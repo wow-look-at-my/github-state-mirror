@@ -14,73 +14,68 @@ var schemaSQL string
 
 const SchemaVersion = 1
 
-// Open opens (or creates) the SQLite database at path.
-// If the schema version doesn't match, the file is deleted and recreated.
-func Open(path string) (*sql.DB, error) {
-	needsCreate := false
+var pragmas = []string{
+	"PRAGMA journal_mode=WAL",
+	"PRAGMA busy_timeout=5000",
+	"PRAGMA synchronous=NORMAL",
+	"PRAGMA foreign_keys=ON",
+}
 
+// Open opens (or creates) the SQLite database at path.
+// If the schema version doesn't match or the DB is corrupt, the file is
+// deleted and recreated. This is a cache — data loss is acceptable.
+func Open(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		needsCreate = true
+		return createFresh(path)
 	} else if err != nil {
 		return nil, fmt.Errorf("stat db: %w", err)
 	}
 
+	// File exists — try to open and verify.
+	db, err := openAndConfigure(path)
+	if err != nil {
+		// Corrupt or unreadable — nuke it.
+		os.Remove(path)
+		return createFresh(path)
+	}
+
+	var version int64
+	if err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil || version != SchemaVersion {
+		// Version mismatch or schema missing — nuke and recreate.
+		db.Close()
+		os.Remove(path)
+		return createFresh(path)
+	}
+
+	return db, nil
+}
+
+func createFresh(path string) (*sql.DB, error) {
+	db, err := openAndConfigure(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(schemaSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
+	}
+	if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", SchemaVersion); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set schema version: %w", err)
+	}
+	return db, nil
+}
+
+func openAndConfigure(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-
-	// SQLite pragmas for performance.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-	} {
+	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("exec %q: %w", pragma, err)
 		}
 	}
-
-	if !needsCreate {
-		var version int64
-		err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-		if err != nil || version != SchemaVersion {
-			// Version mismatch or missing — nuke and recreate.
-			db.Close()
-			if err := os.Remove(path); err != nil {
-				return nil, fmt.Errorf("remove stale db: %w", err)
-			}
-			needsCreate = true
-			db, err = sql.Open("sqlite", path)
-			if err != nil {
-				return nil, fmt.Errorf("reopen db: %w", err)
-			}
-			for _, pragma := range []string{
-				"PRAGMA journal_mode=WAL",
-				"PRAGMA busy_timeout=5000",
-				"PRAGMA synchronous=NORMAL",
-				"PRAGMA foreign_keys=ON",
-			} {
-				if _, err := db.Exec(pragma); err != nil {
-					db.Close()
-					return nil, fmt.Errorf("exec %q: %w", pragma, err)
-				}
-			}
-		}
-	}
-
-	if needsCreate {
-		if _, err := db.Exec(schemaSQL); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("create schema: %w", err)
-		}
-		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", SchemaVersion); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("set schema version: %w", err)
-		}
-	}
-
 	return db, nil
 }

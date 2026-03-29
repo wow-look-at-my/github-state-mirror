@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -27,9 +29,8 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	require.Nil(t, err)
+
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
@@ -57,17 +58,13 @@ func TestGetUser(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var body map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body["login"] != "octocat" {
-		t.Errorf("login = %v, want %q", body["login"], "octocat")
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	assert.Equal(t, "octocat", body["login"])
+
 }
 
 func TestGetUser_NotFound(t *testing.T) {
@@ -77,9 +74,8 @@ func TestGetUser_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
 }
 
 func TestGetUserOrgs(t *testing.T) {
@@ -95,20 +91,15 @@ func TestGetUserOrgs(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var body []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(body) != 1 {
-		t.Fatalf("len = %d, want 1", len(body))
-	}
-	if body[0]["login"] != "org1" {
-		t.Errorf("login = %v, want %q", body[0]["login"], "org1")
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	require.Equal(t, 1, len(body))
+
+	assert.Equal(t, "org1", body[0]["login"])
+
 }
 
 func TestGetPRFiles(t *testing.T) {
@@ -123,20 +114,15 @@ func TestGetPRFiles(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var body []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(body) != 1 {
-		t.Fatalf("len = %d, want 1", len(body))
-	}
-	if body[0]["filename"] != "main.go" {
-		t.Errorf("filename = %v, want %q", body[0]["filename"], "main.go")
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	require.Equal(t, 1, len(body))
+
+	assert.Equal(t, "main.go", body[0]["filename"])
+
 }
 
 func TestGetCompare(t *testing.T) {
@@ -144,25 +130,20 @@ func TestGetCompare(t *testing.T) {
 	ctx := context.Background()
 
 	store.UpsertComparison(ctx, dbgen.BranchComparison{
-		Owner: "org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 5, BehindBy: 2,
+		Owner:	"org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 5, BehindBy: 2,
 	})
 
 	req := httptest.NewRequest("GET", "/repos/org1/repo1/compare/main...feature", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var body map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body["ahead_by"] != float64(5) {
-		t.Errorf("ahead_by = %v, want 5", body["ahead_by"])
-	}
-	if body["behind_by"] != float64(2) {
-		t.Errorf("behind_by = %v, want 2", body["behind_by"])
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	assert.Equal(t, float64(5), body["ahead_by"])
+
+	assert.Equal(t, float64(2), body["behind_by"])
+
 }

@@ -7,15 +7,16 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	require.Nil(t, err)
+
 	t.Cleanup(func() { db.Close() })
 	return NewStore(db)
 }
@@ -24,12 +25,10 @@ func TestStore_GetNonExistent(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	m, err := s.Get(ctx, ResourceID{Kind: "test", Key: "missing"})
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if m != nil {
-		t.Errorf("expected nil for non-existent resource, got %+v", m)
-	}
+	require.Nil(t, err)
+
+	assert.Nil(t, m)
+
 }
 
 func TestStore_UpsertAndGet(t *testing.T) {
@@ -39,28 +38,22 @@ func TestStore_UpsertAndGet(t *testing.T) {
 
 	id := ResourceID{Kind: "test", Key: "key1"}
 	m := &Metadata{
-		ResourceID: id,
-		State:      StateFresh,
-		ETag:       "etag123",
-		ExpiresAt:  &now,
+		ResourceID:	id,
+		State:		StateFresh,
+		ETag:		"etag123",
+		ExpiresAt:	&now,
 	}
-	if err := s.Upsert(ctx, m); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
+	require.NoError(t, s.Upsert(ctx, m))
 
 	got, err := s.Get(ctx, id)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got == nil {
-		t.Fatal("Get returned nil")
-	}
-	if got.State != StateFresh {
-		t.Errorf("state = %q, want %q", got.State, StateFresh)
-	}
-	if got.ETag != "etag123" {
-		t.Errorf("etag = %q, want %q", got.ETag, "etag123")
-	}
+	require.Nil(t, err)
+
+	require.NotNil(t, got)
+
+	assert.Equal(t, StateFresh, got.State)
+
+	assert.Equal(t, "etag123", got.ETag)
+
 }
 
 func TestStore_MarkFreshAndStale(t *testing.T) {
@@ -68,28 +61,19 @@ func TestStore_MarkFreshAndStale(t *testing.T) {
 	ctx := context.Background()
 
 	id := ResourceID{Kind: "test", Key: "key1"}
-	if err := s.Upsert(ctx, &Metadata{ResourceID: id, State: StateUnknown}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id, State: StateUnknown}))
 
 	expires := time.Now().Add(1 * time.Hour)
-	if err := s.MarkFresh(ctx, id, "etag456", expires); err != nil {
-		t.Fatalf("MarkFresh: %v", err)
-	}
+	require.NoError(t, s.MarkFresh(ctx, id, "etag456", expires))
 
 	got, _ := s.Get(ctx, id)
-	if got.State != StateFresh {
-		t.Errorf("state = %q, want %q", got.State, StateFresh)
-	}
+	assert.Equal(t, StateFresh, got.State)
 
-	if err := s.MarkStale(ctx, id); err != nil {
-		t.Fatalf("MarkStale: %v", err)
-	}
+	require.NoError(t, s.MarkStale(ctx, id))
 
 	got, _ = s.Get(ctx, id)
-	if got.State != StateStale {
-		t.Errorf("state = %q, want %q", got.State, StateStale)
-	}
+	assert.Equal(t, StateStale, got.State)
+
 }
 
 func TestStore_MarkError(t *testing.T) {
@@ -97,22 +81,16 @@ func TestStore_MarkError(t *testing.T) {
 	ctx := context.Background()
 
 	id := ResourceID{Kind: "test", Key: "key1"}
-	if err := s.Upsert(ctx, &Metadata{ResourceID: id, State: StateUnknown}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id, State: StateUnknown}))
 
 	retryAt := time.Now().Add(5 * time.Minute)
-	if err := s.MarkError(ctx, id, "connection refused", retryAt); err != nil {
-		t.Fatalf("MarkError: %v", err)
-	}
+	require.NoError(t, s.MarkError(ctx, id, "connection refused", retryAt))
 
 	got, _ := s.Get(ctx, id)
-	if got.State != StateError {
-		t.Errorf("state = %q, want %q", got.State, StateError)
-	}
-	if got.ErrorMessage != "connection refused" {
-		t.Errorf("error = %q, want %q", got.ErrorMessage, "connection refused")
-	}
+	assert.Equal(t, StateError, got.State)
+
+	assert.Equal(t, "connection refused", got.ErrorMessage)
+
 }
 
 func TestStore_ListByKind(t *testing.T) {
@@ -120,28 +98,17 @@ func TestStore_ListByKind(t *testing.T) {
 	ctx := context.Background()
 
 	for _, key := range []string{"a", "b", "c"} {
-		if err := s.Upsert(ctx, &Metadata{
-			ResourceID: ResourceID{Kind: "repos", Key: key},
-			State:      StateFresh,
-		}); err != nil {
-			t.Fatalf("Upsert: %v", err)
-		}
+		require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: ResourceID{Kind: "repos", Key: key}, State: StateFresh}))
+
 	}
 	// Different kind.
-	if err := s.Upsert(ctx, &Metadata{
-		ResourceID: ResourceID{Kind: "users", Key: "x"},
-		State:      StateFresh,
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: ResourceID{Kind: "users", Key: "x"}, State: StateFresh}))
 
 	metas, err := s.ListByKind(ctx, "repos")
-	if err != nil {
-		t.Fatalf("ListByKind: %v", err)
-	}
-	if len(metas) != 3 {
-		t.Errorf("len = %d, want 3", len(metas))
-	}
+	require.Nil(t, err)
+
+	assert.Equal(t, 3, len(metas))
+
 }
 
 func TestStore_RefreshLog(t *testing.T) {
@@ -150,16 +117,12 @@ func TestStore_RefreshLog(t *testing.T) {
 
 	id := ResourceID{Kind: "test", Key: "key1"}
 	logID, err := s.InsertRefreshLog(ctx, id, TriggerLazy)
-	if err != nil {
-		t.Fatalf("InsertRefreshLog: %v", err)
-	}
-	if logID <= 0 {
-		t.Errorf("logID = %d, want > 0", logID)
-	}
+	require.Nil(t, err)
 
-	if err := s.CompleteRefreshLog(ctx, logID, true, 5, ""); err != nil {
-		t.Fatalf("CompleteRefreshLog: %v", err)
-	}
+	assert.Greater(t, logID, 0)
+
+	require.NoError(t, s.CompleteRefreshLog(ctx, logID, true, 5, ""))
+
 }
 
 func TestManager_EnsureFresh_LazyFetch(t *testing.T) {
@@ -168,8 +131,8 @@ func TestManager_EnsureFresh_LazyFetch(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:       "test",
-		DefaultTTL: 1 * time.Hour,
+		Kind:		"test",
+		DefaultTTL:	1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil
@@ -179,20 +142,15 @@ func TestManager_EnsureFresh_LazyFetch(t *testing.T) {
 	id := ResourceID{Kind: "test", Key: "key1"}
 
 	// First call should trigger a fetch.
-	if err := mgr.EnsureFresh(ctx, id); err != nil {
-		t.Fatalf("EnsureFresh 1: %v", err)
-	}
-	if fetchCount != 1 {
-		t.Errorf("fetchCount = %d, want 1", fetchCount)
-	}
+	require.NoError(t, mgr.EnsureFresh(ctx, id))
+
+	assert.Equal(t, 1, fetchCount)
 
 	// Second call — data is fresh, no fetch.
-	if err := mgr.EnsureFresh(ctx, id); err != nil {
-		t.Fatalf("EnsureFresh 2: %v", err)
-	}
-	if fetchCount != 1 {
-		t.Errorf("fetchCount = %d, want 1 (should not re-fetch)", fetchCount)
-	}
+	require.NoError(t, mgr.EnsureFresh(ctx, id))
+
+	assert.Equal(t, 1, fetchCount)
+
 }
 
 func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
@@ -201,8 +159,8 @@ func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:       "test",
-		DefaultTTL: 1 * time.Hour,
+		Kind:		"test",
+		DefaultTTL:	1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil
@@ -215,17 +173,13 @@ func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
 	mgr.EnsureFresh(ctx, id)
 
 	// Invalidate.
-	if err := mgr.Invalidate(ctx, id); err != nil {
-		t.Fatalf("Invalidate: %v", err)
-	}
+	require.NoError(t, mgr.Invalidate(ctx, id))
 
 	// EnsureFresh should re-fetch.
-	if err := mgr.EnsureFresh(ctx, id); err != nil {
-		t.Fatalf("EnsureFresh after invalidate: %v", err)
-	}
-	if fetchCount != 2 {
-		t.Errorf("fetchCount = %d, want 2", fetchCount)
-	}
+	require.NoError(t, mgr.EnsureFresh(ctx, id))
+
+	assert.Equal(t, 2, fetchCount)
+
 }
 
 // FetcherFunc is an adapter to use ordinary functions as Fetcher.
