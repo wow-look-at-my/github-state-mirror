@@ -48,9 +48,10 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 		event := ParseEvent(eventType, body)
 
 		// Respond 200 immediately, dispatch asynchronously.
+		// Use a detached context since the request context will be canceled.
 		w.WriteHeader(http.StatusOK)
 
-		go dispatcher.Dispatch(r.Context(), event)
+		go dispatcher.Dispatch(context.Background(), event)
 	}
 }
 
