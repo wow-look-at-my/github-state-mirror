@@ -143,6 +143,85 @@ func TestSetPRFiles(t *testing.T) {
 
 }
 
+func TestSetPRLabels(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Set initial labels.
+	labels := []dbgen.PrLabel{
+		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "red"},
+		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "urgent", Color: "orange"},
+	}
+	require.NoError(t, s.SetPRLabels(ctx, "org1", "repo1", 1, labels))
+
+	got, err := s.ListPRLabels(ctx, "org1", "repo1", 1)
+	require.Nil(t, err)
+	require.Equal(t, 2, len(got))
+
+	// Replace with different labels.
+	newLabels := []dbgen.PrLabel{
+		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "enhancement", Color: "blue"},
+	}
+	require.NoError(t, s.SetPRLabels(ctx, "org1", "repo1", 1, newLabels))
+
+	got, err = s.ListPRLabels(ctx, "org1", "repo1", 1)
+	require.Nil(t, err)
+	require.Equal(t, 1, len(got))
+	assert.Equal(t, "enhancement", got[0].Name)
+}
+
+func TestListOrgs(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.UpsertOrg(ctx, dbgen.Org{Login: "org1", AvatarUrl: sql.NullString{String: "a1", Valid: true}, Url: sql.NullString{String: "u1", Valid: true}}))
+	require.NoError(t, s.UpsertOrg(ctx, dbgen.Org{Login: "org2", AvatarUrl: sql.NullString{String: "a2", Valid: true}, Url: sql.NullString{String: "u2", Valid: true}}))
+
+	got, err := s.ListOrgs(ctx)
+	require.Nil(t, err)
+	assert.Equal(t, 2, len(got))
+}
+
+func TestGetRepo(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u1"}))
+
+	got, err := s.GetRepo(ctx, "org1", "repo1")
+	require.Nil(t, err)
+	assert.Equal(t, "org1/repo1", got.NameWithOwner)
+}
+
+func TestGetPullRequest(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	pr := dbgen.PullRequest{Owner: "org1", Repo: "repo1", Number: 1, Title: "PR 1", Url: "u1", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"}
+	require.NoError(t, s.UpsertPR(ctx, pr))
+
+	got, err := s.GetPullRequest(ctx, "org1", "repo1", 1)
+	require.Nil(t, err)
+	assert.Equal(t, "PR 1", got.Title)
+}
+
+func TestListOpenPRsByOwner(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	prs := []dbgen.PullRequest{
+		{Owner: "org1", Repo: "repo1", Number: 1, Title: "PR 1", Url: "u1", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
+		{Owner: "org1", Repo: "repo2", Number: 2, Title: "PR 2", Url: "u2", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
+	}
+	for _, pr := range prs {
+		require.NoError(t, s.UpsertPR(ctx, pr))
+	}
+
+	got, err := s.ListOpenPRsByOwner(ctx, "org1")
+	require.Nil(t, err)
+	assert.Equal(t, 2, len(got))
+}
+
 func TestUpsertAndGetComparison(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

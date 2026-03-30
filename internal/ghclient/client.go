@@ -24,6 +24,15 @@ func New(token string) *Client {
 	}
 }
 
+// NewWithBaseURL creates a Client pointing at a custom base URL (for testing).
+func NewWithBaseURL(token, baseURL string) *Client {
+	return &Client{
+		httpClient: &http.Client{},
+		baseURL:    baseURL,
+		token:      token,
+	}
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
 	url := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, body)

@@ -182,6 +182,140 @@ func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
 
 }
 
+func TestManager_InvalidateAndRefresh(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	fetchCount := 0
+	mgr.RegisterFetcher(Policy{
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		fetchCount++
+		return RefreshResult{RecordsChanged: 1}, nil
+	}))
+
+	ctx := context.Background()
+	id := ResourceID{Kind: "test", Key: "key1"}
+
+	// Initial fetch.
+	require.NoError(t, mgr.EnsureFresh(ctx, id))
+	assert.Equal(t, 1, fetchCount)
+
+	// InvalidateAndRefresh should re-fetch immediately.
+	require.NoError(t, mgr.InvalidateAndRefresh(ctx, id, TriggerWebhook))
+	assert.Equal(t, 2, fetchCount)
+
+	// Should be fresh now.
+	meta, err := s.Get(ctx, id)
+	require.Nil(t, err)
+	assert.Equal(t, StateFresh, meta.State)
+}
+
+func TestManager_RefreshAllOfKind(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	fetchCount := 0
+	mgr.RegisterFetcher(Policy{
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		fetchCount++
+		return RefreshResult{RecordsChanged: 1}, nil
+	}))
+
+	ctx := context.Background()
+
+	// Seed a few resources.
+	require.NoError(t, mgr.EnsureFresh(ctx, ResourceID{Kind: "test", Key: "a"}))
+	require.NoError(t, mgr.EnsureFresh(ctx, ResourceID{Kind: "test", Key: "b"}))
+	assert.Equal(t, 2, fetchCount)
+
+	// RefreshAllOfKind should re-fetch both.
+	require.NoError(t, mgr.RefreshAllOfKind(ctx, "test", TriggerPeriodic))
+	assert.Equal(t, 4, fetchCount)
+}
+
+func TestManager_FetchError(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	mgr.RegisterFetcher(Policy{
+		Kind:          "test",
+		DefaultTTL:    1 * time.Hour,
+		ErrorRetryMin: 5 * time.Minute,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		return RefreshResult{}, assert.AnError
+	}))
+
+	ctx := context.Background()
+	id := ResourceID{Kind: "test", Key: "key1"}
+
+	err := mgr.EnsureFresh(ctx, id)
+	assert.Error(t, err)
+
+	meta, err := s.Get(ctx, id)
+	require.Nil(t, err)
+	assert.Equal(t, StateError, meta.State)
+	assert.NotEmpty(t, meta.ErrorMessage)
+}
+
+func TestManager_InvalidateNeverSeen(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	mgr.RegisterFetcher(Policy{Kind: "test"}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		return RefreshResult{}, nil
+	}))
+
+	ctx := context.Background()
+	// Invalidate a resource that was never fetched — should be a no-op.
+	require.NoError(t, mgr.Invalidate(ctx, ResourceID{Kind: "test", Key: "never-seen"}))
+}
+
+func TestManager_NoFetcher(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	ctx := context.Background()
+	// EnsureFresh for unregistered kind — should not error.
+	require.NoError(t, mgr.EnsureFresh(ctx, ResourceID{Kind: "unregistered", Key: "key1"}))
+}
+
+func TestStore_ListStale(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	id1 := ResourceID{Kind: "test", Key: "stale1"}
+	id2 := ResourceID{Kind: "test", Key: "fresh1"}
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id1, State: StateStale}))
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id2, State: StateFresh}))
+
+	stale, err := s.ListStale(ctx, time.Now().Add(1*time.Hour))
+	require.Nil(t, err)
+	assert.Equal(t, 1, len(stale))
+	assert.Equal(t, "stale1", stale[0].Key)
+}
+
+func TestStore_Delete(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	id := ResourceID{Kind: "test", Key: "to-delete"}
+	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id, State: StateFresh}))
+
+	got, err := s.Get(ctx, id)
+	require.Nil(t, err)
+	require.NotNil(t, got)
+
+	require.NoError(t, s.Delete(ctx, id))
+
+	got, err = s.Get(ctx, id)
+	require.Nil(t, err)
+	assert.Nil(t, got)
+}
+
 // FetcherFunc is an adapter to use ordinary functions as Fetcher.
 type FetcherFunc func(ctx context.Context, key string, etag string) (RefreshResult, error)
 
