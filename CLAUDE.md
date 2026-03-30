@@ -29,7 +29,7 @@ A Go service that mirrors GitHub state into SQLite, providing a fast local API s
 
 ## Environment Variables
 
-- `GITHUB_TOKEN` (required) — GitHub personal access token
+- `GITHUB_TOKEN` (optional) — fallback GitHub token for background refreshes; API requests pass through the caller's `Authorization` header
 - `WEBHOOK_SECRET` — GitHub webhook HMAC secret
 - `LISTEN_ADDR` — HTTP listen address (default `:8080`)
 - `DB_PATH` — SQLite database file path (default `github-mirror.db`)

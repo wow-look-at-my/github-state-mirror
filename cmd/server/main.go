@@ -21,8 +21,7 @@ func main() {
 	cfg := config.Load()
 
 	if cfg.GitHubToken == "" {
-		slog.Error("GITHUB_TOKEN is required")
-		os.Exit(1)
+		slog.Warn("GITHUB_TOKEN not set; background refreshes will only work if callers supply Authorization headers")
 	}
 
 	db, err := database.Open(cfg.DBPath)

@@ -10,26 +10,46 @@ import (
 
 const defaultBaseURL = "https://api.github.com"
 
-type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	token      string
+// contextKey is an unexported type for context keys in this package.
+type contextKey struct{}
+
+// tokenKey is the context key for the GitHub auth token.
+var tokenKey = contextKey{}
+
+// WithToken returns a child context carrying the given GitHub auth token.
+func WithToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, tokenKey, token)
 }
 
-func New(token string) *Client {
+// tokenFromContext returns the token from context, or empty string if absent.
+func tokenFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(tokenKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+type Client struct {
+	httpClient   *http.Client
+	baseURL      string
+	defaultToken string // optional fallback for background refreshes
+}
+
+// New creates a Client with an optional default token used when no token is in the context.
+func New(defaultToken string) *Client {
 	return &Client{
-		httpClient: &http.Client{},
-		baseURL:    defaultBaseURL,
-		token:      token,
+		httpClient:   &http.Client{},
+		baseURL:      defaultBaseURL,
+		defaultToken: defaultToken,
 	}
 }
 
 // NewWithBaseURL creates a Client pointing at a custom base URL (for testing).
-func NewWithBaseURL(token, baseURL string) *Client {
+func NewWithBaseURL(defaultToken, baseURL string) *Client {
 	return &Client{
-		httpClient: &http.Client{},
-		baseURL:    baseURL,
-		token:      token,
+		httpClient:   &http.Client{},
+		baseURL:      baseURL,
+		defaultToken: defaultToken,
 	}
 }
 
@@ -40,8 +60,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+
+	// Prefer token from context (passthrough from caller), fall back to default.
+	token := tokenFromContext(ctx)
+	if token == "" {
+		token = c.defaultToken
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

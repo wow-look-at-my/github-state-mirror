@@ -2,14 +2,31 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
+
+// passthroughAuth extracts the caller's Authorization header and injects the
+// token into the request context so outbound GitHub API calls use it.
+func passthroughAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			token := strings.TrimPrefix(auth, "Bearer ")
+			token = strings.TrimPrefix(token, "token ")
+			if token != "" {
+				r = r.WithContext(ghclient.WithToken(r.Context(), token))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func NewRouter(
 	mgr *freshness.Manager,
@@ -20,6 +37,7 @@ func NewRouter(
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(passthroughAuth)
 
 	h := &handlers{mgr: mgr, store: store}
 

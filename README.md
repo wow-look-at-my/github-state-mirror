@@ -14,6 +14,14 @@ The SQLite database is a **cache**, not a database of record. On schema changes,
 
 ## API Endpoints
 
+### Authentication
+
+All API requests pass through the caller's `Authorization` header to GitHub. Send your token the same way you would to the GitHub API:
+
+```
+Authorization: Bearer ghp_xxxx
+```
+
 ### REST
 
 - `GET /user` — authenticated user info (login, avatar)
@@ -33,7 +41,7 @@ The SQLite database is a **cache**, not a database of record. On schema changes,
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | Yes | — | GitHub personal access token |
+| `GITHUB_TOKEN` | No | — | Fallback GitHub token for background refreshes; API requests pass through the caller's `Authorization` header |
 | `WEBHOOK_SECRET` | No | — | HMAC secret for webhook signature verification |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
