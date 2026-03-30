@@ -14,4 +14,5 @@ jobs:
         run: |
           curl -fsSL -o go-toolchain https://github.com/wow-look-at-my/go-toolchain/releases/latest/download/go-toolchain_linux_amd64
           chmod +x go-toolchain
+          ./go-toolchain ignore coverage
           ./go-toolchain
