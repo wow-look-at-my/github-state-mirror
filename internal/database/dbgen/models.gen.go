@@ -9,6 +9,7 @@ import (
 )
 
 type BranchComparison struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	BaseRef  string
@@ -18,6 +19,7 @@ type BranchComparison struct {
 }
 
 type CacheMetadatum struct {
+	Actor         string
 	ResourceKind  string
 	ResourceKey   string
 	LastFetchedAt sql.NullString
@@ -31,6 +33,7 @@ type CacheMetadatum struct {
 
 type CacheRefreshLog struct {
 	ID             int64
+	Actor          string
 	ResourceKind   string
 	ResourceKey    string
 	TriggeredBy    string
@@ -42,12 +45,14 @@ type CacheRefreshLog struct {
 }
 
 type Org struct {
+	Actor     string
 	Login     string
 	AvatarUrl sql.NullString
 	Url       sql.NullString
 }
 
 type PrFile struct {
+	Actor     string
 	Owner     string
 	Repo      string
 	PrNumber  int64
@@ -57,6 +62,7 @@ type PrFile struct {
 }
 
 type PrLabel struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
@@ -65,6 +71,7 @@ type PrLabel struct {
 }
 
 type PullRequest struct {
+	Actor              string
 	Owner              string
 	Repo               string
 	Number             int64
@@ -88,6 +95,7 @@ type PullRequest struct {
 }
 
 type Repo struct {
+	Actor               string
 	Owner               string
 	Name                string
 	NameWithOwner       string
@@ -107,12 +115,14 @@ type SchemaVersion struct {
 }
 
 type User struct {
+	Actor     string
 	Login     string
 	AvatarUrl string
 	Url       string
 }
 
 type UserOrgMembership struct {
+	Actor     string
 	UserLogin string
 	OrgLogin  string
 }

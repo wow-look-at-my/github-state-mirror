@@ -12,10 +12,11 @@ import (
 
 const deleteBranchComparison = `-- name: DeleteBranchComparison :exec
 DELETE FROM branch_comparisons
-WHERE owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
 `
 
 type DeleteBranchComparisonParams struct {
+	Actor   string
 	Owner   string
 	Repo    string
 	BaseRef string
@@ -24,6 +25,7 @@ type DeleteBranchComparisonParams struct {
 
 func (q *Queries) DeleteBranchComparison(ctx context.Context, arg DeleteBranchComparisonParams) error {
 	_, err := q.db.ExecContext(ctx, deleteBranchComparison,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.BaseRef,
@@ -33,102 +35,133 @@ func (q *Queries) DeleteBranchComparison(ctx context.Context, arg DeleteBranchCo
 }
 
 const deletePRFiles = `-- name: DeletePRFiles :exec
-DELETE FROM pr_files WHERE owner = ? AND repo = ? AND pr_number = ?
+DELETE FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
 `
 
 type DeletePRFilesParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) DeletePRFiles(ctx context.Context, arg DeletePRFilesParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRFiles, arg.Owner, arg.Repo, arg.PrNumber)
+	_, err := q.db.ExecContext(ctx, deletePRFiles,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.PrNumber,
+	)
 	return err
 }
 
 const deletePRLabels = `-- name: DeletePRLabels :exec
-DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?
+DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
 `
 
 type DeletePRLabelsParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) DeletePRLabels(ctx context.Context, arg DeletePRLabelsParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRLabels, arg.Owner, arg.Repo, arg.PrNumber)
+	_, err := q.db.ExecContext(ctx, deletePRLabels,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.PrNumber,
+	)
 	return err
 }
 
 const deletePRLabelsByRepo = `-- name: DeletePRLabelsByRepo :exec
-DELETE FROM pr_labels WHERE owner = ? AND repo = ?
+DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ?
 `
 
 type DeletePRLabelsByRepoParams struct {
+	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) DeletePRLabelsByRepo(ctx context.Context, arg DeletePRLabelsByRepoParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRLabelsByRepo, arg.Owner, arg.Repo)
+	_, err := q.db.ExecContext(ctx, deletePRLabelsByRepo, arg.Actor, arg.Owner, arg.Repo)
 	return err
 }
 
 const deletePullRequest = `-- name: DeletePullRequest :exec
-DELETE FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
+DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
 `
 
 type DeletePullRequestParams struct {
+	Actor  string
 	Owner  string
 	Repo   string
 	Number int64
 }
 
 func (q *Queries) DeletePullRequest(ctx context.Context, arg DeletePullRequestParams) error {
-	_, err := q.db.ExecContext(ctx, deletePullRequest, arg.Owner, arg.Repo, arg.Number)
+	_, err := q.db.ExecContext(ctx, deletePullRequest,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
 	return err
 }
 
 const deletePullRequestsByRepo = `-- name: DeletePullRequestsByRepo :exec
-DELETE FROM pull_requests WHERE owner = ? AND repo = ?
+DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ?
 `
 
 type DeletePullRequestsByRepoParams struct {
+	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) DeletePullRequestsByRepo(ctx context.Context, arg DeletePullRequestsByRepoParams) error {
-	_, err := q.db.ExecContext(ctx, deletePullRequestsByRepo, arg.Owner, arg.Repo)
+	_, err := q.db.ExecContext(ctx, deletePullRequestsByRepo, arg.Actor, arg.Owner, arg.Repo)
 	return err
 }
 
 const deleteReposByOwner = `-- name: DeleteReposByOwner :exec
-DELETE FROM repos WHERE owner = ?
+DELETE FROM repos WHERE actor = ? AND owner = ?
 `
 
-func (q *Queries) DeleteReposByOwner(ctx context.Context, owner string) error {
-	_, err := q.db.ExecContext(ctx, deleteReposByOwner, owner)
+type DeleteReposByOwnerParams struct {
+	Actor string
+	Owner string
+}
+
+func (q *Queries) DeleteReposByOwner(ctx context.Context, arg DeleteReposByOwnerParams) error {
+	_, err := q.db.ExecContext(ctx, deleteReposByOwner, arg.Actor, arg.Owner)
 	return err
 }
 
 const deleteUserOrgMemberships = `-- name: DeleteUserOrgMemberships :exec
-DELETE FROM user_org_memberships WHERE user_login = ?
+DELETE FROM user_org_memberships WHERE actor = ? AND user_login = ?
 `
 
-func (q *Queries) DeleteUserOrgMemberships(ctx context.Context, userLogin string) error {
-	_, err := q.db.ExecContext(ctx, deleteUserOrgMemberships, userLogin)
+type DeleteUserOrgMembershipsParams struct {
+	Actor     string
+	UserLogin string
+}
+
+func (q *Queries) DeleteUserOrgMemberships(ctx context.Context, arg DeleteUserOrgMembershipsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteUserOrgMemberships, arg.Actor, arg.UserLogin)
 	return err
 }
 
 const getBranchComparison = `-- name: GetBranchComparison :one
-SELECT owner, repo, base_ref, head_ref, ahead_by, behind_by FROM branch_comparisons
-WHERE owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
+SELECT actor, owner, repo, base_ref, head_ref, ahead_by, behind_by FROM branch_comparisons
+WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
 `
 
 type GetBranchComparisonParams struct {
+	Actor   string
 	Owner   string
 	Repo    string
 	BaseRef string
@@ -137,6 +170,7 @@ type GetBranchComparisonParams struct {
 
 func (q *Queries) GetBranchComparison(ctx context.Context, arg GetBranchComparisonParams) (BranchComparison, error) {
 	row := q.db.QueryRowContext(ctx, getBranchComparison,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.BaseRef,
@@ -144,6 +178,7 @@ func (q *Queries) GetBranchComparison(ctx context.Context, arg GetBranchComparis
 	)
 	var i BranchComparison
 	err := row.Scan(
+		&i.Actor,
 		&i.Owner,
 		&i.Repo,
 		&i.BaseRef,
@@ -155,41 +190,63 @@ func (q *Queries) GetBranchComparison(ctx context.Context, arg GetBranchComparis
 }
 
 const getFirstUser = `-- name: GetFirstUser :one
-SELECT login, avatar_url, url FROM users LIMIT 1
+SELECT actor, login, avatar_url, url FROM users WHERE actor = ? LIMIT 1
 `
 
-func (q *Queries) GetFirstUser(ctx context.Context) (User, error) {
-	row := q.db.QueryRowContext(ctx, getFirstUser)
+func (q *Queries) GetFirstUser(ctx context.Context, actor string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getFirstUser, actor)
 	var i User
-	err := row.Scan(&i.Login, &i.AvatarUrl, &i.Url)
+	err := row.Scan(
+		&i.Actor,
+		&i.Login,
+		&i.AvatarUrl,
+		&i.Url,
+	)
 	return i, err
 }
 
 const getOrg = `-- name: GetOrg :one
-SELECT login, avatar_url, url FROM orgs WHERE login = ?
+SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? AND login = ?
 `
 
-func (q *Queries) GetOrg(ctx context.Context, login string) (Org, error) {
-	row := q.db.QueryRowContext(ctx, getOrg, login)
+type GetOrgParams struct {
+	Actor string
+	Login string
+}
+
+func (q *Queries) GetOrg(ctx context.Context, arg GetOrgParams) (Org, error) {
+	row := q.db.QueryRowContext(ctx, getOrg, arg.Actor, arg.Login)
 	var i Org
-	err := row.Scan(&i.Login, &i.AvatarUrl, &i.Url)
+	err := row.Scan(
+		&i.Actor,
+		&i.Login,
+		&i.AvatarUrl,
+		&i.Url,
+	)
 	return i, err
 }
 
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
 `
 
 type GetPullRequestParams struct {
+	Actor  string
 	Owner  string
 	Repo   string
 	Number int64
 }
 
 func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) (PullRequest, error) {
-	row := q.db.QueryRowContext(ctx, getPullRequest, arg.Owner, arg.Repo, arg.Number)
+	row := q.db.QueryRowContext(ctx, getPullRequest,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
 	var i PullRequest
 	err := row.Scan(
+		&i.Actor,
 		&i.Owner,
 		&i.Repo,
 		&i.Number,
@@ -215,18 +272,20 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 }
 
 const getRepo = `-- name: GetRepo :one
-SELECT owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? AND name = ?
+SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? AND owner = ? AND name = ?
 `
 
 type GetRepoParams struct {
+	Actor string
 	Owner string
 	Name  string
 }
 
 func (q *Queries) GetRepo(ctx context.Context, arg GetRepoParams) (Repo, error) {
-	row := q.db.QueryRowContext(ctx, getRepo, arg.Owner, arg.Name)
+	row := q.db.QueryRowContext(ctx, getRepo, arg.Actor, arg.Owner, arg.Name)
 	var i Repo
 	err := row.Scan(
+		&i.Actor,
 		&i.Owner,
 		&i.Name,
 		&i.NameWithOwner,
@@ -244,26 +303,37 @@ func (q *Queries) GetRepo(ctx context.Context, arg GetRepoParams) (Repo, error) 
 }
 
 const getUser = `-- name: GetUser :one
-SELECT login, avatar_url, url FROM users WHERE login = ?
+SELECT actor, login, avatar_url, url FROM users WHERE actor = ? AND login = ?
 `
 
-func (q *Queries) GetUser(ctx context.Context, login string) (User, error) {
-	row := q.db.QueryRowContext(ctx, getUser, login)
+type GetUserParams struct {
+	Actor string
+	Login string
+}
+
+func (q *Queries) GetUser(ctx context.Context, arg GetUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUser, arg.Actor, arg.Login)
 	var i User
-	err := row.Scan(&i.Login, &i.AvatarUrl, &i.Url)
+	err := row.Scan(
+		&i.Actor,
+		&i.Login,
+		&i.AvatarUrl,
+		&i.Url,
+	)
 	return i, err
 }
 
 const insertPRFile = `-- name: InsertPRFile :exec
 
-INSERT INTO pr_files (owner, repo, pr_number, path, additions, deletions)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, pr_number, path) DO UPDATE SET
+INSERT INTO pr_files (actor, owner, repo, pr_number, path, additions, deletions)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, pr_number, path) DO UPDATE SET
     additions = excluded.additions,
     deletions = excluded.deletions
 `
 
 type InsertPRFileParams struct {
+	Actor     string
 	Owner     string
 	Repo      string
 	PrNumber  int64
@@ -277,6 +347,7 @@ type InsertPRFileParams struct {
 // ============================================================================
 func (q *Queries) InsertPRFile(ctx context.Context, arg InsertPRFileParams) error {
 	_, err := q.db.ExecContext(ctx, insertPRFile,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.PrNumber,
@@ -289,13 +360,14 @@ func (q *Queries) InsertPRFile(ctx context.Context, arg InsertPRFileParams) erro
 
 const insertPRLabel = `-- name: InsertPRLabel :exec
 
-INSERT INTO pr_labels (owner, repo, pr_number, name, color)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, pr_number, name) DO UPDATE SET
+INSERT INTO pr_labels (actor, owner, repo, pr_number, name, color)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, pr_number, name) DO UPDATE SET
     color = excluded.color
 `
 
 type InsertPRLabelParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
@@ -308,6 +380,7 @@ type InsertPRLabelParams struct {
 // ============================================================================
 func (q *Queries) InsertPRLabel(ctx context.Context, arg InsertPRLabelParams) error {
 	_, err := q.db.ExecContext(ctx, insertPRLabel,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.PrNumber,
@@ -318,13 +391,18 @@ func (q *Queries) InsertPRLabel(ctx context.Context, arg InsertPRLabelParams) er
 }
 
 const listOpenPullRequestsByOwner = `-- name: ListOpenPullRequestsByOwner :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
-WHERE owner = ? AND state = 'OPEN'
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
+WHERE actor = ? AND owner = ? AND state = 'OPEN'
 ORDER BY repo, number
 `
 
-func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, owner string) ([]PullRequest, error) {
-	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByOwner, owner)
+type ListOpenPullRequestsByOwnerParams struct {
+	Actor string
+	Owner string
+}
+
+func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, arg ListOpenPullRequestsByOwnerParams) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByOwner, arg.Actor, arg.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +411,7 @@ func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, owner string)
 	for rows.Next() {
 		var i PullRequest
 		if err := rows.Scan(
+			&i.Actor,
 			&i.Owner,
 			&i.Repo,
 			&i.Number,
@@ -368,18 +447,19 @@ func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, owner string)
 }
 
 const listOpenPullRequestsByRepo = `-- name: ListOpenPullRequestsByRepo :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
-WHERE owner = ? AND repo = ? AND state = 'OPEN'
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
+WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number
 `
 
 type ListOpenPullRequestsByRepoParams struct {
+	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPullRequestsByRepoParams) ([]PullRequest, error) {
-	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepo, arg.Owner, arg.Repo)
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepo, arg.Actor, arg.Owner, arg.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +468,7 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 	for rows.Next() {
 		var i PullRequest
 		if err := rows.Scan(
+			&i.Actor,
 			&i.Owner,
 			&i.Repo,
 			&i.Number,
@@ -423,11 +504,11 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 }
 
 const listOrgs = `-- name: ListOrgs :many
-SELECT login, avatar_url, url FROM orgs ORDER BY login
+SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? ORDER BY login
 `
 
-func (q *Queries) ListOrgs(ctx context.Context) ([]Org, error) {
-	rows, err := q.db.QueryContext(ctx, listOrgs)
+func (q *Queries) ListOrgs(ctx context.Context, actor string) ([]Org, error) {
+	rows, err := q.db.QueryContext(ctx, listOrgs, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +516,12 @@ func (q *Queries) ListOrgs(ctx context.Context) ([]Org, error) {
 	var items []Org
 	for rows.Next() {
 		var i Org
-		if err := rows.Scan(&i.Login, &i.AvatarUrl, &i.Url); err != nil {
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Login,
+			&i.AvatarUrl,
+			&i.Url,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -450,17 +536,23 @@ func (q *Queries) ListOrgs(ctx context.Context) ([]Org, error) {
 }
 
 const listPRFiles = `-- name: ListPRFiles :many
-SELECT owner, repo, pr_number, path, additions, deletions FROM pr_files WHERE owner = ? AND repo = ? AND pr_number = ?
+SELECT actor, owner, repo, pr_number, path, additions, deletions FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
 `
 
 type ListPRFilesParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) ListPRFiles(ctx context.Context, arg ListPRFilesParams) ([]PrFile, error) {
-	rows, err := q.db.QueryContext(ctx, listPRFiles, arg.Owner, arg.Repo, arg.PrNumber)
+	rows, err := q.db.QueryContext(ctx, listPRFiles,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.PrNumber,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +561,7 @@ func (q *Queries) ListPRFiles(ctx context.Context, arg ListPRFilesParams) ([]PrF
 	for rows.Next() {
 		var i PrFile
 		if err := rows.Scan(
+			&i.Actor,
 			&i.Owner,
 			&i.Repo,
 			&i.PrNumber,
@@ -490,17 +583,23 @@ func (q *Queries) ListPRFiles(ctx context.Context, arg ListPRFilesParams) ([]PrF
 }
 
 const listPRLabels = `-- name: ListPRLabels :many
-SELECT owner, repo, pr_number, name, color FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?
+SELECT actor, owner, repo, pr_number, name, color FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
 `
 
 type ListPRLabelsParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]PrLabel, error) {
-	rows, err := q.db.QueryContext(ctx, listPRLabels, arg.Owner, arg.Repo, arg.PrNumber)
+	rows, err := q.db.QueryContext(ctx, listPRLabels,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.PrNumber,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -509,6 +608,7 @@ func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]P
 	for rows.Next() {
 		var i PrLabel
 		if err := rows.Scan(
+			&i.Actor,
 			&i.Owner,
 			&i.Repo,
 			&i.PrNumber,
@@ -529,11 +629,16 @@ func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]P
 }
 
 const listReposByOwner = `-- name: ListReposByOwner :many
-SELECT owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? ORDER BY name
+SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? AND owner = ? ORDER BY name
 `
 
-func (q *Queries) ListReposByOwner(ctx context.Context, owner string) ([]Repo, error) {
-	rows, err := q.db.QueryContext(ctx, listReposByOwner, owner)
+type ListReposByOwnerParams struct {
+	Actor string
+	Owner string
+}
+
+func (q *Queries) ListReposByOwner(ctx context.Context, arg ListReposByOwnerParams) ([]Repo, error) {
+	rows, err := q.db.QueryContext(ctx, listReposByOwner, arg.Actor, arg.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -542,6 +647,7 @@ func (q *Queries) ListReposByOwner(ctx context.Context, owner string) ([]Repo, e
 	for rows.Next() {
 		var i Repo
 		if err := rows.Scan(
+			&i.Actor,
 			&i.Owner,
 			&i.Name,
 			&i.NameWithOwner,
@@ -569,11 +675,16 @@ func (q *Queries) ListReposByOwner(ctx context.Context, owner string) ([]Repo, e
 }
 
 const listUserOrgMemberships = `-- name: ListUserOrgMemberships :many
-SELECT org_login FROM user_org_memberships WHERE user_login = ?
+SELECT org_login FROM user_org_memberships WHERE actor = ? AND user_login = ?
 `
 
-func (q *Queries) ListUserOrgMemberships(ctx context.Context, userLogin string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listUserOrgMemberships, userLogin)
+type ListUserOrgMembershipsParams struct {
+	Actor     string
+	UserLogin string
+}
+
+func (q *Queries) ListUserOrgMemberships(ctx context.Context, arg ListUserOrgMembershipsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listUserOrgMemberships, arg.Actor, arg.UserLogin)
 	if err != nil {
 		return nil, err
 	}
@@ -597,12 +708,13 @@ func (q *Queries) ListUserOrgMemberships(ctx context.Context, userLogin string) 
 
 const setUserOrgMembership = `-- name: SetUserOrgMembership :exec
 
-INSERT INTO user_org_memberships (user_login, org_login)
-VALUES (?, ?)
-ON CONFLICT (user_login, org_login) DO NOTHING
+INSERT INTO user_org_memberships (actor, user_login, org_login)
+VALUES (?, ?, ?)
+ON CONFLICT (actor, user_login, org_login) DO NOTHING
 `
 
 type SetUserOrgMembershipParams struct {
+	Actor     string
 	UserLogin string
 	OrgLogin  string
 }
@@ -611,20 +723,21 @@ type SetUserOrgMembershipParams struct {
 // User Org Memberships
 // ============================================================================
 func (q *Queries) SetUserOrgMembership(ctx context.Context, arg SetUserOrgMembershipParams) error {
-	_, err := q.db.ExecContext(ctx, setUserOrgMembership, arg.UserLogin, arg.OrgLogin)
+	_, err := q.db.ExecContext(ctx, setUserOrgMembership, arg.Actor, arg.UserLogin, arg.OrgLogin)
 	return err
 }
 
 const upsertBranchComparison = `-- name: UpsertBranchComparison :exec
 
-INSERT INTO branch_comparisons (owner, repo, base_ref, head_ref, ahead_by, behind_by)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, base_ref, head_ref) DO UPDATE SET
+INSERT INTO branch_comparisons (actor, owner, repo, base_ref, head_ref, ahead_by, behind_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, base_ref, head_ref) DO UPDATE SET
     ahead_by = excluded.ahead_by,
     behind_by = excluded.behind_by
 `
 
 type UpsertBranchComparisonParams struct {
+	Actor    string
 	Owner    string
 	Repo     string
 	BaseRef  string
@@ -638,6 +751,7 @@ type UpsertBranchComparisonParams struct {
 // ============================================================================
 func (q *Queries) UpsertBranchComparison(ctx context.Context, arg UpsertBranchComparisonParams) error {
 	_, err := q.db.ExecContext(ctx, upsertBranchComparison,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.BaseRef,
@@ -650,14 +764,15 @@ func (q *Queries) UpsertBranchComparison(ctx context.Context, arg UpsertBranchCo
 
 const upsertOrg = `-- name: UpsertOrg :exec
 
-INSERT INTO orgs (login, avatar_url, url)
-VALUES (?, ?, ?)
-ON CONFLICT (login) DO UPDATE SET
+INSERT INTO orgs (actor, login, avatar_url, url)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (actor, login) DO UPDATE SET
     avatar_url = excluded.avatar_url,
     url = excluded.url
 `
 
 type UpsertOrgParams struct {
+	Actor     string
 	Login     string
 	AvatarUrl sql.NullString
 	Url       sql.NullString
@@ -667,15 +782,20 @@ type UpsertOrgParams struct {
 // Orgs
 // ============================================================================
 func (q *Queries) UpsertOrg(ctx context.Context, arg UpsertOrgParams) error {
-	_, err := q.db.ExecContext(ctx, upsertOrg, arg.Login, arg.AvatarUrl, arg.Url)
+	_, err := q.db.ExecContext(ctx, upsertOrg,
+		arg.Actor,
+		arg.Login,
+		arg.AvatarUrl,
+		arg.Url,
+	)
 	return err
 }
 
 const upsertPullRequest = `-- name: UpsertPullRequest :exec
 
-INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, number) DO UPDATE SET
+INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
     is_draft = excluded.is_draft,
@@ -696,6 +816,7 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
 `
 
 type UpsertPullRequestParams struct {
+	Actor              string
 	Owner              string
 	Repo               string
 	Number             int64
@@ -723,6 +844,7 @@ type UpsertPullRequestParams struct {
 // ============================================================================
 func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPullRequest,
+		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Number,
@@ -749,9 +871,9 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 
 const upsertRepo = `-- name: UpsertRepo :exec
 
-INSERT INTO repos (owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, name) DO UPDATE SET
+INSERT INTO repos (actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, name) DO UPDATE SET
     name_with_owner = excluded.name_with_owner,
     url = excluded.url,
     is_disabled = excluded.is_disabled,
@@ -765,6 +887,7 @@ ON CONFLICT (owner, name) DO UPDATE SET
 `
 
 type UpsertRepoParams struct {
+	Actor               string
 	Owner               string
 	Name                string
 	NameWithOwner       string
@@ -784,6 +907,7 @@ type UpsertRepoParams struct {
 // ============================================================================
 func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) error {
 	_, err := q.db.ExecContext(ctx, upsertRepo,
+		arg.Actor,
 		arg.Owner,
 		arg.Name,
 		arg.NameWithOwner,
@@ -802,14 +926,15 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) error {
 
 const upsertUser = `-- name: UpsertUser :exec
 
-INSERT INTO users (login, avatar_url, url)
-VALUES (?, ?, ?)
-ON CONFLICT (login) DO UPDATE SET
+INSERT INTO users (actor, login, avatar_url, url)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (actor, login) DO UPDATE SET
     avatar_url = excluded.avatar_url,
     url = excluded.url
 `
 
 type UpsertUserParams struct {
+	Actor     string
 	Login     string
 	AvatarUrl string
 	Url       string
@@ -819,6 +944,11 @@ type UpsertUserParams struct {
 // Users
 // ============================================================================
 func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) error {
-	_, err := q.db.ExecContext(ctx, upsertUser, arg.Login, arg.AvatarUrl, arg.Url)
+	_, err := q.db.ExecContext(ctx, upsertUser,
+		arg.Actor,
+		arg.Login,
+		arg.AvatarUrl,
+		arg.Url,
+	)
 	return err
 }
