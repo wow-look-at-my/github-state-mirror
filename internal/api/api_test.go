@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 // stubFetcher always succeeds (used to satisfy EnsureFresh without hitting GitHub).
@@ -43,7 +44,8 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 	}
 
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr)
-	router := NewRouter(mgr, store, "", dispatcher)
+	gh := ghclient.New("")
+	router := NewRouter(mgr, store, "", dispatcher, gh)
 	return router, store
 }
 

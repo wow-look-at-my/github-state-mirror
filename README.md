@@ -22,6 +22,8 @@ All API requests pass through the caller's `Authorization` header to GitHub. Sen
 Authorization: Bearer ghp_xxxx
 ```
 
+Each caller's GitHub username is resolved on first request (via `GET /user`) and cached in memory. All cached data is scoped per-user — one user's private data is never visible to another user's requests.
+
 ### REST
 
 - `GET /user` — authenticated user info (login, avatar)
@@ -58,13 +60,14 @@ Binary is output to `build/server_linux_amd64`.
 
 ```
 internal/
+  actor/         Context-based per-user identity propagation
   freshness/     Generic cache freshness framework (no GitHub knowledge)
   database/      SQLite schema + sqlc-generated queries
   ghdata/        Domain store (wraps sqlc with transactions)
-  ghclient/      GitHub REST + GraphQL client
+  ghclient/      GitHub REST + GraphQL client (token→login cache)
   sync/          Fetchers, periodic refresh, webhook dispatch
   webhook/       HTTP handler, event parsing, HMAC verification
   api/           chi router, REST handlers, GraphQL assembler
 ```
 
-The key design constraint: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data.
+The key design constraints: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data. All cached data is scoped per-actor (GitHub username) to prevent cross-user data leakage.
