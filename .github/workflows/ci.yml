@@ -12,6 +12,13 @@ jobs:
         env:
           GO_TOOLCHAIN_CACHING_INTENTIONALLY_NOT_CONFIGURED: "1"
         run: |
-          curl -fsSL -o go-toolchain https://github.com/wow-look-at-my/go-toolchain/releases/latest/download/go-toolchain_linux_amd64
+          # Pinned to v0.0.1774858278 — later releases regress on Go 1.25's
+          # covdata tool requirement for packages without test files.
+          curl -fsSL -o go-toolchain https://github.com/wow-look-at-my/go-toolchain/releases/download/v0.0.1774858278/go-toolchain_linux_amd64
           chmod +x go-toolchain
+          # Bootstrap Go so we can pre-build the covdata tool.
+          # Without covdata, `go test -coverprofile` fails for packages
+          # that have no test files (exit code 1, no error message).
+          eval "$(./go-toolchain install-go 2>/dev/null)" || true
+          go build -o "$(go env GOTOOLDIR)/covdata" cmd/covdata 2>/dev/null || true
           ./go-toolchain
