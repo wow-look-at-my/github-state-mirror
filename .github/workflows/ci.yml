@@ -8,10 +8,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install and run go-toolchain
-        env:
-          GO_TOOLCHAIN_CACHING_INTENTIONALLY_NOT_CONFIGURED: "1"
-        run: |
-          curl -fsSL -o go-toolchain https://github.com/wow-look-at-my/go-toolchain/releases/latest/download/go-toolchain_linux_amd64
-          chmod +x go-toolchain
-          ./go-toolchain
+      - uses: wow-look-at-my/go-toolchain@v1
