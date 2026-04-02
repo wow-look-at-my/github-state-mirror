@@ -19,6 +19,7 @@ func NewStore(db *sql.DB) *Store {
 
 func (s *Store) Get(ctx context.Context, id ResourceID) (*Metadata, error) {
 	row, err := s.q.GetCacheMetadata(ctx, dbgen.GetCacheMetadataParams{
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
 	})
@@ -33,6 +34,7 @@ func (s *Store) Get(ctx context.Context, id ResourceID) (*Metadata, error) {
 
 func (s *Store) Upsert(ctx context.Context, m *Metadata) error {
 	return s.q.UpsertCacheMetadata(ctx, dbgen.UpsertCacheMetadataParams{
+		Actor:         m.Actor,
 		ResourceKind:  m.Kind,
 		ResourceKey:   m.Key,
 		LastFetchedAt: optionalTime(m.LastFetchedAt),
@@ -47,6 +49,7 @@ func (s *Store) Upsert(ctx context.Context, m *Metadata) error {
 
 func (s *Store) MarkFetching(ctx context.Context, id ResourceID) error {
 	return s.q.MarkFetching(ctx, dbgen.MarkFetchingParams{
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
 	})
@@ -58,6 +61,7 @@ func (s *Store) MarkFresh(ctx context.Context, id ResourceID, etag string, expir
 		LastFetchedAt: sql.NullString{String: now, Valid: true},
 		Etag:          nullString(etag),
 		ExpiresAt:     sql.NullString{String: expiresAt.UTC().Format(time.RFC3339), Valid: true},
+		Actor:         id.Actor,
 		ResourceKind:  id.Kind,
 		ResourceKey:   id.Key,
 	})
@@ -65,8 +69,16 @@ func (s *Store) MarkFresh(ctx context.Context, id ResourceID, etag string, expir
 
 func (s *Store) MarkStale(ctx context.Context, id ResourceID) error {
 	return s.q.MarkStale(ctx, dbgen.MarkStaleParams{
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
+	})
+}
+
+func (s *Store) MarkStaleAllActors(ctx context.Context, kind, key string) error {
+	return s.q.MarkStaleByKindKey(ctx, dbgen.MarkStaleByKindKeyParams{
+		ResourceKind: kind,
+		ResourceKey:  key,
 	})
 }
 
@@ -74,13 +86,17 @@ func (s *Store) MarkError(ctx context.Context, id ResourceID, errMsg string, ret
 	return s.q.MarkError(ctx, dbgen.MarkErrorParams{
 		ErrorMessage: nullString(errMsg),
 		RetryAfter:   sql.NullString{String: retryAfter.UTC().Format(time.RFC3339), Valid: true},
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
 	})
 }
 
-func (s *Store) ListByKind(ctx context.Context, kind string) ([]Metadata, error) {
-	rows, err := s.q.ListByKind(ctx, kind)
+func (s *Store) ListByKind(ctx context.Context, actor, kind string) ([]Metadata, error) {
+	rows, err := s.q.ListByKind(ctx, dbgen.ListByKindParams{
+		Actor:        actor,
+		ResourceKind: kind,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +107,13 @@ func (s *Store) ListByKind(ctx context.Context, kind string) ([]Metadata, error)
 	return out, nil
 }
 
-func (s *Store) ListStale(ctx context.Context, before time.Time) ([]Metadata, error) {
-	rows, err := s.q.ListStale(ctx, sql.NullString{
-		String: before.UTC().Format(time.RFC3339),
-		Valid:  true,
+func (s *Store) ListStale(ctx context.Context, actor string, before time.Time) ([]Metadata, error) {
+	rows, err := s.q.ListStale(ctx, dbgen.ListStaleParams{
+		Actor: actor,
+		ExpiresAt: sql.NullString{
+			String: before.UTC().Format(time.RFC3339),
+			Valid:  true,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -108,6 +127,7 @@ func (s *Store) ListStale(ctx context.Context, before time.Time) ([]Metadata, er
 
 func (s *Store) Delete(ctx context.Context, id ResourceID) error {
 	return s.q.DeleteCacheMetadata(ctx, dbgen.DeleteCacheMetadataParams{
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
 	})
@@ -115,6 +135,7 @@ func (s *Store) Delete(ctx context.Context, id ResourceID) error {
 
 func (s *Store) InsertRefreshLog(ctx context.Context, id ResourceID, trigger TriggerSource) (int64, error) {
 	return s.q.InsertRefreshLog(ctx, dbgen.InsertRefreshLogParams{
+		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
 		TriggeredBy:  string(trigger),
@@ -142,9 +163,9 @@ func (s *Store) CompleteRefreshLog(ctx context.Context, logID int64, success boo
 
 func rowToMetadata(r dbgen.CacheMetadatum) *Metadata {
 	m := &Metadata{
-		ResourceID: ResourceID{Kind: r.ResourceKind, Key: r.ResourceKey},
-		ETag:       r.Etag.String,
-		State:      FetchState(r.FetchState),
+		ResourceID:   ResourceID{Kind: r.ResourceKind, Key: r.ResourceKey, Actor: r.Actor},
+		ETag:         r.Etag.String,
+		State:        FetchState(r.FetchState),
 		ErrorMessage: r.ErrorMessage.String,
 	}
 	m.LastFetchedAt = parseOptionalTime(r.LastFetchedAt)

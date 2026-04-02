@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
 
 const defaultBaseURL = "https://api.github.com"
@@ -32,7 +33,8 @@ func tokenFromContext(ctx context.Context) string {
 type Client struct {
 	httpClient   *http.Client
 	baseURL      string
-	defaultToken string // optional fallback for background refreshes
+	defaultToken string   // optional fallback for background refreshes
+	actorCache   sync.Map // token -> GitHub login
 }
 
 // New creates a Client with an optional default token used when no token is in the context.
@@ -51,6 +53,30 @@ func NewWithBaseURL(defaultToken, baseURL string) *Client {
 		baseURL:      baseURL,
 		defaultToken: defaultToken,
 	}
+}
+
+// ResolveActor resolves the GitHub login for the token in the given context.
+// Results are cached in memory so /user is only called once per unique token.
+func (c *Client) ResolveActor(ctx context.Context) (string, error) {
+	token := tokenFromContext(ctx)
+	if token == "" {
+		token = c.defaultToken
+	}
+	if token == "" {
+		return "", nil
+	}
+
+	if login, ok := c.actorCache.Load(token); ok {
+		return login.(string), nil
+	}
+
+	var resp userResp
+	if err := c.doJSON(ctx, "GET", "/user", nil, &resp); err != nil {
+		return "", err
+	}
+
+	c.actorCache.Store(token, resp.Login)
+	return resp.Login, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
