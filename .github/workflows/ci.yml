@@ -11,6 +11,7 @@ jobs:
       - name: Install and run go-toolchain
         env:
           GO_TOOLCHAIN_CACHING_INTENTIONALLY_NOT_CONFIGURED: "1"
+          GO_TOOLCHAIN_TEST_ARGS: "-v"
         run: |
           curl -fsSL -o go-toolchain https://github.com/wow-look-at-my/go-toolchain/releases/latest/download/go-toolchain_linux_amd64
           chmod +x go-toolchain
