@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -20,7 +21,9 @@ func NewStore(db *sql.DB) *Store {
 // ---- Users ----
 
 func (s *Store) UpsertUser(ctx context.Context, u dbgen.User) error {
+	act := actor.FromContext(ctx)
 	return s.q.UpsertUser(ctx, dbgen.UpsertUserParams{
+		Actor:     act,
 		Login:     u.Login,
 		AvatarUrl: u.AvatarUrl,
 		Url:       u.Url,
@@ -28,13 +31,16 @@ func (s *Store) UpsertUser(ctx context.Context, u dbgen.User) error {
 }
 
 func (s *Store) GetFirstUser(ctx context.Context) (dbgen.User, error) {
-	return s.q.GetFirstUser(ctx)
+	act := actor.FromContext(ctx)
+	return s.q.GetFirstUser(ctx, act)
 }
 
 // ---- Orgs ----
 
 func (s *Store) UpsertOrg(ctx context.Context, o dbgen.Org) error {
+	act := actor.FromContext(ctx)
 	return s.q.UpsertOrg(ctx, dbgen.UpsertOrgParams{
+		Actor:     act,
 		Login:     o.Login,
 		AvatarUrl: o.AvatarUrl,
 		Url:       o.Url,
@@ -42,11 +48,13 @@ func (s *Store) UpsertOrg(ctx context.Context, o dbgen.Org) error {
 }
 
 func (s *Store) ListOrgs(ctx context.Context) ([]dbgen.Org, error) {
-	return s.q.ListOrgs(ctx)
+	act := actor.FromContext(ctx)
+	return s.q.ListOrgs(ctx, act)
 }
 
 // SetUserOrgs replaces the full set of org memberships + org records for a user.
 func (s *Store) SetUserOrgs(ctx context.Context, userLogin string, orgs []dbgen.Org) error {
+	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -54,11 +62,12 @@ func (s *Store) SetUserOrgs(ctx context.Context, userLogin string, orgs []dbgen.
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := q.DeleteUserOrgMemberships(ctx, userLogin); err != nil {
+	if err := q.DeleteUserOrgMemberships(ctx, dbgen.DeleteUserOrgMembershipsParams{Actor: act, UserLogin: userLogin}); err != nil {
 		return err
 	}
 	for _, o := range orgs {
 		if err := q.UpsertOrg(ctx, dbgen.UpsertOrgParams{
+			Actor:     act,
 			Login:     o.Login,
 			AvatarUrl: o.AvatarUrl,
 			Url:       o.Url,
@@ -66,6 +75,7 @@ func (s *Store) SetUserOrgs(ctx context.Context, userLogin string, orgs []dbgen.
 			return err
 		}
 		if err := q.SetUserOrgMembership(ctx, dbgen.SetUserOrgMembershipParams{
+			Actor:     act,
 			UserLogin: userLogin,
 			OrgLogin:  o.Login,
 		}); err != nil {
@@ -76,13 +86,14 @@ func (s *Store) SetUserOrgs(ctx context.Context, userLogin string, orgs []dbgen.
 }
 
 func (s *Store) ListUserOrgs(ctx context.Context, userLogin string) ([]dbgen.Org, error) {
-	logins, err := s.q.ListUserOrgMemberships(ctx, userLogin)
+	act := actor.FromContext(ctx)
+	logins, err := s.q.ListUserOrgMemberships(ctx, dbgen.ListUserOrgMembershipsParams{Actor: act, UserLogin: userLogin})
 	if err != nil {
 		return nil, err
 	}
 	var orgs []dbgen.Org
 	for _, login := range logins {
-		o, err := s.q.GetOrg(ctx, login)
+		o, err := s.q.GetOrg(ctx, dbgen.GetOrgParams{Actor: act, Login: login})
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -98,6 +109,7 @@ func (s *Store) ListUserOrgs(ctx context.Context, userLogin string) ([]dbgen.Org
 
 // SetOrgRepos replaces all repos for an owner (org) in a single transaction.
 func (s *Store) SetOrgRepos(ctx context.Context, owner string, repos []dbgen.Repo) error {
+	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -105,11 +117,11 @@ func (s *Store) SetOrgRepos(ctx context.Context, owner string, repos []dbgen.Rep
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := q.DeleteReposByOwner(ctx, owner); err != nil {
+	if err := q.DeleteReposByOwner(ctx, dbgen.DeleteReposByOwnerParams{Actor: act, Owner: owner}); err != nil {
 		return err
 	}
 	for _, r := range repos {
-		if err := q.UpsertRepo(ctx, repoToParams(r)); err != nil {
+		if err := q.UpsertRepo(ctx, repoToParams(act, r)); err != nil {
 			return err
 		}
 	}
@@ -117,21 +129,25 @@ func (s *Store) SetOrgRepos(ctx context.Context, owner string, repos []dbgen.Rep
 }
 
 func (s *Store) GetRepo(ctx context.Context, owner, name string) (dbgen.Repo, error) {
-	return s.q.GetRepo(ctx, dbgen.GetRepoParams{Owner: owner, Name: name})
+	act := actor.FromContext(ctx)
+	return s.q.GetRepo(ctx, dbgen.GetRepoParams{Actor: act, Owner: owner, Name: name})
 }
 
 func (s *Store) ListReposByOwner(ctx context.Context, owner string) ([]dbgen.Repo, error) {
-	return s.q.ListReposByOwner(ctx, owner)
+	act := actor.FromContext(ctx)
+	return s.q.ListReposByOwner(ctx, dbgen.ListReposByOwnerParams{Actor: act, Owner: owner})
 }
 
 func (s *Store) UpsertRepo(ctx context.Context, r dbgen.Repo) error {
-	return s.q.UpsertRepo(ctx, repoToParams(r))
+	act := actor.FromContext(ctx)
+	return s.q.UpsertRepo(ctx, repoToParams(act, r))
 }
 
 // ---- Pull Requests ----
 
 // SetRepoPRs replaces all PRs (and their labels) for a repo in a single transaction.
 func (s *Store) SetRepoPRs(ctx context.Context, owner, repo string, prs []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel) error {
+	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -139,19 +155,20 @@ func (s *Store) SetRepoPRs(ctx context.Context, owner, repo string, prs []dbgen.
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := q.DeletePullRequestsByRepo(ctx, dbgen.DeletePullRequestsByRepoParams{Owner: owner, Repo: repo}); err != nil {
+	if err := q.DeletePullRequestsByRepo(ctx, dbgen.DeletePullRequestsByRepoParams{Actor: act, Owner: owner, Repo: repo}); err != nil {
 		return err
 	}
-	if err := q.DeletePRLabelsByRepo(ctx, dbgen.DeletePRLabelsByRepoParams{Owner: owner, Repo: repo}); err != nil {
+	if err := q.DeletePRLabelsByRepo(ctx, dbgen.DeletePRLabelsByRepoParams{Actor: act, Owner: owner, Repo: repo}); err != nil {
 		return err
 	}
 	for _, pr := range prs {
-		if err := q.UpsertPullRequest(ctx, prToParams(pr)); err != nil {
+		if err := q.UpsertPullRequest(ctx, prToParams(act, pr)); err != nil {
 			return err
 		}
 		if labels, ok := labelsByPR[pr.Number]; ok {
 			for _, l := range labels {
 				if err := q.InsertPRLabel(ctx, dbgen.InsertPRLabelParams{
+					Actor:    act,
 					Owner:    l.Owner,
 					Repo:     l.Repo,
 					PrNumber: l.PrNumber,
@@ -167,24 +184,29 @@ func (s *Store) SetRepoPRs(ctx context.Context, owner, repo string, prs []dbgen.
 }
 
 func (s *Store) GetPullRequest(ctx context.Context, owner, repo string, number int64) (dbgen.PullRequest, error) {
-	return s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{Owner: owner, Repo: repo, Number: number})
+	act := actor.FromContext(ctx)
+	return s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{Actor: act, Owner: owner, Repo: repo, Number: number})
 }
 
 func (s *Store) ListOpenPRsByRepo(ctx context.Context, owner, repo string) ([]dbgen.PullRequest, error) {
-	return s.q.ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Owner: owner, Repo: repo})
+	act := actor.FromContext(ctx)
+	return s.q.ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Actor: act, Owner: owner, Repo: repo})
 }
 
 func (s *Store) ListOpenPRsByOwner(ctx context.Context, owner string) ([]dbgen.PullRequest, error) {
-	return s.q.ListOpenPullRequestsByOwner(ctx, owner)
+	act := actor.FromContext(ctx)
+	return s.q.ListOpenPullRequestsByOwner(ctx, dbgen.ListOpenPullRequestsByOwnerParams{Actor: act, Owner: owner})
 }
 
 func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest) error {
-	return s.q.UpsertPullRequest(ctx, prToParams(pr))
+	act := actor.FromContext(ctx)
+	return s.q.UpsertPullRequest(ctx, prToParams(act, pr))
 }
 
 // ---- PR Labels ----
 
 func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber int64, labels []dbgen.PrLabel) error {
+	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -192,11 +214,12 @@ func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber in
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: owner, Repo: repo, PrNumber: prNumber}); err != nil {
+	if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Actor: act, Owner: owner, Repo: repo, PrNumber: prNumber}); err != nil {
 		return err
 	}
 	for _, l := range labels {
 		if err := q.InsertPRLabel(ctx, dbgen.InsertPRLabelParams{
+			Actor:    act,
 			Owner:    l.Owner,
 			Repo:     l.Repo,
 			PrNumber: l.PrNumber,
@@ -210,12 +233,14 @@ func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber in
 }
 
 func (s *Store) ListPRLabels(ctx context.Context, owner, repo string, prNumber int64) ([]dbgen.PrLabel, error) {
-	return s.q.ListPRLabels(ctx, dbgen.ListPRLabelsParams{Owner: owner, Repo: repo, PrNumber: prNumber})
+	act := actor.FromContext(ctx)
+	return s.q.ListPRLabels(ctx, dbgen.ListPRLabelsParams{Actor: act, Owner: owner, Repo: repo, PrNumber: prNumber})
 }
 
 // ---- PR Files ----
 
 func (s *Store) SetPRFiles(ctx context.Context, owner, repo string, prNumber int64, files []dbgen.PrFile) error {
+	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -223,11 +248,12 @@ func (s *Store) SetPRFiles(ctx context.Context, owner, repo string, prNumber int
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := q.DeletePRFiles(ctx, dbgen.DeletePRFilesParams{Owner: owner, Repo: repo, PrNumber: prNumber}); err != nil {
+	if err := q.DeletePRFiles(ctx, dbgen.DeletePRFilesParams{Actor: act, Owner: owner, Repo: repo, PrNumber: prNumber}); err != nil {
 		return err
 	}
 	for _, f := range files {
 		if err := q.InsertPRFile(ctx, dbgen.InsertPRFileParams{
+			Actor:     act,
 			Owner:     f.Owner,
 			Repo:      f.Repo,
 			PrNumber:  f.PrNumber,
@@ -242,13 +268,16 @@ func (s *Store) SetPRFiles(ctx context.Context, owner, repo string, prNumber int
 }
 
 func (s *Store) ListPRFiles(ctx context.Context, owner, repo string, prNumber int64) ([]dbgen.PrFile, error) {
-	return s.q.ListPRFiles(ctx, dbgen.ListPRFilesParams{Owner: owner, Repo: repo, PrNumber: prNumber})
+	act := actor.FromContext(ctx)
+	return s.q.ListPRFiles(ctx, dbgen.ListPRFilesParams{Actor: act, Owner: owner, Repo: repo, PrNumber: prNumber})
 }
 
 // ---- Branch Comparisons ----
 
 func (s *Store) UpsertComparison(ctx context.Context, c dbgen.BranchComparison) error {
+	act := actor.FromContext(ctx)
 	return s.q.UpsertBranchComparison(ctx, dbgen.UpsertBranchComparisonParams{
+		Actor:    act,
 		Owner:    c.Owner,
 		Repo:     c.Repo,
 		BaseRef:  c.BaseRef,
@@ -259,7 +288,9 @@ func (s *Store) UpsertComparison(ctx context.Context, c dbgen.BranchComparison) 
 }
 
 func (s *Store) GetComparison(ctx context.Context, owner, repo, base, head string) (dbgen.BranchComparison, error) {
+	act := actor.FromContext(ctx)
 	return s.q.GetBranchComparison(ctx, dbgen.GetBranchComparisonParams{
+		Actor:   act,
 		Owner:   owner,
 		Repo:    repo,
 		BaseRef: base,
@@ -269,8 +300,9 @@ func (s *Store) GetComparison(ctx context.Context, owner, repo, base, head strin
 
 // ---- Helpers ----
 
-func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {
+func repoToParams(act string, r dbgen.Repo) dbgen.UpsertRepoParams {
 	return dbgen.UpsertRepoParams{
+		Actor:               act,
 		Owner:               r.Owner,
 		Name:                r.Name,
 		NameWithOwner:       r.NameWithOwner,
@@ -286,8 +318,9 @@ func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {
 	}
 }
 
-func prToParams(pr dbgen.PullRequest) dbgen.UpsertPullRequestParams {
+func prToParams(act string, pr dbgen.PullRequest) dbgen.UpsertPullRequestParams {
 	return dbgen.UpsertPullRequestParams{
+		Actor:              act,
 		Owner:              pr.Owner,
 		Repo:               pr.Repo,
 		Number:             pr.Number,

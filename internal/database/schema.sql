@@ -10,6 +10,7 @@ CREATE TABLE schema_version (
 );
 
 CREATE TABLE cache_metadata (
+    actor           TEXT NOT NULL DEFAULT '',
     resource_kind   TEXT NOT NULL,
     resource_key    TEXT NOT NULL,
     last_fetched_at TEXT,           -- RFC3339
@@ -19,11 +20,12 @@ CREATE TABLE cache_metadata (
     fetch_state     TEXT NOT NULL DEFAULT 'unknown',
     error_message   TEXT,
     retry_after     TEXT,           -- RFC3339
-    PRIMARY KEY (resource_kind, resource_key)
+    PRIMARY KEY (actor, resource_kind, resource_key)
 );
 
 CREATE TABLE cache_refresh_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor           TEXT NOT NULL DEFAULT '',
     resource_kind   TEXT NOT NULL,
     resource_key    TEXT NOT NULL,
     triggered_by    TEXT NOT NULL,
@@ -39,24 +41,30 @@ CREATE TABLE cache_refresh_log (
 -- ============================================================================
 
 CREATE TABLE users (
-    login       TEXT PRIMARY KEY,
+    actor       TEXT NOT NULL DEFAULT '',
+    login       TEXT NOT NULL,
     avatar_url  TEXT NOT NULL,
-    url         TEXT NOT NULL
+    url         TEXT NOT NULL,
+    PRIMARY KEY (actor, login)
 );
 
 CREATE TABLE orgs (
-    login       TEXT PRIMARY KEY,
+    actor       TEXT NOT NULL DEFAULT '',
+    login       TEXT NOT NULL,
     avatar_url  TEXT,
-    url         TEXT
+    url         TEXT,
+    PRIMARY KEY (actor, login)
 );
 
 CREATE TABLE user_org_memberships (
+    actor       TEXT NOT NULL DEFAULT '',
     user_login  TEXT NOT NULL,
     org_login   TEXT NOT NULL,
-    PRIMARY KEY (user_login, org_login)
+    PRIMARY KEY (actor, user_login, org_login)
 );
 
 CREATE TABLE repos (
+    actor                 TEXT NOT NULL DEFAULT '',
     owner                 TEXT NOT NULL,
     name                  TEXT NOT NULL,
     name_with_owner       TEXT NOT NULL,
@@ -69,10 +77,11 @@ CREATE TABLE repos (
     owner_login           TEXT,
     owner_avatar          TEXT,
     owner_url             TEXT,
-    PRIMARY KEY (owner, name)
+    PRIMARY KEY (actor, owner, name)
 );
 
 CREATE TABLE pull_requests (
+    actor                TEXT NOT NULL DEFAULT '',
     owner                TEXT NOT NULL,
     repo                 TEXT NOT NULL,
     number               INTEGER NOT NULL,
@@ -93,34 +102,37 @@ CREATE TABLE pull_requests (
     head_ref_oid         TEXT,
     review_request_count INTEGER,
     last_commit_status   TEXT,
-    PRIMARY KEY (owner, repo, number)
+    PRIMARY KEY (actor, owner, repo, number)
 );
 
 CREATE TABLE pr_labels (
+    actor       TEXT NOT NULL DEFAULT '',
     owner       TEXT NOT NULL,
     repo        TEXT NOT NULL,
     pr_number   INTEGER NOT NULL,
     name        TEXT NOT NULL,
     color       TEXT NOT NULL,
-    PRIMARY KEY (owner, repo, pr_number, name)
+    PRIMARY KEY (actor, owner, repo, pr_number, name)
 );
 
 CREATE TABLE pr_files (
+    actor       TEXT NOT NULL DEFAULT '',
     owner       TEXT NOT NULL,
     repo        TEXT NOT NULL,
     pr_number   INTEGER NOT NULL,
     path        TEXT NOT NULL,
     additions   INTEGER NOT NULL,
     deletions   INTEGER NOT NULL,
-    PRIMARY KEY (owner, repo, pr_number, path)
+    PRIMARY KEY (actor, owner, repo, pr_number, path)
 );
 
 CREATE TABLE branch_comparisons (
+    actor       TEXT NOT NULL DEFAULT '',
     owner       TEXT NOT NULL,
     repo        TEXT NOT NULL,
     base_ref    TEXT NOT NULL,
     head_ref    TEXT NOT NULL,
     ahead_by    INTEGER NOT NULL,
     behind_by   INTEGER NOT NULL,
-    PRIMARY KEY (owner, repo, base_ref, head_ref)
+    PRIMARY KEY (actor, owner, repo, base_ref, head_ref)
 );

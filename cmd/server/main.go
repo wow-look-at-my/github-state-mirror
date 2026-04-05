@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
 	"github.com/wow-look-at-my/github-state-mirror/internal/config"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
@@ -21,8 +22,7 @@ func main() {
 	cfg := config.Load()
 
 	if cfg.GitHubToken == "" {
-		slog.Error("GITHUB_TOKEN is required")
-		os.Exit(1)
+		slog.Warn("GITHUB_TOKEN not set; background refreshes will only work if callers supply Authorization headers")
 	}
 
 	db, err := database.Open(cfg.DBPath)
@@ -48,12 +48,27 @@ func main() {
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval)
 
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh)
 
-	// Start periodic refresher in background.
+	// Resolve the default actor for background tasks.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go refresher.Start(ctx)
+
+	defaultActor := ""
+	if cfg.GitHubToken != "" {
+		tokenCtx := ghclient.WithToken(ctx, cfg.GitHubToken)
+		login, err := gh.ResolveActor(tokenCtx)
+		if err != nil {
+			slog.Warn("could not resolve default actor from GITHUB_TOKEN", "error", err)
+		} else {
+			defaultActor = login
+			slog.Info("resolved default actor", "login", defaultActor)
+		}
+	}
+
+	// Start periodic refresher with actor context.
+	bgCtx := actor.WithActor(ctx, defaultActor)
+	go refresher.Start(bgCtx)
 
 	// Start HTTP server.
 	srv := &http.Server{

@@ -95,8 +95,7 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) {
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
-	id := freshness.ResourceID{Kind: kind, Key: key}
-	if err := d.mgr.Invalidate(ctx, id); err != nil {
-		slog.Warn("webhook invalidate failed", "resource", id, "error", err)
+	if err := d.mgr.InvalidateAllActors(ctx, kind, key); err != nil {
+		slog.Warn("webhook invalidate failed", "kind", kind, "key", key, "error", err)
 	}
 }

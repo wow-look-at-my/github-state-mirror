@@ -14,6 +14,16 @@ The SQLite database is a **cache**, not a database of record. On schema changes,
 
 ## API Endpoints
 
+### Authentication
+
+All API requests pass through the caller's `Authorization` header to GitHub. Send your token the same way you would to the GitHub API:
+
+```
+Authorization: Bearer ghp_xxxx
+```
+
+Each caller's GitHub username is resolved on first request (via `GET /user`) and cached in memory. All cached data is scoped per-user — one user's private data is never visible to another user's requests.
+
 ### REST
 
 - `GET /user` — authenticated user info (login, avatar)
@@ -33,7 +43,7 @@ The SQLite database is a **cache**, not a database of record. On schema changes,
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | Yes | — | GitHub personal access token |
+| `GITHUB_TOKEN` | No | — | Fallback GitHub token for background refreshes; API requests pass through the caller's `Authorization` header |
 | `WEBHOOK_SECRET` | No | — | HMAC secret for webhook signature verification |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
@@ -50,13 +60,14 @@ Binary is output to `build/server_linux_amd64`.
 
 ```
 internal/
+  actor/         Context-based per-user identity propagation
   freshness/     Generic cache freshness framework (no GitHub knowledge)
   database/      SQLite schema + sqlc-generated queries
   ghdata/        Domain store (wraps sqlc with transactions)
-  ghclient/      GitHub REST + GraphQL client
+  ghclient/      GitHub REST + GraphQL client (token→login cache)
   sync/          Fetchers, periodic refresh, webhook dispatch
   webhook/       HTTP handler, event parsing, HMAC verification
   api/           chi router, REST handlers, GraphQL assembler
 ```
 
-The key design constraint: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data.
+The key design constraints: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data. All cached data is scoped per-actor (GitHub username) to prevent cross-user data leakage.
