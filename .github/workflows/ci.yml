@@ -8,6 +8,23 @@ permissions:
   contents: read
 
 jobs:
+  sqlc-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sqlc
+        run: |
+          curl -fsSL https://github.com/sqlc-dev/sqlc/releases/download/v1.28.0/sqlc_1.28.0_linux_amd64.tar.gz | tar xz
+          sudo mv sqlc /usr/local/bin/
+      - name: Check sqlc generated code is up to date
+        run: |
+          sqlc generate
+          if [ -n "$(git diff -- internal/database/dbgen/)" ]; then
+            echo "::error::sqlc generated code is out of date. Run 'sqlc generate' and commit the changes."
+            git diff -- internal/database/dbgen/
+            exit 1
+          fi
+
   build:
     runs-on: ubuntu-latest
     steps:
