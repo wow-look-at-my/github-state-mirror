@@ -298,6 +298,74 @@ func (s *Store) GetComparison(ctx context.Context, owner, repo, base, head strin
 	})
 }
 
+// ---- Cross-Actor Operations (for webhooks) ----
+
+// ActorsForRepo returns all distinct actors that have cached data for the given repo.
+func (s *Store) ActorsForRepo(ctx context.Context, owner, repo string) ([]string, error) {
+	return s.q.ListActorsForRepo(ctx, dbgen.ListActorsForRepoParams{
+		Owner: owner,
+		Name:  repo,
+	})
+}
+
+// UpsertPRForActors upserts a PR and its labels for every given actor.
+func (s *Store) UpsertPRForActors(ctx context.Context, actors []string, pr dbgen.PullRequest, labels []dbgen.PrLabel) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+
+	for _, act := range actors {
+		if err := q.UpsertPullRequest(ctx, prToParams(act, pr)); err != nil {
+			return err
+		}
+		if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{
+			Actor: act, Owner: pr.Owner, Repo: pr.Repo, PrNumber: pr.Number,
+		}); err != nil {
+			return err
+		}
+		for _, l := range labels {
+			if err := q.InsertPRLabel(ctx, dbgen.InsertPRLabelParams{
+				Actor:    act,
+				Owner:    l.Owner,
+				Repo:     l.Repo,
+				PrNumber: l.PrNumber,
+				Name:     l.Name,
+				Color:    l.Color,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// DeletePRForActors deletes a PR and its labels for every given actor.
+func (s *Store) DeletePRForActors(ctx context.Context, actors []string, owner, repo string, prNumber int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+
+	for _, act := range actors {
+		if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{
+			Actor: act, Owner: owner, Repo: repo, PrNumber: prNumber,
+		}); err != nil {
+			return err
+		}
+		if err := q.DeletePullRequest(ctx, dbgen.DeletePullRequestParams{
+			Actor: act, Owner: owner, Repo: repo, Number: prNumber,
+		}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ---- Helpers ----
 
 func repoToParams(act string, r dbgen.Repo) dbgen.UpsertRepoParams {

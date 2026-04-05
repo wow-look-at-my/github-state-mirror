@@ -141,6 +141,38 @@ func (q *Queries) DeleteReposByOwner(ctx context.Context, arg DeleteReposByOwner
 	return err
 }
 
+const listActorsForRepo = `-- name: ListActorsForRepo :many
+SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?
+`
+
+type ListActorsForRepoParams struct {
+	Owner string
+	Name  string
+}
+
+func (q *Queries) ListActorsForRepo(ctx context.Context, arg ListActorsForRepoParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listActorsForRepo, arg.Owner, arg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var actor string
+		if err := rows.Scan(&actor); err != nil {
+			return nil, err
+		}
+		items = append(items, actor)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteUserOrgMemberships = `-- name: DeleteUserOrgMemberships :exec
 DELETE FROM user_org_memberships WHERE actor = ? AND user_login = ?
 `

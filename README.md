@@ -6,7 +6,7 @@ A Go service that mirrors GitHub state into a local SQLite database, providing f
 
 Data stays fresh via three mechanisms:
 
-1. **Webhooks** — GitHub pushes events, the mirror invalidates + refreshes affected resources immediately
+1. **Webhooks** — GitHub pushes events. For `pull_request` events, the payload data is written directly to the cache (no re-fetch needed). Other event types mark affected resources stale for lazy refresh on next access.
 2. **Periodic refresh** — Every 6 hours, all known resources are re-fetched as a fallback
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand before responding
 

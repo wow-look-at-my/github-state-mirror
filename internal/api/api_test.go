@@ -43,7 +43,7 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
 	}
 
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 	gh := ghclient.New("")
 	router := NewRouter(mgr, store, "", dispatcher, gh)
 	return router, store
