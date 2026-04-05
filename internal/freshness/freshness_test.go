@@ -104,7 +104,7 @@ func TestStore_ListByKind(t *testing.T) {
 	// Different kind.
 	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: ResourceID{Kind: "users", Key: "x"}, State: StateFresh}))
 
-	metas, err := s.ListByKind(ctx, "repos")
+	metas, err := s.ListByKind(ctx, "", "repos")
 	require.Nil(t, err)
 
 	assert.Equal(t, 3, len(metas))
@@ -292,7 +292,7 @@ func TestStore_ListStale(t *testing.T) {
 	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id1, State: StateStale}))
 	require.NoError(t, s.Upsert(ctx, &Metadata{ResourceID: id2, State: StateFresh}))
 
-	stale, err := s.ListStale(ctx, time.Now().Add(1*time.Hour))
+	stale, err := s.ListStale(ctx, "", time.Now().Add(1*time.Hour))
 	require.Nil(t, err)
 	assert.Equal(t, 1, len(stale))
 	assert.Equal(t, "stale1", stale[0].Key)

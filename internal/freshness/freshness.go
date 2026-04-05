@@ -8,12 +8,16 @@ import (
 
 // ResourceID uniquely identifies any cacheable resource.
 type ResourceID struct {
-	Kind string // e.g. "org_repos", "pr_files", "compare"
-	Key  string // e.g. "my-org/my-repo/42"
+	Kind  string // e.g. "org_repos", "pr_files", "compare"
+	Key   string // e.g. "my-org/my-repo/42"
+	Actor string // GitHub login of the user whose token fetched this data
 }
 
 func (r ResourceID) String() string {
-	return fmt.Sprintf("%s:%s", r.Kind, r.Key)
+	if r.Actor == "" {
+		return fmt.Sprintf("%s:%s", r.Kind, r.Key)
+	}
+	return fmt.Sprintf("%s:%s@%s", r.Kind, r.Key, r.Actor)
 }
 
 // FetchState represents the lifecycle of a cached resource.

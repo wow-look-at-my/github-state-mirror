@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
 
 // Manager coordinates freshness checks and delegates to registered fetchers.
@@ -31,6 +33,8 @@ func (m *Manager) RegisterFetcher(policy Policy, f Fetcher) {
 
 // EnsureFresh checks if the resource is fresh. If stale or unknown, triggers a synchronous fetch.
 func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
+	id = m.fillActor(ctx, id)
+
 	meta, err := m.store.Get(ctx, id)
 	if err != nil {
 		return err
@@ -48,6 +52,8 @@ func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
 
 // Invalidate marks a resource as stale.
 func (m *Manager) Invalidate(ctx context.Context, id ResourceID) error {
+	id = m.fillActor(ctx, id)
+
 	meta, err := m.store.Get(ctx, id)
 	if err != nil {
 		return err
@@ -59,17 +65,26 @@ func (m *Manager) Invalidate(ctx context.Context, id ResourceID) error {
 	return m.store.MarkStale(ctx, id)
 }
 
+// InvalidateAllActors marks a resource as stale for all actors.
+// Used by webhooks where the change affects everyone's cache.
+func (m *Manager) InvalidateAllActors(ctx context.Context, kind, key string) error {
+	return m.store.MarkStaleAllActors(ctx, kind, key)
+}
+
 // InvalidateAndRefresh marks stale then immediately fetches.
 func (m *Manager) InvalidateAndRefresh(ctx context.Context, id ResourceID, trigger TriggerSource) error {
+	id = m.fillActor(ctx, id)
+
 	if err := m.Invalidate(ctx, id); err != nil {
 		slog.Warn("invalidate failed", "resource", id, "error", err)
 	}
 	return m.doFetch(ctx, id, trigger)
 }
 
-// RefreshAllOfKind fetches all known resources of a given kind.
+// RefreshAllOfKind fetches all known resources of a given kind for the current actor.
 func (m *Manager) RefreshAllOfKind(ctx context.Context, kind string, trigger TriggerSource) error {
-	metas, err := m.store.ListByKind(ctx, kind)
+	act := actor.FromContext(ctx)
+	metas, err := m.store.ListByKind(ctx, act, kind)
 	if err != nil {
 		return err
 	}
@@ -159,6 +174,13 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	}
 
 	return nil
+}
+
+func (m *Manager) fillActor(ctx context.Context, id ResourceID) ResourceID {
+	if id.Actor == "" {
+		id.Actor = actor.FromContext(ctx)
+	}
+	return id
 }
 
 func (m *Manager) resourceMutex(id ResourceID) *sync.Mutex {

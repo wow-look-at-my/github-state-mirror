@@ -1,11 +1,11 @@
 -- name: GetCacheMetadata :one
 SELECT * FROM cache_metadata
-WHERE resource_kind = ? AND resource_key = ?;
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 
 -- name: UpsertCacheMetadata :exec
-INSERT INTO cache_metadata (resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (resource_kind, resource_key) DO UPDATE SET
+INSERT INTO cache_metadata (actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, resource_kind, resource_key) DO UPDATE SET
     last_fetched_at = excluded.last_fetched_at,
     last_changed_at = excluded.last_changed_at,
     etag = excluded.etag,
@@ -16,7 +16,7 @@ ON CONFLICT (resource_kind, resource_key) DO UPDATE SET
 
 -- name: MarkFetching :exec
 UPDATE cache_metadata SET fetch_state = 'fetching'
-WHERE resource_kind = ? AND resource_key = ?;
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 
 -- name: MarkFresh :exec
 UPDATE cache_metadata SET
@@ -26,9 +26,13 @@ UPDATE cache_metadata SET
     expires_at = ?,
     error_message = NULL,
     retry_after = NULL
-WHERE resource_kind = ? AND resource_key = ?;
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 
 -- name: MarkStale :exec
+UPDATE cache_metadata SET fetch_state = 'stale'
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
+
+-- name: MarkStaleByKindKey :exec
 UPDATE cache_metadata SET fetch_state = 'stale'
 WHERE resource_kind = ? AND resource_key = ?;
 
@@ -37,24 +41,26 @@ UPDATE cache_metadata SET
     fetch_state = 'error',
     error_message = ?,
     retry_after = ?
-WHERE resource_kind = ? AND resource_key = ?;
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 
 -- name: ListByKind :many
 SELECT * FROM cache_metadata
-WHERE resource_kind = ?;
+WHERE actor = ? AND resource_kind = ?;
 
 -- name: ListStale :many
 SELECT * FROM cache_metadata
-WHERE fetch_state IN ('stale', 'unknown')
-   OR (fetch_state = 'fresh' AND expires_at < ?);
+WHERE actor = ? AND (
+    fetch_state IN ('stale', 'unknown')
+    OR (fetch_state = 'fresh' AND expires_at < ?)
+);
 
 -- name: DeleteCacheMetadata :exec
 DELETE FROM cache_metadata
-WHERE resource_kind = ? AND resource_key = ?;
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 
 -- name: InsertRefreshLog :one
-INSERT INTO cache_refresh_log (resource_kind, resource_key, triggered_by, started_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO cache_refresh_log (actor, resource_kind, resource_key, triggered_by, started_at)
+VALUES (?, ?, ?, ?, ?)
 RETURNING id;
 
 -- name: CompleteRefreshLog :exec

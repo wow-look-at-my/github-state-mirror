@@ -40,33 +40,36 @@ func (q *Queries) CompleteRefreshLog(ctx context.Context, arg CompleteRefreshLog
 
 const deleteCacheMetadata = `-- name: DeleteCacheMetadata :exec
 DELETE FROM cache_metadata
-WHERE resource_kind = ? AND resource_key = ?
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type DeleteCacheMetadataParams struct {
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 }
 
 func (q *Queries) DeleteCacheMetadata(ctx context.Context, arg DeleteCacheMetadataParams) error {
-	_, err := q.db.ExecContext(ctx, deleteCacheMetadata, arg.ResourceKind, arg.ResourceKey)
+	_, err := q.db.ExecContext(ctx, deleteCacheMetadata, arg.Actor, arg.ResourceKind, arg.ResourceKey)
 	return err
 }
 
 const getCacheMetadata = `-- name: GetCacheMetadata :one
-SELECT resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
-WHERE resource_kind = ? AND resource_key = ?
+SELECT actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type GetCacheMetadataParams struct {
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 }
 
 func (q *Queries) GetCacheMetadata(ctx context.Context, arg GetCacheMetadataParams) (CacheMetadatum, error) {
-	row := q.db.QueryRowContext(ctx, getCacheMetadata, arg.ResourceKind, arg.ResourceKey)
+	row := q.db.QueryRowContext(ctx, getCacheMetadata, arg.Actor, arg.ResourceKind, arg.ResourceKey)
 	var i CacheMetadatum
 	err := row.Scan(
+		&i.Actor,
 		&i.ResourceKind,
 		&i.ResourceKey,
 		&i.LastFetchedAt,
@@ -81,12 +84,13 @@ func (q *Queries) GetCacheMetadata(ctx context.Context, arg GetCacheMetadataPara
 }
 
 const insertRefreshLog = `-- name: InsertRefreshLog :one
-INSERT INTO cache_refresh_log (resource_kind, resource_key, triggered_by, started_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO cache_refresh_log (actor, resource_kind, resource_key, triggered_by, started_at)
+VALUES (?, ?, ?, ?, ?)
 RETURNING id
 `
 
 type InsertRefreshLogParams struct {
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 	TriggeredBy  string
@@ -95,6 +99,7 @@ type InsertRefreshLogParams struct {
 
 func (q *Queries) InsertRefreshLog(ctx context.Context, arg InsertRefreshLogParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, insertRefreshLog,
+		arg.Actor,
 		arg.ResourceKind,
 		arg.ResourceKey,
 		arg.TriggeredBy,
@@ -106,12 +111,17 @@ func (q *Queries) InsertRefreshLog(ctx context.Context, arg InsertRefreshLogPara
 }
 
 const listByKind = `-- name: ListByKind :many
-SELECT resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
-WHERE resource_kind = ?
+SELECT actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
+WHERE actor = ? AND resource_kind = ?
 `
 
-func (q *Queries) ListByKind(ctx context.Context, resourceKind string) ([]CacheMetadatum, error) {
-	rows, err := q.db.QueryContext(ctx, listByKind, resourceKind)
+type ListByKindParams struct {
+	Actor        string
+	ResourceKind string
+}
+
+func (q *Queries) ListByKind(ctx context.Context, arg ListByKindParams) ([]CacheMetadatum, error) {
+	rows, err := q.db.QueryContext(ctx, listByKind, arg.Actor, arg.ResourceKind)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +130,7 @@ func (q *Queries) ListByKind(ctx context.Context, resourceKind string) ([]CacheM
 	for rows.Next() {
 		var i CacheMetadatum
 		if err := rows.Scan(
+			&i.Actor,
 			&i.ResourceKind,
 			&i.ResourceKey,
 			&i.LastFetchedAt,
@@ -144,13 +155,20 @@ func (q *Queries) ListByKind(ctx context.Context, resourceKind string) ([]CacheM
 }
 
 const listStale = `-- name: ListStale :many
-SELECT resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
-WHERE fetch_state IN ('stale', 'unknown')
-   OR (fetch_state = 'fresh' AND expires_at < ?)
+SELECT actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
+WHERE actor = ? AND (
+    fetch_state IN ('stale', 'unknown')
+    OR (fetch_state = 'fresh' AND expires_at < ?)
+)
 `
 
-func (q *Queries) ListStale(ctx context.Context, expiresAt sql.NullString) ([]CacheMetadatum, error) {
-	rows, err := q.db.QueryContext(ctx, listStale, expiresAt)
+type ListStaleParams struct {
+	Actor     string
+	ExpiresAt sql.NullString
+}
+
+func (q *Queries) ListStale(ctx context.Context, arg ListStaleParams) ([]CacheMetadatum, error) {
+	rows, err := q.db.QueryContext(ctx, listStale, arg.Actor, arg.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +177,7 @@ func (q *Queries) ListStale(ctx context.Context, expiresAt sql.NullString) ([]Ca
 	for rows.Next() {
 		var i CacheMetadatum
 		if err := rows.Scan(
+			&i.Actor,
 			&i.ResourceKind,
 			&i.ResourceKey,
 			&i.LastFetchedAt,
@@ -187,12 +206,13 @@ UPDATE cache_metadata SET
     fetch_state = 'error',
     error_message = ?,
     retry_after = ?
-WHERE resource_kind = ? AND resource_key = ?
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type MarkErrorParams struct {
 	ErrorMessage sql.NullString
 	RetryAfter   sql.NullString
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 }
@@ -201,6 +221,7 @@ func (q *Queries) MarkError(ctx context.Context, arg MarkErrorParams) error {
 	_, err := q.db.ExecContext(ctx, markError,
 		arg.ErrorMessage,
 		arg.RetryAfter,
+		arg.Actor,
 		arg.ResourceKind,
 		arg.ResourceKey,
 	)
@@ -209,16 +230,17 @@ func (q *Queries) MarkError(ctx context.Context, arg MarkErrorParams) error {
 
 const markFetching = `-- name: MarkFetching :exec
 UPDATE cache_metadata SET fetch_state = 'fetching'
-WHERE resource_kind = ? AND resource_key = ?
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type MarkFetchingParams struct {
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 }
 
 func (q *Queries) MarkFetching(ctx context.Context, arg MarkFetchingParams) error {
-	_, err := q.db.ExecContext(ctx, markFetching, arg.ResourceKind, arg.ResourceKey)
+	_, err := q.db.ExecContext(ctx, markFetching, arg.Actor, arg.ResourceKind, arg.ResourceKey)
 	return err
 }
 
@@ -230,13 +252,14 @@ UPDATE cache_metadata SET
     expires_at = ?,
     error_message = NULL,
     retry_after = NULL
-WHERE resource_kind = ? AND resource_key = ?
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type MarkFreshParams struct {
 	LastFetchedAt sql.NullString
 	Etag          sql.NullString
 	ExpiresAt     sql.NullString
+	Actor         string
 	ResourceKind  string
 	ResourceKey   string
 }
@@ -246,6 +269,7 @@ func (q *Queries) MarkFresh(ctx context.Context, arg MarkFreshParams) error {
 		arg.LastFetchedAt,
 		arg.Etag,
 		arg.ExpiresAt,
+		arg.Actor,
 		arg.ResourceKind,
 		arg.ResourceKey,
 	)
@@ -254,23 +278,39 @@ func (q *Queries) MarkFresh(ctx context.Context, arg MarkFreshParams) error {
 
 const markStale = `-- name: MarkStale :exec
 UPDATE cache_metadata SET fetch_state = 'stale'
-WHERE resource_kind = ? AND resource_key = ?
+WHERE actor = ? AND resource_kind = ? AND resource_key = ?
 `
 
 type MarkStaleParams struct {
+	Actor        string
 	ResourceKind string
 	ResourceKey  string
 }
 
 func (q *Queries) MarkStale(ctx context.Context, arg MarkStaleParams) error {
-	_, err := q.db.ExecContext(ctx, markStale, arg.ResourceKind, arg.ResourceKey)
+	_, err := q.db.ExecContext(ctx, markStale, arg.Actor, arg.ResourceKind, arg.ResourceKey)
+	return err
+}
+
+const markStaleByKindKey = `-- name: MarkStaleByKindKey :exec
+UPDATE cache_metadata SET fetch_state = 'stale'
+WHERE resource_kind = ? AND resource_key = ?
+`
+
+type MarkStaleByKindKeyParams struct {
+	ResourceKind string
+	ResourceKey  string
+}
+
+func (q *Queries) MarkStaleByKindKey(ctx context.Context, arg MarkStaleByKindKeyParams) error {
+	_, err := q.db.ExecContext(ctx, markStaleByKindKey, arg.ResourceKind, arg.ResourceKey)
 	return err
 }
 
 const upsertCacheMetadata = `-- name: UpsertCacheMetadata :exec
-INSERT INTO cache_metadata (resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (resource_kind, resource_key) DO UPDATE SET
+INSERT INTO cache_metadata (actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, resource_kind, resource_key) DO UPDATE SET
     last_fetched_at = excluded.last_fetched_at,
     last_changed_at = excluded.last_changed_at,
     etag = excluded.etag,
@@ -281,6 +321,7 @@ ON CONFLICT (resource_kind, resource_key) DO UPDATE SET
 `
 
 type UpsertCacheMetadataParams struct {
+	Actor         string
 	ResourceKind  string
 	ResourceKey   string
 	LastFetchedAt sql.NullString
@@ -294,6 +335,7 @@ type UpsertCacheMetadataParams struct {
 
 func (q *Queries) UpsertCacheMetadata(ctx context.Context, arg UpsertCacheMetadataParams) error {
 	_, err := q.db.ExecContext(ctx, upsertCacheMetadata,
+		arg.Actor,
 		arg.ResourceKind,
 		arg.ResourceKey,
 		arg.LastFetchedAt,
