@@ -75,6 +75,9 @@ SELECT * FROM repos WHERE actor = ? AND owner = ? ORDER BY name;
 -- name: DeleteReposByOwner :exec
 DELETE FROM repos WHERE actor = ? AND owner = ?;
 
+-- name: ListActorsForRepo :many
+SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?;
+
 -- ============================================================================
 -- Pull Requests
 -- ============================================================================

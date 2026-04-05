@@ -42,7 +42,7 @@ func main() {
 	syncpkg.RegisterAll(mgr, gh, store)
 
 	// Webhook dispatcher.
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// Periodic refresher.
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval)
