@@ -51,6 +51,28 @@ func TestParseCheckPayload_Errors(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseCheckPayload_OnDefaultBranch(t *testing.T) {
+	// check_suite on the default branch.
+	p, err := ParseCheckPayload("check_suite", json.RawMessage(`{"check_suite":{"head_sha":"s","head_branch":"main","status":"completed","conclusion":"success"},"repository":{"name":"r","default_branch":"main","owner":{"login":"o"}}}`))
+	require.NoError(t, err)
+	assert.True(t, p.OnDefaultBranch)
+
+	// check_run on the default branch (branch is nested under check_suite).
+	p, err = ParseCheckPayload("check_run", json.RawMessage(`{"check_run":{"head_sha":"s","status":"completed","conclusion":"success","name":"b","check_suite":{"head_branch":"main"}},"repository":{"name":"r","default_branch":"main","owner":{"login":"o"}}}`))
+	require.NoError(t, err)
+	assert.True(t, p.OnDefaultBranch)
+
+	// status event listing the default branch.
+	p, err = ParseCheckPayload("status", json.RawMessage(`{"sha":"s","state":"success","context":"ci","branches":[{"name":"main"}],"repository":{"name":"r","default_branch":"main","owner":{"login":"o"}}}`))
+	require.NoError(t, err)
+	assert.True(t, p.OnDefaultBranch)
+
+	// not on the default branch.
+	p, err = ParseCheckPayload("check_suite", json.RawMessage(`{"check_suite":{"head_sha":"s","head_branch":"feature","status":"completed","conclusion":"success"},"repository":{"name":"r","default_branch":"main","owner":{"login":"o"}}}`))
+	require.NoError(t, err)
+	assert.False(t, p.OnDefaultBranch)
+}
+
 func TestNormalizeStatusState(t *testing.T) {
 	assert.Equal(t, "SUCCESS", normalizeStatusState("success"))
 	assert.Equal(t, "PENDING", normalizeStatusState("pending"))

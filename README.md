@@ -8,7 +8,7 @@ Data stays fresh via three mechanisms:
 
 1. **Webhooks (primary)** — GitHub pushes events and we apply the payload straight to the cache, with **no re-fetch**:
    - `pull_request` / `pull_request_review` → upsert the PR (and delete it on close)
-   - `status` / `check_run` / `check_suite` → record the per-check state and recompute the commit-status rollup onto any PR whose head is that commit
+   - `status` / `check_run` / `check_suite` → record the per-check state and recompute the commit-status rollup onto any PR whose head is that commit, and onto the repo's default-branch status when the check ran on the default branch
    - `push` → update the repo's `pushed_at`
    - `label` → recolor/remove the label across the repo's cached PRs
 

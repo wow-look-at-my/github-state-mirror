@@ -225,11 +225,12 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 // CheckPayload is a single commit-check state parsed from a status/check_run/
 // check_suite webhook. Context is a stable dedup key (latest state wins).
 type CheckPayload struct {
-	Owner   string
-	Repo    string
-	SHA     string
-	Context string
-	State   string // normalized: SUCCESS / FAILURE / ERROR / PENDING
+	Owner           string
+	Repo            string
+	SHA             string
+	Context         string
+	State           string // normalized: SUCCESS / FAILURE / ERROR / PENDING
+	OnDefaultBranch bool   // the check ran on the repo's default branch
 }
 
 // ParseCheckPayload extracts a commit-check state from a status, check_run, or
@@ -239,14 +240,21 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		SHA      string `json:"sha"`
 		State    string `json:"state"`
 		Context  string `json:"context"`
+		Branches []struct {
+			Name string `json:"name"`
+		} `json:"branches"`
 		CheckRun *struct {
 			HeadSHA    string `json:"head_sha"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			Name       string `json:"name"`
+			CheckSuite *struct {
+				HeadBranch string `json:"head_branch"`
+			} `json:"check_suite"`
 		} `json:"check_run"`
 		CheckSuite *struct {
 			HeadSHA    string `json:"head_sha"`
+			HeadBranch string `json:"head_branch"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			App        *struct {
@@ -254,8 +262,9 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 			} `json:"app"`
 		} `json:"check_suite"`
 		Repository *struct {
-			Name  string `json:"name"`
-			Owner struct {
+			Name          string `json:"name"`
+			DefaultBranch string `json:"default_branch"`
+			Owner         struct {
 				Login string `json:"login"`
 			} `json:"owner"`
 		} `json:"repository"`
@@ -265,16 +274,22 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 	}
 
 	var p CheckPayload
+	defaultBranch := ""
 	if body.Repository != nil {
 		p.Owner = body.Repository.Owner.Login
 		p.Repo = body.Repository.Name
+		defaultBranch = body.Repository.DefaultBranch
 	}
 
+	var branches []string
 	switch eventType {
 	case "status":
 		p.SHA = body.SHA
 		p.Context = "status:" + body.Context
 		p.State = normalizeStatusState(body.State)
+		for _, b := range body.Branches {
+			branches = append(branches, b.Name)
+		}
 	case "check_run":
 		if body.CheckRun == nil {
 			return CheckPayload{}, fmt.Errorf("parse check_run payload: no check_run field")
@@ -282,6 +297,9 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		p.SHA = body.CheckRun.HeadSHA
 		p.Context = "check_run:" + body.CheckRun.Name
 		p.State = normalizeCheckState(body.CheckRun.Status, body.CheckRun.Conclusion)
+		if body.CheckRun.CheckSuite != nil {
+			branches = append(branches, body.CheckRun.CheckSuite.HeadBranch)
+		}
 	case "check_suite":
 		if body.CheckSuite == nil {
 			return CheckPayload{}, fmt.Errorf("parse check_suite payload: no check_suite field")
@@ -293,8 +311,18 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		}
 		p.Context = "check_suite:" + slug
 		p.State = normalizeCheckState(body.CheckSuite.Status, body.CheckSuite.Conclusion)
+		branches = append(branches, body.CheckSuite.HeadBranch)
 	default:
 		return CheckPayload{}, fmt.Errorf("unsupported check event type: %s", eventType)
+	}
+
+	if defaultBranch != "" {
+		for _, b := range branches {
+			if b == defaultBranch {
+				p.OnDefaultBranch = true
+				break
+			}
+		}
 	}
 
 	if p.Owner == "" || p.Repo == "" || p.SHA == "" {

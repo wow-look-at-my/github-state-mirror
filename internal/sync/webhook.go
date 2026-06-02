@@ -163,14 +163,15 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if len(actors) == 0 {
 		return
 	}
-	rollup, err := d.store.ApplyCommitStatusForActors(ctx, actors, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State)
+	rollup, err := d.store.ApplyCommitStatusForActors(ctx, actors, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
 	if err != nil {
 		slog.Warn("webhook: apply commit status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		d.invalidateRepoOrg(ctx, event)
 		return
 	}
 	slog.Info("webhook: applied commit status",
-		"repo", payload.Owner+"/"+payload.Repo, "sha", payload.SHA, "context", payload.Context, "rollup", rollup, "actors", len(actors))
+		"repo", payload.Owner+"/"+payload.Repo, "sha", payload.SHA, "context", payload.Context,
+		"rollup", rollup, "defaultBranch", payload.OnDefaultBranch, "actors", len(actors))
 }
 
 func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Event) {

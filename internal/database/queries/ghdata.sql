@@ -202,6 +202,10 @@ WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?;
 UPDATE repos SET pushed_at = ?
 WHERE actor = ? AND owner = ? AND name = ?;
 
+-- name: SetRepoDefaultBranchStatus :exec
+UPDATE repos SET default_branch_status = ?
+WHERE actor = ? AND owner = ? AND name = ?;
+
 -- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
 WHERE actor = ? AND owner = ? AND repo = ? AND name = ?;

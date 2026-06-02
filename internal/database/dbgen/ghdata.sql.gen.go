@@ -867,6 +867,28 @@ func (q *Queries) SetPRStatusByHeadSha(ctx context.Context, arg SetPRStatusByHea
 	return err
 }
 
+const setRepoDefaultBranchStatus = `-- name: SetRepoDefaultBranchStatus :exec
+UPDATE repos SET default_branch_status = ?
+WHERE actor = ? AND owner = ? AND name = ?
+`
+
+type SetRepoDefaultBranchStatusParams struct {
+	DefaultBranchStatus sql.NullString
+	Actor               string
+	Owner               string
+	Name                string
+}
+
+func (q *Queries) SetRepoDefaultBranchStatus(ctx context.Context, arg SetRepoDefaultBranchStatusParams) error {
+	_, err := q.db.ExecContext(ctx, setRepoDefaultBranchStatus,
+		arg.DefaultBranchStatus,
+		arg.Actor,
+		arg.Owner,
+		arg.Name,
+	)
+	return err
+}
+
 const setRepoPushedAt = `-- name: SetRepoPushedAt :exec
 UPDATE repos SET pushed_at = ?
 WHERE actor = ? AND owner = ? AND name = ?

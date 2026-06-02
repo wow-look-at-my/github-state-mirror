@@ -368,8 +368,9 @@ func (s *Store) DeletePRForActors(ctx context.Context, actors []string, owner, r
 
 // ApplyCommitStatusForActors records a single check/status state for a commit
 // and recomputes the rollup, writing it onto any PR whose head is that commit —
-// for every actor that has the repo cached. Returns the resulting rollup state.
-func (s *Store) ApplyCommitStatusForActors(ctx context.Context, actors []string, owner, repo, sha, checkContext, state string) (string, error) {
+// and, when onDefaultBranch is set, onto the repo's default_branch_status — for
+// every actor that has the repo cached. Returns the resulting rollup state.
+func (s *Store) ApplyCommitStatusForActors(ctx context.Context, actors []string, owner, repo, sha, checkContext, state string, onDefaultBranch bool) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -391,14 +392,25 @@ func (s *Store) ApplyCommitStatusForActors(ctx context.Context, actors []string,
 			return "", err
 		}
 		rollup = rollupState(states)
+		status := sql.NullString{String: rollup, Valid: rollup != ""}
 		if err := q.SetPRStatusByHeadSha(ctx, dbgen.SetPRStatusByHeadShaParams{
-			LastCommitStatus: sql.NullString{String: rollup, Valid: rollup != ""},
+			LastCommitStatus: status,
 			Actor:            act,
 			Owner:            owner,
 			Repo:             repo,
 			HeadRefOid:       sql.NullString{String: sha, Valid: sha != ""},
 		}); err != nil {
 			return "", err
+		}
+		if onDefaultBranch {
+			if err := q.SetRepoDefaultBranchStatus(ctx, dbgen.SetRepoDefaultBranchStatusParams{
+				DefaultBranchStatus: status,
+				Actor:               act,
+				Owner:               owner,
+				Name:                repo,
+			}); err != nil {
+				return "", err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

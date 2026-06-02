@@ -541,3 +541,49 @@ func TestDispatch_Label_RecolorAndDelete(t *testing.T) {
 	require.Nil(t, err)
 	assert.Equal(t, 0, len(labels))
 }
+
+func makeCheckSuitePayload(t *testing.T, owner, repo, sha, headBranch, defaultBranch, conclusion string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(map[string]interface{}{
+		"check_suite": map[string]interface{}{
+			"head_sha":    sha,
+			"head_branch": headBranch,
+			"status":      "completed",
+			"conclusion":  conclusion,
+			"app":         map[string]interface{}{"slug": "actions"},
+		},
+		"repository": map[string]interface{}{
+			"name":           repo,
+			"default_branch": defaultBranch,
+			"owner":          map[string]interface{}{"login": owner},
+		},
+	})
+	require.Nil(t, err)
+	return data
+}
+
+// TestDispatch_CheckSuite_DefaultBranchStatus verifies a check_suite on the
+// default branch updates the repo's default_branch_status in place, and one on
+// another branch does not.
+func TestDispatch_CheckSuite_DefaultBranchStatus(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		DefaultBranch: sql.NullString{String: "main", Valid: true},
+	}))
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_suite",
+		makeCheckSuitePayload(t, "my-org", "my-repo", "sha9", "main", "main", "success")))
+	repo, err := store.GetRepo(actorCtx, "my-org", "my-repo")
+	require.Nil(t, err)
+	assert.Equal(t, "SUCCESS", repo.DefaultBranchStatus.String)
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_suite",
+		makeCheckSuitePayload(t, "my-org", "my-repo", "sha10", "feature", "main", "failure")))
+	repo, err = store.GetRepo(actorCtx, "my-org", "my-repo")
+	require.Nil(t, err)
+	assert.Equal(t, "SUCCESS", repo.DefaultBranchStatus.String, "non-default branch must not change default_branch_status")
+}
