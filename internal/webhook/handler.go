@@ -9,7 +9,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// dispatchTimeout bounds how long an asynchronous webhook dispatch may run,
+// so a slow or stuck refresh can't leak goroutines indefinitely.
+const dispatchTimeout = 30 * time.Second
 
 // Dispatcher is called to process a parsed webhook event.
 type Dispatcher interface {
@@ -48,10 +53,15 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 		event := ParseEvent(eventType, body)
 
 		// Respond 200 immediately, dispatch asynchronously.
-		// Use a detached context since the request context will be canceled.
+		// Use a detached, time-bounded context since the request context will
+		// be canceled once we return.
 		w.WriteHeader(http.StatusOK)
 
-		go dispatcher.Dispatch(context.Background(), event)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+			defer cancel()
+			dispatcher.Dispatch(ctx, event)
+		}()
 	}
 }
 

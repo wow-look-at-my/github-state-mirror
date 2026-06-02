@@ -15,30 +15,51 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// passthroughAuth extracts the caller's Authorization header, injects the
-// token into the request context, resolves the GitHub login, and sets
-// the actor so all cache operations are scoped per-user.
-func passthroughAuth(gh *ghclient.Client) func(http.Handler) http.Handler {
+// requireAuth enforces that every data request carries a usable GitHub token.
+// It validates the token against GitHub (rejecting absent, malformed, or
+// revoked credentials with 401), injects the token into the request context,
+// and scopes all cache operations to a fingerprint of that token.
+//
+// The cache partition (actor) is derived from the token itself, NOT the GitHub
+// login, so that each credential only ever reads data it fetched. Two tokens
+// belonging to the same user — e.g. a full-scope PAT and a read-only token
+// granted to a third-party app — get separate buckets and can never observe
+// each other's cached private data. Requests must never fall through to the
+// server's GITHUB_TOKEN, which is reserved for background refreshes and may
+// have far broader access than the caller.
+func requireAuth(gh *ghclient.Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if auth := r.Header.Get("Authorization"); auth != "" {
-				token := strings.TrimPrefix(auth, "Bearer ")
-				token = strings.TrimPrefix(token, "token ")
-				if token != "" {
-					ctx := ghclient.WithToken(r.Context(), token)
-					login, err := gh.ResolveActor(ctx)
-					if err != nil {
-						slog.Warn("resolve actor failed", "error", err)
-						http.Error(w, "unauthorized", http.StatusUnauthorized)
-						return
-					}
-					ctx = actor.WithActor(ctx, login)
-					r = r.WithContext(ctx)
-				}
+			token := bearerToken(r)
+			if token == "" {
+				http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
+				return
 			}
-			next.ServeHTTP(w, r)
+			ctx := ghclient.WithToken(r.Context(), token)
+			// Validate the credential with GitHub up front (and warm the
+			// token->login cache). The returned login is intentionally
+			// discarded: the bucket key is the token fingerprint.
+			if _, err := gh.ResolveActor(ctx); err != nil {
+				slog.Warn("resolve actor failed", "error", err)
+				http.Error(w, "unauthorized: could not validate GitHub credential", http.StatusUnauthorized)
+				return
+			}
+			ctx = actor.WithActor(ctx, ghclient.Fingerprint(token))
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" or
+// "Authorization: token <token>" header, returning "" when absent.
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return ""
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	token = strings.TrimPrefix(token, "token ")
+	return strings.TrimSpace(token)
 }
 
 func NewRouter(
@@ -51,21 +72,27 @@ func NewRouter(
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(passthroughAuth(gh))
 
 	h := &handlers{mgr: mgr, store: store}
 
-	// REST endpoints
-	r.Get("/user", h.getUser)
-	r.Get("/user/orgs", h.getUserOrgs)
-	r.Get("/repos/{owner}/{repo}/compare/{base}...{head}", h.getCompare)
-	r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.getPRFiles)
-
-	// GraphQL endpoint
-	r.Post("/graphql", h.graphql)
-
-	// Webhook endpoint
+	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
+	// not a user token, so it sits outside the requireAuth group.
 	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher))
+
+	// Data endpoints — every request must carry a valid GitHub token, and all
+	// cache access is scoped to that credential's fingerprint.
+	r.Group(func(r chi.Router) {
+		r.Use(requireAuth(gh))
+
+		// REST endpoints
+		r.Get("/user", h.getUser)
+		r.Get("/user/orgs", h.getUserOrgs)
+		r.Get("/repos/{owner}/{repo}/compare/{base}...{head}", h.getCompare)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.getPRFiles)
+
+		// GraphQL endpoint
+		r.Post("/graphql", h.graphql)
+	})
 
 	return r
 }

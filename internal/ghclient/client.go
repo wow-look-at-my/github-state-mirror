@@ -2,6 +2,8 @@ package ghclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +30,17 @@ func tokenFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// Fingerprint returns a stable, non-reversible identifier for a token, suitable
+// for use as a per-credential cache partition key. Cached data is keyed by this
+// fingerprint (not the GitHub login) so that two distinct tokens never share a
+// cache bucket — a narrow-scoped token can never read data a broader token
+// fetched, even when both belong to the same GitHub user. The raw token is
+// never stored or logged.
+func Fingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 type Client struct {

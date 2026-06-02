@@ -10,7 +10,7 @@ import (
 type ResourceID struct {
 	Kind  string // e.g. "org_repos", "pr_files", "compare"
 	Key   string // e.g. "my-org/my-repo/42"
-	Actor string // GitHub login of the user whose token fetched this data
+	Actor string // per-credential cache partition (fingerprint of the caller's token)
 }
 
 func (r ResourceID) String() string {
