@@ -366,6 +366,130 @@ func (s *Store) DeletePRForActors(ctx context.Context, actors []string, owner, r
 	return tx.Commit()
 }
 
+// ApplyCommitStatusForActors records a single check/status state for a commit
+// and recomputes the rollup, writing it onto any PR whose head is that commit —
+// for every actor that has the repo cached. Returns the resulting rollup state.
+func (s *Store) ApplyCommitStatusForActors(ctx context.Context, actors []string, owner, repo, sha, checkContext, state string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+
+	var rollup string
+	for _, act := range actors {
+		if err := q.UpsertCommitCheck(ctx, dbgen.UpsertCommitCheckParams{
+			Actor: act, Owner: owner, Repo: repo, Sha: sha, Context: checkContext, State: state,
+		}); err != nil {
+			return "", err
+		}
+		states, err := q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{
+			Actor: act, Owner: owner, Repo: repo, Sha: sha,
+		})
+		if err != nil {
+			return "", err
+		}
+		rollup = rollupState(states)
+		if err := q.SetPRStatusByHeadSha(ctx, dbgen.SetPRStatusByHeadShaParams{
+			LastCommitStatus: sql.NullString{String: rollup, Valid: rollup != ""},
+			Actor:            act,
+			Owner:            owner,
+			Repo:             repo,
+			HeadRefOid:       sql.NullString{String: sha, Valid: sha != ""},
+		}); err != nil {
+			return "", err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return rollup, nil
+}
+
+// DeleteCommitChecksForActors drops the per-check rows for a commit (e.g. when
+// the PR that pointed at it closes), for every given actor.
+func (s *Store) DeleteCommitChecksForActors(ctx context.Context, actors []string, owner, repo, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	return s.forEachActorTx(ctx, func(q *dbgen.Queries, act string) error {
+		return q.DeleteCommitChecksBySha(ctx, dbgen.DeleteCommitChecksByShaParams{
+			Actor: act, Owner: owner, Repo: repo, Sha: sha,
+		})
+	}, actors)
+}
+
+// SetRepoPushedAtForActors updates a repo's pushed_at for every given actor.
+func (s *Store) SetRepoPushedAtForActors(ctx context.Context, actors []string, owner, repo, pushedAt string) error {
+	return s.forEachActorTx(ctx, func(q *dbgen.Queries, act string) error {
+		return q.SetRepoPushedAt(ctx, dbgen.SetRepoPushedAtParams{
+			PushedAt: sql.NullString{String: pushedAt, Valid: pushedAt != ""},
+			Actor:    act, Owner: owner, Name: repo,
+		})
+	}, actors)
+}
+
+// RecolorPRLabelForActors updates the color of a label across all PRs in a repo.
+func (s *Store) RecolorPRLabelForActors(ctx context.Context, actors []string, owner, repo, name, color string) error {
+	return s.forEachActorTx(ctx, func(q *dbgen.Queries, act string) error {
+		return q.SetPRLabelColorByName(ctx, dbgen.SetPRLabelColorByNameParams{
+			Color: color, Actor: act, Owner: owner, Repo: repo, Name: name,
+		})
+	}, actors)
+}
+
+// DeletePRLabelByNameForActors removes a label from all PRs in a repo.
+func (s *Store) DeletePRLabelByNameForActors(ctx context.Context, actors []string, owner, repo, name string) error {
+	return s.forEachActorTx(ctx, func(q *dbgen.Queries, act string) error {
+		return q.DeletePRLabelsByName(ctx, dbgen.DeletePRLabelsByNameParams{
+			Actor: act, Owner: owner, Repo: repo, Name: name,
+		})
+	}, actors)
+}
+
+// forEachActorTx runs fn for every actor inside one transaction.
+func (s *Store) forEachActorTx(ctx context.Context, fn func(q *dbgen.Queries, actor string) error, actors []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	for _, act := range actors {
+		if err := fn(q, act); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// rollupState aggregates per-check states into a single GitHub-style rollup:
+// any failure dominates, then pending, then success.
+func rollupState(states []string) string {
+	var hasFailure, hasPending, hasSuccess bool
+	for _, st := range states {
+		switch st {
+		case "FAILURE", "ERROR":
+			hasFailure = true
+		case "PENDING", "EXPECTED":
+			hasPending = true
+		case "SUCCESS":
+			hasSuccess = true
+		}
+	}
+	switch {
+	case hasFailure:
+		return "FAILURE"
+	case hasPending:
+		return "PENDING"
+	case hasSuccess:
+		return "SUCCESS"
+	default:
+		return ""
+	}
+}
+
 // ---- Helpers ----
 
 func repoToParams(act string, r dbgen.Repo) dbgen.UpsertRepoParams {

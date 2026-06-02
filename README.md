@@ -6,9 +6,17 @@ A Go service that mirrors GitHub state into a local SQLite database, providing f
 
 Data stays fresh via three mechanisms:
 
-1. **Webhooks** — GitHub pushes events. For `pull_request` events, the payload data is written directly to the cache (no re-fetch needed). Other event types mark affected resources stale for lazy refresh on next access.
-2. **Periodic refresh** — Every 6 hours, all known resources are re-fetched as a fallback
+1. **Webhooks (primary)** — GitHub pushes events and we apply the payload straight to the cache, with **no re-fetch**:
+   - `pull_request` / `pull_request_review` → upsert the PR (and delete it on close)
+   - `status` / `check_run` / `check_suite` → record the per-check state and recompute the commit-status rollup onto any PR whose head is that commit
+   - `push` → update the repo's `pushed_at`
+   - `label` → recolor/remove the label across the repo's cached PRs
+
+   Only low-frequency structural events (`repository`, `organization`, `membership`) — and any payload that can't be parsed — fall back to marking the affected resource stale for lazy refresh.
+2. **Periodic refresh** — Every 6 hours, the service token's known resources are re-fetched as a backstop
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand before responding
+
+Because high-frequency events are applied in place, an active org's cache no longer gets invalidated (and fully re-fetched) on every CI run or push — which is the point: serve from local state, only call GitHub on a genuine miss.
 
 The SQLite database is a **cache**, not a database of record. On schema changes, the DB file is automatically deleted and recreated.
 

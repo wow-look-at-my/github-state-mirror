@@ -375,3 +375,169 @@ func TestDispatch_PullRequest_MultipleActors(t *testing.T) {
 		assert.Equal(t, "Multi-actor PR", pr.Title)
 	}
 }
+
+func makeStatusPayload(t *testing.T, owner, repo, sha, state, context string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(map[string]interface{}{
+		"sha":     sha,
+		"state":   state,
+		"context": context,
+		"repository": map[string]interface{}{
+			"name":  repo,
+			"owner": map[string]interface{}{"login": owner},
+		},
+	})
+	require.Nil(t, err)
+	return data
+}
+
+// TestDispatch_Status_AppliesRollup verifies a status webhook updates the PR's
+// last_commit_status in place (no org invalidation, no re-fetch).
+func TestDispatch_Status_AppliesRollup(t *testing.T) {
+	dispatcher, mgr, fStore, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+	}))
+	require.Nil(t, store.UpsertPR(actorCtx, dbgen.PullRequest{
+		Owner: "my-org", Repo: "my-repo", Number: 1, Title: "PR", Url: "u",
+		State: "OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		HeadRefOid: sql.NullString{String: "sha1", Valid: true},
+	}))
+	seed(t, mgr, KindOrgRepos, "my-org")
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("status", makeStatusPayload(t, "my-org", "my-repo", "sha1", "success", "ci/build")))
+
+	pr, err := store.GetPullRequest(actorCtx, "my-org", "my-repo", 1)
+	require.Nil(t, err)
+	assert.Equal(t, "SUCCESS", pr.LastCommitStatus.String)
+
+	// org repos must NOT be invalidated — the rollup was applied directly.
+	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "my-org"})
+	require.Nil(t, err)
+	assert.Equal(t, freshness.StateFresh, meta.State)
+
+	// A second, failing context flips the rollup to FAILURE.
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("status", makeStatusPayload(t, "my-org", "my-repo", "sha1", "failure", "ci/test")))
+	pr, err = store.GetPullRequest(actorCtx, "my-org", "my-repo", 1)
+	require.Nil(t, err)
+	assert.Equal(t, "FAILURE", pr.LastCommitStatus.String)
+}
+
+// TestDispatch_PRUpsert_PreservesStatus verifies a later pull_request webhook
+// (which carries no CI status) doesn't wipe a status set by a check webhook.
+func TestDispatch_PRUpsert_PreservesStatus(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+	}))
+	require.Nil(t, store.UpsertPR(actorCtx, dbgen.PullRequest{
+		Owner: "my-org", Repo: "my-repo", Number: 42, Title: "PR", Url: "u",
+		State: "OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		HeadRefOid: sql.NullString{String: "abc123", Valid: true},
+	}))
+
+	// CI status arrives first.
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("status", makeStatusPayload(t, "my-org", "my-repo", "abc123", "success", "ci")))
+
+	// Then a pull_request webhook (e.g. "labeled") with no CI status.
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", makePRPayload(t, "labeled", "open", "my-org", "my-repo", 42, "PR")))
+
+	pr, err := store.GetPullRequest(actorCtx, "my-org", "my-repo", 42)
+	require.Nil(t, err)
+	assert.Equal(t, "SUCCESS", pr.LastCommitStatus.String, "PR upsert must not clobber CI status")
+}
+
+func makePushPayload(t *testing.T, owner, repo, ts string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(map[string]interface{}{
+		"repository":  map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
+		"head_commit": map[string]interface{}{"timestamp": ts},
+	})
+	require.Nil(t, err)
+	return data
+}
+
+func TestDispatch_Push_UpdatesPushedAt(t *testing.T) {
+	dispatcher, mgr, fStore, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		PushedAt: sql.NullString{String: "2020-01-01T00:00:00Z", Valid: true},
+	}))
+	seed(t, mgr, KindOrgRepos, "my-org")
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", makePushPayload(t, "my-org", "my-repo", "2026-05-01T12:00:00Z")))
+
+	repo, err := store.GetRepo(actorCtx, "my-org", "my-repo")
+	require.Nil(t, err)
+	assert.Equal(t, "2026-05-01T12:00:00Z", repo.PushedAt.String)
+
+	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "my-org"})
+	require.Nil(t, err)
+	assert.Equal(t, freshness.StateFresh, meta.State)
+}
+
+func TestDispatch_PullRequestReview_AppliesPR(t *testing.T) {
+	dispatcher, mgr, fStore, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+	}))
+	seed(t, mgr, KindOrgRepos, "my-org")
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request_review",
+		makePRPayload(t, "submitted", "open", "my-org", "my-repo", 5, "Reviewed PR")))
+
+	pr, err := store.GetPullRequest(actorCtx, "my-org", "my-repo", 5)
+	require.Nil(t, err)
+	assert.Equal(t, "Reviewed PR", pr.Title)
+
+	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "my-org"})
+	require.Nil(t, err)
+	assert.Equal(t, freshness.StateFresh, meta.State)
+}
+
+func makeLabelPayload(t *testing.T, action, owner, repo, name, color string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(map[string]interface{}{
+		"action":     action,
+		"label":      map[string]interface{}{"name": name, "color": color},
+		"repository": map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
+	})
+	require.Nil(t, err)
+	return data
+}
+
+func TestDispatch_Label_RecolorAndDelete(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	actorCtx := actor.WithActor(ctx, "test-user")
+
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+	}))
+	require.Nil(t, store.SetPRLabels(actorCtx, "my-org", "my-repo", 1, []dbgen.PrLabel{
+		{Owner: "my-org", Repo: "my-repo", PrNumber: 1, Name: "bug", Color: "aaaaaa"},
+	}))
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("label", makeLabelPayload(t, "edited", "my-org", "my-repo", "bug", "bbbbbb")))
+	labels, err := store.ListPRLabels(actorCtx, "my-org", "my-repo", 1)
+	require.Nil(t, err)
+	require.Equal(t, 1, len(labels))
+	assert.Equal(t, "bbbbbb", labels[0].Color)
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("label", makeLabelPayload(t, "deleted", "my-org", "my-repo", "bug", "bbbbbb")))
+	labels, err = store.ListPRLabels(actorCtx, "my-org", "my-repo", 1)
+	require.Nil(t, err)
+	assert.Equal(t, 0, len(labels))
+}
