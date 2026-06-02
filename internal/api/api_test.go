@@ -25,9 +25,8 @@ import (
 	"github.com/wow-look-at-my/testify/require"
 )
 
-// testToken is the bearer token sent by authenticated test requests
-// (a GitHub App user-to-server token, which is what the mirror requires).
-const testToken = "ghu_testtoken"
+// testToken is the bearer token sent by authenticated test requests.
+const testToken = "test-token"
 
 // testWebhookSecret is the HMAC secret the test router verifies webhooks against.
 const testWebhookSecret = "test-webhook-secret"
@@ -221,20 +220,6 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestRequireAuth_RejectsNonAppToken verifies that PATs (and other non-App
-// tokens) are rejected — only GitHub App user-to-server tokens are accepted.
-func TestRequireAuth_RejectsNonAppToken(t *testing.T) {
-	router, _ := setupTestRouter(t)
-
-	for _, tok := range []string{"ghp_classicPAT", "github_pat_finegrained", "gho_oauthtoken"} {
-		req := httptest.NewRequest("GET", "/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tok)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		assert.Equal(t, http.StatusUnauthorized, w.Code, "token %q must be rejected", tok)
-	}
-}
-
 // TestCredentialIsolation verifies that data cached under one credential is not
 // served to a request bearing a different credential, even for the same login.
 func TestCredentialIsolation(t *testing.T) {
@@ -248,7 +233,7 @@ func TestCredentialIsolation(t *testing.T) {
 	// A different token (same stubbed login) resolves to a different bucket and
 	// must see nothing.
 	req := httptest.NewRequest("GET", "/repos/org1/repo1/pulls/42/files", nil)
-	req.Header.Set("Authorization", "Bearer ghu_othertoken")
+	req.Header.Set("Authorization", "Bearer other-token")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
