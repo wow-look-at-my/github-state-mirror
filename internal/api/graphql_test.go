@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -16,7 +15,7 @@ import (
 
 func TestGraphQL_BasicQuery(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := context.Background()
+	ctx := seedCtx()
 
 	// Seed repo data.
 	store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
@@ -56,7 +55,7 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 	})
 
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -105,7 +104,7 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 
 func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := context.Background()
+	ctx := seedCtx()
 
 	store.SetOrgRepos(ctx, "fallback-org", []dbgen.Repo{
 		{Owner: "fallback-org", Name: "repo1", NameWithOwner: "fallback-org/repo1", Url: "u1"},
@@ -113,7 +112,7 @@ func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 
 	// No "org" in variables — should extract from query string.
 	body := `{"query":"{ organization(login: \"fallback-org\") { repositories { nodes { name } } } }","variables":{}}`
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -135,7 +134,7 @@ func TestGraphQL_MissingOrg(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	body := `{"query":"{ viewer { login } }","variables":{}}`
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -147,7 +146,7 @@ func TestGraphQL_MissingOrg(t *testing.T) {
 func TestGraphQL_BadJSON(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader("not json"))
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -160,7 +159,7 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
 	body := `{"query":"{ organization(login: \"empty-org\") { repositories { nodes { name } } } }","variables":{"org":"empty-org"}}`
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()

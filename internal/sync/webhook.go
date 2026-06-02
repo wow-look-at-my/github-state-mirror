@@ -43,8 +43,23 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) {
 }
 
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) {
-	if owner := event.RepoOwner(); owner != "" {
-		d.invalidate(ctx, KindOrgRepos, owner)
+	payload, err := webhook.ParsePushPayload(event.Raw)
+	if err != nil {
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	if err != nil {
+		slog.Warn("webhook: list actors for push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	if len(actors) == 0 {
+		return
+	}
+	if err := d.store.SetRepoPushedAtForActors(ctx, actors, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
+		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
 	}
 }
 
@@ -103,6 +118,10 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 			slog.Warn("webhook: failed to delete PR for actors", "pr", fmt.Sprintf("%s/%s#%d", owner, repo, payload.PR.Number), "error", err)
 			return false
 		}
+		// Drop the commit-check rows for the (now irrelevant) head commit.
+		if err := d.store.DeleteCommitChecksForActors(ctx, actors, owner, repo, payload.PR.HeadRefOid.String); err != nil {
+			slog.Warn("webhook: failed to delete commit checks for closed PR", "pr", fmt.Sprintf("%s/%s#%d", owner, repo, payload.PR.Number), "error", err)
+		}
 		slog.Info("webhook: deleted closed PR from cache",
 			"pr", fmt.Sprintf("%s/%s#%d", owner, repo, payload.PR.Number),
 			"actors", len(actors))
@@ -122,15 +141,37 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 }
 
 func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) {
-	if owner := event.RepoOwner(); owner != "" {
-		d.invalidate(ctx, KindOrgRepos, owner)
+	// The review payload embeds the full pull_request, so apply it like a
+	// pull_request event instead of invalidating the whole org.
+	if applied := d.applyPRPayload(ctx, event); !applied {
+		d.invalidateRepoOrg(ctx, event)
 	}
 }
 
 func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Event) {
-	if owner := event.RepoOwner(); owner != "" {
-		d.invalidate(ctx, KindOrgRepos, owner)
+	payload, err := webhook.ParseCheckPayload(event.Type, event.Raw)
+	if err != nil {
+		d.invalidateRepoOrg(ctx, event)
+		return
 	}
+	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	if err != nil {
+		slog.Warn("webhook: list actors for status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	if len(actors) == 0 {
+		return
+	}
+	rollup, err := d.store.ApplyCommitStatusForActors(ctx, actors, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
+	if err != nil {
+		slog.Warn("webhook: apply commit status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	slog.Info("webhook: applied commit status",
+		"repo", payload.Owner+"/"+payload.Repo, "sha", payload.SHA, "context", payload.Context,
+		"rollup", rollup, "defaultBranch", payload.OnDefaultBranch, "actors", len(actors))
 }
 
 func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Event) {
@@ -146,13 +187,54 @@ func (d *WebhookDispatcher) onOrgChange(ctx context.Context, event webhook.Event
 }
 
 func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) {
-	if owner := event.RepoOwner(); owner != "" {
-		d.invalidate(ctx, KindOrgRepos, owner)
+	payload, err := webhook.ParseLabelPayload(event.Raw)
+	if err != nil {
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	// A brand-new label definition has no cached PRs referencing it yet.
+	if payload.Action == "created" {
+		return
+	}
+	// A rename touches the label's primary key across many PRs; re-fetch.
+	if payload.Action == "edited" && payload.OldName != "" && payload.OldName != payload.Name {
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	if err != nil {
+		slog.Warn("webhook: list actors for label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	if len(actors) == 0 {
+		return
+	}
+	switch payload.Action {
+	case "deleted":
+		err = d.store.DeletePRLabelByNameForActors(ctx, actors, payload.Owner, payload.Repo, payload.Name)
+	case "edited":
+		err = d.store.RecolorPRLabelForActors(ctx, actors, payload.Owner, payload.Repo, payload.Name, payload.Color)
+	default:
+		d.invalidateRepoOrg(ctx, event)
+		return
+	}
+	if err != nil {
+		slog.Warn("webhook: apply label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		d.invalidateRepoOrg(ctx, event)
 	}
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
 	if err := d.mgr.InvalidateAllActors(ctx, kind, key); err != nil {
 		slog.Warn("webhook invalidate failed", "kind", kind, "key", key, "error", err)
+	}
+}
+
+// invalidateRepoOrg is the fallback when a payload can't be applied directly:
+// mark the owner's org-repos cache stale so the next request re-fetches.
+func (d *WebhookDispatcher) invalidateRepoOrg(ctx context.Context, event webhook.Event) {
+	if owner := event.RepoOwner(); owner != "" {
+		d.invalidate(ctx, KindOrgRepos, owner)
 	}
 }

@@ -102,7 +102,7 @@ ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
     review_request_count = excluded.review_request_count,
-    last_commit_status = excluded.last_commit_status;
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status);
 
 -- name: GetPullRequest :one
 SELECT * FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?;
@@ -177,3 +177,38 @@ WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?;
 -- name: DeleteBranchComparison :exec
 DELETE FROM branch_comparisons
 WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?;
+
+-- ============================================================================
+-- Commit Check States (CI rollup fed by webhooks)
+-- ============================================================================
+
+-- name: UpsertCommitCheck :exec
+INSERT INTO commit_checks (actor, owner, repo, sha, context, state)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, sha, context) DO UPDATE SET
+    state = excluded.state;
+
+-- name: ListCommitCheckStates :many
+SELECT state FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteCommitChecksBySha :exec
+DELETE FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
+
+-- name: SetPRStatusByHeadSha :exec
+UPDATE pull_requests SET last_commit_status = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?;
+
+-- name: SetRepoPushedAt :exec
+UPDATE repos SET pushed_at = ?
+WHERE actor = ? AND owner = ? AND name = ?;
+
+-- name: SetRepoDefaultBranchStatus :exec
+UPDATE repos SET default_branch_status = ?
+WHERE actor = ? AND owner = ? AND name = ?;
+
+-- name: SetPRLabelColorByName :exec
+UPDATE pr_labels SET color = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND name = ?;
+
+-- name: DeletePRLabelsByName :exec
+DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND name = ?;

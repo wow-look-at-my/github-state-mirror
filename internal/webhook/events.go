@@ -222,6 +222,235 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	return PRPayload{PR: pr, Labels: labels}, nil
 }
 
+// CheckPayload is a single commit-check state parsed from a status/check_run/
+// check_suite webhook. Context is a stable dedup key (latest state wins).
+type CheckPayload struct {
+	Owner           string
+	Repo            string
+	SHA             string
+	Context         string
+	State           string // normalized: SUCCESS / FAILURE / ERROR / PENDING
+	OnDefaultBranch bool   // the check ran on the repo's default branch
+}
+
+// ParseCheckPayload extracts a commit-check state from a status, check_run, or
+// check_suite webhook payload.
+func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, error) {
+	var body struct {
+		SHA      string `json:"sha"`
+		State    string `json:"state"`
+		Context  string `json:"context"`
+		Branches []struct {
+			Name string `json:"name"`
+		} `json:"branches"`
+		CheckRun *struct {
+			HeadSHA    string `json:"head_sha"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			Name       string `json:"name"`
+			CheckSuite *struct {
+				HeadBranch string `json:"head_branch"`
+			} `json:"check_suite"`
+		} `json:"check_run"`
+		CheckSuite *struct {
+			HeadSHA    string `json:"head_sha"`
+			HeadBranch string `json:"head_branch"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			App        *struct {
+				Slug string `json:"slug"`
+			} `json:"app"`
+		} `json:"check_suite"`
+		Repository *struct {
+			Name          string `json:"name"`
+			DefaultBranch string `json:"default_branch"`
+			Owner         struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return CheckPayload{}, fmt.Errorf("parse check webhook payload: %w", err)
+	}
+
+	var p CheckPayload
+	defaultBranch := ""
+	if body.Repository != nil {
+		p.Owner = body.Repository.Owner.Login
+		p.Repo = body.Repository.Name
+		defaultBranch = body.Repository.DefaultBranch
+	}
+
+	var branches []string
+	switch eventType {
+	case "status":
+		p.SHA = body.SHA
+		p.Context = "status:" + body.Context
+		p.State = normalizeStatusState(body.State)
+		for _, b := range body.Branches {
+			branches = append(branches, b.Name)
+		}
+	case "check_run":
+		if body.CheckRun == nil {
+			return CheckPayload{}, fmt.Errorf("parse check_run payload: no check_run field")
+		}
+		p.SHA = body.CheckRun.HeadSHA
+		p.Context = "check_run:" + body.CheckRun.Name
+		p.State = normalizeCheckState(body.CheckRun.Status, body.CheckRun.Conclusion)
+		if body.CheckRun.CheckSuite != nil {
+			branches = append(branches, body.CheckRun.CheckSuite.HeadBranch)
+		}
+	case "check_suite":
+		if body.CheckSuite == nil {
+			return CheckPayload{}, fmt.Errorf("parse check_suite payload: no check_suite field")
+		}
+		p.SHA = body.CheckSuite.HeadSHA
+		slug := ""
+		if body.CheckSuite.App != nil {
+			slug = body.CheckSuite.App.Slug
+		}
+		p.Context = "check_suite:" + slug
+		p.State = normalizeCheckState(body.CheckSuite.Status, body.CheckSuite.Conclusion)
+		branches = append(branches, body.CheckSuite.HeadBranch)
+	default:
+		return CheckPayload{}, fmt.Errorf("unsupported check event type: %s", eventType)
+	}
+
+	if defaultBranch != "" {
+		for _, b := range branches {
+			if b == defaultBranch {
+				p.OnDefaultBranch = true
+				break
+			}
+		}
+	}
+
+	if p.Owner == "" || p.Repo == "" || p.SHA == "" {
+		return CheckPayload{}, fmt.Errorf("parse check payload: missing owner/repo/sha")
+	}
+	return p, nil
+}
+
+func normalizeStatusState(state string) string {
+	switch state {
+	case "success":
+		return "SUCCESS"
+	case "pending":
+		return "PENDING"
+	case "failure":
+		return "FAILURE"
+	case "error":
+		return "ERROR"
+	}
+	return "PENDING"
+}
+
+func normalizeCheckState(status, conclusion string) string {
+	if status != "completed" {
+		return "PENDING"
+	}
+	switch conclusion {
+	case "success", "neutral", "skipped":
+		return "SUCCESS"
+	case "failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale":
+		return "FAILURE"
+	}
+	return "PENDING"
+}
+
+// PushPayload is the minimal info applied directly from a push webhook.
+type PushPayload struct {
+	Owner    string
+	Repo     string
+	PushedAt string // RFC3339
+}
+
+// ParsePushPayload extracts owner/repo and a best-effort pushed_at timestamp.
+func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
+	var body struct {
+		Repository *struct {
+			Name  string `json:"name"`
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+		HeadCommit *struct {
+			Timestamp string `json:"timestamp"`
+		} `json:"head_commit"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return PushPayload{}, fmt.Errorf("parse push payload: %w", err)
+	}
+	if body.Repository == nil {
+		return PushPayload{}, fmt.Errorf("parse push payload: no repository field")
+	}
+	p := PushPayload{
+		Owner: body.Repository.Owner.Login,
+		Repo:  body.Repository.Name,
+	}
+	if body.HeadCommit != nil && body.HeadCommit.Timestamp != "" {
+		p.PushedAt = normaliseTime(body.HeadCommit.Timestamp)
+	} else {
+		p.PushedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if p.Owner == "" || p.Repo == "" {
+		return PushPayload{}, fmt.Errorf("parse push payload: missing owner/repo")
+	}
+	return p, nil
+}
+
+// LabelPayload is a repo label change parsed from a label webhook.
+type LabelPayload struct {
+	Owner   string
+	Repo    string
+	Action  string
+	Name    string
+	Color   string
+	OldName string // changes.name.from, for renames
+}
+
+// ParseLabelPayload extracts a repo-level label change.
+func ParseLabelPayload(raw json.RawMessage) (LabelPayload, error) {
+	var body struct {
+		Action string `json:"action"`
+		Label  *struct {
+			Name  string `json:"name"`
+			Color string `json:"color"`
+		} `json:"label"`
+		Changes *struct {
+			Name *struct {
+				From string `json:"from"`
+			} `json:"name"`
+		} `json:"changes"`
+		Repository *struct {
+			Name  string `json:"name"`
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return LabelPayload{}, fmt.Errorf("parse label payload: %w", err)
+	}
+	if body.Label == nil || body.Repository == nil {
+		return LabelPayload{}, fmt.Errorf("parse label payload: missing label/repository")
+	}
+	p := LabelPayload{
+		Owner:  body.Repository.Owner.Login,
+		Repo:   body.Repository.Name,
+		Action: body.Action,
+		Name:   body.Label.Name,
+		Color:  body.Label.Color,
+	}
+	if body.Changes != nil && body.Changes.Name != nil {
+		p.OldName = body.Changes.Name.From
+	}
+	if p.Owner == "" || p.Repo == "" {
+		return LabelPayload{}, fmt.Errorf("parse label payload: missing owner/repo")
+	}
+	return p, nil
+}
+
 func boolToInt(b bool) int64 {
 	if b {
 		return 1

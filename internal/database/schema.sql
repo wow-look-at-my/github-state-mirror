@@ -136,3 +136,16 @@ CREATE TABLE branch_comparisons (
     behind_by   INTEGER NOT NULL,
     PRIMARY KEY (actor, owner, repo, base_ref, head_ref)
 );
+
+-- Per-check state for a commit, fed by status/check_run/check_suite webhooks.
+-- We aggregate these into the PR's last_commit_status rollup without re-fetching
+-- from GitHub. context is the status context or check name (latest state wins).
+CREATE TABLE commit_checks (
+    actor       TEXT NOT NULL DEFAULT '',
+    owner       TEXT NOT NULL,
+    repo        TEXT NOT NULL,
+    sha         TEXT NOT NULL,
+    context     TEXT NOT NULL,
+    state       TEXT NOT NULL,   -- normalized: SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
+    PRIMARY KEY (actor, owner, repo, sha, context)
+);

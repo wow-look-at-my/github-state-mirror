@@ -44,6 +44,15 @@ type CacheRefreshLog struct {
 	ErrorMessage   sql.NullString
 }
 
+type CommitCheck struct {
+	Actor   string
+	Owner   string
+	Repo    string
+	Sha     string
+	Context string
+	State   string
+}
+
 type Org struct {
 	Actor     string
 	Login     string

@@ -9,7 +9,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// dispatchTimeout bounds how long an asynchronous webhook dispatch may run,
+// so a slow or stuck refresh can't leak goroutines indefinitely.
+const dispatchTimeout = 30 * time.Second
 
 // Dispatcher is called to process a parsed webhook event.
 type Dispatcher interface {
@@ -30,13 +35,20 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 			return
 		}
 
-		if secret != "" {
-			sig := r.Header.Get("X-Hub-Signature-256")
-			if !verifySignature(secret, sig, body) {
-				slog.Warn("webhook signature verification failed")
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
+		// Fail closed: without a configured secret we cannot verify that a
+		// webhook actually came from GitHub, and an unauthenticated endpoint
+		// that mutates the cache would let anyone inject data into other
+		// callers' partitions. Refuse rather than trust the payload.
+		if secret == "" {
+			slog.Error("webhook rejected: WEBHOOK_SECRET is not set")
+			http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if !verifySignature(secret, sig, body) {
+			slog.Warn("webhook signature verification failed")
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
 		}
 
 		eventType := r.Header.Get("X-GitHub-Event")
@@ -48,10 +60,15 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 		event := ParseEvent(eventType, body)
 
 		// Respond 200 immediately, dispatch asynchronously.
-		// Use a detached context since the request context will be canceled.
+		// Use a detached, time-bounded context since the request context will
+		// be canceled once we return.
 		w.WriteHeader(http.StatusOK)
 
-		go dispatcher.Dispatch(context.Background(), event)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+			defer cancel()
+			dispatcher.Dispatch(ctx, event)
+		}()
 	}
 }
 

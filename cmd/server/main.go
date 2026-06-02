@@ -22,7 +22,10 @@ func main() {
 	cfg := config.Load()
 
 	if cfg.GitHubToken == "" {
-		slog.Warn("GITHUB_TOKEN not set; background refreshes will only work if callers supply Authorization headers")
+		slog.Warn("GITHUB_TOKEN not set; periodic background refreshes are disabled (per-request data still works via the caller's Authorization header)")
+	}
+	if cfg.WebhookSecret == "" {
+		slog.Warn("WEBHOOK_SECRET not set; the /webhook endpoint will reject all deliveries")
 	}
 
 	db, err := database.Open(cfg.DBPath)
@@ -50,24 +53,25 @@ func main() {
 	// Build router.
 	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh)
 
-	// Resolve the default actor for background tasks.
+	// Background tasks run as the service credential (GITHUB_TOKEN), in its own
+	// cache partition keyed by the token's fingerprint — the same scheme used
+	// for per-user requests, so background-refreshed data is never served to a
+	// different caller.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	defaultActor := ""
+	bgCtx := ctx
 	if cfg.GitHubToken != "" {
-		tokenCtx := ghclient.WithToken(ctx, cfg.GitHubToken)
-		login, err := gh.ResolveActor(tokenCtx)
-		if err != nil {
-			slog.Warn("could not resolve default actor from GITHUB_TOKEN", "error", err)
+		bgCtx = ghclient.WithToken(bgCtx, cfg.GitHubToken)
+		bgCtx = actor.WithActor(bgCtx, ghclient.Fingerprint(cfg.GitHubToken))
+		if login, err := gh.ResolveActor(bgCtx); err != nil {
+			slog.Warn("could not validate GITHUB_TOKEN", "error", err)
 		} else {
-			defaultActor = login
-			slog.Info("resolved default actor", "login", defaultActor)
+			slog.Info("background refresher authenticated", "login", login)
 		}
 	}
 
-	// Start periodic refresher with actor context.
-	bgCtx := actor.WithActor(ctx, defaultActor)
+	// Start periodic refresher with the service credential's context.
 	go refresher.Start(bgCtx)
 
 	// Start HTTP server.

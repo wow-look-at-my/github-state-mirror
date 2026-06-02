@@ -34,6 +34,27 @@ func (q *Queries) DeleteBranchComparison(ctx context.Context, arg DeleteBranchCo
 	return err
 }
 
+const deleteCommitChecksBySha = `-- name: DeleteCommitChecksBySha :exec
+DELETE FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+`
+
+type DeleteCommitChecksByShaParams struct {
+	Actor string
+	Owner string
+	Repo  string
+	Sha   string
+}
+
+func (q *Queries) DeleteCommitChecksBySha(ctx context.Context, arg DeleteCommitChecksByShaParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitChecksBySha,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+	)
+	return err
+}
+
 const deletePRFiles = `-- name: DeletePRFiles :exec
 DELETE FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
 `
@@ -72,6 +93,27 @@ func (q *Queries) DeletePRLabels(ctx context.Context, arg DeletePRLabelsParams) 
 		arg.Owner,
 		arg.Repo,
 		arg.PrNumber,
+	)
+	return err
+}
+
+const deletePRLabelsByName = `-- name: DeletePRLabelsByName :exec
+DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND name = ?
+`
+
+type DeletePRLabelsByNameParams struct {
+	Actor string
+	Owner string
+	Repo  string
+	Name  string
+}
+
+func (q *Queries) DeletePRLabelsByName(ctx context.Context, arg DeletePRLabelsByNameParams) error {
+	_, err := q.db.ExecContext(ctx, deletePRLabelsByName,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
 	)
 	return err
 }
@@ -422,6 +464,45 @@ func (q *Queries) ListActorsForRepo(ctx context.Context, arg ListActorsForRepoPa
 	return items, nil
 }
 
+const listCommitCheckStates = `-- name: ListCommitCheckStates :many
+SELECT state FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+`
+
+type ListCommitCheckStatesParams struct {
+	Actor string
+	Owner string
+	Repo  string
+	Sha   string
+}
+
+func (q *Queries) ListCommitCheckStates(ctx context.Context, arg ListCommitCheckStatesParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listCommitCheckStates,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return nil, err
+		}
+		items = append(items, state)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenPullRequestsByOwner = `-- name: ListOpenPullRequestsByOwner :many
 SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
 WHERE actor = ? AND owner = ? AND state = 'OPEN'
@@ -738,6 +819,98 @@ func (q *Queries) ListUserOrgMemberships(ctx context.Context, arg ListUserOrgMem
 	return items, nil
 }
 
+const setPRLabelColorByName = `-- name: SetPRLabelColorByName :exec
+UPDATE pr_labels SET color = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND name = ?
+`
+
+type SetPRLabelColorByNameParams struct {
+	Color string
+	Actor string
+	Owner string
+	Repo  string
+	Name  string
+}
+
+func (q *Queries) SetPRLabelColorByName(ctx context.Context, arg SetPRLabelColorByNameParams) error {
+	_, err := q.db.ExecContext(ctx, setPRLabelColorByName,
+		arg.Color,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
+	)
+	return err
+}
+
+const setPRStatusByHeadSha = `-- name: SetPRStatusByHeadSha :exec
+UPDATE pull_requests SET last_commit_status = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?
+`
+
+type SetPRStatusByHeadShaParams struct {
+	LastCommitStatus sql.NullString
+	Actor            string
+	Owner            string
+	Repo             string
+	HeadRefOid       sql.NullString
+}
+
+func (q *Queries) SetPRStatusByHeadSha(ctx context.Context, arg SetPRStatusByHeadShaParams) error {
+	_, err := q.db.ExecContext(ctx, setPRStatusByHeadSha,
+		arg.LastCommitStatus,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.HeadRefOid,
+	)
+	return err
+}
+
+const setRepoDefaultBranchStatus = `-- name: SetRepoDefaultBranchStatus :exec
+UPDATE repos SET default_branch_status = ?
+WHERE actor = ? AND owner = ? AND name = ?
+`
+
+type SetRepoDefaultBranchStatusParams struct {
+	DefaultBranchStatus sql.NullString
+	Actor               string
+	Owner               string
+	Name                string
+}
+
+func (q *Queries) SetRepoDefaultBranchStatus(ctx context.Context, arg SetRepoDefaultBranchStatusParams) error {
+	_, err := q.db.ExecContext(ctx, setRepoDefaultBranchStatus,
+		arg.DefaultBranchStatus,
+		arg.Actor,
+		arg.Owner,
+		arg.Name,
+	)
+	return err
+}
+
+const setRepoPushedAt = `-- name: SetRepoPushedAt :exec
+UPDATE repos SET pushed_at = ?
+WHERE actor = ? AND owner = ? AND name = ?
+`
+
+type SetRepoPushedAtParams struct {
+	PushedAt sql.NullString
+	Actor    string
+	Owner    string
+	Name     string
+}
+
+func (q *Queries) SetRepoPushedAt(ctx context.Context, arg SetRepoPushedAtParams) error {
+	_, err := q.db.ExecContext(ctx, setRepoPushedAt,
+		arg.PushedAt,
+		arg.Actor,
+		arg.Owner,
+		arg.Name,
+	)
+	return err
+}
+
 const setUserOrgMembership = `-- name: SetUserOrgMembership :exec
 
 INSERT INTO user_org_memberships (actor, user_login, org_login)
@@ -794,6 +967,38 @@ func (q *Queries) UpsertBranchComparison(ctx context.Context, arg UpsertBranchCo
 	return err
 }
 
+const upsertCommitCheck = `-- name: UpsertCommitCheck :exec
+
+INSERT INTO commit_checks (actor, owner, repo, sha, context, state)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo, sha, context) DO UPDATE SET
+    state = excluded.state
+`
+
+type UpsertCommitCheckParams struct {
+	Actor   string
+	Owner   string
+	Repo    string
+	Sha     string
+	Context string
+	State   string
+}
+
+// ============================================================================
+// Commit Check States (CI rollup fed by webhooks)
+// ============================================================================
+func (q *Queries) UpsertCommitCheck(ctx context.Context, arg UpsertCommitCheckParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCommitCheck,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+		arg.Context,
+		arg.State,
+	)
+	return err
+}
+
 const upsertOrg = `-- name: UpsertOrg :exec
 
 INSERT INTO orgs (actor, login, avatar_url, url)
@@ -844,7 +1049,7 @@ ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
     review_request_count = excluded.review_request_count,
-    last_commit_status = excluded.last_commit_status
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status)
 `
 
 type UpsertPullRequestParams struct {
