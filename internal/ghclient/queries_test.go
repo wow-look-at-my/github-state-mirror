@@ -3,7 +3,9 @@ package ghclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/wow-look-at-my/testify/assert"
@@ -187,6 +189,47 @@ func TestGetOrgData_Pagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, len(data.Repos))
 	assert.Equal(t, 2, callCount)
+}
+
+func TestGetOrgData_PRPagination(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "repository(owner") {
+			// Per-repo PR pagination request: return the final page.
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"pullRequests": map[string]interface{}{
+							"pageInfo": map[string]interface{}{"hasNextPage": false},
+							"nodes": []map[string]interface{}{
+								{"number": 2, "title": "second-page PR", "url": "u2"},
+							},
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Org query: one repo whose open PRs overflow the first page.
+		resp := gqlResponse{}
+		resp.Data.Organization.Repositories.PageInfo = gqlPageInfo{HasNextPage: false}
+		repo := gqlRepo{Name: "repo1", NameWithOwner: "org/repo1"}
+		repo.PullRequests.PageInfo = gqlPageInfo{HasNextPage: true, EndCursor: "prc1"}
+		repo.PullRequests.Nodes = []gqlPR{{Number: 1, Title: "first-page PR", URL: "u1"}}
+		resp.Data.Organization.Repositories.Nodes = []gqlRepo{repo}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	data, err := c.GetOrgData(context.Background(), "org")
+	require.NoError(t, err)
+	require.Equal(t, 1, len(data.Repos))
+
+	prs := data.PRsByRepo["org/repo1"]
+	require.Equal(t, 2, len(prs), "both PR pages should be collected")
+	assert.Equal(t, int64(1), prs[0].Number)
+	assert.Equal(t, int64(2), prs[1].Number)
 }
 
 func TestBoolToInt(t *testing.T) {
