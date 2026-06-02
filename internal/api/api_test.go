@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +27,9 @@ import (
 
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
+
+// testWebhookSecret is the HMAC secret the test router verifies webhooks against.
+const testWebhookSecret = "test-webhook-secret"
 
 // stubFetcher always succeeds (used to satisfy EnsureFresh without hitting GitHub).
 type stubFetcher struct{}
@@ -59,8 +65,15 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
 
-	router := NewRouter(mgr, store, "", dispatcher, gh)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh)
 	return router, store
+}
+
+// sign returns the GitHub HMAC signature header value for a webhook body.
+func sign(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // seedCtx returns a context scoped to the same cache partition that an
@@ -231,12 +244,14 @@ func TestCredentialIsolation(t *testing.T) {
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
-// a user token (it is authenticated by HMAC signature instead).
+// a bearer token (it is authenticated by HMAC signature instead).
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}"))
+	body := "{}"
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "ping")
+	req.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(body)))
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

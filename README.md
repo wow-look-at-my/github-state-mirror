@@ -54,7 +54,7 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GITHUB_TOKEN` | No | — | Service token used **only** for background (periodic) refreshes, in its own credential partition. It is never used to serve API requests, which always require the caller's own `Authorization` header. |
-| `WEBHOOK_SECRET` | No | — | HMAC secret for webhook signature verification |
+| `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
 

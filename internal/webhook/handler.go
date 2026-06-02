@@ -35,13 +35,20 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 			return
 		}
 
-		if secret != "" {
-			sig := r.Header.Get("X-Hub-Signature-256")
-			if !verifySignature(secret, sig, body) {
-				slog.Warn("webhook signature verification failed")
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
+		// Fail closed: without a configured secret we cannot verify that a
+		// webhook actually came from GitHub, and an unauthenticated endpoint
+		// that mutates the cache would let anyone inject data into other
+		// callers' partitions. Refuse rather than trust the payload.
+		if secret == "" {
+			slog.Error("webhook rejected: WEBHOOK_SECRET is not set")
+			http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if !verifySignature(secret, sig, body) {
+			slog.Warn("webhook signature verification failed")
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
 		}
 
 		eventType := r.Header.Get("X-GitHub-Event")

@@ -22,7 +22,10 @@ func main() {
 	cfg := config.Load()
 
 	if cfg.GitHubToken == "" {
-		slog.Warn("GITHUB_TOKEN not set; background refreshes will only work if callers supply Authorization headers")
+		slog.Warn("GITHUB_TOKEN not set; periodic background refreshes are disabled (per-request data still works via the caller's Authorization header)")
+	}
+	if cfg.WebhookSecret == "" {
+		slog.Warn("WEBHOOK_SECRET not set; the /webhook endpoint will reject all deliveries")
 	}
 
 	db, err := database.Open(cfg.DBPath)

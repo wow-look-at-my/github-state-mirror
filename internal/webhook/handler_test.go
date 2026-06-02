@@ -56,7 +56,7 @@ func TestHandler_ValidWebhook(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestHandler_NoSecret(t *testing.T) {
+func TestHandler_NoSecretRejected(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
 	handler := Handler("", dispatcher)
 
@@ -67,7 +67,9 @@ func TestHandler_NoSecret(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	// Without a configured secret the endpoint must fail closed.
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Empty(t, dispatcher.getEvents())
 }
 
 func TestHandler_InvalidSignature(t *testing.T) {
@@ -97,10 +99,12 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_MissingEventType(t *testing.T) {
-	handler := Handler("", &recordingDispatcher{})
+	secret := "test-secret"
+	handler := Handler(secret, &recordingDispatcher{})
 
 	body := `{"action":"opened"}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
 	// No X-GitHub-Event header.
 
 	w := httptest.NewRecorder()
@@ -125,12 +129,14 @@ func TestHandler_MissingSignature(t *testing.T) {
 }
 
 func TestHandler_DispatchCalledAsync(t *testing.T) {
+	secret := "test-secret"
 	dispatcher := &recordingDispatcher{}
-	handler := Handler("", dispatcher)
+	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened","repository":{"name":"repo","owner":{"login":"org"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
