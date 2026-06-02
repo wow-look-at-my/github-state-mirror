@@ -24,13 +24,13 @@ The SQLite database is a **cache**, not a database of record. On schema changes,
 
 ### Authentication
 
-Every data endpoint **requires** a GitHub token. Send it the same way you would to the GitHub API:
+Every data endpoint **requires** a GitHub App **user-to-server token** — a `ghu_...` token a caller obtains by authorizing the App. Send it as a bearer token:
 
 ```
-Authorization: Bearer ghp_xxxx
+Authorization: Bearer ghu_xxxx
 ```
 
-Requests without a valid token are rejected with `401 Unauthorized` — they are never served using the server's own `GITHUB_TOKEN`. The token is validated against GitHub (`GET /user`) on first use and the result is cached in memory.
+Personal access tokens and other credential types are rejected with `401 Unauthorized`, as are requests with no token — they are never served using the server's own credentials. The token is validated against GitHub (`GET /user`) on first use and the result is cached in memory.
 
 The only endpoint that does **not** require a bearer token is `POST /webhook`, which is authenticated by its GitHub HMAC signature instead (see `WEBHOOK_SECRET`).
 

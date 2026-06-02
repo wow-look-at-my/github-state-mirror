@@ -35,6 +35,12 @@ func requireAuth(gh *ghclient.Client) func(http.Handler) http.Handler {
 				http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
 				return
 			}
+			// Callers must present a GitHub App user-to-server token (ghu_...).
+			// PATs and other credential types are rejected by policy.
+			if !isAppUserToken(token) {
+				http.Error(w, "unauthorized: a GitHub App user-to-server token (ghu_...) is required", http.StatusUnauthorized)
+				return
+			}
 			ctx := ghclient.WithToken(r.Context(), token)
 			// Validate the credential with GitHub up front (and warm the
 			// token->login cache). The returned login is intentionally
@@ -48,6 +54,14 @@ func requireAuth(gh *ghclient.Client) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// appUserTokenPrefix is the prefix GitHub uses for App user-to-server tokens.
+const appUserTokenPrefix = "ghu_"
+
+// isAppUserToken reports whether a token is a GitHub App user-to-server token.
+func isAppUserToken(token string) bool {
+	return strings.HasPrefix(token, appUserTokenPrefix)
 }
 
 // bearerToken extracts the token from an "Authorization: Bearer <token>" or
