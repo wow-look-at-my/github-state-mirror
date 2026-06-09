@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testStore(t *testing.T) *Store {

@@ -11,8 +11,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupFetcherTest(t *testing.T, handler http.Handler) (*ghclient.Client, *ghdata.Store) {
@@ -34,9 +34,9 @@ func TestUserFetcher_Fetch(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
-			"login":      "octocat",
-			"avatar_url": "https://avatar",
-			"html_url":   "https://github.com/octocat",
+			"login":	"octocat",
+			"avatar_url":	"https://avatar",
+			"html_url":	"https://github.com/octocat",
 		})
 	})
 
@@ -99,8 +99,8 @@ func TestCompareFetcher_Fetch(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/org1/repo1/compare/main...feature", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ahead_by":  5,
-			"behind_by": 2,
+			"ahead_by":	5,
+			"behind_by":	2,
 		})
 	})
 
@@ -125,20 +125,20 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 				"organization": map[string]interface{}{
 					"repositories": map[string]interface{}{
 						"pageInfo": map[string]interface{}{
-							"hasNextPage": false,
-							"endCursor":   "",
+							"hasNextPage":	false,
+							"endCursor":	"",
 						},
 						"nodes": []map[string]interface{}{
 							{
-								"name":          "repo1",
-								"nameWithOwner": "org1/repo1",
-								"url":           "https://github.com/org1/repo1",
-								"isDisabled":    false,
-								"pushedAt":      "2024-01-01T00:00:00Z",
+								"name":			"repo1",
+								"nameWithOwner":	"org1/repo1",
+								"url":			"https://github.com/org1/repo1",
+								"isDisabled":		false,
+								"pushedAt":		"2024-01-01T00:00:00Z",
 								"owner": map[string]string{
-									"login":     "org1",
-									"avatarUrl": "https://a",
-									"url":       "https://u",
+									"login":	"org1",
+									"avatarUrl":	"https://a",
+									"url":		"https://u",
 								},
 								"pullRequests": map[string]interface{}{
 									"pageInfo": map[string]interface{}{
@@ -146,29 +146,29 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 									},
 									"nodes": []map[string]interface{}{
 										{
-											"number":      1,
-											"title":       "Test PR",
-											"url":         "https://github.com/org1/repo1/pull/1",
-											"isDraft":     false,
-											"createdAt":   "2024-01-01",
-											"updatedAt":   "2024-01-02",
-											"additions":   10,
-											"deletions":   5,
-											"mergeable":   "MERGEABLE",
-											"headRefName": "feature",
-											"baseRefName": "main",
-											"headRefOid":  "abc123",
+											"number":	1,
+											"title":	"Test PR",
+											"url":		"https://github.com/org1/repo1/pull/1",
+											"isDraft":	false,
+											"createdAt":	"2024-01-01",
+											"updatedAt":	"2024-01-02",
+											"additions":	10,
+											"deletions":	5,
+											"mergeable":	"MERGEABLE",
+											"headRefName":	"feature",
+											"baseRefName":	"main",
+											"headRefOid":	"abc123",
 											"author": map[string]string{
-												"login":     "dev",
-												"avatarUrl": "https://a",
-												"url":       "https://u",
+												"login":	"dev",
+												"avatarUrl":	"https://a",
+												"url":		"https://u",
 											},
 											"labels": map[string]interface{}{
 												"nodes": []map[string]string{
 													{"name": "bug", "color": "d73a4a"},
 												},
 											},
-											"reviewRequests": map[string]int{"totalCount": 1},
+											"reviewRequests":	map[string]int{"totalCount": 1},
 											"commits": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
@@ -197,7 +197,7 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 
 	result, err := f.Fetch(context.Background(), "org1", "")
 	require.NoError(t, err)
-	assert.Equal(t, 2, result.RecordsChanged) // 1 repo + 1 PR
+	assert.Equal(t, 2, result.RecordsChanged)	// 1 repo + 1 PR
 
 	repos, err := store.ListReposByOwner(context.Background(), "org1")
 	require.NoError(t, err)

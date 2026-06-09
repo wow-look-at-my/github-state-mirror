@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/stretchr/testify/assert"
 	"testing"
-	"github.com/wow-look-at-my/testify/assert"
 )
 
 func TestParseEvent_PullRequest(t *testing.T) {
@@ -83,31 +83,31 @@ func TestParseEvent_InvalidJSON(t *testing.T) {
 
 func TestParsePRPayload_Open(t *testing.T) {
 	payload := map[string]interface{}{
-		"action": "opened",
+		"action":	"opened",
 		"pull_request": map[string]interface{}{
-			"number":     42,
-			"title":      "Add feature",
-			"html_url":   "https://github.com/my-org/my-repo/pull/42",
-			"draft":      false,
-			"state":      "open",
-			"created_at": "2026-04-01T10:00:00Z",
-			"updated_at": "2026-04-01T10:00:00Z",
-			"additions":  10,
-			"deletions":  3,
-			"mergeable":  true,
+			"number":	42,
+			"title":	"Add feature",
+			"html_url":	"https://github.com/my-org/my-repo/pull/42",
+			"draft":	false,
+			"state":	"open",
+			"created_at":	"2026-04-01T10:00:00Z",
+			"updated_at":	"2026-04-01T10:00:00Z",
+			"additions":	10,
+			"deletions":	3,
+			"mergeable":	true,
 			"user": map[string]interface{}{
-				"login":      "alice",
-				"avatar_url": "https://avatars.githubusercontent.com/alice",
-				"html_url":   "https://github.com/alice",
+				"login":	"alice",
+				"avatar_url":	"https://avatars.githubusercontent.com/alice",
+				"html_url":	"https://github.com/alice",
 			},
 			"head": map[string]interface{}{
-				"ref": "feature",
-				"sha": "abc123",
+				"ref":	"feature",
+				"sha":	"abc123",
 			},
 			"base": map[string]interface{}{
-				"ref": "main",
+				"ref":	"main",
 				"repo": map[string]interface{}{
-					"name": "my-repo",
+					"name":	"my-repo",
 					"owner": map[string]interface{}{
 						"login": "my-org",
 					},
@@ -119,7 +119,7 @@ func TestParsePRPayload_Open(t *testing.T) {
 			"requested_reviewers": []map[string]interface{}{
 				{"login": "bob"},
 			},
-			"requested_teams": []interface{}{},
+			"requested_teams":	[]interface{}{},
 		},
 	}
 	data, _ := json.Marshal(payload)
@@ -151,27 +151,27 @@ func TestParsePRPayload_Open(t *testing.T) {
 
 func TestParsePRPayload_Closed(t *testing.T) {
 	payload := map[string]interface{}{
-		"action": "closed",
+		"action":	"closed",
 		"pull_request": map[string]interface{}{
-			"number":     7,
-			"title":      "Fix bug",
-			"html_url":   "https://github.com/my-org/my-repo/pull/7",
-			"draft":      false,
-			"state":      "closed",
-			"created_at": "2026-03-01T10:00:00Z",
-			"updated_at": "2026-04-01T12:00:00Z",
-			"user":       map[string]interface{}{"login": "bob", "avatar_url": "", "html_url": ""},
-			"head":       map[string]interface{}{"ref": "fix", "sha": "def456"},
+			"number":	7,
+			"title":	"Fix bug",
+			"html_url":	"https://github.com/my-org/my-repo/pull/7",
+			"draft":	false,
+			"state":	"closed",
+			"created_at":	"2026-03-01T10:00:00Z",
+			"updated_at":	"2026-04-01T12:00:00Z",
+			"user":		map[string]interface{}{"login": "bob", "avatar_url": "", "html_url": ""},
+			"head":		map[string]interface{}{"ref": "fix", "sha": "def456"},
 			"base": map[string]interface{}{
-				"ref": "main",
+				"ref":	"main",
 				"repo": map[string]interface{}{
-					"name":  "my-repo",
-					"owner": map[string]interface{}{"login": "my-org"},
+					"name":		"my-repo",
+					"owner":	map[string]interface{}{"login": "my-org"},
 				},
 			},
-			"labels":              []interface{}{},
-			"requested_reviewers": []interface{}{},
-			"requested_teams":     []interface{}{},
+			"labels":		[]interface{}{},
+			"requested_reviewers":	[]interface{}{},
+			"requested_teams":	[]interface{}{},
 		},
 	}
 	data, _ := json.Marshal(payload)
@@ -194,27 +194,27 @@ func TestParsePRPayload_NoPullRequest(t *testing.T) {
 
 func TestParsePRPayload_Draft(t *testing.T) {
 	payload := map[string]interface{}{
-		"action": "opened",
+		"action":	"opened",
 		"pull_request": map[string]interface{}{
-			"number":     1,
-			"title":      "WIP",
-			"html_url":   "https://github.com/o/r/pull/1",
-			"draft":      true,
-			"state":      "open",
-			"created_at": "2026-04-01T10:00:00Z",
-			"updated_at": "2026-04-01T10:00:00Z",
-			"user":       map[string]interface{}{"login": "alice", "avatar_url": "", "html_url": ""},
-			"head":       map[string]interface{}{"ref": "wip", "sha": "aaa"},
+			"number":	1,
+			"title":	"WIP",
+			"html_url":	"https://github.com/o/r/pull/1",
+			"draft":	true,
+			"state":	"open",
+			"created_at":	"2026-04-01T10:00:00Z",
+			"updated_at":	"2026-04-01T10:00:00Z",
+			"user":		map[string]interface{}{"login": "alice", "avatar_url": "", "html_url": ""},
+			"head":		map[string]interface{}{"ref": "wip", "sha": "aaa"},
 			"base": map[string]interface{}{
-				"ref": "main",
+				"ref":	"main",
 				"repo": map[string]interface{}{
-					"name":  "r",
-					"owner": map[string]interface{}{"login": "o"},
+					"name":		"r",
+					"owner":	map[string]interface{}{"login": "o"},
 				},
 			},
-			"labels":              []interface{}{},
-			"requested_reviewers": []interface{}{},
-			"requested_teams":     []interface{}{},
+			"labels":		[]interface{}{},
+			"requested_reviewers":	[]interface{}{},
+			"requested_teams":	[]interface{}{},
 		},
 	}
 	data, _ := json.Marshal(payload)
@@ -226,28 +226,28 @@ func TestParsePRPayload_Draft(t *testing.T) {
 
 func TestParsePRPayload_MergeableNull(t *testing.T) {
 	payload := map[string]interface{}{
-		"action": "opened",
+		"action":	"opened",
 		"pull_request": map[string]interface{}{
-			"number":     1,
-			"title":      "Test",
-			"html_url":   "https://github.com/o/r/pull/1",
-			"draft":      false,
-			"state":      "open",
-			"created_at": "2026-04-01T10:00:00Z",
-			"updated_at": "2026-04-01T10:00:00Z",
-			"mergeable":  nil,
-			"user":       map[string]interface{}{"login": "alice", "avatar_url": "", "html_url": ""},
-			"head":       map[string]interface{}{"ref": "f", "sha": "aaa"},
+			"number":	1,
+			"title":	"Test",
+			"html_url":	"https://github.com/o/r/pull/1",
+			"draft":	false,
+			"state":	"open",
+			"created_at":	"2026-04-01T10:00:00Z",
+			"updated_at":	"2026-04-01T10:00:00Z",
+			"mergeable":	nil,
+			"user":		map[string]interface{}{"login": "alice", "avatar_url": "", "html_url": ""},
+			"head":		map[string]interface{}{"ref": "f", "sha": "aaa"},
 			"base": map[string]interface{}{
-				"ref": "main",
+				"ref":	"main",
 				"repo": map[string]interface{}{
-					"name":  "r",
-					"owner": map[string]interface{}{"login": "o"},
+					"name":		"r",
+					"owner":	map[string]interface{}{"login": "o"},
 				},
 			},
-			"labels":              []interface{}{},
-			"requested_reviewers": []interface{}{},
-			"requested_teams":     []interface{}{},
+			"labels":		[]interface{}{},
+			"requested_reviewers":	[]interface{}{},
+			"requested_teams":	[]interface{}{},
 		},
 	}
 	data, _ := json.Marshal(payload)

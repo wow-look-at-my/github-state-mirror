@@ -8,8 +8,8 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPeriodicRefresher_Start(t *testing.T) {
@@ -29,7 +29,7 @@ func TestPeriodicRefresher_Start(t *testing.T) {
 	// Seed some resources so RefreshAllOfKind has work to do.
 	ctx := context.Background()
 	require.NoError(t, mgr.EnsureFresh(ctx, freshness.ResourceID{Kind: KindUser, Key: "self"}))
-	_ = fetchCount // stubFetcher doesn't increment, that's fine
+	_ = fetchCount	// stubFetcher doesn't increment, that's fine
 
 	refresher := NewPeriodicRefresher(mgr, 50*time.Millisecond)
 

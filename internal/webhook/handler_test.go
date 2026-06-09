@@ -11,13 +11,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type recordingDispatcher struct {
-	mu     sync.Mutex
-	events []Event
+	mu	sync.Mutex
+	events	[]Event
 }
 
 func (d *recordingDispatcher) Dispatch(_ context.Context, event Event) {
@@ -148,5 +148,5 @@ func TestHandler_DispatchCalledAsync(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		events := dispatcher.getEvents()
 		return len(events) == 1 && events[0].Type == "push"
-	}, 1e9, 1e7) // 1s timeout, 10ms poll
+	}, 1e9, 1e7)	// 1s timeout, 10ms poll
 }

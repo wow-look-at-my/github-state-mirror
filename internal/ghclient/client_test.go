@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWithToken_RoundTrip(t *testing.T) {
@@ -54,7 +54,7 @@ func TestResolveActor_FromContext(t *testing.T) {
 	login, err = c.ResolveActor(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "octocat", login)
-	assert.Equal(t, 1, callCount) // no additional API call
+	assert.Equal(t, 1, callCount)	// no additional API call
 }
 
 func TestResolveActor_DefaultToken(t *testing.T) {

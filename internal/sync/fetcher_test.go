@@ -1,8 +1,8 @@
 package sync
 
 import (
+	"github.com/stretchr/testify/assert"
 	"testing"
-	"github.com/wow-look-at-my/testify/assert"
 )
 
 func TestParseOwnerRepoNumber(t *testing.T) {

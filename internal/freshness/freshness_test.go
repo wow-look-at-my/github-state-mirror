@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testStore(t *testing.T) *Store {
@@ -188,8 +188,8 @@ func TestManager_InvalidateAndRefresh(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:       "test",
-		DefaultTTL: 1 * time.Hour,
+		Kind:		"test",
+		DefaultTTL:	1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil
@@ -218,8 +218,8 @@ func TestManager_RefreshAllOfKind(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:       "test",
-		DefaultTTL: 1 * time.Hour,
+		Kind:		"test",
+		DefaultTTL:	1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil
@@ -242,9 +242,9 @@ func TestManager_FetchError(t *testing.T) {
 	mgr := NewManager(s)
 
 	mgr.RegisterFetcher(Policy{
-		Kind:          "test",
-		DefaultTTL:    1 * time.Hour,
-		ErrorRetryMin: 5 * time.Minute,
+		Kind:		"test",
+		DefaultTTL:	1 * time.Hour,
+		ErrorRetryMin:	5 * time.Minute,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		return RefreshResult{}, assert.AnError
 	}))

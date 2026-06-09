@@ -13,8 +13,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type stubFetcher struct{}
@@ -57,9 +57,9 @@ func TestDispatch_Push(t *testing.T) {
 	seed(t, mgr, KindOrgRepos, "my-org")
 
 	event := webhook.Event{
-		Type:           "push",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
+		Type:		"push",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"my-repo",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -77,13 +77,13 @@ func TestDispatch_PullRequest(t *testing.T) {
 	seed(t, mgr, KindCompare, "my-org/my-repo/main...feature")
 
 	event := webhook.Event{
-		Type:           "pull_request",
-		Action:         "opened",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
-		PRNumber:       42,
-		PRBase:         "main",
-		PRHead:         "feature",
+		Type:		"pull_request",
+		Action:		"opened",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"my-repo",
+		PRNumber:	42,
+		PRBase:		"main",
+		PRHead:		"feature",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -107,10 +107,10 @@ func TestDispatch_PullRequestReview(t *testing.T) {
 	seed(t, mgr, KindOrgRepos, "my-org")
 
 	event := webhook.Event{
-		Type:           "pull_request_review",
-		Action:         "submitted",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
+		Type:		"pull_request_review",
+		Action:		"submitted",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"my-repo",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -127,9 +127,9 @@ func TestDispatch_CheckRun(t *testing.T) {
 
 	for _, eventType := range []string{"check_run", "check_suite", "status"} {
 		event := webhook.Event{
-			Type:           eventType,
-			RepoOwnerLogin: "my-org",
-			RepoNameStr:    "my-repo",
+			Type:		eventType,
+			RepoOwnerLogin:	"my-org",
+			RepoNameStr:	"my-repo",
 		}
 		dispatcher.Dispatch(ctx, event)
 	}
@@ -146,10 +146,10 @@ func TestDispatch_Repository(t *testing.T) {
 	seed(t, mgr, KindOrgRepos, "my-org")
 
 	event := webhook.Event{
-		Type:           "repository",
-		Action:         "created",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "new-repo",
+		Type:		"repository",
+		Action:		"created",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"new-repo",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -165,9 +165,9 @@ func TestDispatch_Organization(t *testing.T) {
 	seed(t, mgr, KindUserOrgs, "my-org")
 
 	event := webhook.Event{
-		Type:     "organization",
-		Action:   "member_added",
-		OrgLogin: "my-org",
+		Type:		"organization",
+		Action:		"member_added",
+		OrgLogin:	"my-org",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -183,9 +183,9 @@ func TestDispatch_Membership(t *testing.T) {
 	seed(t, mgr, KindUserOrgs, "my-org")
 
 	event := webhook.Event{
-		Type:     "membership",
-		Action:   "added",
-		OrgLogin: "my-org",
+		Type:		"membership",
+		Action:		"added",
+		OrgLogin:	"my-org",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -201,10 +201,10 @@ func TestDispatch_Label(t *testing.T) {
 	seed(t, mgr, KindOrgRepos, "my-org")
 
 	event := webhook.Event{
-		Type:           "label",
-		Action:         "created",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
+		Type:		"label",
+		Action:		"created",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"my-repo",
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -233,11 +233,11 @@ func TestDispatch_PullRequest_NoBranches(t *testing.T) {
 
 	// PR event without branch info — should not invalidate compare.
 	event := webhook.Event{
-		Type:           "pull_request",
-		Action:         "labeled",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
-		PRNumber:       10,
+		Type:		"pull_request",
+		Action:		"labeled",
+		RepoOwnerLogin:	"my-org",
+		RepoNameStr:	"my-repo",
+		PRNumber:	10,
 	}
 	dispatcher.Dispatch(ctx, event)
 
@@ -250,34 +250,34 @@ func TestDispatch_PullRequest_NoBranches(t *testing.T) {
 func makePRPayload(t *testing.T, action, state, owner, repo string, number int, title string) json.RawMessage {
 	t.Helper()
 	payload := map[string]interface{}{
-		"action": action,
+		"action":	action,
 		"repository": map[string]interface{}{
-			"name":  repo,
-			"owner": map[string]interface{}{"login": owner},
+			"name":		repo,
+			"owner":	map[string]interface{}{"login": owner},
 		},
 		"pull_request": map[string]interface{}{
-			"number":     number,
-			"title":      title,
-			"html_url":   "https://github.com/" + owner + "/" + repo + "/pull/42",
-			"draft":      false,
-			"state":      state,
-			"created_at": "2026-04-01T10:00:00Z",
-			"updated_at": "2026-04-01T11:00:00Z",
-			"additions":  5,
-			"deletions":  2,
-			"mergeable":  true,
-			"user":       map[string]interface{}{"login": "alice", "avatar_url": "https://a.com/alice.png", "html_url": "https://github.com/alice"},
-			"head":       map[string]interface{}{"ref": "feature", "sha": "abc123"},
+			"number":	number,
+			"title":	title,
+			"html_url":	"https://github.com/" + owner + "/" + repo + "/pull/42",
+			"draft":	false,
+			"state":	state,
+			"created_at":	"2026-04-01T10:00:00Z",
+			"updated_at":	"2026-04-01T11:00:00Z",
+			"additions":	5,
+			"deletions":	2,
+			"mergeable":	true,
+			"user":		map[string]interface{}{"login": "alice", "avatar_url": "https://a.com/alice.png", "html_url": "https://github.com/alice"},
+			"head":		map[string]interface{}{"ref": "feature", "sha": "abc123"},
 			"base": map[string]interface{}{
-				"ref": "main",
+				"ref":	"main",
 				"repo": map[string]interface{}{
-					"name":  repo,
-					"owner": map[string]interface{}{"login": owner},
+					"name":		repo,
+					"owner":	map[string]interface{}{"login": owner},
 				},
 			},
-			"labels":              []map[string]interface{}{{"name": "enhancement", "color": "a2eeef"}},
-			"requested_reviewers": []interface{}{},
-			"requested_teams":     []interface{}{},
+			"labels":		[]map[string]interface{}{{"name": "enhancement", "color": "a2eeef"}},
+			"requested_reviewers":	[]interface{}{},
+			"requested_teams":	[]interface{}{},
 		},
 	}
 	data, err := json.Marshal(payload)
@@ -292,7 +292,7 @@ func TestDispatch_PullRequest_PayloadApplied(t *testing.T) {
 	// Seed a repo in the DB so ActorsForRepo finds the actor.
 	actorCtx := actor.WithActor(ctx, "test-user")
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
 	}))
 
 	seed(t, mgr, KindOrgRepos, "my-org")
@@ -334,11 +334,11 @@ func TestDispatch_PullRequest_ClosedDeletesPR(t *testing.T) {
 	// Seed a repo and an existing open PR in the DB.
 	actorCtx := actor.WithActor(ctx, "test-user")
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
 	}))
 	require.Nil(t, store.UpsertPR(actorCtx, dbgen.PullRequest{
-		Owner: "my-org", Repo: "my-repo", Number: 7, Title: "Old PR", Url: "https://github.com/my-org/my-repo/pull/7",
-		State: "OPEN", CreatedAt: "2026-03-01T10:00:00Z", UpdatedAt: "2026-03-01T10:00:00Z",
+		Owner:	"my-org", Repo: "my-repo", Number: 7, Title: "Old PR", Url: "https://github.com/my-org/my-repo/pull/7",
+		State:	"OPEN", CreatedAt: "2026-03-01T10:00:00Z", UpdatedAt: "2026-03-01T10:00:00Z",
 	}))
 
 	// Dispatch a "closed" webhook.
@@ -359,7 +359,7 @@ func TestDispatch_PullRequest_MultipleActors(t *testing.T) {
 	for _, act := range []string{"alice", "bob"} {
 		actorCtx := actor.WithActor(ctx, act)
 		require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-			Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
+			Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "https://github.com/my-org/my-repo",
 		}))
 	}
 
@@ -379,12 +379,12 @@ func TestDispatch_PullRequest_MultipleActors(t *testing.T) {
 func makeStatusPayload(t *testing.T, owner, repo, sha, state, context string) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(map[string]interface{}{
-		"sha":     sha,
-		"state":   state,
-		"context": context,
+		"sha":		sha,
+		"state":	state,
+		"context":	context,
 		"repository": map[string]interface{}{
-			"name":  repo,
-			"owner": map[string]interface{}{"login": owner},
+			"name":		repo,
+			"owner":	map[string]interface{}{"login": owner},
 		},
 	})
 	require.Nil(t, err)
@@ -399,12 +399,12 @@ func TestDispatch_Status_AppliesRollup(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
 	}))
 	require.Nil(t, store.UpsertPR(actorCtx, dbgen.PullRequest{
-		Owner: "my-org", Repo: "my-repo", Number: 1, Title: "PR", Url: "u",
-		State: "OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
-		HeadRefOid: sql.NullString{String: "sha1", Valid: true},
+		Owner:	"my-org", Repo: "my-repo", Number: 1, Title: "PR", Url: "u",
+		State:	"OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		HeadRefOid:	sql.NullString{String: "sha1", Valid: true},
 	}))
 	seed(t, mgr, KindOrgRepos, "my-org")
 
@@ -434,12 +434,12 @@ func TestDispatch_PRUpsert_PreservesStatus(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
 	}))
 	require.Nil(t, store.UpsertPR(actorCtx, dbgen.PullRequest{
-		Owner: "my-org", Repo: "my-repo", Number: 42, Title: "PR", Url: "u",
-		State: "OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
-		HeadRefOid: sql.NullString{String: "abc123", Valid: true},
+		Owner:	"my-org", Repo: "my-repo", Number: 42, Title: "PR", Url: "u",
+		State:	"OPEN", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		HeadRefOid:	sql.NullString{String: "abc123", Valid: true},
 	}))
 
 	// CI status arrives first.
@@ -456,8 +456,8 @@ func TestDispatch_PRUpsert_PreservesStatus(t *testing.T) {
 func makePushPayload(t *testing.T, owner, repo, ts string) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(map[string]interface{}{
-		"repository":  map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
-		"head_commit": map[string]interface{}{"timestamp": ts},
+		"repository":	map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
+		"head_commit":	map[string]interface{}{"timestamp": ts},
 	})
 	require.Nil(t, err)
 	return data
@@ -469,8 +469,8 @@ func TestDispatch_Push_UpdatesPushedAt(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
-		PushedAt: sql.NullString{String: "2020-01-01T00:00:00Z", Valid: true},
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		PushedAt:	sql.NullString{String: "2020-01-01T00:00:00Z", Valid: true},
 	}))
 	seed(t, mgr, KindOrgRepos, "my-org")
 
@@ -491,7 +491,7 @@ func TestDispatch_PullRequestReview_AppliesPR(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
 	}))
 	seed(t, mgr, KindOrgRepos, "my-org")
 
@@ -510,9 +510,9 @@ func TestDispatch_PullRequestReview_AppliesPR(t *testing.T) {
 func makeLabelPayload(t *testing.T, action, owner, repo, name, color string) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(map[string]interface{}{
-		"action":     action,
-		"label":      map[string]interface{}{"name": name, "color": color},
-		"repository": map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
+		"action":	action,
+		"label":	map[string]interface{}{"name": name, "color": color},
+		"repository":	map[string]interface{}{"name": repo, "owner": map[string]interface{}{"login": owner}},
 	})
 	require.Nil(t, err)
 	return data
@@ -524,7 +524,7 @@ func TestDispatch_Label_RecolorAndDelete(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
 	}))
 	require.Nil(t, store.SetPRLabels(actorCtx, "my-org", "my-repo", 1, []dbgen.PrLabel{
 		{Owner: "my-org", Repo: "my-repo", PrNumber: 1, Name: "bug", Color: "aaaaaa"},
@@ -546,16 +546,16 @@ func makeCheckSuitePayload(t *testing.T, owner, repo, sha, headBranch, defaultBr
 	t.Helper()
 	data, err := json.Marshal(map[string]interface{}{
 		"check_suite": map[string]interface{}{
-			"head_sha":    sha,
-			"head_branch": headBranch,
-			"status":      "completed",
-			"conclusion":  conclusion,
-			"app":         map[string]interface{}{"slug": "actions"},
+			"head_sha":	sha,
+			"head_branch":	headBranch,
+			"status":	"completed",
+			"conclusion":	conclusion,
+			"app":		map[string]interface{}{"slug": "actions"},
 		},
 		"repository": map[string]interface{}{
-			"name":           repo,
-			"default_branch": defaultBranch,
-			"owner":          map[string]interface{}{"login": owner},
+			"name":			repo,
+			"default_branch":	defaultBranch,
+			"owner":		map[string]interface{}{"login": owner},
 		},
 	})
 	require.Nil(t, err)
@@ -571,8 +571,8 @@ func TestDispatch_CheckSuite_DefaultBranchStatus(t *testing.T) {
 	actorCtx := actor.WithActor(ctx, "test-user")
 
 	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
-		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
-		DefaultBranch: sql.NullString{String: "main", Valid: true},
+		Owner:	"my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+		DefaultBranch:	sql.NullString{String: "main", Valid: true},
 	}))
 
 	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_suite",

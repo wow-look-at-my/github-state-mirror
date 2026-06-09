@@ -68,10 +68,15 @@ func NewRouter(
 	webhookSecret string,
 	dispatcher *syncpkg.WebhookDispatcher,
 	gh *ghclient.Client,
+	allowedOrigins []string,
 ) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// CORS so browser clients on other origins (e.g. the repo-nightmare PR
+	// viewer on GitHub Pages) can call the API. Mounted before the auth group
+	// so preflight OPTIONS is answered without a token.
+	r.Use(corsMiddleware(allowedOrigins))
 
 	h := &handlers{mgr: mgr, store: store}
 

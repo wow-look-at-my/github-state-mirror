@@ -21,8 +21,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testToken is the bearer token sent by authenticated test requests.
@@ -65,7 +65,7 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
 
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"})
 	return router, store
 }
 
