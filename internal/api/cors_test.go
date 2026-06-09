@@ -32,7 +32,7 @@ func TestCORS_Preflight(t *testing.T) {
 func TestCORS_ResponseHeader(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/user", nil)	// no token -> 401
+	req := httptest.NewRequest(http.MethodGet, "/user", nil) // no token -> 401
 	req.Header.Set("Origin", "https://wow-look-at-my.github.io")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)

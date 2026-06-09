@@ -21,7 +21,7 @@ func TestOpen_CreatesNewDB(t *testing.T) {
 	var version int64
 	require.NoError(t, db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version))
 
-	assert.Equal(t, SchemaVersion, version)
+	assert.Equal(t, int64(SchemaVersion), version)
 
 	// Verify tables exist by inserting into them.
 	_, err = db.Exec("INSERT INTO users (login, avatar_url, url) VALUES ('test', 'http://avatar', 'http://url')")
@@ -87,7 +87,7 @@ func TestOpen_NukesOnVersionMismatch(t *testing.T) {
 	var version int64
 	require.NoError(t, db2.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version))
 
-	assert.Equal(t, SchemaVersion, version)
+	assert.Equal(t, int64(SchemaVersion), version)
 
 }
 
@@ -117,6 +117,6 @@ func TestOpen_FileExistsButCorrupt(t *testing.T) {
 	var version int64
 	require.NoError(t, db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version))
 
-	assert.Equal(t, SchemaVersion, version)
+	assert.Equal(t, int64(SchemaVersion), version)
 
 }

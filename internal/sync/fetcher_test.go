@@ -7,11 +7,11 @@ import (
 
 func TestParseOwnerRepoNumber(t *testing.T) {
 	tests := []struct {
-		key		string
-		wantOwner	string
-		wantRepo	string
-		wantNumber	int64
-		wantErr		bool
+		key        string
+		wantOwner  string
+		wantRepo   string
+		wantNumber int64
+		wantErr    bool
 	}{
 		{"org/repo/42", "org", "repo", 42, false},
 		{"my-org/my-repo/1", "my-org", "my-repo", 1, false},
@@ -33,12 +33,12 @@ func TestParseOwnerRepoNumber(t *testing.T) {
 
 func TestParseCompareKey(t *testing.T) {
 	tests := []struct {
-		key		string
-		wantOwner	string
-		wantRepo	string
-		wantBase	string
-		wantHead	string
-		wantErr		bool
+		key       string
+		wantOwner string
+		wantRepo  string
+		wantBase  string
+		wantHead  string
+		wantErr   bool
 	}{
 		{"org/repo/main...feature", "org", "repo", "main", "feature", false},
 		{"my-org/my-repo/develop...hotfix/1", "my-org", "my-repo", "develop", "hotfix/1", false},

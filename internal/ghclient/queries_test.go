@@ -22,25 +22,25 @@ func TestGetOrgData_BasicQuery(t *testing.T) {
 		resp.Data.Organization.Repositories.PageInfo = gqlPageInfo{HasNextPage: false}
 		resp.Data.Organization.Repositories.Nodes = []gqlRepo{
 			{
-				Name:		"my-repo",
-				NameWithOwner:	"myorg/my-repo",
-				URL:		"https://github.com/myorg/my-repo",
-				IsDisabled:	false,
-				PushedAt:	&pushedAt,
+				Name:          "my-repo",
+				NameWithOwner: "myorg/my-repo",
+				URL:           "https://github.com/myorg/my-repo",
+				IsDisabled:    false,
+				PushedAt:      &pushedAt,
 				Owner: struct {
-					Login		string	`json:"login"`
-					AvatarURL	string	`json:"avatarUrl"`
-					URL		string	`json:"url"`
+					Login     string `json:"login"`
+					AvatarURL string `json:"avatarUrl"`
+					URL       string `json:"url"`
 				}{Login: "myorg", AvatarURL: "http://avatar", URL: "http://url"},
 				DefaultBranchRef: &struct {
-					Name	string	`json:"name"`
-					Target	struct {
+					Name   string `json:"name"`
+					Target struct {
 						StatusCheckRollup *struct {
 							State string `json:"state"`
 						} `json:"statusCheckRollup"`
-					}	`json:"target"`
+					} `json:"target"`
 				}{
-					Name:	"main",
+					Name: "main",
 					Target: struct {
 						StatusCheckRollup *struct {
 							State string `json:"state"`
@@ -52,38 +52,38 @@ func TestGetOrgData_BasicQuery(t *testing.T) {
 					},
 				},
 				PullRequests: struct {
-					PageInfo	gqlPageInfo	`json:"pageInfo"`
-					Nodes		[]gqlPR		`json:"nodes"`
+					PageInfo gqlPageInfo `json:"pageInfo"`
+					Nodes    []gqlPR     `json:"nodes"`
 				}{
-					PageInfo:	gqlPageInfo{HasNextPage: false},
+					PageInfo: gqlPageInfo{HasNextPage: false},
 					Nodes: []gqlPR{
 						{
-							Number:		1,
-							Title:		"Fix bug",
-							URL:		"https://github.com/myorg/my-repo/pull/1",
-							IsDraft:	false,
-							CreatedAt:	"2024-01-10T10:00:00Z",
-							UpdatedAt:	"2024-01-15T10:00:00Z",
-							Additions:	10,
-							Deletions:	5,
-							Mergeable:	"MERGEABLE",
-							HeadRefName:	"fix-bug",
-							BaseRefName:	"main",
-							HeadRefOid:	"abc123",
+							Number:      1,
+							Title:       "Fix bug",
+							URL:         "https://github.com/myorg/my-repo/pull/1",
+							IsDraft:     false,
+							CreatedAt:   "2024-01-10T10:00:00Z",
+							UpdatedAt:   "2024-01-15T10:00:00Z",
+							Additions:   10,
+							Deletions:   5,
+							Mergeable:   "MERGEABLE",
+							HeadRefName: "fix-bug",
+							BaseRefName: "main",
+							HeadRefOid:  "abc123",
 							Author: &struct {
-								Login		string	`json:"login"`
-								AvatarURL	string	`json:"avatarUrl"`
-								URL		string	`json:"url"`
+								Login     string `json:"login"`
+								AvatarURL string `json:"avatarUrl"`
+								URL       string `json:"url"`
 							}{Login: "dev", AvatarURL: "http://dev-avatar", URL: "http://dev-url"},
 							Labels: struct {
 								Nodes []struct {
-									Name	string	`json:"name"`
-									Color	string	`json:"color"`
+									Name  string `json:"name"`
+									Color string `json:"color"`
 								} `json:"nodes"`
 							}{
 								Nodes: []struct {
-									Name	string	`json:"name"`
-									Color	string	`json:"color"`
+									Name  string `json:"name"`
+									Color string `json:"color"`
 								}{
 									{Name: "bug", Color: "d73a4a"},
 								},
@@ -155,8 +155,8 @@ func TestGetOrgData_BasicQuery(t *testing.T) {
 func TestGetOrgData_GraphQLError(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
-			"data":		nil,
-			"errors":	[]map[string]string{{"message": "org not found"}},
+			"data":   nil,
+			"errors": []map[string]string{{"message": "org not found"}},
 		}
 		json.NewEncoder(w).Encode(resp)
 	})
@@ -200,7 +200,7 @@ func TestGetOrgData_PRPagination(t *testing.T) {
 				"data": map[string]interface{}{
 					"repository": map[string]interface{}{
 						"pullRequests": map[string]interface{}{
-							"pageInfo":	map[string]interface{}{"hasNextPage": false},
+							"pageInfo": map[string]interface{}{"hasNextPage": false},
 							"nodes": []map[string]interface{}{
 								{"number": 2, "title": "second-page PR", "url": "u2"},
 							},

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
 func TestGraphQL_BasicQuery(t *testing.T) {
@@ -20,35 +20,35 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 	// Seed repo data.
 	store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
 		{
-			Owner:		"my-org",
-			Name:		"repo1",
-			NameWithOwner:	"my-org/repo1",
-			Url:		"https://github.com/my-org/repo1",
-			DefaultBranch:	sql.NullString{String: "main", Valid: true},
-			OwnerLogin:	sql.NullString{String: "my-org", Valid: true},
-			OwnerAvatar:	sql.NullString{String: "https://avatar", Valid: true},
-			OwnerUrl:	sql.NullString{String: "https://github.com/my-org", Valid: true},
+			Owner:         "my-org",
+			Name:          "repo1",
+			NameWithOwner: "my-org/repo1",
+			Url:           "https://github.com/my-org/repo1",
+			DefaultBranch: sql.NullString{String: "main", Valid: true},
+			OwnerLogin:    sql.NullString{String: "my-org", Valid: true},
+			OwnerAvatar:   sql.NullString{String: "https://avatar", Valid: true},
+			OwnerUrl:      sql.NullString{String: "https://github.com/my-org", Valid: true},
 		},
 	})
 
 	// Seed PRs with labels.
 	store.SetRepoPRs(ctx, "my-org", "repo1", []dbgen.PullRequest{
 		{
-			Owner:			"my-org",
-			Repo:			"repo1",
-			Number:			1,
-			Title:			"Test PR",
-			Url:			"https://github.com/my-org/repo1/pull/1",
-			State:			"OPEN",
-			CreatedAt:		"2024-01-01",
-			UpdatedAt:		"2024-01-02",
-			AuthorLogin:		sql.NullString{String: "dev", Valid: true},
-			AuthorAvatar:		sql.NullString{String: "https://avatar/dev", Valid: true},
-			AuthorUrl:		sql.NullString{String: "https://github.com/dev", Valid: true},
-			HeadRefName:		sql.NullString{String: "feature", Valid: true},
-			BaseRefName:		sql.NullString{String: "main", Valid: true},
-			HeadRefOid:		sql.NullString{String: "abc123", Valid: true},
-			LastCommitStatus:	sql.NullString{String: "SUCCESS", Valid: true},
+			Owner:            "my-org",
+			Repo:             "repo1",
+			Number:           1,
+			Title:            "Test PR",
+			Url:              "https://github.com/my-org/repo1/pull/1",
+			State:            "OPEN",
+			CreatedAt:        "2024-01-01",
+			UpdatedAt:        "2024-01-02",
+			AuthorLogin:      sql.NullString{String: "dev", Valid: true},
+			AuthorAvatar:     sql.NullString{String: "https://avatar/dev", Valid: true},
+			AuthorUrl:        sql.NullString{String: "https://github.com/dev", Valid: true},
+			HeadRefName:      sql.NullString{String: "feature", Valid: true},
+			BaseRefName:      sql.NullString{String: "main", Valid: true},
+			HeadRefOid:       sql.NullString{String: "abc123", Valid: true},
+			LastCommitStatus: sql.NullString{String: "SUCCESS", Valid: true},
 		},
 	}, map[int64][]dbgen.PrLabel{
 		1: {{Owner: "my-org", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "d73a4a"}},
@@ -120,14 +120,14 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	})
 	store.SetRepoPRs(ctx, "my-org", "repo1", []dbgen.PullRequest{
 		{
-			Owner:		"my-org",
-			Repo:		"repo1",
-			Number:		1,
-			Title:		"No status PR",
-			Url:		"https://github.com/my-org/repo1/pull/1",
-			State:		"OPEN",
-			CreatedAt:	"2024-01-01",
-			UpdatedAt:	"2024-01-02",
+			Owner:     "my-org",
+			Repo:      "repo1",
+			Number:    1,
+			Title:     "No status PR",
+			Url:       "https://github.com/my-org/repo1/pull/1",
+			State:     "OPEN",
+			CreatedAt: "2024-01-01",
+			UpdatedAt: "2024-01-02",
 			// LastCommitStatus intentionally left invalid (no CI status recorded).
 		},
 	}, map[int64][]dbgen.PrLabel{})
@@ -240,8 +240,8 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 
 func TestExtractOrgFromQuery(t *testing.T) {
 	tests := []struct {
-		query	string
-		want	string
+		query string
+		want  string
 	}{
 		{`{ organization(login: "my-org") { repos } }`, "my-org"},
 		{`query { organization(login: "test-org") { name } }`, "test-org"},

@@ -42,10 +42,10 @@ func TestParseCheckPayload_Errors(t *testing.T) {
 	assert.Error(t, err)
 
 	_, err = ParseCheckPayload("check_run", json.RawMessage(`{"repository":{"name":"r","owner":{"login":"o"}}}`))
-	assert.Error(t, err)	// no check_run field
+	assert.Error(t, err) // no check_run field
 
 	_, err = ParseCheckPayload("status", json.RawMessage(`{"state":"success"}`))
-	assert.Error(t, err)	// missing repo/sha
+	assert.Error(t, err) // missing repo/sha
 
 	_, err = ParseCheckPayload("unknown", json.RawMessage(`{}`))
 	assert.Error(t, err)
@@ -113,5 +113,5 @@ func TestParseLabelPayload(t *testing.T) {
 	assert.Equal(t, "defect", p.OldName)
 
 	_, err = ParseLabelPayload(json.RawMessage(`{"action":"created"}`))
-	assert.Error(t, err)	// no label/repository
+	assert.Error(t, err) // no label/repository
 }
