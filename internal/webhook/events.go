@@ -47,7 +47,7 @@ func ParseEvent(eventType string, payload []byte) Event {
 	}
 
 	var body struct {
-		Action string `json:"action"`
+		Action     string `json:"action"`
 		Repository *struct {
 			Name  string `json:"name"`
 			Owner struct {

@@ -51,7 +51,7 @@ func main() {
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval)
 
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins)
 
 	// Background tasks run as the service credential (GITHUB_TOKEN), in its own
 	// cache partition keyed by the token's fingerprint — the same scheme used

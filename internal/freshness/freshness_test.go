@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
 )
 
 func testStore(t *testing.T) *Store {
@@ -38,10 +38,10 @@ func TestStore_UpsertAndGet(t *testing.T) {
 
 	id := ResourceID{Kind: "test", Key: "key1"}
 	m := &Metadata{
-		ResourceID:	id,
-		State:		StateFresh,
-		ETag:		"etag123",
-		ExpiresAt:	&now,
+		ResourceID: id,
+		State:      StateFresh,
+		ETag:       "etag123",
+		ExpiresAt:  &now,
 	}
 	require.NoError(t, s.Upsert(ctx, m))
 
@@ -119,7 +119,7 @@ func TestStore_RefreshLog(t *testing.T) {
 	logID, err := s.InsertRefreshLog(ctx, id, TriggerLazy)
 	require.Nil(t, err)
 
-	assert.Greater(t, logID, 0)
+	assert.Greater(t, logID, int64(0))
 
 	require.NoError(t, s.CompleteRefreshLog(ctx, logID, true, 5, ""))
 
@@ -131,8 +131,8 @@ func TestManager_EnsureFresh_LazyFetch(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:		"test",
-		DefaultTTL:	1 * time.Hour,
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil
@@ -159,8 +159,8 @@ func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
 
 	fetchCount := 0
 	mgr.RegisterFetcher(Policy{
-		Kind:		"test",
-		DefaultTTL:	1 * time.Hour,
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
 		fetchCount++
 		return RefreshResult{RecordsChanged: 1}, nil

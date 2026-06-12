@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -227,7 +227,7 @@ func TestUpsertAndGetComparison(t *testing.T) {
 	ctx := context.Background()
 
 	comp := dbgen.BranchComparison{
-		Owner:	"org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 3, BehindBy: 1,
+		Owner: "org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 3, BehindBy: 1,
 	}
 	require.NoError(t, s.UpsertComparison(ctx, comp))
 

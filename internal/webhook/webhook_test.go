@@ -5,23 +5,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/stretchr/testify/assert"
 	"testing"
-	"github.com/wow-look-at-my/testify/assert"
 )
 
 func TestParseEvent_PullRequest(t *testing.T) {
 	payload := map[string]interface{}{
-		"action":	"opened",
+		"action": "opened",
 		"repository": map[string]interface{}{
-			"name":	"my-repo",
+			"name": "my-repo",
 			"owner": map[string]interface{}{
 				"login": "my-org",
 			},
 		},
 		"pull_request": map[string]interface{}{
-			"number":	42,
-			"base":		map[string]interface{}{"ref": "main"},
-			"head":		map[string]interface{}{"ref": "feature"},
+			"number": 42,
+			"base":   map[string]interface{}{"ref": "main"},
+			"head":   map[string]interface{}{"ref": "feature"},
 		},
 		"organization": map[string]interface{}{
 			"login": "my-org",
@@ -53,9 +53,9 @@ func TestParseEvent_PullRequest(t *testing.T) {
 
 func TestParseEvent_Push(t *testing.T) {
 	payload := map[string]interface{}{
-		"ref":	"refs/heads/main",
+		"ref": "refs/heads/main",
 		"repository": map[string]interface{}{
-			"name":	"my-repo",
+			"name": "my-repo",
 			"owner": map[string]interface{}{
 				"login": "my-org",
 			},

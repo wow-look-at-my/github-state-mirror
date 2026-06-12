@@ -70,19 +70,23 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 
-			var lastCommitStatus interface{}
+			// statusCheckRollup is null when no CI status is recorded, mirroring
+			// real GitHub. The commits object itself is always a well-formed node
+			// list so clients can safely read commits.nodes[0].commit.statusCheckRollup.
+			var rollup interface{}
 			if pr.LastCommitStatus.Valid {
-				lastCommitStatus = map[string]interface{}{
-					"nodes": []map[string]interface{}{
-						{
-							"commit": map[string]interface{}{
-								"statusCheckRollup": map[string]interface{}{
-									"state": pr.LastCommitStatus.String,
-								},
-							},
+				rollup = map[string]interface{}{
+					"state": pr.LastCommitStatus.String,
+				}
+			}
+			commits := map[string]interface{}{
+				"nodes": []map[string]interface{}{
+					{
+						"commit": map[string]interface{}{
+							"statusCheckRollup": rollup,
 						},
 					},
-				}
+				},
 			}
 
 			prNode := map[string]interface{}{
@@ -109,7 +113,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 				"reviewRequests": map[string]interface{}{
 					"totalCount": pr.ReviewRequestCount.Int64,
 				},
-				"commits": lastCommitStatus,
+				"commits": commits,
 			}
 			prNodes = append(prNodes, prNode)
 		}
@@ -152,6 +156,13 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]interface{}{
 			"organization": map[string]interface{}{
 				"repositories": map[string]interface{}{
+					// The mirror returns every repo in one response, so paging
+					// always terminates after the first page. pageInfo must be
+					// present: clients read pageInfo.hasNextPage unconditionally.
+					"pageInfo": map[string]interface{}{
+						"hasNextPage": false,
+						"endCursor":   nil,
+					},
 					"nodes": repoNodes,
 				},
 			},
@@ -160,7 +171,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, response)
 }
-
 
 func extractOrgFromQuery(query string) string {
 	// Simple heuristic: look for organization(login: "xxx")

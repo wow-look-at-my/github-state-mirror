@@ -90,7 +90,7 @@ type gqlResponse struct {
 	Data struct {
 		Organization struct {
 			Repositories struct {
-				PageInfo gqlPageInfo  `json:"pageInfo"`
+				PageInfo gqlPageInfo `json:"pageInfo"`
 				Nodes    []gqlRepo   `json:"nodes"`
 			} `json:"repositories"`
 		} `json:"organization"`
@@ -131,15 +131,15 @@ type gqlRepo struct {
 }
 
 type gqlPR struct {
-	Number    int     `json:"number"`
-	Title     string  `json:"title"`
-	URL       string  `json:"url"`
-	IsDraft   bool    `json:"isDraft"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
-	Additions int     `json:"additions"`
-	Deletions int     `json:"deletions"`
-	Mergeable string  `json:"mergeable"`
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	IsDraft   bool   `json:"isDraft"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Mergeable string `json:"mergeable"`
 	Author    *struct {
 		Login     string `json:"login"`
 		AvatarURL string `json:"avatarUrl"`
@@ -186,8 +186,8 @@ type repoPRsResponse struct {
 // OrgData holds the fetched repos and their PRs keyed by "owner/repo".
 type OrgData struct {
 	Repos      []dbgen.Repo
-	PRsByRepo  map[string][]dbgen.PullRequest         // key: "owner/repo"
-	LabelsByPR map[string]map[int64][]dbgen.PrLabel   // key: "owner/repo" -> pr number -> labels
+	PRsByRepo  map[string][]dbgen.PullRequest       // key: "owner/repo"
+	LabelsByPR map[string]map[int64][]dbgen.PrLabel // key: "owner/repo" -> pr number -> labels
 }
 
 // GetOrgData fetches all non-archived repos and open PRs for an org via GraphQL.
@@ -340,21 +340,21 @@ func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 
 func convertPR(owner, repoName string, gpr gqlPR) dbgen.PullRequest {
 	pr := dbgen.PullRequest{
-		Owner:     owner,
-		Repo:      repoName,
-		Number:    int64(gpr.Number),
-		Title:     gpr.Title,
-		Url:       gpr.URL,
-		IsDraft:   boolToInt(gpr.IsDraft),
-		State:     "OPEN",
-		CreatedAt: gpr.CreatedAt,
-		UpdatedAt: gpr.UpdatedAt,
-		Additions: sql.NullInt64{Int64: int64(gpr.Additions), Valid: true},
-		Deletions: sql.NullInt64{Int64: int64(gpr.Deletions), Valid: true},
-		Mergeable: sql.NullString{String: gpr.Mergeable, Valid: gpr.Mergeable != ""},
-		HeadRefName: sql.NullString{String: gpr.HeadRefName, Valid: gpr.HeadRefName != ""},
-		BaseRefName: sql.NullString{String: gpr.BaseRefName, Valid: gpr.BaseRefName != ""},
-		HeadRefOid:  sql.NullString{String: gpr.HeadRefOid, Valid: gpr.HeadRefOid != ""},
+		Owner:              owner,
+		Repo:               repoName,
+		Number:             int64(gpr.Number),
+		Title:              gpr.Title,
+		Url:                gpr.URL,
+		IsDraft:            boolToInt(gpr.IsDraft),
+		State:              "OPEN",
+		CreatedAt:          gpr.CreatedAt,
+		UpdatedAt:          gpr.UpdatedAt,
+		Additions:          sql.NullInt64{Int64: int64(gpr.Additions), Valid: true},
+		Deletions:          sql.NullInt64{Int64: int64(gpr.Deletions), Valid: true},
+		Mergeable:          sql.NullString{String: gpr.Mergeable, Valid: gpr.Mergeable != ""},
+		HeadRefName:        sql.NullString{String: gpr.HeadRefName, Valid: gpr.HeadRefName != ""},
+		BaseRefName:        sql.NullString{String: gpr.BaseRefName, Valid: gpr.BaseRefName != ""},
+		HeadRefOid:         sql.NullString{String: gpr.HeadRefOid, Valid: gpr.HeadRefOid != ""},
 		ReviewRequestCount: sql.NullInt64{Int64: int64(gpr.ReviewRequests.TotalCount), Valid: true},
 	}
 	if gpr.Author != nil {

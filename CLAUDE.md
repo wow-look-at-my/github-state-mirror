@@ -36,3 +36,4 @@ A Go service that mirrors GitHub state into SQLite, providing a fast local API s
 - `WEBHOOK_SECRET` — GitHub webhook HMAC secret
 - `LISTEN_ADDR` — HTTP listen address (default `:8080`)
 - `DB_PATH` — SQLite database file path (default `github-mirror.db`)
+- `ALLOWED_ORIGINS` (optional) — comma-separated CORS allow-list for browser clients (e.g. the repo-nightmare PR viewer). Defaults to `*` (any origin), which is safe because data is isolated by token fingerprint, not origin. Preflight `OPTIONS` is answered without auth; see `internal/api/cors.go`.
