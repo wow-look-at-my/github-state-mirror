@@ -63,7 +63,7 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
 	}))
 	t.Cleanup(ghSrv.Close)
-	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
+	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"})
 	return router, store
@@ -191,8 +191,8 @@ func TestGetCompare(t *testing.T) {
 }
 
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
-// with no Authorization header instead of silently serving the server's
-// GITHUB_TOKEN view.
+// with no Authorization header instead of silently serving another
+// credential's cached view.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, store := setupTestRouter(t)
 

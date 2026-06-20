@@ -13,7 +13,7 @@ Data stays fresh via three mechanisms:
    - `label` → recolor/remove the label across the repo's cached PRs
 
    Only low-frequency structural events (`repository`, `organization`, `membership`) — and any payload that can't be parsed — fall back to marking the affected resource stale for lazy refresh.
-2. **Periodic refresh** — Every 6 hours, the service token's known resources are re-fetched as a backstop
+2. **Periodic refresh** — Every 6 hours, known resources are re-fetched as a backstop. This runs only when a GitHub App is configured (see Configuration); the service signs in as the app, per installation, and never uses a static service token.
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand before responding
 
 Because high-frequency events are applied in place, an active org's cache no longer gets invalidated (and fully re-fetched) on every CI run or push — which is the point: serve from local state, only call GitHub on a genuine miss.
@@ -30,7 +30,7 @@ Every data endpoint **requires** a GitHub token — a personal access token or a
 Authorization: Bearer <token>
 ```
 
-Requests with no token are rejected with `401 Unauthorized` — they are never served using the server's own credentials. The token is validated against GitHub (`GET /user`) on first use and the result is cached in memory.
+Requests with no token are rejected with `401 Unauthorized` — they are never served using the service's own credentials (the GitHub App used for background refreshes). The token is validated against GitHub (`GET /user`) on first use and the result is cached in memory.
 
 The only endpoint that does **not** require a bearer token is `POST /webhook`, which is authenticated by its GitHub HMAC signature instead (see `WEBHOOK_SECRET`).
 
@@ -59,12 +59,17 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 
 ## Configuration
 
+The service has **no static service token**. API requests authenticate with the caller's own bearer token; the only credential the service itself uses is an optional GitHub App, exclusively for background (periodic) refreshes.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | No | — | Service token used **only** for background (periodic) refreshes, in its own credential partition. It is never used to serve API requests, which always require the caller's own `Authorization` header. |
+| `GITHUB_APP_ID` | No | — | GitHub App ID. When set (together with a private key), the service signs in as this app to run background (periodic) refreshes — minting a short-lived access token per installation. The app's data lives in its own credential partition and is **never** served to API callers, who always authenticate with their own `Authorization` header. Leave unset to disable periodic refreshes entirely. |
+| `GITHUB_APP_PRIVATE_KEY` | With `GITHUB_APP_ID` | — | The app's PEM private key (PKCS#1 or PKCS#8). May be `\n`-escaped onto a single line for convenience in env vars. |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | Alt. to inline | — | Path to a PEM private-key file. Takes precedence over `GITHUB_APP_PRIVATE_KEY`. |
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
+| `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because data is isolated by token fingerprint, not origin. |
 
 ## Building
 
@@ -86,11 +91,15 @@ It is a static binary on a `distroless` base (no shell, runs as a non-root user)
 
 ```sh
 docker run -p 8080:8080 \
-  -e GITHUB_TOKEN=... \
+  -e GITHUB_APP_ID=123456 \
+  -e GITHUB_APP_PRIVATE_KEY_PATH=/etc/github-app.pem \
   -e WEBHOOK_SECRET=... \
+  -v "$PWD/github-app.pem:/etc/github-app.pem:ro" \
   -v github-state-mirror-data:/var/lib/github-state-mirror \
   ghcr.io/wow-look-at-my/github-state-mirror:latest
 ```
+
+The GitHub App is optional — omit `GITHUB_APP_ID` and the key to run without background refreshes (per-request data and webhooks still work).
 
 The SQLite database is a disposable cache, so persisting it with a volume is optional. The image is built and pushed by the `publish-ghcr` job in `.github/workflows/ci.yml`, which reuses `wow-look-at-my/actions/.github/workflows/publish-ghcr.yml` (downloads the CI build artifact, builds the `Dockerfile`, pushes to GHCR, and prunes old versions).
 
