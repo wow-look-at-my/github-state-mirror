@@ -127,6 +127,14 @@ func NewRouter(
 	// not a user token, so it sits outside the requireAuth group.
 	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher))
 
+	// GitHub OAuth token-exchange relay for browser clients. A purely
+	// client-side app cannot POST to github.com/login/oauth/access_token
+	// directly (that endpoint sends no CORS headers); the mirror relays it with
+	// correct CORS. It carries no bearer token (the OAuth client secret in the
+	// body is the credential), so it sits outside requireAuth, and it targets
+	// github.com — not the api.github.com passthrough.
+	r.Post("/login/oauth/access_token", h.oauthAccessToken)
+
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's fingerprint.
 	r.Group(func(r chi.Router) {
