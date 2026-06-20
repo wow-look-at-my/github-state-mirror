@@ -42,7 +42,23 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 
 // newTestStack builds the full router with the given auth service, returning the
 // router, the data store, and the underlying DB (for seeding freshness rows).
+// Its fake GitHub answers every path with a login JSON, enough for requireAuth.
 func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
+	t.Helper()
+	// Stub GitHub's /user endpoint so requireAuth can validate the test token
+	// without reaching the real API.
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+	})
+	router, store, db, _ := newTestStackWithGitHub(t, authSvc, gh)
+	return router, store, db
+}
+
+// newTestStackWithGitHub is like newTestStack but lets the caller supply the
+// fake upstream GitHub handler, and returns its URL — used by passthrough tests
+// that need to observe forwarded requests. requireAuth resolves the bearer
+// token against this same handler, so it must answer GET /user with a login.
+func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -61,16 +77,12 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
-	// Stub GitHub's /user endpoint so requireAuth can validate the test token
-	// without reaching the real API.
-	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
-	}))
+	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
-	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
+	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "")
-	return router, store, db
+	return router, store, db, ghSrv.URL
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
@@ -200,8 +212,8 @@ func TestGetCompare(t *testing.T) {
 }
 
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
-// with no Authorization header instead of silently serving the server's
-// GITHUB_TOKEN view.
+// with no Authorization header instead of silently serving another
+// credential's cached view.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, store := setupTestRouter(t)
 
