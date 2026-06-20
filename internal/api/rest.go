@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
-	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -18,7 +17,11 @@ import (
 type handlers struct {
 	mgr   *freshness.Manager
 	store *ghdata.Store
-	gh    *ghclient.Client
+	// ghProxy forwards requests the mirror does not serve from cache straight
+	// to GitHub, uncached. The GraphQL handler uses it for queries it cannot
+	// answer from the cache; it is also the router's NotFound/MethodNotAllowed
+	// fallback.
+	ghProxy http.Handler
 }
 
 func (h *handlers) getUser(w http.ResponseWriter, r *http.Request) {

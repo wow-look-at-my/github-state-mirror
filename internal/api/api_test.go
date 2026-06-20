@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 // testToken is the bearer token sent by authenticated test requests.
@@ -40,20 +41,24 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 }
 
 // newTestStack builds the full router with the given auth service, returning the
-// router, the data store, and the underlying DB (for seeding freshness rows). It
-// stubs only GitHub's /user endpoint — enough for requireAuth to validate the
-// test token. Use newTestStackUpstream when a test needs a richer upstream (e.g.
-// passthrough or App-identity verification).
+// router, the data store, and the underlying DB (for seeding freshness rows).
+// Its fake GitHub answers every path with a login JSON, enough for requireAuth.
 func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
-	return newTestStackUpstream(t, authSvc, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	// Stub GitHub's /user endpoint so requireAuth can validate the test token
+	// without reaching the real API.
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
-	}))
+	})
+	router, store, db, _ := newTestStackWithGitHub(t, authSvc, gh)
+	return router, store, db
 }
 
-// newTestStackUpstream is newTestStack with a caller-supplied upstream handler,
-// which stands in for api.github.com (both for /user credential validation and
-// for any request the passthrough proxy forwards).
-func newTestStackUpstream(t *testing.T, authSvc *auth.Service, upstream http.Handler) (http.Handler, *ghdata.Store, *sql.DB) {
+// newTestStackWithGitHub is like newTestStack but lets the caller supply the
+// fake upstream GitHub handler, and returns its URL — used by passthrough tests
+// that need to observe forwarded requests. requireAuth resolves the bearer
+// token against this same handler, so it must answer GET /user with a login.
+func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -72,12 +77,12 @@ func newTestStackUpstream(t *testing.T, authSvc *auth.Service, upstream http.Han
 
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
-	ghSrv := httptest.NewServer(upstream)
+	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "")
-	return router, store, db
+	return router, store, db, ghSrv.URL
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
@@ -260,7 +265,8 @@ func TestCredentialIsolation(t *testing.T) {
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
-// a bearer token (it is authenticated by HMAC signature instead).
+// a bearer token (it is authenticated by HMAC signature instead). A ping is an
+// untracked event, so it is accepted as a no-op (202), not rejected (401/403).
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -271,5 +277,6 @@ func TestWebhook_NoAuthRequired(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, webhook.DispIgnored, w.Header().Get("X-GSM-Disposition"))
 }

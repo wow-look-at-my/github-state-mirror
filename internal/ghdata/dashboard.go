@@ -87,3 +87,64 @@ func (s *Store) FreshnessByKind(ctx context.Context, actorFP string) ([]dbgen.Ac
 func (s *Store) RecentRefreshes(ctx context.Context, actorFP string, limit int64) ([]dbgen.CacheRefreshLog, error) {
 	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorFP, Limit: limit})
 }
+
+// WebhookDelivery is one recorded webhook delivery and what the dispatcher did
+// with it. It is global (not actor-scoped) — see the webhook_deliveries table.
+type WebhookDelivery struct {
+	DeliveryID  string `json:"delivery_id"`
+	EventType   string `json:"event_type"`
+	Action      string `json:"action"`
+	Repo        string `json:"repo"`
+	ReceivedAt  string `json:"received_at"`
+	Disposition string `json:"disposition"`
+	Detail      string `json:"detail"`
+	Actors      int64  `json:"actors"`
+}
+
+// webhookDeliveryKeep caps how many delivery-log rows are retained. The log is
+// observability, not source-of-truth, so old rows are pruned on each insert.
+const webhookDeliveryKeep = 500
+
+// RecordWebhookDelivery appends a delivery to the global webhook log and prunes
+// it back to the most recent webhookDeliveryKeep rows.
+func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) error {
+	receivedAt := d.ReceivedAt
+	if receivedAt == "" {
+		receivedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := s.q.InsertWebhookDelivery(ctx, dbgen.InsertWebhookDeliveryParams{
+		DeliveryID:  d.DeliveryID,
+		EventType:   d.EventType,
+		Action:      d.Action,
+		Repo:        d.Repo,
+		ReceivedAt:  receivedAt,
+		Disposition: d.Disposition,
+		Detail:      d.Detail,
+		Actors:      d.Actors,
+	}); err != nil {
+		return err
+	}
+	return s.q.PruneWebhookDeliveries(ctx, webhookDeliveryKeep)
+}
+
+// RecentWebhookDeliveries returns the most recent webhook deliveries, newest first.
+func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {
+	rows, err := s.q.ListRecentWebhookDeliveries(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WebhookDelivery, len(rows))
+	for i, r := range rows {
+		out[i] = WebhookDelivery{
+			DeliveryID:  r.DeliveryID,
+			EventType:   r.EventType,
+			Action:      r.Action,
+			Repo:        r.Repo,
+			ReceivedAt:  r.ReceivedAt,
+			Disposition: r.Disposition,
+			Detail:      r.Detail,
+			Actors:      r.Actors,
+		}
+	}
+	return out, nil
+}

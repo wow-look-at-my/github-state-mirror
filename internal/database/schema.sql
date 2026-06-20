@@ -169,3 +169,26 @@ CREATE TABLE actor_identities (
 );
 
 CREATE INDEX idx_actor_identities_login ON actor_identities (login);
+
+-- ============================================================================
+-- Webhook delivery log (dashboard observability)
+-- ============================================================================
+
+-- Every received webhook delivery and what the dispatcher did with it. Unlike
+-- the per-credential data tables, this log is global (not actor-scoped): a
+-- delivery is a single GitHub event, recorded once with its disposition so an
+-- operator can see whether the cache was actually updated. delivery_id is the
+-- X-GitHub-Delivery UUID, which matches the row in GitHub's "Recent Deliveries"
+-- UI, so the two can be lined up. The log is capped to the most recent rows
+-- (see PruneWebhookDeliveries) since it is observability, not source-of-truth.
+CREATE TABLE webhook_deliveries (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id  TEXT NOT NULL DEFAULT '',   -- X-GitHub-Delivery header (UUID)
+    event_type   TEXT NOT NULL,              -- X-GitHub-Event header
+    action       TEXT NOT NULL DEFAULT '',   -- payload "action", when present
+    repo         TEXT NOT NULL DEFAULT '',   -- owner/name, when derivable
+    received_at  TEXT NOT NULL,              -- RFC3339
+    disposition  TEXT NOT NULL,              -- applied | skipped | invalidated | ignored | error
+    detail       TEXT NOT NULL DEFAULT '',   -- human summary, e.g. "upserted PR #42"
+    actors       INTEGER NOT NULL DEFAULT 0  -- number of cache scopes touched
+);

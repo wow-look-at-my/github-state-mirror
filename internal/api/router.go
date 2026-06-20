@@ -51,7 +51,9 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			// while the Authorization token is still used for upstream fetches so
 			// per-repo authorization is preserved. Callers without this header
 			// keep the fingerprint isolation below, so untrusting multi-tenant
-			// use is unaffected.
+			// use is unaffected. (Distinct from the background refresher's
+			// app-installation:<id> partition: that is the mirror as its own app;
+			// this is an external app caller tagging its data-API requests.)
 			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
 				ident, err := gh.VerifyAppIdentity(ctx, idJWT)
 				if err != nil {
@@ -138,7 +140,12 @@ func NewRouter(
 	// so preflight OPTIONS is answered without a token.
 	r.Use(corsMiddleware(allowedOrigins))
 
-	h := &handlers{mgr: mgr, store: store, gh: gh}
+	// Transparent GitHub passthrough for anything the mirror does not serve
+	// itself. Built from the same base URL the cache fetchers use, so forwarded
+	// requests reach the same upstream (a fake server in tests).
+	ghProxy := newGitHubProxy(gh.BaseURL())
+
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
@@ -161,15 +168,17 @@ func NewRouter(
 
 		// GraphQL endpoint
 		r.Post("/graphql", h.graphql)
-
-		// Passthrough: anything not matched by a cached endpoint above is
-		// proxied verbatim to the upstream GitHub API. Registered last and as a
-		// catch-all so the mirror is a drop-in GitHub API base URL — cached
-		// where it can be, transparent everywhere else. Still inside the auth
-		// group, so the caller's token (and optional identity) is resolved
-		// before forwarding.
-		r.HandleFunc("/*", h.passthrough)
 	})
+
+	// Fallback: any request the mirror does not specifically serve is forwarded
+	// to GitHub, uncached, using the caller's own token. This makes the mirror a
+	// drop-in for api.github.com — cached endpoints stay fast, and every other
+	// endpoint still works. chi runs r.Use middleware (CORS, recoverer) around
+	// these, so forwarded responses carry CORS headers and preflight is handled.
+	// MethodNotAllowed covers a known path hit with an unregistered method
+	// (e.g. POST /user); the proxy itself enforces the bearer-token requirement.
+	r.NotFound(ghProxy.ServeHTTP)
+	r.MethodNotAllowed(ghProxy.ServeHTTP)
 
 	return r
 }

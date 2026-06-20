@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,12 +19,14 @@ import (
 type recordingDispatcher struct {
 	mu     sync.Mutex
 	events []Event
+	result DispatchResult
 }
 
-func (d *recordingDispatcher) Dispatch(_ context.Context, event Event) {
+func (d *recordingDispatcher) Dispatch(_ context.Context, event Event) DispatchResult {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.events = append(d.events, event)
+	return d.result
 }
 
 func (d *recordingDispatcher) getEvents() []Event {
@@ -40,7 +43,7 @@ func signPayload(secret string, body []byte) string {
 
 func TestHandler_ValidWebhook(t *testing.T) {
 	secret := "test-secret"
-	dispatcher := &recordingDispatcher{}
+	dispatcher := &recordingDispatcher{result: DispatchResult{Disposition: DispApplied}}
 	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened","pull_request":{"number":42},"repository":{"name":"repo","owner":{"login":"org"}}}`
@@ -128,14 +131,15 @@ func TestHandler_MissingSignature(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
-func TestHandler_DispatchCalledAsync(t *testing.T) {
+func TestHandler_DispatchSynchronous(t *testing.T) {
 	secret := "test-secret"
-	dispatcher := &recordingDispatcher{}
+	dispatcher := &recordingDispatcher{result: DispatchResult{Disposition: DispApplied}}
 	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened","repository":{"name":"repo","owner":{"login":"org"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "test-delivery-id")
 	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
 
 	w := httptest.NewRecorder()
@@ -143,10 +147,38 @@ func TestHandler_DispatchCalledAsync(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 
-	// The dispatch runs in a goroutine, so we need to wait a bit.
-	// Use eventually-style check.
-	assert.Eventually(t, func() bool {
-		events := dispatcher.getEvents()
-		return len(events) == 1 && events[0].Type == "push"
-	}, 1e9, 1e7) // 1s timeout, 10ms poll
+	// Dispatch is synchronous: the event is recorded by the time ServeHTTP
+	// returns, and the X-GitHub-Delivery header is threaded through.
+	events := dispatcher.getEvents()
+	require.Len(t, events, 1)
+	assert.Equal(t, "push", events[0].Type)
+	assert.Equal(t, "test-delivery-id", events[0].DeliveryID)
+}
+
+func TestHandler_WritesOutcome(t *testing.T) {
+	secret := "test-secret"
+	dispatcher := &recordingDispatcher{result: DispatchResult{
+		Event:       "pull_request",
+		Disposition: DispSkipped,
+		Detail:      "no cached scope for org/repo",
+	}}
+	handler := Handler(secret, dispatcher)
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// A no-op delivery is a 202 (received, nothing applied), distinct from the
+	// 200 of an applied delivery — visible in GitHub's deliveries list.
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, DispSkipped, w.Header().Get("X-GSM-Disposition"))
+
+	var got DispatchResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, DispSkipped, got.Disposition)
+	assert.Equal(t, "no cached scope for org/repo", got.Detail)
 }

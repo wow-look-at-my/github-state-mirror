@@ -11,8 +11,9 @@ import (
 
 // Event is a parsed webhook event with just enough info for dispatch.
 type Event struct {
-	Type   string // X-GitHub-Event header value
-	Action string // "action" field from payload
+	Type       string // X-GitHub-Event header value
+	DeliveryID string // X-GitHub-Delivery header value (UUID), for the delivery log
+	Action     string // "action" field from payload
 
 	// Repository info (extracted from payload.repository)
 	RepoOwnerLogin string

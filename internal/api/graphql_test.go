@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -191,8 +193,25 @@ func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 	assert.Equal(t, 1, len(nodes))
 }
 
-func TestGraphQL_MissingOrg(t *testing.T) {
-	router, _ := setupTestRouter(t)
+// TestGraphQL_NonCachedQueryForwarded verifies that a GraphQL query the mirror
+// cannot answer from cache (here, a viewer query with no org/repositories) is
+// forwarded to GitHub uncached, with the caller's body and token, rather than
+// rejected.
+func TestGraphQL_NonCachedQueryForwarded(t *testing.T) {
+	var gotPath, gotAuth, gotBody string
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" { // requireAuth's token validation
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+			return
+		}
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, auth.New(auth.Config{SessionKey: []byte("k")}), gh)
 
 	body := `{"query":"{ viewer { login } }","variables":{}}`
 	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -201,7 +220,15 @@ func TestGraphQL_MissingOrg(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "/graphql", gotPath, "should forward to GitHub's /graphql")
+	assert.Equal(t, "Bearer "+testToken, gotAuth, "should forward the caller's token")
+	assert.Equal(t, body, gotBody, "should forward the original request body")
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	viewer := resp["data"].(map[string]interface{})["viewer"].(map[string]interface{})
+	assert.Equal(t, "octocat", viewer["login"])
 }
 
 func TestGraphQL_BadJSON(t *testing.T) {

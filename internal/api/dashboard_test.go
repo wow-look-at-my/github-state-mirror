@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 // configuredAuth returns an auth.Service wired to a stub GitHub OAuth + API so
@@ -201,6 +202,55 @@ func TestDashboard_CacheAll_Admin(t *testing.T) {
 	assert.False(t, byLogin["(unknown)"].IsSelf)
 	// Admin "all" omits the recent-activity detail.
 	assert.Empty(t, byLogin["octocat"].Recent)
+}
+
+func TestDashboard_Webhooks_Admin(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, _ := newTestStack(t, svc)
+	require.NoError(t, store.RecordWebhookDelivery(context.Background(), ghdata.WebhookDelivery{
+		DeliveryID:  "abc123",
+		EventType:   "pull_request",
+		Action:      "opened",
+		Repo:        "o/r",
+		Disposition: webhook.DispApplied,
+		Detail:      "upserted PR #5",
+		Actors:      2,
+	}))
+
+	req := httptest.NewRequest("GET", "/api/webhooks", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp webhooksResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Deliveries, 1)
+	assert.Equal(t, "abc123", resp.Deliveries[0].DeliveryID)
+	assert.Equal(t, webhook.DispApplied, resp.Deliveries[0].Disposition)
+	assert.Equal(t, int64(2), resp.Deliveries[0].Actors)
+}
+
+func TestDashboard_Webhooks_NonAdminForbidden(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, db := newTestStack(t, svc)
+	seedScope(t, store, db, "fp-octocat", "octocat")
+
+	req := httptest.NewRequest("GET", "/api/webhooks", nil)
+	req.AddCookie(mintSession(t, svc, "octocat")) // not an admin
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestDashboard_Webhooks_Unauthenticated(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+
+	req := httptest.NewRequest("GET", "/api/webhooks", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestDashboard_Login_Redirects(t *testing.T) {

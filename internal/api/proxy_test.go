@@ -1,192 +1,182 @@
 package api
 
 import (
-	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
-	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-func testAuthSvc() *auth.Service {
+func testAuth() *auth.Service {
 	return auth.New(auth.Config{SessionKey: []byte("test-session-key")})
 }
 
-// TestPassthrough_ForwardsUnknownPath verifies a request the mirror does not
-// cache is proxied to the upstream GitHub API and the response copied back,
-// authenticated with the caller's own token.
-func TestPassthrough_ForwardsUnknownPath(t *testing.T) {
-	var gotAuth, gotPath, gotQuery string
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user" {
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
-			return
-		}
+// TestProxy_ForwardsUnknownRESTPath verifies that a path the mirror does not
+// cache is transparently forwarded to GitHub: method, path, query, token, and
+// body are passed through, and the upstream status/body/headers come back. CORS
+// headers are applied because chi runs Use middleware around the NotFound route.
+func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
+	var gotMethod, gotPath, gotQuery, gotAuth string
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
 		gotAuth = r.Header.Get("Authorization")
-		gotPath = r.URL.Path
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("X-Custom", "upstream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"number":5}`))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "4999")
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte(`{"resources":{"core":{"remaining":4999}}}`))
 	})
-	router, _, _ := newTestStackUpstream(t, testAuthSvc(), upstream)
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("GET", "/repos/o/r/pulls/5?state=open", nil)
+	req := authedReq("GET", "/rate_limit?foo=bar", nil)
+	req.Header.Set("Origin", "https://example.com")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Upstream status and body are returned verbatim.
+	assert.Equal(t, http.StatusTeapot, w.Code)
+	assert.Contains(t, w.Body.String(), `"remaining":4999`)
+
+	// Upstream received the forwarded request unchanged.
+	assert.Equal(t, "GET", gotMethod)
+	assert.Equal(t, "/rate_limit", gotPath)
+	assert.Equal(t, "foo=bar", gotQuery)
+	assert.Equal(t, "Bearer "+testToken, gotAuth, "caller's token must be forwarded")
+
+	// Upstream response headers and CORS both pass through to the client.
+	assert.Equal(t, "4999", w.Header().Get("X-RateLimit-Remaining"))
+	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+}
+
+// TestProxy_DeduplicatesCORS verifies that when GitHub returns its own CORS
+// headers (it does — Access-Control-Allow-Origin: *), the forwarded response
+// carries exactly one Access-Control-Allow-Origin (the mirror's) so browsers do
+// not reject it for having multiple values, while Expose-Headers is preserved.
+func TestProxy_DeduplicatesCORS(t *testing.T) {
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.Header().Set("Access-Control-Expose-Headers", "X-RateLimit-Remaining, Link")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	req := authedReq("GET", "/rate_limit", nil)
+	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.JSONEq(t, `{"number":5}`, w.Body.String())
-	assert.Equal(t, "upstream", w.Header().Get("X-Custom"), "upstream response headers are copied")
-	assert.Equal(t, "/repos/o/r/pulls/5", gotPath)
-	assert.Equal(t, "state=open", gotQuery, "query string is forwarded")
-	assert.Equal(t, "Bearer test-token", gotAuth, "the caller's token is forwarded upstream")
+	acao := w.Header().Values("Access-Control-Allow-Origin")
+	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
+	assert.Equal(t, "*", acao[0])
+	// GitHub's Expose-Headers must survive so clients can read X-RateLimit-* etc.
+	assert.Equal(t, "X-RateLimit-Remaining, Link", w.Header().Get("Access-Control-Expose-Headers"))
 }
 
-// TestPassthrough_PreservesMethodBodyAndStatus verifies writes proxy correctly:
-// method, body, and the upstream status code are all preserved.
-func TestPassthrough_PreservesMethodBodyAndStatus(t *testing.T) {
-	var gotMethod, gotBody string
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user" {
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
-			return
-		}
-		gotMethod = r.Method
-		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":true}`))
+// TestProxy_RequiresToken verifies the passthrough is not an open relay: a
+// request without an Authorization header is rejected with 401 and never
+// reaches GitHub.
+func TestProxy_RequiresToken(t *testing.T) {
+	var upstreamHits int32
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
 	})
-	router, _, _ := newTestStackUpstream(t, testAuthSvc(), upstream)
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("POST", "/repos/o/r/pulls", strings.NewReader(`{"title":"hi"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusCreated, w.Code)
-	assert.Equal(t, "POST", gotMethod)
-	assert.Equal(t, `{"title":"hi"}`, gotBody)
-	assert.JSONEq(t, `{"created":true}`, w.Body.String())
-}
-
-// TestModeB_AppIdentityPartition verifies that a caller asserting an App JWT in
-// X-Mirror-Identity is partitioned by the verified app (not the token), and that
-// the credential is NOT validated via /user — so a rotating installation token,
-// which cannot call /user, works.
-func TestModeB_AppIdentityPartition(t *testing.T) {
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/app":
-			assert.Equal(t, "Bearer app-jwt", r.Header.Get("Authorization"))
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "slug": "pr-minder"})
-		case "/user":
-			// An installation token 403s here; if Mode B wrongly called it the
-			// request would fail. It must not be reached.
-			t.Error("/user must not be called in identity mode")
-			w.WriteHeader(http.StatusForbidden)
-		default:
-			t.Errorf("unexpected upstream call: %s", r.URL.Path)
-		}
-	})
-	router, store, _ := newTestStackUpstream(t, testAuthSvc(), upstream)
-
-	// Seed a cached endpoint in the app's bucket.
-	appCtx := actor.WithActor(context.Background(), "app:99")
-	require.NoError(t, store.SetPRFiles(appCtx, "o", "r", 7, []dbgen.PrFile{
-		{Owner: "o", Repo: "r", PrNumber: 7, Path: "main.go", Additions: 3, Deletions: 1},
-	}))
-
-	req := httptest.NewRequest("GET", "/repos/o/r/pulls/7/files", nil)
-	req.Header.Set("Authorization", "Bearer install-token-xyz")
-	req.Header.Set("X-Mirror-Identity", "app-jwt")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var body []map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, 1, len(body), "the app bucket's cached file is served")
-	assert.Equal(t, "main.go", body[0]["filename"])
-}
-
-// TestModeB_ForwardsInstallToken verifies the passthrough still forwards the
-// caller's installation token upstream (the identity JWT is only for
-// partitioning, never sent upstream).
-func TestModeB_ForwardsInstallToken(t *testing.T) {
-	var gotAuth, gotIdentity string
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/app":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "slug": "pr-minder"})
-		default:
-			gotAuth = r.Header.Get("Authorization")
-			gotIdentity = r.Header.Get("X-Mirror-Identity")
-			_, _ = w.Write([]byte(`[]`))
-		}
-	})
-	router, _, _ := newTestStackUpstream(t, testAuthSvc(), upstream)
-
-	req := httptest.NewRequest("GET", "/repos/o/r/branches", nil)
-	req.Header.Set("Authorization", "Bearer install-token-xyz")
-	req.Header.Set("X-Mirror-Identity", "app-jwt")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "Bearer install-token-xyz", gotAuth, "the install token is forwarded upstream")
-	assert.Empty(t, gotIdentity, "the identity header must not leak upstream")
-}
-
-// TestModeB_InvalidIdentityRejected verifies a forged/expired App JWT (GitHub
-// rejects it) yields 401, not a silent fallthrough.
-func TestModeB_InvalidIdentityRejected(t *testing.T) {
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app" {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"message":"A JSON web token could not be decoded"}`))
-			return
-		}
-		t.Errorf("upstream must not be reached on invalid identity: %s", r.URL.Path)
-	})
-	router, _, _ := newTestStackUpstream(t, testAuthSvc(), upstream)
-
-	req := httptest.NewRequest("GET", "/repos/o/r/branches", nil)
-	req.Header.Set("Authorization", "Bearer install-token-xyz")
-	req.Header.Set("X-Mirror-Identity", "forged")
+	req := httptest.NewRequest("GET", "/rate_limit", nil) // no token
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "must not forward a tokenless request")
 }
 
-// TestVerifyAppIdentity_Caches verifies the App identity is fetched once per JWT.
-func TestVerifyAppIdentity_Caches(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		assert.Equal(t, "/app", r.URL.Path)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 42, "slug": "pr-minder"})
-	}))
-	t.Cleanup(srv.Close)
-	c := ghclient.NewWithBaseURL(srv.URL)
+// TestProxy_Uncached verifies the passthrough does not cache: repeated requests
+// each reach GitHub.
+func TestProxy_Uncached(t *testing.T) {
+	var upstreamHits int32
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	id, err := c.VerifyAppIdentity(context.Background(), "jwt-1")
-	require.NoError(t, err)
-	assert.Equal(t, int64(42), id.ID)
-	assert.Equal(t, "pr-minder", id.Slug)
+	for i := 0; i < 3; i++ {
+		req := authedReq("GET", "/repos/o/r/releases", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&upstreamHits), "each call must reach GitHub uncached")
+}
 
-	_, err = c.VerifyAppIdentity(context.Background(), "jwt-1")
-	require.NoError(t, err)
-	assert.Equal(t, 1, calls, "result is cached per JWT")
+// TestProxy_MethodNotAllowedForwarded verifies that a known path hit with an
+// unregistered method (e.g. POST /user, which only exists as GET) is forwarded
+// rather than 405'd, so the mirror is a complete GitHub surface.
+func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
+	var gotMethod, gotPath string
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = w.Write([]byte(`{}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	req := authedReq("POST", "/user", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "POST", gotMethod)
+	assert.Equal(t, "/user", gotPath)
+}
+
+// TestProxy_PreflightNotForwarded verifies a CORS preflight on an unknown path
+// is answered locally (204) and never forwarded to GitHub.
+func TestProxy_PreflightNotForwarded(t *testing.T) {
+	var upstreamHits int32
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	req := httptest.NewRequest(http.MethodOptions, "/rate_limit", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
+}
+
+// TestProxy_CachedEndpointNotForwarded verifies that a cached REST endpoint is
+// served from the store and does NOT reach the GitHub passthrough.
+func TestProxy_CachedEndpointNotForwarded(t *testing.T) {
+	var proxyHits int32
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /user is the only path requireAuth legitimately calls; any other path
+		// reaching here means a cached endpoint leaked into the proxy.
+		if r.URL.Path != "/user" {
+			atomic.AddInt32(&proxyHits, 1)
+		}
+		_, _ = io.WriteString(w, `{"login":"testuser"}`)
+	})
+	router, store, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	store.UpsertUser(seedCtx(), dbgen.User{Login: "octocat", AvatarUrl: "a", Url: "u"})
+
+	req := authedReq("GET", "/user", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "octocat")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&proxyHits), "cached /user must not be forwarded")
 }

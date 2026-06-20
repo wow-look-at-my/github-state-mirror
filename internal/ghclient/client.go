@@ -69,6 +69,14 @@ func NewWithBaseURL(baseURL string) *Client {
 	}
 }
 
+// BaseURL returns the GitHub API base URL this client targets (normally
+// "https://api.github.com"). The HTTP passthrough proxy uses it so that
+// forwarded requests reach the same upstream the cache fetchers do, including a
+// fake server in tests.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // ResolveActor resolves the GitHub login for the token in the given context.
 // Results are cached in memory so /user is only called once per unique token.
 // With no token in context it returns ("", nil).
@@ -144,39 +152,6 @@ func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity
 	id := AppIdentity{ID: a.ID, Slug: a.Slug}
 	c.appIdentityCache.Store(jwt, id)
 	return id, nil
-}
-
-// Forward proxies an arbitrary request to the upstream GitHub API and returns
-// the raw response for the caller to copy verbatim. It is the passthrough path
-// for endpoints the mirror does not cache: the request method, path, query, and
-// body are forwarded unchanged, authenticated with the caller's own token (from
-// context) so GitHub applies the caller's authorization. The caller is
-// responsible for closing the returned response body.
-func (c *Client) Forward(ctx context.Context, method, path, rawQuery string, in http.Header, body io.Reader) (*http.Response, error) {
-	u := c.baseURL + path
-	if rawQuery != "" {
-		u += "?" + rawQuery
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
-	if err != nil {
-		return nil, err
-	}
-	// Forward the caller's content negotiation and API-version headers so media
-	// types like application/vnd.github.diff are honored upstream.
-	for _, h := range []string{"Accept", "Content-Type", "X-Github-Api-Version"} {
-		if v := in.Get(h); v != "" {
-			req.Header.Set(h, v)
-		}
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/vnd.github+json")
-	}
-	// Authenticate with the token carried in the context (the caller's bearer
-	// token, or a GitHub App installation token for background refreshes).
-	if token := tokenFromContext(ctx); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	return c.httpClient.Do(req)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {

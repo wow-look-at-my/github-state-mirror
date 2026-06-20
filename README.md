@@ -44,7 +44,7 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 
 #### App-identity partition (for trusted first-party app callers)
 
-The per-token fingerprint is a poor partition for a **GitHub App backend** (e.g. a webhook handler) whose installation tokens rotate every hour — each new token is a fresh, empty bucket. Such a caller may instead assert a **stable identity** by sending its **GitHub App JWT** in an `X-Mirror-Identity` header. The mirror verifies that JWT against GitHub (`GET /app` — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partitions the caller as `app:<id>`, so all of the app's rotating tokens share **one** warm, webhook-fed bucket. The `Authorization` token is still used for upstream fetches, so per-repo authorization is preserved. Callers that send no identity header keep the fingerprint isolation above unchanged — this mode is opt-in and additive, so untrusting multi-tenant use is unaffected.
+A **GitHub App backend** whose installation tokens rotate hourly would get a fresh, empty fingerprint bucket every hour. Such a caller may instead assert a stable identity by sending its **GitHub App JWT** in an `X-Mirror-Identity` header. The mirror verifies that JWT against GitHub (`GET /app` — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partitions the caller as `app:<id>`, so all of the app's rotating tokens share **one** warm, webhook-fed bucket. The `Authorization` token is still used for upstream fetches, so per-repo authorization is preserved. Callers that send no identity header keep the fingerprint isolation above unchanged — this mode is opt-in and additive. It is appropriate **only** for a first-party app (within an app's bucket, any of that app's tokens reads what the bucket cached), never as a way to relax the default isolation.
 
 ### REST
 
@@ -53,24 +53,33 @@ The per-token fingerprint is a poor partition for a **GitHub App backend** (e.g.
 - `GET /repos/{owner}/{repo}/compare/{base}...{head}` — ahead_by, behind_by
 - `GET /repos/{owner}/{repo}/pulls/{number}/files` — changed files (path, additions, deletions)
 
-### Passthrough proxy
-
-Any request that **doesn't** match a cached endpoint above is **proxied verbatim to `api.github.com`** — same method, path, query, and body — authenticated with the caller's own token, and the upstream response is returned unchanged (each such path is logged at warn level). This makes the mirror a **drop-in base URL for the GitHub API**: point a client at the mirror, and reads it can serve come from cache while everything else (single-PR reads, branches, reviews, writes, GraphQL mutations, App-level endpoints) transparently reaches GitHub. Coverage can then grow by promoting frequently-proxied paths to cached endpoints.
-
 ### GraphQL
 
-- `POST /graphql` — accepts org data queries, returns cached repo + PR data assembled from SQLite. (Non-org queries and mutations are not handled here; send those to `api.github.com` directly — the mirror's `/graphql` is a cache assembler, not a GraphQL proxy.)
+- `POST /graphql` — the org-repos query (an `organization { repositories { ... pullRequests ... } }` shape) is served from the cache, assembled from SQLite. Any other GraphQL query is forwarded to GitHub (see passthrough below).
+
+### GitHub passthrough (everything else)
+
+Any request the mirror does not serve from cache is **transparently forwarded to GitHub** (`https://api.github.com`) and returned **uncached**. This makes the mirror a drop-in replacement for `api.github.com`: the endpoints above are served fast from the per-credential cache, and every other endpoint (`/rate_limit`, `/repos/{owner}/{repo}`, issues, releases, an unrecognized GraphQL query, ...) still works.
+
+- The caller's `Authorization` header is forwarded unchanged — the mirror never substitutes its own `GITHUB_TOKEN` — and a forwarded request **still requires a token** (`401` otherwise), so the mirror is never an open, unauthenticated relay.
+- Responses are passed through verbatim, including status, body, and headers such as `Link` (pagination) and `X-RateLimit-*`. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved so browsers can read those rate-limit/link headers.
+- This path is uncached: it never reads or writes the freshness store.
 
 ### Webhook
 
-- `POST /webhook` — receives GitHub webhook events, triggers cache invalidation
+- `POST /webhook` — receives GitHub webhook events and applies them to the cache. The handler processes each delivery **synchronously** (the cache writes are small, idempotent upserts that finish well within GitHub's delivery deadline) and the HTTP response reflects what happened, so a "successful" delivery actually means data was preserved:
+  - `200 OK` — applied: webhook data was written to one or more cache scopes
+  - `202 Accepted` — received but nothing applied (no scope had the repo cached, an untracked event, or a fallback invalidation)
+  - `500` — an internal error; GitHub retries (and the re-applied upsert is idempotent)
+
+  The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
 
 ## Web Dashboard
 
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache for your account: how many repos, pull requests, orgs, etc. are cached, the freshness of each resource kind (fresh / stale / fetching / error), and recent refresh activity.
 
 - **What you see is yours.** The dashboard groups cache scopes by GitHub login. You only ever see scopes that *your own* tokens populated (a user may hold several tokens, each its own scope). This is a read-only view of counts and freshness metadata — it never exposes another credential's cached rows.
-- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity.
+- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity. They also get a **Webhooks** tab: a global log of recent webhook deliveries and each one's disposition (`applied` / `skipped` / `invalidated` / `ignored` / `error`), so you can confirm at a glance whether incoming events are actually updating the cache. The log spans every repo, so it is admin-only.
 - **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's per-token fingerprint model. The fingerprint→login mapping (`actor_identities`) exists purely so the UI can attribute scopes; it does **not** relax data isolation — the data tables remain keyed by the opaque token fingerprint.
 
 Dashboard routes (session-cookie auth, not bearer tokens):
@@ -80,6 +89,7 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `POST /logout` — clear the session
 - `GET /api/me` — `{ authenticated, login_configured, login, is_admin }`
 - `GET /api/cache?scope=mine|all` — cache stats for the signed-in user (`mine`) or every scope (`all`, admin only)
+- `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
 
 Sign-in requires a GitHub OAuth App; set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (see below). With those unset the page still renders but the sign-in button is disabled.
 

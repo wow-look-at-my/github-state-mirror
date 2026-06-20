@@ -129,3 +129,34 @@ func TestDoJSON_SetsContentType(t *testing.T) {
 	err := c.doJSON(context.Background(), "GET", "/test", nil, nil)
 	require.NoError(t, err)
 }
+
+func TestVerifyAppIdentity_Caches(t *testing.T) {
+	calls := 0
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, "/app", r.URL.Path)
+		assert.Equal(t, "Bearer jwt-1", r.Header.Get("Authorization"))
+		json.NewEncoder(w).Encode(map[string]interface{}{"id": 42, "slug": "pr-minder"})
+	})
+
+	id, err := c.VerifyAppIdentity(context.Background(), "jwt-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), id.ID)
+	assert.Equal(t, "pr-minder", id.Slug)
+
+	// Second call for the same JWT is served from cache (no extra /app call).
+	_, err = c.VerifyAppIdentity(context.Background(), "jwt-1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+}
+
+func TestVerifyAppIdentity_RejectsInvalid(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"could not be decoded"}`))
+	})
+
+	_, err := c.VerifyAppIdentity(context.Background(), "forged")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "401")
+}
