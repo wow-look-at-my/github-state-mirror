@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
+	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
@@ -38,7 +39,9 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 	return freshness.RefreshResult{}, nil
 }
 
-func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
+// newTestStack builds the full router with the given auth service, returning the
+// router, the data store, and the underlying DB (for seeding freshness rows).
+func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -65,7 +68,12 @@ func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"})
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "")
+	return router, store, db
+}
+
+func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
+	router, store, _ := newTestStack(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}))
 	return router, store
 }
 

@@ -12,7 +12,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

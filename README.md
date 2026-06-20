@@ -57,6 +57,24 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 
 - `POST /webhook` — receives GitHub webhook events, triggers cache invalidation
 
+## Web Dashboard
+
+Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache for your account: how many repos, pull requests, orgs, etc. are cached, the freshness of each resource kind (fresh / stale / fetching / error), and recent refresh activity.
+
+- **What you see is yours.** The dashboard groups cache scopes by GitHub login. You only ever see scopes that *your own* tokens populated (a user may hold several tokens, each its own scope). This is a read-only view of counts and freshness metadata — it never exposes another credential's cached rows.
+- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity.
+- **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's per-token fingerprint model. The fingerprint→login mapping (`actor_identities`) exists purely so the UI can attribute scopes; it does **not** relax data isolation — the data tables remain keyed by the opaque token fingerprint.
+
+Dashboard routes (session-cookie auth, not bearer tokens):
+
+- `GET /` — the dashboard page
+- `GET /login` → `GET /auth/callback` — GitHub OAuth sign-in
+- `POST /logout` — clear the session
+- `GET /api/me` — `{ authenticated, login_configured, login, is_admin }`
+- `GET /api/cache?scope=mine|all` — cache stats for the signed-in user (`mine`) or every scope (`all`, admin only)
+
+Sign-in requires a GitHub OAuth App; set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (see below). With those unset the page still renders but the sign-in button is disabled.
+
 ## Configuration
 
 The service has **no static service token**. API requests authenticate with the caller's own bearer token; the only credential the service itself uses is an optional GitHub App, exclusively for background (periodic) refreshes.
@@ -70,6 +88,11 @@ The service has **no static service token**. API requests authenticate with the 
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because data is isolated by token fingerprint, not origin. |
+| `GITHUB_OAUTH_CLIENT_ID` | For dashboard login | — | GitHub OAuth App client ID. Register the app's callback URL as `<BASE_URL>/auth/callback`. |
+| `GITHUB_OAUTH_CLIENT_SECRET` | For dashboard login | — | GitHub OAuth App client secret. |
+| `SESSION_SECRET` | Recommended | random per-process | HMAC key for signed session cookies. If unset, a random key is generated at startup, so sessions reset on restart. Set it in production. |
+| `ADMIN_LOGINS` | No | `PazerOP` | Comma-separated GitHub logins granted the **All scopes** dashboard view (case-insensitive). |
+| `BASE_URL` | No | derived from request | Public base URL (e.g. `https://github-state-mirror.pazer.io`) used to build the OAuth `redirect_uri`. Derived from the request (honoring `X-Forwarded-Proto`) when unset. |
 
 ## Building
 
@@ -78,6 +101,15 @@ go-toolchain
 ```
 
 Binary is output to `build/server_linux_amd64`.
+
+The dashboard front-end is authored in TypeScript under `internal/api/web/src/` and compiled to `internal/api/web/assets/*.js`, which is **committed** (a generated artifact) and embedded into the binary via `//go:embed`. After editing the `.ts` sources, regenerate the JS:
+
+```sh
+npm ci        # first time only
+npm run build # tsc: src/*.ts -> assets/*.js
+```
+
+CI's `web-check` job fails if the committed JS is out of date with the TypeScript source (run `npm run build` and commit). A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.
 
 ## Docker
 
@@ -112,9 +144,11 @@ internal/
   database/      SQLite schema + sqlc-generated queries
   ghdata/        Domain store (wraps sqlc with transactions)
   ghclient/      GitHub REST + GraphQL client (token→login cache)
+  auth/          GitHub OAuth login + signed-cookie sessions (dashboard)
   sync/          Fetchers, periodic refresh, webhook dispatch
   webhook/       HTTP handler, event parsing, HMAC verification
-  api/           chi router, REST handlers, GraphQL assembler
+  api/           chi router, REST handlers, GraphQL assembler, web dashboard
+  api/web/       Dashboard front-end (TypeScript src/ -> embedded assets/)
 ```
 
 The key design constraints: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data. All cached data is scoped per-actor — where an actor is a fingerprint of the caller's token — to prevent cross-credential data leakage (see **Data isolation** above).

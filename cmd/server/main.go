@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
+	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/config"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
@@ -52,8 +53,19 @@ func main() {
 	// Periodic refresher.
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
+	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
+	authSvc := auth.New(auth.Config{
+		ClientID:     cfg.OAuthClientID,
+		ClientSecret: cfg.OAuthClientSecret,
+		SessionKey:   cfg.SessionSecret,
+		AdminLogins:  cfg.AdminLogins,
+	})
+	if !authSvc.Configured() {
+		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
+	}
+
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

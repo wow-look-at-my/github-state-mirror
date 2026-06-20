@@ -30,6 +30,31 @@ jobs:
             exit 1
           fi
 
+  # The dashboard front-end is authored in TypeScript (internal/api/web/src/*.ts)
+  # and compiled to internal/api/web/assets/*.js, which is committed (a generated
+  # artifact) and embedded into the Go binary. This job fails if the committed JS
+  # is out of date with the TypeScript source.
+  web-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - name: Verify compiled dashboard JS is committed and up to date
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const res = await exec.getExecOutput("git", ["status", "--porcelain", "--", "internal/api/web/assets"], { silent: true });
+            if (res.stdout.trim() !== "") {
+              await exec.exec("git", ["--no-pager", "diff", "--", "internal/api/web/assets"]);
+              core.setFailed("Compiled dashboard JS is out of date. Run `npm run build` and commit internal/api/web/assets/.");
+            } else {
+              core.info("Dashboard JS is in sync with the TypeScript source.");
+            }
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -42,3 +67,53 @@ jobs:
   publish-ghcr:
     needs: build
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+
+  # Deploy a standalone, backend-free styling preview of the dashboard to
+  # buildhost as a per-branch static site, served at
+  # https://sites.pazer.build/github-state-mirror/branch/<branch>/. The preview
+  # injects demo-data.js so the page renders canned data (login/user/admin views)
+  # without a real server. OIDC handles auth; no static token is needed.
+  preview:
+    needs: web-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - name: Assemble the demo bundle
+        id: bundle
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const webDir = "internal/api/web";
+            const dist = "dist";
+            fs.mkdirSync(`${dist}/assets`, { recursive: true });
+
+            // Inject the preview-only demo-data.js before app.js so the page
+            // renders canned data instead of calling the (absent) backend.
+            const appTag = '<script type="module" src="assets/app.js"></script>';
+            const demoTag = '<script type="module" src="assets/demo-data.js"></script>';
+            let html = fs.readFileSync(`${webDir}/index.html`, "utf8");
+            html = html.replace(appTag, `${demoTag}\n    ${appTag}`);
+            fs.writeFileSync(`${dist}/index.html`, html);
+
+            for (const f of ["app.js", "style.css", "demo-data.js"]) {
+              fs.copyFileSync(`${webDir}/assets/${f}`, `${dist}/assets/${f}`);
+            }
+
+            // buildhost serves sites under a single path segment, so the branch
+            // name must not contain '/'. Flatten anything outside [A-Za-z0-9._-].
+            const raw = github.ref_name || "preview";
+            const branch = raw.replace(/[^A-Za-z0-9._-]/g, "-");
+            core.setOutput("branch", branch);
+            core.info(`Prepared dist/ for branch '${branch}'.`);
+      - name: Publish preview to buildhost
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: github-state-mirror
+          branch: ${{ steps.bundle.outputs.branch }}
+          source_dir: ./dist
