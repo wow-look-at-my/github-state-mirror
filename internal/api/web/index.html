@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GitHub State Mirror</title>
+    <meta name="description" content="Inspect the state of the GitHub State Mirror cache for your account.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪞</text></svg>">
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true">🪞</span>
+                <span class="brand-name">GitHub State Mirror</span>
+            </div>
+            <div id="user-box" class="user-box" hidden></div>
+        </div>
+    </header>
+
+    <main id="main" class="container">
+        <div class="loading" id="boot">Loading…</div>
+    </main>
+
+    <footer class="footer">
+        <span>A disposable SQLite cache of GitHub state. Data is partitioned per credential.</span>
+    </footer>
+
+    <!-- assets/app.js is compiled from src/app.ts (tsc). It renders everything
+         below #main, talking to /api/me and /api/cache. When a demo-data.js has
+         set window.__GSM_DEMO__ (only in the standalone styling preview), it
+         renders canned data instead of calling the backend. Production never
+         ships demo-data.js. -->
+    <script type="module" src="assets/app.js"></script>
+</body>
+</html>
