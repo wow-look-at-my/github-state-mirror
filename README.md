@@ -51,7 +51,15 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 
 ### GraphQL
 
-- `POST /graphql` — accepts org data queries, returns cached repo + PR data assembled from SQLite
+- `POST /graphql` — the org-repos query (an `organization { repositories { ... pullRequests ... } }` shape) is served from the cache, assembled from SQLite. Any other GraphQL query is forwarded to GitHub (see passthrough below).
+
+### GitHub passthrough (everything else)
+
+Any request the mirror does not serve from cache is **transparently forwarded to GitHub** (`https://api.github.com`) and returned **uncached**. This makes the mirror a drop-in replacement for `api.github.com`: the endpoints above are served fast from the per-credential cache, and every other endpoint (`/rate_limit`, `/repos/{owner}/{repo}`, issues, releases, an unrecognized GraphQL query, ...) still works.
+
+- The caller's `Authorization` header is forwarded unchanged — the mirror never substitutes its own `GITHUB_TOKEN` — and a forwarded request **still requires a token** (`401` otherwise), so the mirror is never an open, unauthenticated relay.
+- Responses are passed through verbatim, including status, body, and headers such as `Link` (pagination) and `X-RateLimit-*`. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved so browsers can read those rate-limit/link headers.
+- This path is uncached: it never reads or writes the freshness store.
 
 ### Webhook
 

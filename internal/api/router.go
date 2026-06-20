@@ -112,7 +112,12 @@ func NewRouter(
 	// so preflight OPTIONS is answered without a token.
 	r.Use(corsMiddleware(allowedOrigins))
 
-	h := &handlers{mgr: mgr, store: store}
+	// Transparent GitHub passthrough for anything the mirror does not serve
+	// itself. Built from the same base URL the cache fetchers use, so forwarded
+	// requests reach the same upstream (a fake server in tests).
+	ghProxy := newGitHubProxy(gh.BaseURL())
+
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
@@ -136,6 +141,16 @@ func NewRouter(
 		// GraphQL endpoint
 		r.Post("/graphql", h.graphql)
 	})
+
+	// Fallback: any request the mirror does not specifically serve is forwarded
+	// to GitHub, uncached, using the caller's own token. This makes the mirror a
+	// drop-in for api.github.com — cached endpoints stay fast, and every other
+	// endpoint still works. chi runs r.Use middleware (CORS, recoverer) around
+	// these, so forwarded responses carry CORS headers and preflight is handled.
+	// MethodNotAllowed covers a known path hit with an unregistered method
+	// (e.g. POST /user); the proxy itself enforces the bearer-token requirement.
+	r.NotFound(ghProxy.ServeHTTP)
+	r.MethodNotAllowed(ghProxy.ServeHTTP)
 
 	return r
 }

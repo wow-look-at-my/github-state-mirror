@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,29 +12,55 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
+// maxGraphQLBodyBytes caps how much of a GraphQL request body we buffer. Real
+// GraphQL payloads are tiny; this only guards memory when forwarding arbitrary
+// queries to GitHub.
+const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
+
 // graphql handles the POST /graphql endpoint.
-// It extracts the org name from the query variables, ensures freshness,
-// then assembles a response matching the expected GraphQL shape.
+//
+// The mirror only serves the org-repos query shape from its cache. It extracts
+// the org from the query variables (or the query text), ensures freshness, and
+// assembles a response matching that shape. Any other GraphQL query — a viewer
+// query, a repo query, a different org field — is an "unknown" the cache cannot
+// answer, so it is forwarded to GitHub uncached.
 func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Buffer the body so we can both inspect the query and, if we cannot serve
+	// it from cache, replay it to GitHub.
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if len(bodyBytes) > maxGraphQLBodyBytes {
+		http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	var req struct {
 		Query     string                 `json:"query"`
 		Variables map[string]interface{} `json:"variables"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	// Extract org from variables.
+	// Extract org from variables, falling back to the query text.
 	orgLogin, _ := req.Variables["org"].(string)
 	if orgLogin == "" {
-		// Try to extract from the query itself (fallback).
 		orgLogin = extractOrgFromQuery(req.Query)
 	}
-	if orgLogin == "" {
-		http.Error(w, "missing org variable", http.StatusBadRequest)
+
+	// Only the org-repos query shape is served from cache (it names an org and
+	// asks for repositories). Forward anything else straight to GitHub, uncached,
+	// restoring the body we consumed above.
+	if orgLogin == "" || !strings.Contains(req.Query, "repositories") {
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
+		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
 
