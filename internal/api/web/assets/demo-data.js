@@ -111,6 +111,19 @@ function sumScopes(list) {
         branch_comparisons: acc.branch_comparisons + s.counts.branch_comparisons,
     }), counts({}));
 }
+// --- webhook delivery log (admin "Webhooks" tab) ---
+const demoWebhooks = {
+    deliveries: [
+        { delivery_id: "ddfad8a0-6ce9-11f1-9454-861fa0b5e50d", event_type: "pull_request", action: "edited", repo: "wow-look-at-my/buildhost", received_at: ago(5), disposition: "applied", detail: "upserted PR #318", actors: 2 },
+        { delivery_id: "dbf2cd6a-6ce9-11f1-94a4-20dae95361b4", event_type: "status", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(9), disposition: "applied", detail: "status:ci/build=SUCCESS, rollup=SUCCESS", actors: 2 },
+        { delivery_id: "db19f030-6ce9-11f1-9657-775bf60e6774", event_type: "check_run", action: "completed", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "applied", detail: "check_run:test=SUCCESS, rollup=SUCCESS", actors: 2 },
+        { delivery_id: "db1f7e10-6ce9-11f1-830a-4240fdd66fd2", event_type: "workflow_job", action: "completed", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "ignored", detail: "event type not tracked", actors: 0 },
+        { delivery_id: "d8388ac0-6ce9-11f1-8f30-7678518bf7a2", event_type: "pull_request", action: "labeled", repo: "octo-org/api", received_at: ago(11), disposition: "skipped", detail: "no cached scope for octo-org/api", actors: 0 },
+        { delivery_id: "d6f2c450-6ce9-11f1-8f8a-0023eea7e213", event_type: "pull_request", action: "opened", repo: "wow-look-at-my/actions", received_at: ago(18), disposition: "applied", detail: "upserted PR #92", actors: 1 },
+        { delivery_id: "d607e048-6ce9-11f1-9529-df37c1489e44", event_type: "repository", action: "renamed", repo: "wow-look-at-my/old-name", received_at: ago(40), disposition: "invalidated", detail: "structural change; marked org repos stale", actors: 0 },
+        { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at", actors: 2 },
+    ],
+};
 const pazerMine = [pazerScopeCli, pazerScopeCi];
 const allScopes = [serviceScope, octocatScope, pazerScopeCli, pazerScopeCi, unknownScope].map((s) => ({ ...s, is_self: s.login === "PazerOP" }));
 const config = {
@@ -136,6 +149,7 @@ const config = {
                 login: "PazerOP", is_admin: true, scope: "all", scope_count: allScopes.length,
                 totals: sumScopes(allScopes), scopes: allScopes,
             },
+            webhooks: demoWebhooks,
         },
     },
 };
