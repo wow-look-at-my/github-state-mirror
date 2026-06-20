@@ -13,7 +13,9 @@ Data stays fresh via three mechanisms:
    - `label` → recolor/remove the label across the repo's cached PRs
 
    Only low-frequency structural events (`repository`, `organization`, `membership`) — and any payload that can't be parsed — fall back to marking the affected resource stale for lazy refresh.
-2. **Periodic refresh** — Every 6 hours, known resources are re-fetched as a backstop. This runs only when a GitHub App is configured (see Configuration); the service signs in as the app, per installation, and never uses a static service token.
+
+   A webhook is applied to every credential partition that has already cached the affected repo. If **no** partition has it cached, there is nothing to update and the delivery is recorded as `skipped` ("no cached scope") — so the cache must first be populated (by lazy fetch or the periodic refresh below) before webhooks can keep a repo warm.
+2. **Periodic refresh** — When a GitHub App is configured (see Configuration), the service signs in as the app — per installation, never using a static service token — and, on startup and every 6 hours, **populates each installation's organization repos** into that installation's own partition. This both re-fetches already-known resources as a backstop *and* seeds a repo's first appearance, guaranteeing the webhook dispatcher always has at least one cached scope to apply to (so an active org's deliveries are `applied`, not `skipped`, even on a cold cache).
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand before responding
 
 Because high-frequency events are applied in place, an active org's cache no longer gets invalidated (and fully re-fetched) on every CI run or push — which is the point: serve from local state, only call GitHub on a genuine miss.
