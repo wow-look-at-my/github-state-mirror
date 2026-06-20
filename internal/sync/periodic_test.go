@@ -31,7 +31,12 @@ func TestPeriodicRefresher_Start(t *testing.T) {
 	require.NoError(t, mgr.EnsureFresh(ctx, freshness.ResourceID{Kind: KindUser, Key: "self"}))
 	_ = fetchCount // stubFetcher doesn't increment, that's fine
 
-	refresher := NewPeriodicRefresher(mgr, 50*time.Millisecond)
+	// A single session in the default (empty) cache partition, matching the
+	// seed above.
+	sessions := func(ctx context.Context) ([]context.Context, error) {
+		return []context.Context{ctx}, nil
+	}
+	refresher := NewPeriodicRefresher(mgr, 50*time.Millisecond, sessions)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()

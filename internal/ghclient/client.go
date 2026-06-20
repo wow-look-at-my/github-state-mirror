@@ -44,27 +44,27 @@ func Fingerprint(token string) string {
 }
 
 type Client struct {
-	httpClient   *http.Client
-	baseURL      string
-	defaultToken string   // optional fallback for background refreshes
-	actorCache   sync.Map // token -> GitHub login
+	httpClient *http.Client
+	baseURL    string
+	actorCache sync.Map // token -> GitHub login
 }
 
-// New creates a Client with an optional default token used when no token is in the context.
-func New(defaultToken string) *Client {
+// New creates a Client targeting the public GitHub API. The client carries no
+// token of its own: every request authenticates with the token in its context
+// (see WithToken), set per-request from the caller's Authorization header or,
+// for background refreshes, from a GitHub App installation token.
+func New() *Client {
 	return &Client{
-		httpClient:   &http.Client{},
-		baseURL:      defaultBaseURL,
-		defaultToken: defaultToken,
+		httpClient: &http.Client{},
+		baseURL:    defaultBaseURL,
 	}
 }
 
 // NewWithBaseURL creates a Client pointing at a custom base URL (for testing).
-func NewWithBaseURL(defaultToken, baseURL string) *Client {
+func NewWithBaseURL(baseURL string) *Client {
 	return &Client{
-		httpClient:   &http.Client{},
-		baseURL:      baseURL,
-		defaultToken: defaultToken,
+		httpClient: &http.Client{},
+		baseURL:    baseURL,
 	}
 }
 
@@ -78,11 +78,9 @@ func (c *Client) BaseURL() string {
 
 // ResolveActor resolves the GitHub login for the token in the given context.
 // Results are cached in memory so /user is only called once per unique token.
+// With no token in context it returns ("", nil).
 func (c *Client) ResolveActor(ctx context.Context) (string, error) {
 	token := tokenFromContext(ctx)
-	if token == "" {
-		token = c.defaultToken
-	}
 	if token == "" {
 		return "", nil
 	}
@@ -108,12 +106,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 	}
 	req.Header.Set("Accept", "application/json")
 
-	// Prefer token from context (passthrough from caller), fall back to default.
-	token := tokenFromContext(ctx)
-	if token == "" {
-		token = c.defaultToken
-	}
-	if token != "" {
+	// Authenticate with the token carried in the context (caller's bearer token
+	// or a GitHub App installation token). Requests without one are sent
+	// unauthenticated and will be rejected by GitHub.
+	if token := tokenFromContext(ctx); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {

@@ -29,8 +29,8 @@ import (
 // belonging to the same user — e.g. a full-scope PAT and a read-only token
 // granted to a third-party app — get separate buckets and can never observe
 // each other's cached private data. Requests must never fall through to the
-// server's GITHUB_TOKEN, which is reserved for background refreshes and may
-// have far broader access than the caller.
+// service's own credentials (the GitHub App used for background refreshes),
+// which may have far broader access than the caller.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
