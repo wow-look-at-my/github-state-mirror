@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 // testToken is the bearer token sent by authenticated test requests.
@@ -252,7 +253,8 @@ func TestCredentialIsolation(t *testing.T) {
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
-// a bearer token (it is authenticated by HMAC signature instead).
+// a bearer token (it is authenticated by HMAC signature instead). A ping is an
+// untracked event, so it is accepted as a no-op (202), not rejected (401/403).
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -263,5 +265,6 @@ func TestWebhook_NoAuthRequired(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, webhook.DispIgnored, w.Header().Get("X-GSM-Disposition"))
 }
