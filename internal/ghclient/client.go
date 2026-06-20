@@ -68,6 +68,14 @@ func NewWithBaseURL(defaultToken, baseURL string) *Client {
 	}
 }
 
+// BaseURL returns the GitHub API base URL this client targets (normally
+// "https://api.github.com"). The HTTP passthrough proxy uses it so that
+// forwarded requests reach the same upstream the cache fetchers do, including a
+// fake server in tests.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // ResolveActor resolves the GitHub login for the token in the given context.
 // Results are cached in memory so /user is only called once per unique token.
 func (c *Client) ResolveActor(ctx context.Context) (string, error) {
