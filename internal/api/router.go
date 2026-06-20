@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -40,6 +41,33 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				return
 			}
 			ctx := ghclient.WithToken(r.Context(), token)
+
+			// Trusted-app mode: a caller may assert a stable identity with a
+			// GitHub App JWT in X-Mirror-Identity. We verify it against GitHub
+			// (GET /app — unforgeable, since only the app's private key produces
+			// a JWT GitHub accepts) and partition that caller by the app, NOT by
+			// the token fingerprint. This lets a first-party app whose
+			// installation tokens rotate hourly share one warm cache bucket,
+			// while the Authorization token is still used for upstream fetches so
+			// per-repo authorization is preserved. Callers without this header
+			// keep the fingerprint isolation below, so untrusting multi-tenant
+			// use is unaffected. (Distinct from the background refresher's
+			// app-installation:<id> partition: that is the mirror as its own app;
+			// this is an external app caller tagging its data-API requests.)
+			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
+				ident, err := gh.VerifyAppIdentity(ctx, idJWT)
+				if err != nil {
+					slog.Warn("verify app identity failed", "error", err)
+					http.Error(w, "unauthorized: could not verify identity assertion", http.StatusUnauthorized)
+					return
+				}
+				actorKey := fmt.Sprintf("app:%d", ident.ID)
+				ctx = actor.WithActor(ctx, actorKey)
+				record(ctx, actorKey, ident.Slug)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
 			// Validate the credential with GitHub up front (and warm the
 			// token->login cache). The login does NOT become the bucket key —
 			// the fingerprint does — but we remember the fingerprint->login

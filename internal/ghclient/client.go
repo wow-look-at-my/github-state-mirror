@@ -44,9 +44,10 @@ func Fingerprint(token string) string {
 }
 
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	actorCache sync.Map // token -> GitHub login
+	httpClient       *http.Client
+	baseURL          string
+	actorCache       sync.Map // token -> GitHub login
+	appIdentityCache sync.Map // app JWT -> AppIdentity
 }
 
 // New creates a Client targeting the public GitHub API. The client carries no
@@ -96,6 +97,61 @@ func (c *Client) ResolveActor(ctx context.Context) (string, error) {
 
 	c.actorCache.Store(token, resp.Login)
 	return resp.Login, nil
+}
+
+// AppIdentity is a GitHub App identity proven by a valid App JWT.
+type AppIdentity struct {
+	ID   int64
+	Slug string
+}
+
+type appResp struct {
+	ID   int64  `json:"id"`
+	Slug string `json:"slug"`
+}
+
+// VerifyAppIdentity validates a GitHub App JWT by calling GET /app with it. The
+// App JWT is signed with the app's private key (RS256); GitHub only returns 200
+// if that signature checks out against the public key it holds for the app, so a
+// successful response is unforgeable proof that the caller holds the app's
+// private key — exactly the "GitHub agrees you are app X" assertion. The result
+// is cached per JWT (a caller reuses one JWT for its ~9-minute validity), so this
+// costs one upstream call per JWT, not per request.
+//
+// The returned identity is meant to be used as a stable cache partition for a
+// trusted first-party app caller (e.g. a webhook handler) whose underlying
+// installation tokens rotate hourly: every one of those tokens proves the same
+// app identity, so they all share one bucket.
+func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity, error) {
+	if v, ok := c.appIdentityCache.Load(jwt); ok {
+		return v.(AppIdentity), nil
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/app", nil)
+	if err != nil {
+		return AppIdentity{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+jwt)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return AppIdentity{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return AppIdentity{}, fmt.Errorf("verify app identity: %d %s", resp.StatusCode, string(data))
+	}
+	var a appResp
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		return AppIdentity{}, err
+	}
+	if a.ID == 0 {
+		return AppIdentity{}, fmt.Errorf("verify app identity: response missing app id")
+	}
+	id := AppIdentity{ID: a.ID, Slug: a.Slug}
+	c.appIdentityCache.Store(jwt, id)
+	return id, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {

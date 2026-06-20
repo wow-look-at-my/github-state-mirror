@@ -42,6 +42,10 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 - Because the partition is the token — not the login — even two tokens belonging to the *same* GitHub user are isolated. A read-only token granted to a third-party app cannot read private data that a broader personal token previously cached.
 - On a cache miss the data is fetched using the caller's own token, so GitHub's authorization is always applied at fetch time. Staleness after an access change is bounded by each resource's TTL (and webhook invalidation), after which the next fetch re-authorizes.
 
+#### App-identity partition (for trusted first-party app callers)
+
+A **GitHub App backend** whose installation tokens rotate hourly would get a fresh, empty fingerprint bucket every hour. Such a caller may instead assert a stable identity by sending its **GitHub App JWT** in an `X-Mirror-Identity` header. The mirror verifies that JWT against GitHub (`GET /app` — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partitions the caller as `app:<id>`, so all of the app's rotating tokens share **one** warm, webhook-fed bucket. The `Authorization` token is still used for upstream fetches, so per-repo authorization is preserved. Callers that send no identity header keep the fingerprint isolation above unchanged — this mode is opt-in and additive. It is appropriate **only** for a first-party app (within an app's bucket, any of that app's tokens reads what the bucket cached), never as a way to relax the default isolation.
+
 ### REST
 
 - `GET /user` — authenticated user info (login, avatar)
