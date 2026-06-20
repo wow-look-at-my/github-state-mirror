@@ -47,9 +47,9 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const { stdout } = await $`git status --porcelain -- internal/api/web/assets`.silent();
-            if (stdout.trim() !== "") {
-              await $`git --no-pager diff -- internal/api/web/assets`;
+            const res = await exec.getExecOutput("git", ["status", "--porcelain", "--", "internal/api/web/assets"], { silent: true });
+            if (res.stdout.trim() !== "") {
+              await exec.exec("git", ["--no-pager", "diff", "--", "internal/api/web/assets"]);
               core.setFailed("Compiled dashboard JS is out of date. Run `npm run build` and commit internal/api/web/assets/.");
             } else {
               core.info("Dashboard JS is in sync with the TypeScript source.");
