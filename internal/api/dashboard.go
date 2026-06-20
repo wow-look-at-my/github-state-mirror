@@ -62,6 +62,7 @@ func (d *dashboard) routes(r chi.Router) {
 
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
+	r.Get("/api/webhooks", d.handleWebhooks)
 }
 
 func (d *dashboard) serveIndex(w http.ResponseWriter, _ *http.Request) {
@@ -181,6 +182,36 @@ func (d *dashboard) handleMe(w http.ResponseWriter, r *http.Request) {
 		resp.IsAdmin = d.auth.IsAdmin(login)
 	}
 	writeJSON(w, resp)
+}
+
+type webhooksResponse struct {
+	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`
+}
+
+// handleWebhooks returns the recent webhook deliveries and their dispositions.
+// The delivery log is global (it spans every repo/tenant), so — unlike the
+// per-scope cache stats — it is restricted to admins, consistent with the
+// admin-only "all scopes" view.
+func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
+	login, ok := d.auth.Session(r)
+	if !ok {
+		http.Error(w, "unauthorized: sign in first", http.StatusUnauthorized)
+		return
+	}
+	if !d.auth.IsAdmin(login) {
+		http.Error(w, "forbidden: admin only", http.StatusForbidden)
+		return
+	}
+	deliveries, err := d.store.RecentWebhookDeliveries(r.Context(), 100)
+	if err != nil {
+		slog.Warn("list webhook deliveries failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if deliveries == nil {
+		deliveries = []ghdata.WebhookDelivery{}
+	}
+	writeJSON(w, webhooksResponse{Deliveries: deliveries})
 }
 
 type kindFreshness struct {

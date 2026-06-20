@@ -139,7 +139,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -153,7 +153,10 @@ async function renderDashboard(me) {
         for (const b of Array.from(tabs.querySelectorAll("button"))) {
             b.classList.toggle("active", b.dataset.scope === scope);
         }
-        void loadScope(scope);
+        if (scope === "webhooks")
+            void loadWebhooks();
+        else
+            void loadScope(scope);
     }
 }
 async function loadScope(scope) {
@@ -262,6 +265,56 @@ function adminTable(scopes) {
     });
     return el("table", { class: "scopes" }, el("thead", null, el("tr", null, el("th", { text: "Login" }), el("th", { text: "Scope" }), ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })), el("th", { class: "num", text: "Total" }), el("th", { text: "Last seen" }))), el("tbody", null, rows));
 }
+// ---- webhook activity (admin only) ----
+async function loadWebhooks() {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "loading", text: "Loading webhook activity…" }));
+    let data;
+    try {
+        data = await api("/api/webhooks");
+    }
+    catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load webhook activity: " + e.message }));
+        return;
+    }
+    body.innerHTML = "";
+    const deliveries = data.deliveries ?? [];
+    sub.textContent = deliveries.length
+        ? "Most recent " + deliveries.length + " webhook deliver" + (deliveries.length === 1 ? "y" : "ies") + ", newest first"
+        : "Webhook deliveries and whether each one updated the cache";
+    if (deliveries.length === 0) {
+        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No webhook deliveries recorded yet." }), el("p", { class: "sub", text: "Deliveries appear here as GitHub sends them and the mirror processes each one." })));
+        return;
+    }
+    body.appendChild(webhookLegend());
+    body.appendChild(webhookTable(deliveries));
+}
+const DISPOSITIONS = [
+    ["applied", "data written to the cache"],
+    ["skipped", "no cached scope for the repo"],
+    ["invalidated", "marked stale; refetched on next read"],
+    ["ignored", "event not tracked"],
+    ["error", "internal error (GitHub retries)"],
+];
+function webhookLegend() {
+    const legend = el("div", { class: "wh-legend" });
+    for (const [disp, meaning] of DISPOSITIONS) {
+        legend.appendChild(el("span", { class: "wh-legend-item" }, el("span", { class: "disp " + disp, text: disp }), el("span", { class: "wh-legend-text", text: meaning })));
+    }
+    return legend;
+}
+function webhookTable(deliveries) {
+    const rows = deliveries.map((d) => {
+        const disp = d.disposition || "ignored";
+        const evt = d.action ? d.event_type + "." + d.action : d.event_type;
+        const shortID = d.delivery_id ? d.delivery_id.slice(0, 8) : "—";
+        return el("tr", null, el("td", null, el("span", { class: "disp " + disp, text: disp })), el("td", { class: "wh-event", text: evt }), el("td", { class: "wh-repo", text: d.repo || "—" }), el("td", { class: "wh-detail", text: d.detail || "" }), el("td", { class: "num", text: String(d.actors) }), el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }), el("td", { class: "wh-when", text: fmtTime(d.received_at) }));
+    });
+    return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { class: "num", text: "Scopes" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
+}
 // ---- boot ----
 async function boot() {
     if (DEMO)
@@ -300,6 +353,14 @@ function demoApi(path) {
             return Promise.reject(err);
         }
         return Promise.resolve(payload);
+    }
+    if (path.startsWith("/api/webhooks")) {
+        if (!d.webhooks) {
+            const err = new Error("HTTP 403");
+            err.status = 403;
+            return Promise.reject(err);
+        }
+        return Promise.resolve(d.webhooks);
     }
     return Promise.reject(new Error("unknown demo path " + path));
 }

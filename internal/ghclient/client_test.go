@@ -24,11 +24,11 @@ func testServer(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewWithBaseURL("", srv.URL)
+	return NewWithBaseURL(srv.URL)
 }
 
 func TestResolveActor_NoToken(t *testing.T) {
-	c := New("")
+	c := New()
 	login, err := c.ResolveActor(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "", login)
@@ -55,18 +55,6 @@ func TestResolveActor_FromContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "octocat", login)
 	assert.Equal(t, 1, callCount) // no additional API call
-}
-
-func TestResolveActor_DefaultToken(t *testing.T) {
-	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Bearer default-tok", r.Header.Get("Authorization"))
-		json.NewEncoder(w).Encode(userResp{Login: "defaultuser"})
-	})
-	c.defaultToken = "default-tok"
-
-	login, err := c.ResolveActor(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "defaultuser", login)
 }
 
 func TestResolveActor_APIError(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"path/filepath"
 	"testing"
 
@@ -424,6 +425,76 @@ func TestDispatch_Status_AppliesRollup(t *testing.T) {
 	pr, err = store.GetPullRequest(actorCtx, "my-org", "my-repo", 1)
 	require.Nil(t, err)
 	assert.Equal(t, "FAILURE", pr.LastCommitStatus.String)
+}
+
+// TestDispatch_AppliedRecordsDelivery verifies the dispatch returns an "applied"
+// result and records it (with the delivery id) in the global webhook log.
+func TestDispatch_AppliedRecordsDelivery(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	actorCtx := actor.WithActor(ctx, "alice")
+	require.Nil(t, store.UpsertRepo(actorCtx, dbgen.Repo{
+		Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+	}))
+
+	event := webhook.ParseEvent("pull_request", makePRPayload(t, "opened", "open", "my-org", "my-repo", 42, "Add feature"))
+	event.DeliveryID = "delivery-42"
+
+	result := dispatcher.Dispatch(ctx, event)
+
+	assert.Equal(t, webhook.DispApplied, result.Disposition)
+	assert.Equal(t, 1, result.Scopes)
+	assert.Equal(t, "my-org/my-repo", result.Repo)
+	assert.Equal(t, http.StatusOK, result.StatusCode())
+
+	deliveries, err := store.RecentWebhookDeliveries(ctx, 10)
+	require.Nil(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "delivery-42", deliveries[0].DeliveryID)
+	assert.Equal(t, "pull_request", deliveries[0].EventType)
+	assert.Equal(t, "opened", deliveries[0].Action)
+	assert.Equal(t, webhook.DispApplied, deliveries[0].Disposition)
+	assert.Equal(t, int64(1), deliveries[0].Actors)
+}
+
+// TestDispatch_SkippedWhenRepoNotCached verifies a parseable event for a repo no
+// actor has cached is a no-op recorded as "skipped" (202), not a silent success.
+func TestDispatch_SkippedWhenRepoNotCached(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	event := webhook.ParseEvent("pull_request", makePRPayload(t, "opened", "open", "ghost-org", "ghost-repo", 1, "Nobody cached this"))
+	result := dispatcher.Dispatch(ctx, event)
+
+	assert.Equal(t, webhook.DispSkipped, result.Disposition)
+	assert.Equal(t, 0, result.Scopes)
+	assert.Equal(t, http.StatusAccepted, result.StatusCode())
+
+	deliveries, err := store.RecentWebhookDeliveries(ctx, 10)
+	require.Nil(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, webhook.DispSkipped, deliveries[0].Disposition)
+	assert.Equal(t, "ghost-org/ghost-repo", deliveries[0].Repo)
+}
+
+// TestDispatch_IgnoredUntrackedEvent verifies an event the mirror does not track
+// (e.g. workflow_job) is recorded as "ignored" rather than dropped invisibly.
+func TestDispatch_IgnoredUntrackedEvent(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	event := webhook.Event{Type: "workflow_job", Action: "completed"}
+	result := dispatcher.Dispatch(ctx, event)
+
+	assert.Equal(t, webhook.DispIgnored, result.Disposition)
+	assert.Equal(t, http.StatusAccepted, result.StatusCode())
+
+	deliveries, err := store.RecentWebhookDeliveries(ctx, 10)
+	require.Nil(t, err)
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, "workflow_job", deliveries[0].EventType)
+	assert.Equal(t, webhook.DispIgnored, deliveries[0].Disposition)
 }
 
 // TestDispatch_PRUpsert_PreservesStatus verifies a later pull_request webhook
