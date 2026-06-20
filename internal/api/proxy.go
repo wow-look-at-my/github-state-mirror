@@ -39,6 +39,7 @@ func newGitHubProxy(baseURL string) http.Handler {
 			// not need the client's address and we avoid leaking it.
 			pr.SetURL(target)
 		},
+		ModifyResponse: stripUpstreamCORS,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Warn("github proxy error", "method", r.Method, "path", r.URL.Path, "error", err)
 			http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -52,4 +53,21 @@ func newGitHubProxy(baseURL string) http.Handler {
 		}
 		rp.ServeHTTP(w, r)
 	})
+}
+
+// stripUpstreamCORS removes the Access-Control-Allow-* / Max-Age headers from a
+// forwarded GitHub response. The mirror's own corsMiddleware is the single
+// authority for those, so leaving GitHub's copies in place would duplicate them
+// — most importantly Access-Control-Allow-Origin, which browsers reject when it
+// appears more than once ("multiple values"). Access-Control-Expose-Headers is
+// intentionally preserved: the mirror does not set it, and it lets cross-origin
+// clients read GitHub's X-RateLimit-*, Link, and similar headers.
+func stripUpstreamCORS(resp *http.Response) error {
+	h := resp.Header
+	h.Del("Access-Control-Allow-Origin")
+	h.Del("Access-Control-Allow-Methods")
+	h.Del("Access-Control-Allow-Headers")
+	h.Del("Access-Control-Allow-Credentials")
+	h.Del("Access-Control-Max-Age")
+	return nil
 }

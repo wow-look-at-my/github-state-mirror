@@ -53,6 +53,32 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 }
 
+// TestProxy_DeduplicatesCORS verifies that when GitHub returns its own CORS
+// headers (it does — Access-Control-Allow-Origin: *), the forwarded response
+// carries exactly one Access-Control-Allow-Origin (the mirror's) so browsers do
+// not reject it for having multiple values, while Expose-Headers is preserved.
+func TestProxy_DeduplicatesCORS(t *testing.T) {
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.Header().Set("Access-Control-Expose-Headers", "X-RateLimit-Remaining, Link")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	req := authedReq("GET", "/rate_limit", nil)
+	req.Header.Set("Origin", "https://example.com")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	acao := w.Header().Values("Access-Control-Allow-Origin")
+	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
+	assert.Equal(t, "*", acao[0])
+	// GitHub's Expose-Headers must survive so clients can read X-RateLimit-* etc.
+	assert.Equal(t, "X-RateLimit-Remaining, Link", w.Header().Get("Access-Control-Expose-Headers"))
+}
+
 // TestProxy_RequiresToken verifies the passthrough is not an open relay: a
 // request without an Authorization header is rejected with 401 and never
 // reaches GitHub.
