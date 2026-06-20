@@ -179,7 +179,7 @@ func TestVerifyAppIdentity_Caches(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 42, "slug": "pr-minder"})
 	}))
 	t.Cleanup(srv.Close)
-	c := ghclient.NewWithBaseURL("", srv.URL)
+	c := ghclient.NewWithBaseURL(srv.URL)
 
 	id, err := c.VerifyAppIdentity(context.Background(), "jwt-1")
 	require.NoError(t, err)

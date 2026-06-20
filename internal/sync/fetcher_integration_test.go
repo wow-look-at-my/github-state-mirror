@@ -25,7 +25,7 @@ func setupFetcherTest(t *testing.T, handler http.Handler) (*ghclient.Client, *gh
 	require.Nil(t, err)
 	t.Cleanup(func() { db.Close() })
 
-	client := ghclient.NewWithBaseURL("test-token", srv.URL)
+	client := ghclient.NewWithBaseURL(srv.URL)
 	store := ghdata.NewStore(db)
 	return client, store
 }

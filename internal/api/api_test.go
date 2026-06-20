@@ -74,7 +74,7 @@ func newTestStackUpstream(t *testing.T, authSvc *auth.Service, upstream http.Han
 
 	ghSrv := httptest.NewServer(upstream)
 	t.Cleanup(ghSrv.Close)
-	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
+	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "")
 	return router, store, db
@@ -207,8 +207,8 @@ func TestGetCompare(t *testing.T) {
 }
 
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
-// with no Authorization header instead of silently serving the server's
-// GITHUB_TOKEN view.
+// with no Authorization header instead of silently serving another
+// credential's cached view.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, store := setupTestRouter(t)
 
