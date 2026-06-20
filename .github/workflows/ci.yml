@@ -7,6 +7,10 @@ permissions:
   id-token: write
   contents: read
   actions: read
+  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
+  # A reusable workflow cannot exceed the caller's permissions, so it must be
+  # declared here.
+  packages: write
 
 jobs:
   sqlc-check:
@@ -31,3 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1
+
+  # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
+  # on master. Downloads the go-build artifact (server_linux_amd64) the build job
+  # uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
+  publish-ghcr:
+    needs: build
+    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master

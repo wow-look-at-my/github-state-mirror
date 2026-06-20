@@ -74,6 +74,26 @@ go-toolchain
 
 Binary is output to `build/server_linux_amd64`.
 
+## Docker
+
+A container image is published to the GitHub Container Registry on every push to `master`:
+
+```
+ghcr.io/wow-look-at-my/github-state-mirror:latest
+```
+
+It is a static binary on a `distroless` base (no shell, runs as a non-root user), listens on port `8080`, and keeps its SQLite cache under `/var/lib/github-state-mirror` (declared as a volume), so `DB_PATH` defaults to `/var/lib/github-state-mirror/github-mirror.db` inside the container.
+
+```sh
+docker run -p 8080:8080 \
+  -e GITHUB_TOKEN=... \
+  -e WEBHOOK_SECRET=... \
+  -v github-state-mirror-data:/var/lib/github-state-mirror \
+  ghcr.io/wow-look-at-my/github-state-mirror:latest
+```
+
+The SQLite database is a disposable cache, so persisting it with a volume is optional. The image is built and pushed by the `publish-ghcr` job in `.github/workflows/ci.yml`, which reuses `wow-look-at-my/actions/.github/workflows/publish-ghcr.yml` (downloads the CI build artifact, builds the `Dockerfile`, pushes to GHCR, and prunes old versions).
+
 ## Architecture
 
 ```
