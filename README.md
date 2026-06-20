@@ -42,6 +42,10 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 - Because the partition is the token — not the login — even two tokens belonging to the *same* GitHub user are isolated. A read-only token granted to a third-party app cannot read private data that a broader personal token previously cached.
 - On a cache miss the data is fetched using the caller's own token, so GitHub's authorization is always applied at fetch time. Staleness after an access change is bounded by each resource's TTL (and webhook invalidation), after which the next fetch re-authorizes.
 
+#### App-identity partition (for trusted first-party app callers)
+
+The per-token fingerprint is a poor partition for a **GitHub App backend** (e.g. a webhook handler) whose installation tokens rotate every hour — each new token is a fresh, empty bucket. Such a caller may instead assert a **stable identity** by sending its **GitHub App JWT** in an `X-Mirror-Identity` header. The mirror verifies that JWT against GitHub (`GET /app` — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partitions the caller as `app:<id>`, so all of the app's rotating tokens share **one** warm, webhook-fed bucket. The `Authorization` token is still used for upstream fetches, so per-repo authorization is preserved. Callers that send no identity header keep the fingerprint isolation above unchanged — this mode is opt-in and additive, so untrusting multi-tenant use is unaffected.
+
 ### REST
 
 - `GET /user` — authenticated user info (login, avatar)
@@ -49,9 +53,13 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 - `GET /repos/{owner}/{repo}/compare/{base}...{head}` — ahead_by, behind_by
 - `GET /repos/{owner}/{repo}/pulls/{number}/files` — changed files (path, additions, deletions)
 
+### Passthrough proxy
+
+Any request that **doesn't** match a cached endpoint above is **proxied verbatim to `api.github.com`** — same method, path, query, and body — authenticated with the caller's own token, and the upstream response is returned unchanged (each such path is logged at warn level). This makes the mirror a **drop-in base URL for the GitHub API**: point a client at the mirror, and reads it can serve come from cache while everything else (single-PR reads, branches, reviews, writes, GraphQL mutations, App-level endpoints) transparently reaches GitHub. Coverage can then grow by promoting frequently-proxied paths to cached endpoints.
+
 ### GraphQL
 
-- `POST /graphql` — accepts org data queries, returns cached repo + PR data assembled from SQLite
+- `POST /graphql` — accepts org data queries, returns cached repo + PR data assembled from SQLite. (Non-org queries and mutations are not handled here; send those to `api.github.com` directly — the mirror's `/graphql` is a cache assembler, not a GraphQL proxy.)
 
 ### Webhook
 

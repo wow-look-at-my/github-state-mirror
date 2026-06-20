@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -40,6 +41,31 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				return
 			}
 			ctx := ghclient.WithToken(r.Context(), token)
+
+			// Trusted-app mode: a caller may assert a stable identity with a
+			// GitHub App JWT in X-Mirror-Identity. We verify it against GitHub
+			// (GET /app — unforgeable, since only the app's private key produces
+			// a JWT GitHub accepts) and partition that caller by the app, NOT by
+			// the token fingerprint. This lets a first-party app whose
+			// installation tokens rotate hourly share one warm cache bucket,
+			// while the Authorization token is still used for upstream fetches so
+			// per-repo authorization is preserved. Callers without this header
+			// keep the fingerprint isolation below, so untrusting multi-tenant
+			// use is unaffected.
+			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
+				ident, err := gh.VerifyAppIdentity(ctx, idJWT)
+				if err != nil {
+					slog.Warn("verify app identity failed", "error", err)
+					http.Error(w, "unauthorized: could not verify identity assertion", http.StatusUnauthorized)
+					return
+				}
+				actorKey := fmt.Sprintf("app:%d", ident.ID)
+				ctx = actor.WithActor(ctx, actorKey)
+				record(ctx, actorKey, ident.Slug)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
 			// Validate the credential with GitHub up front (and warm the
 			// token->login cache). The login does NOT become the bucket key —
 			// the fingerprint does — but we remember the fingerprint->login
@@ -112,7 +138,7 @@ func NewRouter(
 	// so preflight OPTIONS is answered without a token.
 	r.Use(corsMiddleware(allowedOrigins))
 
-	h := &handlers{mgr: mgr, store: store}
+	h := &handlers{mgr: mgr, store: store, gh: gh}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
@@ -135,6 +161,14 @@ func NewRouter(
 
 		// GraphQL endpoint
 		r.Post("/graphql", h.graphql)
+
+		// Passthrough: anything not matched by a cached endpoint above is
+		// proxied verbatim to the upstream GitHub API. Registered last and as a
+		// catch-all so the mirror is a drop-in GitHub API base URL — cached
+		// where it can be, transparent everywhere else. Still inside the auth
+		// group, so the caller's token (and optional identity) is resolved
+		// before forwarding.
+		r.HandleFunc("/*", h.passthrough)
 	})
 
 	return r

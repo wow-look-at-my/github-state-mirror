@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -17,6 +18,7 @@ import (
 type handlers struct {
 	mgr   *freshness.Manager
 	store *ghdata.Store
+	gh    *ghclient.Client
 }
 
 func (h *handlers) getUser(w http.ResponseWriter, r *http.Request) {

@@ -40,8 +40,20 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 }
 
 // newTestStack builds the full router with the given auth service, returning the
-// router, the data store, and the underlying DB (for seeding freshness rows).
+// router, the data store, and the underlying DB (for seeding freshness rows). It
+// stubs only GitHub's /user endpoint — enough for requireAuth to validate the
+// test token. Use newTestStackUpstream when a test needs a richer upstream (e.g.
+// passthrough or App-identity verification).
 func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
+	return newTestStackUpstream(t, authSvc, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+	}))
+}
+
+// newTestStackUpstream is newTestStack with a caller-supplied upstream handler,
+// which stands in for api.github.com (both for /user credential validation and
+// for any request the passthrough proxy forwards).
+func newTestStackUpstream(t *testing.T, authSvc *auth.Service, upstream http.Handler) (http.Handler, *ghdata.Store, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -60,11 +72,7 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
-	// Stub GitHub's /user endpoint so requireAuth can validate the test token
-	// without reaching the real API.
-	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
-	}))
+	ghSrv := httptest.NewServer(upstream)
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL("", ghSrv.URL)
 
