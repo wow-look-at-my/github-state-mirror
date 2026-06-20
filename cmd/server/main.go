@@ -10,6 +10,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
+	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/config"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
@@ -50,8 +51,19 @@ func main() {
 	// Periodic refresher.
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval)
 
+	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
+	authSvc := auth.New(auth.Config{
+		ClientID:     cfg.OAuthClientID,
+		ClientSecret: cfg.OAuthClientSecret,
+		SessionKey:   cfg.SessionSecret,
+		AdminLogins:  cfg.AdminLogins,
+	})
+	if !authSvc.Configured() {
+		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
+	}
+
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL)
 
 	// Background tasks run as the service credential (GITHUB_TOKEN), in its own
 	// cache partition keyed by the token's fingerprint — the same scheme used
@@ -68,6 +80,11 @@ func main() {
 			slog.Warn("could not validate GITHUB_TOKEN", "error", err)
 		} else {
 			slog.Info("background refresher authenticated", "login", login)
+			// Record the service token's fingerprint->login so its scope is
+			// attributed (not "(unknown)") in the admin dashboard.
+			if err := store.RecordActorIdentity(bgCtx, ghclient.Fingerprint(cfg.GitHubToken), login); err != nil {
+				slog.Warn("record service identity failed", "error", err)
+			}
 		}
 	}
 

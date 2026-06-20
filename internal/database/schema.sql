@@ -149,3 +149,23 @@ CREATE TABLE commit_checks (
     state       TEXT NOT NULL,   -- normalized: SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
     PRIMARY KEY (actor, owner, repo, sha, context)
 );
+
+-- ============================================================================
+-- Actor Identities (dashboard only)
+-- ============================================================================
+--
+-- Maps a cache partition (actor = SHA-256 fingerprint of a token) to the GitHub
+-- login that token authenticated as. Populated in requireAuth whenever a token
+-- is validated. This does NOT relax data isolation: the data tables remain keyed
+-- by the opaque fingerprint. It exists purely so the web dashboard can group a
+-- user's own scopes (a user may hold several tokens) under their login, and so
+-- an admin can attribute every scope. The raw token is never stored — only its
+-- fingerprint and the login GitHub reports for it.
+CREATE TABLE actor_identities (
+    actor       TEXT NOT NULL PRIMARY KEY,  -- token fingerprint (matches the actor column elsewhere)
+    login       TEXT NOT NULL,              -- GitHub login the token authenticated as
+    first_seen  TEXT NOT NULL,              -- RFC3339
+    last_seen   TEXT NOT NULL               -- RFC3339
+);
+
+CREATE INDEX idx_actor_identities_login ON actor_identities (login);

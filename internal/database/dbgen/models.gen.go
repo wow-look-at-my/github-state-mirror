@@ -8,6 +8,13 @@ import (
 	"database/sql"
 )
 
+type ActorIdentity struct {
+	Actor     string
+	Login     string
+	FirstSeen string
+	LastSeen  string
+}
+
 type BranchComparison struct {
 	Actor    string
 	Owner    string
