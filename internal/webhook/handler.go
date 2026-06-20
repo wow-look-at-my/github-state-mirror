@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,13 +13,17 @@ import (
 	"time"
 )
 
-// dispatchTimeout bounds how long an asynchronous webhook dispatch may run,
-// so a slow or stuck refresh can't leak goroutines indefinitely.
+// dispatchTimeout bounds how long a webhook dispatch may run, so a stuck store
+// operation can't hold the connection open indefinitely. The cache writes are
+// small idempotent upserts that complete well within GitHub's delivery deadline,
+// so dispatch runs synchronously (see ServeHTTP) and this is only a safety net.
 const dispatchTimeout = 30 * time.Second
 
-// Dispatcher is called to process a parsed webhook event.
+// Dispatcher is called to process a parsed webhook event. It returns a
+// DispatchResult describing what it did, which the handler reports back to
+// GitHub so the delivery record reflects whether the cache was updated.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, event Event)
+	Dispatch(ctx context.Context, event Event) DispatchResult
 }
 
 // Handler returns an http.Handler that receives GitHub webhook POSTs.
@@ -58,17 +63,28 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 		}
 
 		event := ParseEvent(eventType, body)
+		event.DeliveryID = r.Header.Get("X-GitHub-Delivery")
 
-		// Respond 200 immediately, dispatch asynchronously.
-		// Use a detached, time-bounded context since the request context will
-		// be canceled once we return.
-		w.WriteHeader(http.StatusOK)
+		// Dispatch synchronously so the response reflects the real outcome (the
+		// cache writes are fast, idempotent upserts). Bound it so a stuck store
+		// op can't pin the connection; a retried delivery re-applies cleanly.
+		ctx, cancel := context.WithTimeout(r.Context(), dispatchTimeout)
+		defer cancel()
+		result := dispatcher.Dispatch(ctx, event)
 
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
-			defer cancel()
-			dispatcher.Dispatch(ctx, event)
-		}()
+		writeResult(w, result)
+	}
+}
+
+// writeResult serializes the dispatch outcome as the HTTP response. The status
+// distinguishes "applied" (200) from a no-op (202) and an internal error (500);
+// the body and headers carry the detail so it shows up in GitHub's delivery UI.
+func writeResult(w http.ResponseWriter, result DispatchResult) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-GSM-Disposition", result.Disposition)
+	w.WriteHeader(result.StatusCode())
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		slog.Warn("webhook: encode response failed", "error", err)
 	}
 }
 

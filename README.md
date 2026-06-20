@@ -63,14 +63,19 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 
 ### Webhook
 
-- `POST /webhook` — receives GitHub webhook events, triggers cache invalidation
+- `POST /webhook` — receives GitHub webhook events and applies them to the cache. The handler processes each delivery **synchronously** (the cache writes are small, idempotent upserts that finish well within GitHub's delivery deadline) and the HTTP response reflects what happened, so a "successful" delivery actually means data was preserved:
+  - `200 OK` — applied: webhook data was written to one or more cache scopes
+  - `202 Accepted` — received but nothing applied (no scope had the repo cached, an untracked event, or a fallback invalidation)
+  - `500` — an internal error; GitHub retries (and the re-applied upsert is idempotent)
+
+  The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
 
 ## Web Dashboard
 
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache for your account: how many repos, pull requests, orgs, etc. are cached, the freshness of each resource kind (fresh / stale / fetching / error), and recent refresh activity.
 
 - **What you see is yours.** The dashboard groups cache scopes by GitHub login. You only ever see scopes that *your own* tokens populated (a user may hold several tokens, each its own scope). This is a read-only view of counts and freshness metadata — it never exposes another credential's cached rows.
-- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity.
+- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity. They also get a **Webhooks** tab: a global log of recent webhook deliveries and each one's disposition (`applied` / `skipped` / `invalidated` / `ignored` / `error`), so you can confirm at a glance whether incoming events are actually updating the cache. The log spans every repo, so it is admin-only.
 - **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's per-token fingerprint model. The fingerprint→login mapping (`actor_identities`) exists purely so the UI can attribute scopes; it does **not** relax data isolation — the data tables remain keyed by the opaque token fingerprint.
 
 Dashboard routes (session-cookie auth, not bearer tokens):
@@ -80,6 +85,7 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `POST /logout` — clear the session
 - `GET /api/me` — `{ authenticated, login_configured, login, is_admin }`
 - `GET /api/cache?scope=mine|all` — cache stats for the signed-in user (`mine`) or every scope (`all`, admin only)
+- `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
 
 Sign-in requires a GitHub OAuth App; set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (see below). With those unset the page still renders but the sign-in button is disabled.
 

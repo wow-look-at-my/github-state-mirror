@@ -142,3 +142,15 @@ type UserOrgMembership struct {
 	UserLogin string
 	OrgLogin  string
 }
+
+type WebhookDelivery struct {
+	ID          int64
+	DeliveryID  string
+	EventType   string
+	Action      string
+	Repo        string
+	ReceivedAt  string
+	Disposition string
+	Detail      string
+	Actors      int64
+}
