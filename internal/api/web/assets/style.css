@@ -229,9 +229,9 @@ table.kinds tr.kind-error-row td.kind-error {
     border-radius: 8px; padding: 12px 14px;
 }
 .rate-meter.low { border-color: rgba(248,81,73,0.5); }
-.rate-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.rate-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
-.rate-nums { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.rate-top { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.rate-name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.rate-nums { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rate-bar { height: 6px; border-radius: 999px; background: var(--border-muted); overflow: hidden; margin: 8px 0 6px; }
 .rate-fill { height: 100%; background: var(--green); border-radius: 999px; transition: width 0.3s; }
 .rate-meter.low .rate-fill { background: var(--red); }
