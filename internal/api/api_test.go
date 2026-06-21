@@ -75,7 +75,7 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
 	}
 
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store, nil)
 
 	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
