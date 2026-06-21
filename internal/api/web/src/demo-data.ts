@@ -3,105 +3,7 @@
 // file; the CI preview bundle injects a <script> tag for it so app.js renders
 // these payloads instead of calling the backend. Edit this .ts, not the .js.
 
-interface Me {
-    authenticated: boolean;
-    login_configured: boolean;
-    login?: string;
-    is_admin: boolean;
-}
-
-interface Counts {
-    repos: number;
-    pull_requests: number;
-    orgs: number;
-    users: number;
-    commit_checks: number;
-    pr_files: number;
-    branch_comparisons: number;
-}
-
-interface KindFreshness {
-    kind: string;
-    states: Record<string, number>;
-    last_fetched?: string;
-}
-
-interface RecentRefresh {
-    kind: string;
-    key: string;
-    trigger: string;
-    started_at: string;
-    status: string;
-}
-
-interface ScopeStats {
-    actor: string;
-    login: string;
-    is_self: boolean;
-    last_seen?: string;
-    counts: Counts;
-    total: number;
-    kinds: KindFreshness[] | null;
-    recent?: RecentRefresh[];
-}
-
-interface CacheResponse {
-    login: string;
-    is_admin: boolean;
-    scope: string;
-    scope_count: number;
-    totals: Counts;
-    scopes: ScopeStats[] | null;
-}
-
-interface WebhookDelivery {
-    delivery_id: string;
-    event_type: string;
-    action: string;
-    repo: string;
-    received_at: string;
-    disposition: string;
-    detail: string;
-    actors: number;
-}
-
-interface WebhooksResponse {
-    deliveries: WebhookDelivery[] | null;
-}
-
-interface RequestEvent {
-    actor: string;
-    method: string;
-    path: string;
-    disposition: string;
-    at: string;
-}
-
-interface RequestsResponse {
-    total: number;
-    by_disposition: Record<string, number>;
-    recent: RequestEvent[] | null;
-}
-
-interface DemoStateData {
-    me: Me;
-    mine?: CacheResponse;
-    all?: CacheResponse;
-    webhooks?: WebhooksResponse;
-    requests?: RequestsResponse;
-}
-
-interface DemoConfig {
-    initial: string;
-    current?: string;
-    data: Record<string, DemoStateData>;
-}
-
-declare global {
-    interface Window {
-        __GSM_DEMO__?: DemoConfig;
-    }
-}
+import type { Counts, ScopeStats, WebhooksResponse, BrowseResponse, ConsistencyReport, RequestsResponse, DemoConfig } from "./types";
 
 function ago(seconds: number): string {
     return new Date(Date.now() - seconds * 1000).toISOString();
@@ -122,6 +24,7 @@ function total(c: Counts): number {
 const octocatCounts = counts({ repos: 14, pull_requests: 23, orgs: 2, users: 1, commit_checks: 61, pr_files: 188, branch_comparisons: 4 });
 const octocatScope: ScopeStats = {
     actor: "9f86d081884c",
+    actor_id: "9f86d081884c4d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f0fp01",
     login: "octocat",
     is_self: true,
     last_seen: ago(120),
@@ -138,7 +41,7 @@ const octocatScope: ScopeStats = {
         { kind: "pr_files", key: "octo-org/api/142", trigger: "lazy", started_at: ago(300), status: "success" },
         { kind: "compare", key: "octo-org/api/main...release", trigger: "webhook", started_at: ago(640), status: "success" },
         { kind: "org_repos", key: "octo-org", trigger: "periodic", started_at: ago(3600), status: "success" },
-        { kind: "pr_files", key: "octo-org/web/77", trigger: "lazy", started_at: ago(5400), status: "error" },
+        { kind: "pr_files", key: "octo-org/web/77", trigger: "lazy", started_at: ago(5400), status: "error", error: "github api GET /repos/octo-org/web/pulls/77/files: 404 Not Found" },
     ],
 };
 
@@ -147,6 +50,7 @@ const pazerCli = counts({ repos: 41, pull_requests: 96, orgs: 5, users: 1, commi
 const pazerCi = counts({ repos: 12, pull_requests: 8, orgs: 1, users: 1, commit_checks: 33, pr_files: 0, branch_comparisons: 2 });
 const pazerScopeCli: ScopeStats = {
     actor: "a3f5c9d20b71",
+    actor_id: "a3f5c9d20b71e6f4c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5ffp02",
     login: "PazerOP",
     is_self: true,
     last_seen: ago(60),
@@ -167,6 +71,7 @@ const pazerScopeCli: ScopeStats = {
 };
 const pazerScopeCi: ScopeStats = {
     actor: "c1d2e3f4a5b6",
+    actor_id: "c1d2e3f4a5b6f7081920a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6fp03",
     login: "PazerOP",
     is_self: true,
     last_seen: ago(7200),
@@ -185,6 +90,7 @@ const pazerScopeCi: ScopeStats = {
 const serviceCounts = counts({ repos: 60, pull_requests: 140, orgs: 6, users: 1, commit_checks: 410, pr_files: 0, branch_comparisons: 0 });
 const serviceScope: ScopeStats = {
     actor: "deadbeef0001",
+    actor_id: "app-installation:481",
     login: "gsm-bot",
     is_self: false,
     last_seen: ago(21600),
@@ -198,6 +104,7 @@ const serviceScope: ScopeStats = {
 const unknownCounts = counts({ repos: 3, pull_requests: 5, orgs: 0, users: 1, commit_checks: 9, pr_files: 22, branch_comparisons: 1 });
 const unknownScope: ScopeStats = {
     actor: "00ff11ee22dd",
+    actor_id: "00ff11ee22dd33cc44bb55aa66990088112233445566778899aabbccddeefp05",
     login: "(unknown)",
     is_self: false,
     counts: unknownCounts,
@@ -252,6 +159,66 @@ const pazerMine = [pazerScopeCli, pazerScopeCi];
 const allScopes = [serviceScope, octocatScope, pazerScopeCli, pazerScopeCi, unknownScope].map((s) =>
     ({ ...s, is_self: s.login === "PazerOP" }));
 
+// --- admin: browse + consistency check demo payloads (keyed by actor_id) ---
+function demoOwner(login: string): string {
+    return login === "octocat" ? "octo-org" : "wow-look-at-my";
+}
+
+function demoBrowse(s: ScopeStats): BrowseResponse {
+    const owner = demoOwner(s.login);
+    return {
+        actor: s.actor,
+        actor_id: s.actor_id ?? s.actor,
+        login: s.login === "(unknown)" ? undefined : s.login,
+        counts: s.counts,
+        repos: [
+            { owner, name: "buildhost", name_with_owner: owner + "/buildhost", url: "https://github.com/" + owner + "/buildhost", is_disabled: false, is_archived: false, pushed_at: ago(300), default_branch: "master", default_branch_status: "SUCCESS" },
+            { owner, name: "actions", name_with_owner: owner + "/actions", url: "https://github.com/" + owner + "/actions", is_disabled: false, is_archived: false, pushed_at: ago(5400), default_branch: "master", default_branch_status: "FAILURE" },
+        ],
+        pull_requests: [
+            { owner, repo: "buildhost", number: 318, title: "Add OCI manifest cache", url: "https://github.com/" + owner + "/buildhost/pull/318", state: "OPEN", is_draft: false, author_login: "PazerOP", base_ref: "master", head_ref: "oci-cache", head_sha: "9f3c1a2", additions: 220, deletions: 14, mergeable: "MERGEABLE", review_requests: 1, last_commit_status: "SUCCESS", labels: ["enhancement"], created_at: ago(86400), updated_at: ago(5) },
+            { owner, repo: "actions", number: 92, title: "Fix typescript action newline", url: "https://github.com/" + owner + "/actions/pull/92", state: "OPEN", is_draft: true, author_login: "dependabot", base_ref: "master", head_ref: "fix-newline", head_sha: "1b2c3d4", additions: 4, deletions: 2, mergeable: "UNKNOWN", review_requests: 0, last_commit_status: "PENDING", labels: ["bug", "ci"], created_at: ago(18000), updated_at: ago(18) },
+        ],
+        orgs: [{ login: owner, url: "https://github.com/" + owner }],
+        users: [{ login: s.login, url: "https://github.com/" + s.login }],
+        branch_comparisons: [{ owner, repo: "buildhost", base_ref: "master", head_ref: "oci-cache", ahead_by: 3, behind_by: 0 }],
+        pr_files: [{ owner, repo: "buildhost", pr_number: 318, path: "internal/oci/manifest.go", additions: 120, deletions: 4 }],
+        commit_checks: [{ owner, repo: "buildhost", sha: "9f3c1a2", context: "ci/build", state: "SUCCESS" }],
+    };
+}
+
+function demoCheck(s: ScopeStats): ConsistencyReport {
+    const owner = demoOwner(s.login);
+    return {
+        scope: s.actor,
+        scope_full: s.actor_id ?? s.actor,
+        login: s.login === "(unknown)" ? undefined : s.login,
+        fetched_as: "github-app",
+        generated_at: ago(2),
+        orgs_checked: [owner],
+        orgs_skipped: [{ org: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" }],
+        summary: { orgs_checked: 1, repos_cached: s.counts.repos, open_prs_cached: s.counts.pull_requests, discrepancies: 4, repos_only_in_cache: 1, repos_only_on_github: 0, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2 },
+        discrepancies: [
+            { kind: "pr", repo: owner + "/actions", pr: 92, issue: "field_mismatch", field: "last_commit_status", cached: "PENDING", github: "SUCCESS", note: "webhook-aggregated rollup diverged from GitHub" },
+            { kind: "pr", repo: owner + "/buildhost", pr: 318, issue: "field_mismatch", field: "label:enhancement", cached: "(absent)", github: "a2eeef" },
+            { kind: "pr", repo: owner + "/buildhost", pr: 301, issue: "only_in_cache", note: "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)" },
+            { kind: "repo", repo: owner + "/old-name", issue: "only_in_cache", note: "cached but not among GitHub's non-archived repos (archived, deleted, renamed, or no longer visible)" },
+        ],
+        notes: [
+            "Source of truth was fetched as the mirror's GitHub App, which may not see exactly what the token that populated this scope sees.",
+            "Only OPEN pull requests are compared (the cache only retains open PRs).",
+        ],
+    };
+}
+
+const adminBrowse: Record<string, BrowseResponse> = {};
+const adminCheck: Record<string, ConsistencyReport> = {};
+for (const s of allScopes) {
+    if (!s.actor_id) continue;
+    adminBrowse[s.actor_id] = demoBrowse(s);
+    adminCheck[s.actor_id] = demoCheck(s);
+}
+
 const config: DemoConfig = {
     initial: "admin",
     data: {
@@ -277,6 +244,8 @@ const config: DemoConfig = {
             },
             requests: demoRequests,
             webhooks: demoWebhooks,
+            browse: adminBrowse,
+            check: adminCheck,
         },
     },
 };

@@ -27,6 +27,10 @@ type Event struct {
 	// Org info
 	OrgLogin string
 
+	// GitHub App installation that produced this delivery (0 when absent). Used
+	// to pull an as-yet-uncached repo on demand, as that installation.
+	InstallationID int64
+
 	// Raw payload for anything that needs deeper inspection.
 	Raw json.RawMessage
 }
@@ -67,6 +71,9 @@ func ParseEvent(eventType string, payload []byte) Event {
 		Organization *struct {
 			Login string `json:"login"`
 		} `json:"organization"`
+		Installation *struct {
+			ID int64 `json:"id"`
+		} `json:"installation"`
 	}
 
 	if err := json.Unmarshal(payload, &body); err != nil {
@@ -89,6 +96,9 @@ func ParseEvent(eventType string, payload []byte) Event {
 	}
 	if body.Organization != nil {
 		e.OrgLogin = body.Organization.Login
+	}
+	if body.Installation != nil {
+		e.InstallationID = body.Installation.ID
 	}
 
 	return e
