@@ -103,6 +103,44 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.GreaterOrEqual(t, len(snap.Recent), 3)
 }
 
+// TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records
+// the status GitHub returned (e.g. 502), so the dashboard shows whether the
+// forwarded call actually succeeded — not just that it was forwarded.
+func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
+	svc := configuredAuth(t)
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" { // token validation, if reached
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway) // simulate GitHub 502 on the proxied path
+		_, _ = w.Write([]byte("upstream boom"))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
+
+	pass := authedReq("GET", "/some/uncached/path", nil)
+	pw := httptest.NewRecorder()
+	router.ServeHTTP(pw, pass)
+	require.Equal(t, http.StatusBadGateway, pw.Code)
+
+	rl := httptest.NewRequest("GET", "/api/requests", nil)
+	rl.AddCookie(mintSession(t, svc, "PazerOP"))
+	rw := httptest.NewRecorder()
+	router.ServeHTTP(rw, rl)
+	require.Equal(t, http.StatusOK, rw.Code)
+
+	var snap requestLogSnapshot
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &snap))
+	var found bool
+	for _, e := range snap.Recent {
+		if e.Disposition == DispPassthrough && e.Path == "/some/uncached/path" {
+			found = true
+			assert.Equal(t, http.StatusBadGateway, e.Status, "passthrough records the upstream status")
+		}
+	}
+	assert.True(t, found, "the passthrough should be in the request log")
+}
+
 func TestDashboard_Requests_NonAdminForbidden(t *testing.T) {
 	svc := configuredAuth(t)
 	router, _, _ := newTestStack(t, svc)

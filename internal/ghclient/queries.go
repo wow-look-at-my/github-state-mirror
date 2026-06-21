@@ -41,10 +41,17 @@ const prFields = `
 // orgDataQuery fetches a page of non-archived repos and the first page of each
 // repo's open PRs for an organization. Repos with more than 100 open PRs are
 // completed by repoPRsQuery (see fetchRemainingPRs).
+//
+// repositories is paged small (first: 5) on purpose: requesting all repos at
+// once — each with statusCheckRollup on the default branch AND on every open
+// PR's last commit — produces a response large/expensive enough that an
+// intermediary (or GitHub itself) returns "502 Bad Gateway" for active orgs.
+// Small pages keep each response well within those limits; pagination (the
+// repoCursor loop in GetOrgData) stitches them back together.
 const orgDataQuery = `
 query($org: String!, $repoCursor: String) {
   organization(login: $org) {
-    repositories(first: 100, after: $repoCursor, isArchived: false, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 5, after: $repoCursor, isArchived: false, orderBy: {field: PUSHED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
         name

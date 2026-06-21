@@ -35,6 +35,49 @@ func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, app *ghclie
 // read:user only).
 func (c *ConsistencyChecker) Available() bool { return c.app != nil }
 
+// InstallationRateLimit is the GitHub rate-limit status for one App installation
+// (the credential the background fetches and the consistency check actually use).
+type InstallationRateLimit struct {
+	Installation string                                `json:"installation"` // account login
+	AccountType  string                                `json:"account_type,omitempty"`
+	Resources    map[string]ghclient.RateLimitResource `json:"resources,omitempty"`
+	Error        string                                `json:"error,omitempty"`
+}
+
+// RateLimits reports the GitHub rate-limit status for each App installation, so
+// the operator can see how much of the App's quota the background fetches and
+// the consistency check are consuming (and when it resets). It mints a
+// short-lived installation token per installation and queries GET /rate_limit,
+// which does not itself count against the limit.
+func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRateLimit, error) {
+	if c.app == nil {
+		return nil, fmt.Errorf("rate limit unavailable: no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)")
+	}
+	installs, err := c.app.Installations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list GitHub App installations: %w", err)
+	}
+	out := make([]InstallationRateLimit, 0, len(installs))
+	for _, inst := range installs {
+		entry := InstallationRateLimit{Installation: inst.Account.Login, AccountType: inst.Account.Type}
+		token, err := c.app.InstallationToken(ctx, inst.ID)
+		if err != nil {
+			entry.Error = "could not mint installation token: " + err.Error()
+			out = append(out, entry)
+			continue
+		}
+		rl, err := c.gh.GetRateLimit(ghclient.WithToken(ctx, token))
+		if err != nil {
+			entry.Error = "fetch /rate_limit failed: " + err.Error()
+			out = append(out, entry)
+			continue
+		}
+		entry.Resources = rl.Resources
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 // ConsistencyReport is the full drift report for one cache scope, designed to be
 // copy-pasted back for analysis.
 type ConsistencyReport struct {

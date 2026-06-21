@@ -15,6 +15,7 @@ import type {
     Me, Counts, KindFreshness, RecentRefresh, ScopeStats, CacheResponse,
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
     Discrepancy, ConsistencyReport, RequestEvent, RequestsResponse,
+    RateLimitResponse, InstallationRateLimit, RateLimitResource,
     DemoStateData, DemoConfig,
 } from "./types";
 
@@ -177,6 +178,7 @@ async function renderDashboard(me: Me): Promise<void> {
             el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"),
             el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
+            el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"),
         );
         head.appendChild(tabs);
     }
@@ -186,32 +188,62 @@ async function renderDashboard(me: Me): Promise<void> {
     body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
     main.appendChild(body);
 
-    await loadScope("mine");
+    currentView = "mine";
+    await loadView("mine");
+    startAutoRefresh();
 
     function switchTab(scope: string): void {
         if (!tabs) return;
         for (const b of Array.from(tabs.querySelectorAll("button"))) {
             b.classList.toggle("active", (b as HTMLElement).dataset.scope === scope);
         }
-        if (scope === "webhooks") void loadWebhooks();
-        else if (scope === "requests") void loadRequests();
-        else void loadScope(scope);
+        currentView = scope;
+        void loadView(scope);
     }
 }
 
-async function loadScope(scope: string): Promise<void> {
+// loadView dispatches to the loader for a tab.
+function loadView(scope: string, silent = false): Promise<void> {
+    if (scope === "webhooks") return loadWebhooks(silent);
+    if (scope === "requests") return loadRequests(silent);
+    if (scope === "ratelimit") return loadRateLimits(silent);
+    return loadScope(scope, silent);
+}
+
+// ---- auto-refresh ----
+// The dashboard polls the active tab every few seconds so cache/freshness/rate
+// state stays live without a manual reload. Refreshes are "silent" (no loading
+// flash) and pause while a modal is open.
+const REFRESH_MS = 5000;
+let currentView = "mine";
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let modalOpen = false;
+
+function startAutoRefresh(): void {
+    if (DEMO || refreshTimer !== undefined) return;
+    refreshTimer = setInterval(() => {
+        if (modalOpen || document.hidden) return;
+        void loadView(currentView, true);
+    }, REFRESH_MS);
+}
+
+async function loadScope(scope: string, silent = false): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    body.innerHTML = "";
-    body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
+    if (!silent) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
+    }
     let data: CacheResponse;
     try {
         data = await api<CacheResponse>("/api/cache?scope=" + scope);
     } catch (e) {
+        if (silent) return; // keep current content during a background refresh
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Could not load cache stats: " + (e as Error).message }));
         return;
     }
+    if (currentView !== scope) return; // user switched tabs while we were fetching
     body.innerHTML = "";
     const scopes = data.scopes ?? [];
 
@@ -392,19 +424,23 @@ function scopeActions(s: ScopeStats): HTMLElement {
 }
 
 // ---- webhook activity (admin only) ----
-async function loadWebhooks(): Promise<void> {
+async function loadWebhooks(silent = false): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    body.innerHTML = "";
-    body.appendChild(el("div", { class: "loading", text: "Loading webhook activity…" }));
+    if (!silent) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: "Loading webhook activity…" }));
+    }
     let data: WebhooksResponse;
     try {
         data = await api<WebhooksResponse>("/api/webhooks");
     } catch (e) {
+        if (silent) return;
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Could not load webhook activity: " + (e as Error).message }));
         return;
     }
+    if (currentView !== "webhooks") return;
     body.innerHTML = "";
     const deliveries = data.deliveries ?? [];
     sub.textContent = deliveries.length
@@ -475,19 +511,23 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
 // HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
 // to GitHub uncached). This is the live view of how much the cache is actually
 // used vs. proxied straight through.
-async function loadRequests(): Promise<void> {
+async function loadRequests(silent = false): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    body.innerHTML = "";
-    body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
+    if (!silent) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
+    }
     let data: RequestsResponse;
     try {
         data = await api<RequestsResponse>("/api/requests");
     } catch (e) {
+        if (silent) return;
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Could not load request activity: " + (e as Error).message }));
         return;
     }
+    if (currentView !== "requests") return;
     body.innerHTML = "";
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
@@ -540,6 +580,7 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         const disp = e.disposition || "passthrough";
         return el("tr", null,
             el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })),
+            el("td", null, statusBadge(e.status)),
             el("td", { class: "wh-event", text: e.method }),
             el("td", { class: "wh-repo", text: e.path }),
             el("td", { class: "wh-detail", text: e.actor || "" }),
@@ -549,6 +590,7 @@ function requestTable(events: RequestEvent[]): HTMLElement {
     return el("table", { class: "webhooks" },
         el("thead", null, el("tr", null,
             el("th", { text: "Result" }),
+            el("th", { text: "Upstream" }),
             el("th", { text: "Method" }),
             el("th", { text: "Path" }),
             el("th", { text: "Caller" }),
@@ -556,6 +598,108 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         )),
         el("tbody", null, rows),
     );
+}
+
+// statusBadge renders the upstream HTTP status for a passthrough, colored by
+// class (2xx ok, 3xx redirect, 4xx/5xx error). Empty when there's no upstream
+// call (a cache hit), where "—" is shown instead.
+function statusBadge(status?: number): Node {
+    if (!status) return document.createTextNode("—");
+    const cls = status >= 500 ? "err" : status >= 400 ? "warn" : status >= 300 ? "redir" : "ok";
+    return el("span", { class: "status-code " + cls, text: String(status) });
+}
+
+// ---- GitHub App rate limit (admin only) ----
+const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
+
+async function loadRateLimits(silent = false): Promise<void> {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    if (!silent) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: "Loading rate limit…" }));
+    }
+    let data: RateLimitResponse;
+    try {
+        data = await api<RateLimitResponse>("/api/ratelimit");
+    } catch (e) {
+        if (silent) return;
+        body.innerHTML = "";
+        const msg = (e as Error).message;
+        const hint = (e as { status?: number }).status === 503
+            ? "No GitHub App is configured on this server, so there is no App credential to report a rate limit for."
+            : msg;
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + hint }));
+        return;
+    }
+    if (currentView !== "ratelimit") return;
+    body.innerHTML = "";
+    const installs = data.installations ?? [];
+    sub.textContent = "GitHub App rate limit — the credential the background fetches and the consistency check use" +
+        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "");
+
+    if (installs.length === 0) {
+        body.appendChild(el("div", { class: "empty" },
+            el("p", { text: "No GitHub App installations found." }),
+            el("p", { class: "sub", text: "If the App is configured, it has no installations; otherwise set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY." }),
+        ));
+        return;
+    }
+    for (const inst of installs) body.appendChild(rateLimitCard(inst));
+}
+
+function rateLimitCard(inst: InstallationRateLimit): HTMLElement {
+    const head = el("div", { class: "scope-head" },
+        el("div", { class: "scope-id" },
+            el("img", { class: "avatar", src: avatarFor(inst.installation), alt: "" }),
+            el("span", { class: "login", text: inst.installation }),
+            inst.account_type ? el("span", { class: "badge", text: inst.account_type }) : null,
+        ),
+    );
+    const body = el("div", { class: "scope-body" });
+    if (inst.error) {
+        body.appendChild(el("div", { class: "error-banner", text: inst.error }));
+        return el("div", { class: "scope" }, head, body);
+    }
+    const resources = inst.resources ?? {};
+    const names = RATE_RESOURCES.filter((n) => resources[n]).concat(
+        Object.keys(resources).filter((n) => !RATE_RESOURCES.includes(n)));
+    const grid = el("div", { class: "rate-grid" });
+    for (const name of names) grid.appendChild(rateMeter(name, resources[name]));
+    body.appendChild(grid);
+    return el("div", { class: "scope" }, head, body);
+}
+
+function rateMeter(name: string, r: RateLimitResource): HTMLElement {
+    const remaining = Number(r.remaining) || 0;
+    const limit = Number(r.limit) || 0;
+    const used = limit ? limit - remaining : (Number(r.used) || 0);
+    const pct = limit ? Math.max(0, Math.min(100, (remaining / limit) * 100)) : 100;
+    const low = limit > 0 && remaining / limit < 0.15;
+    return el("div", { class: "rate-meter" + (low ? " low" : "") },
+        el("div", { class: "rate-top" },
+            el("span", { class: "rate-name", text: name }),
+            el("span", { class: "rate-nums", text: remaining + " / " + limit + " left" }),
+        ),
+        el("div", { class: "rate-bar" }, el("div", { class: "rate-fill", style: "width:" + pct.toFixed(1) + "%" })),
+        el("div", { class: "rate-foot" },
+            el("span", { text: used + " used" }),
+            el("span", { class: "rate-reset", text: "resets " + fmtUntil(r.reset) }),
+        ),
+    );
+}
+
+// fmtUntil renders the time remaining until a Unix-epoch reset, e.g. "in 42m"
+// or "in 1h 3m"; "now" once the window has passed.
+function fmtUntil(epochSeconds: number): string {
+    const secs = Math.round(Number(epochSeconds) - Date.now() / 1000);
+    if (!isFinite(secs) || secs <= 0) return "now";
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0) return "in " + h + "h " + m + "m";
+    if (m > 0) return "in " + m + "m " + s + "s";
+    return "in " + s + "s";
 }
 
 // ---- admin: browse + consistency check (modal) ----
@@ -578,8 +722,10 @@ function openModal(titleText: string): Modal {
         body,
     );
     const backdrop = el("div", { class: "modal-backdrop" }, card);
+    modalOpen = true; // pause auto-refresh while the modal is open
     const close = (): void => {
         backdrop.remove();
+        modalOpen = false;
         document.removeEventListener("keydown", onKey);
     };
     function onKey(e: KeyboardEvent): void { if (e.key === "Escape") close(); }
@@ -850,6 +996,10 @@ function demoApi<T>(path: string): Promise<T> {
             return Promise.reject(err);
         }
         return Promise.resolve(d.requests as unknown as T);
+    }
+    if (path.startsWith("/api/ratelimit")) {
+        if (!d.ratelimit) return demoReject(503);
+        return Promise.resolve(d.ratelimit as unknown as T);
     }
     return Promise.reject(new Error("unknown demo path " + path));
 }

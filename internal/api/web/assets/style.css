@@ -219,6 +219,37 @@ table.kinds tr.kind-error-row td.kind-error {
 }
 .kind-error-msg { color: var(--red); font-family: var(--mono); font-size: 12px; word-break: break-word; }
 
+/* ---- GitHub App rate limit ---- */
+.rate-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+}
+.rate-meter {
+    background: var(--bg); border: 1px solid var(--border-muted);
+    border-radius: 8px; padding: 12px 14px;
+}
+.rate-meter.low { border-color: rgba(248,81,73,0.5); }
+.rate-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rate-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.rate-nums { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.rate-bar { height: 6px; border-radius: 999px; background: var(--border-muted); overflow: hidden; margin: 8px 0 6px; }
+.rate-fill { height: 100%; background: var(--green); border-radius: 999px; transition: width 0.3s; }
+.rate-meter.low .rate-fill { background: var(--red); }
+.rate-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.rate-reset { color: var(--fg-muted); }
+.rate-meter.low .rate-reset { color: var(--yellow); }
+
+/* ---- Upstream status badge (Requests view) ---- */
+.status-code {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    font-family: var(--mono); padding: 1px 7px; border-radius: 999px;
+    font-variant-numeric: tabular-nums;
+}
+.status-code.ok    { color: var(--green);  background: rgba(63,185,80,0.12); }
+.status-code.redir { color: var(--accent); background: rgba(47,129,247,0.12); }
+.status-code.warn  { color: var(--yellow); background: rgba(210,153,34,0.12); }
+.status-code.err   { color: var(--red);    background: rgba(248,81,73,0.12); }
+
 .pill {
     display: inline-block; font-size: 11px; font-weight: 600;
     padding: 1px 8px; border-radius: 999px; margin-right: 5px;

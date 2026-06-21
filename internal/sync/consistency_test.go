@@ -215,6 +215,37 @@ func TestConsistencyChecker_OrgFilter(t *testing.T) {
 	assert.Equal(t, []string{"org1"}, rep.OrgsChecked)
 }
 
+func TestConsistencyChecker_RateLimits(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 7, "account": map[string]any{"login": "wow-look-at-my", "type": "Organization"}},
+		})
+	})
+	mux.HandleFunc("/app/installations/7/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_7"})
+	})
+	mux.HandleFunc("/rate_limit", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resources": map[string]any{
+				"graphql": map[string]any{"limit": 5000, "remaining": 4000, "used": 1000, "reset": 1999999999},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	checker, _ := newCheckerTest(t, srv.URL)
+	limits, err := checker.RateLimits(context.Background())
+	require.NoError(t, err)
+	require.Len(t, limits, 1)
+	assert.Equal(t, "wow-look-at-my", limits[0].Installation)
+	assert.Equal(t, "Organization", limits[0].AccountType)
+	assert.Empty(t, limits[0].Error)
+	assert.Equal(t, 4000, limits[0].Resources["graphql"].Remaining)
+	assert.Equal(t, int64(1999999999), limits[0].Resources["graphql"].Reset)
+}
+
 func TestConsistencyChecker_Unavailable(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
