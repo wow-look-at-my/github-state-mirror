@@ -11,91 +11,18 @@
 // a state switcher is shown. Production never defines it, so the real backend is
 // used.
 
-interface Me {
-    authenticated: boolean;
-    login_configured: boolean;
-    login?: string;
-    is_admin: boolean;
-}
-
-interface Counts {
-    repos: number;
-    pull_requests: number;
-    orgs: number;
-    users: number;
-    commit_checks: number;
-    pr_files: number;
-    branch_comparisons: number;
-}
-
-interface KindFreshness {
-    kind: string;
-    states: Record<string, number>;
-    last_fetched?: string;
-}
-
-interface RecentRefresh {
-    kind: string;
-    key: string;
-    trigger: string;
-    started_at: string;
-    status: string;
-    error?: string;
-}
-
-interface ScopeStats {
-    actor: string;
-    login: string;
-    is_self: boolean;
-    last_seen?: string;
-    counts: Counts;
-    total: number;
-    kinds: KindFreshness[] | null;
-    recent?: RecentRefresh[];
-}
-
-interface CacheResponse {
-    login: string;
-    is_admin: boolean;
-    scope: string;
-    scope_count: number;
-    totals: Counts;
-    scopes: ScopeStats[] | null;
-}
-
-interface WebhookDelivery {
-    delivery_id: string;
-    event_type: string;
-    action: string;
-    repo: string;
-    received_at: string;
-    disposition: string;
-    detail: string;
-    actors: number;
-}
-
-interface WebhooksResponse {
-    deliveries: WebhookDelivery[] | null;
-}
-
-interface DemoStateData {
-    me: Me;
-    mine?: CacheResponse;
-    all?: CacheResponse;
-    webhooks?: WebhooksResponse;
-}
-
-interface DemoConfig {
-    initial: string;
-    current?: string;
-    data: Record<string, DemoStateData>;
-}
-
-declare global {
-    interface Window {
-        __GSM_DEMO__?: DemoConfig;
-    }
-}
+import type {
+    Me,
+    Counts,
+    KindFreshness,
+    RecentRefresh,
+    ScopeStats,
+    CacheResponse,
+    WebhookDelivery,
+    WebhooksResponse,
+    DemoStateData,
+    DemoConfig,
+} from "./types";
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
 
