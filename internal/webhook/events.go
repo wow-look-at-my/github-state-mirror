@@ -371,9 +371,11 @@ func normalizeCheckState(status, conclusion string) string {
 
 // PushPayload is the minimal info applied directly from a push webhook.
 type PushPayload struct {
-	Owner    string
-	Repo     string
-	PushedAt string // RFC3339
+	Owner          string
+	Repo           string
+	PushedAt       string // RFC3339
+	ChangedPaths   []string
+	HasChangedList bool
 }
 
 // ParsePushPayload extracts owner/repo and a best-effort pushed_at timestamp.
@@ -388,6 +390,11 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 		HeadCommit *struct {
 			Timestamp string `json:"timestamp"`
 		} `json:"head_commit"`
+		Commits []struct {
+			Added    []string `json:"added"`
+			Modified []string `json:"modified"`
+			Removed  []string `json:"removed"`
+		} `json:"commits"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return PushPayload{}, fmt.Errorf("parse push payload: %w", err)
@@ -403,6 +410,18 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 		p.PushedAt = normaliseTime(body.HeadCommit.Timestamp)
 	} else {
 		p.PushedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if len(body.Commits) > 0 {
+		p.HasChangedList = true
+		seen := make(map[string]bool)
+		for _, c := range body.Commits {
+			for _, path := range append(append(c.Added, c.Modified...), c.Removed...) {
+				if path != "" && !seen[path] {
+					seen[path] = true
+					p.ChangedPaths = append(p.ChangedPaths, path)
+				}
+			}
+		}
 	}
 	if p.Owner == "" || p.Repo == "" {
 		return PushPayload{}, fmt.Errorf("parse push payload: missing owner/repo")

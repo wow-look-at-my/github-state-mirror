@@ -50,14 +50,20 @@ A **GitHub App backend** whose installation tokens rotate hourly would get a fre
 
 ### REST
 
-The mirror serves **no** REST endpoint from cache. It used to cache `/user`,
-`/user/orgs`, `/repos/{owner}/{repo}/compare/{base}...{head}`, and
-`/repos/{owner}/{repo}/pulls/{number}/files`, but with *trimmed* response shapes
-(a subset of GitHub's fields). **A cache must be byte-for-byte identical to the
-origin — not a transformative middleman** — so those routes were removed; they
-now **pass through** to GitHub verbatim (see below). New cached REST endpoints
-will be added back only when they return GitHub's exact shape, each gated by an
-identity test.
+The mirror caches a small set of REST endpoints by storing GitHub's JSON after
+stripping URL/link fields (`url`, `*_url`, `_links`, and `links`). It does not
+reconstruct partial REST shapes from structured cache rows. Routes whose ordering,
+ranking, security semantics, or response variation cannot be kept correct remain
+uncached passthroughs and receive the same URL-stripping treatment.
+
+- `GET /repos/{owner}/{repo}/pulls/{number}` — cached per caller credential as
+  normalized JSON; pull-request webhooks mark it stale and a 30-minute TTL bounds
+  drift.
+- `GET /repos/{owner}/{repo}/pulls` — cached per exact query/media version as
+  normalized JSON; pull-request webhooks mark matching repo list pages stale.
+- `GET /repos/{owner}/{repo}/contents/{path}` — cached per path/query as
+  normalized JSON; push webhooks mark changed paths stale, falling back to the
+  repo's contents cache when the payload lacks a changed-file list.
 
 ### GraphQL
 
@@ -68,7 +74,7 @@ identity test.
 Any request the mirror does not serve from cache is **transparently forwarded to GitHub** (`https://api.github.com`) and returned **uncached**. This makes the mirror a drop-in replacement for `api.github.com`: the endpoints above are served fast from the per-credential cache, and every other endpoint (`/rate_limit`, `/repos/{owner}/{repo}`, issues, releases, an unrecognized GraphQL query, ...) still works.
 
 - The caller's `Authorization` header is forwarded unchanged — the mirror never substitutes its own `GITHUB_TOKEN` — and a forwarded request **still requires a token** (`401` otherwise), so the mirror is never an open, unauthenticated relay.
-- Responses are passed through verbatim, including status, body, and headers such as `Link` (pagination) and `X-RateLimit-*`. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved so browsers can read those rate-limit/link headers.
+- JSON responses are normalized by stripping GitHub URL/link fields, and URL-bearing `Link` headers are removed. Other response status/body/header behavior is passed through without populating the cache. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved.
 - This path is uncached: it never reads or writes the freshness store.
 
 ### OAuth token-exchange relay

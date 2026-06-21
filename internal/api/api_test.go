@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 	mgr := freshness.NewManager(fStore)
 
 	// Register stub fetchers so EnsureFresh doesn't panic.
-	for _, kind := range []string{syncpkg.KindUser, syncpkg.KindUserOrgs, syncpkg.KindOrgRepos, syncpkg.KindPRFiles, syncpkg.KindCompare} {
+	for _, kind := range []string{syncpkg.KindUser, syncpkg.KindUserOrgs, syncpkg.KindOrgRepos, syncpkg.KindPullRequestRaw, syncpkg.KindRepoPullList, syncpkg.KindRepoContents, syncpkg.KindPRFiles, syncpkg.KindCompare} {
 		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
 	}
 
@@ -80,6 +81,21 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          syncpkg.KindPullRequestRaw,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, syncpkg.NewPullRequestRawFetcher(gh, store))
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          syncpkg.KindRepoContents,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, syncpkg.NewRepoContentsFetcher(gh, store))
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          syncpkg.KindRepoPullList,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, syncpkg.NewRepoPullListFetcher(gh, store))
 
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
@@ -115,7 +131,7 @@ func authedReq(method, target string, body io.Reader) *http.Request {
 
 // NOTE: the /user, /user/orgs, /compare, and /pulls/{n}/files cached endpoints
 // were removed (they returned trimmed, non-GitHub shapes). They now pass through
-// to GitHub verbatim — see TestProxy_FormerlyCachedNowForwarded in proxy_test.go.
+// through GitHub uncached — see TestProxy_FormerlyCachedNowForwarded in proxy_test.go.
 // The only cached data route left is POST /graphql (the org-repos query).
 
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
