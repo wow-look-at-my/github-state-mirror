@@ -227,6 +227,7 @@ type recentRefresh struct {
 	Trigger   string `json:"trigger"`
 	StartedAt string `json:"started_at"`
 	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
 }
 
 type scopeStats struct {
@@ -421,6 +422,9 @@ func toRecent(logs []dbgen.CacheRefreshLog) []recentRefresh {
 			Trigger:   l.TriggeredBy,
 			StartedAt: l.StartedAt,
 			Status:    status,
+			// Surface the captured failure reason (cache_refresh_log.error_message)
+			// so the dashboard can show *why* a refresh errored, not just that it did.
+			Error: l.ErrorMessage.String,
 		})
 	}
 	return out

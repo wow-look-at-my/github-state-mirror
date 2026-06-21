@@ -40,6 +40,7 @@ interface RecentRefresh {
     trigger: string;
     started_at: string;
     status: string;
+    error?: string;
 }
 
 interface ScopeStats {
@@ -493,13 +494,18 @@ function kindsTable(kinds: KindFreshness[]): HTMLElement {
 function recentList(recent: RecentRefresh[]): HTMLElement {
     const ul = el("ul", { class: "recent" });
     for (const r of recent) {
-        ul.appendChild(el("li", null,
+        const li = el("li", null,
             el("span", { class: "dot " + (r.status || "running") }),
             el("span", { class: "r-kind", text: r.kind }),
             el("span", { class: "r-key", text: r.key }),
             el("span", { class: "r-trigger", text: r.trigger }),
             el("span", { class: "r-when", text: fmtTime(r.started_at) }),
-        ));
+        );
+        // Show the captured failure reason on errored refreshes.
+        if (r.error) {
+            li.appendChild(el("span", { class: "r-error", text: r.error }));
+        }
+        ul.appendChild(li);
     }
     return ul;
 }
