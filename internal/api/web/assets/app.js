@@ -11,6 +11,9 @@
 // a state switcher is shown. Production never defines it, so the real backend is
 // used.
 const DEMO = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
+// Whether the signed-in user is an admin. Admins get the per-scope Browse /
+// Check actions (the data/check endpoints are admin-only). Set in renderDashboard.
+let dashIsAdmin = false;
 const COUNT_FIELDS = [
     ["repos", "Repos"],
     ["pull_requests", "Pull requests"],
@@ -133,6 +136,7 @@ function githubIcon() {
 }
 // ---- dashboard ----
 async function renderDashboard(me) {
+    dashIsAdmin = me.is_admin;
     const main = byId("main");
     main.innerHTML = "";
     const head = el("div", { class: "page-head" });
@@ -216,6 +220,8 @@ function scopeCard(s, detailed) {
     meta.appendChild(el("div", { class: "fingerprint", text: "scope " + s.actor }));
     if (s.last_seen)
         meta.appendChild(el("div", { text: "last seen " + fmtTime(s.last_seen) }));
+    if (dashIsAdmin && s.actor_id)
+        meta.appendChild(scopeActions(s));
     head.appendChild(meta);
     const body = el("div", { class: "scope-body" });
     const mini = el("div", { class: "mini-grid" });
@@ -261,9 +267,14 @@ function adminTable(scopes) {
     const rows = scopes.map((s) => {
         const known = !!s.login && s.login !== "(unknown)";
         const loginCell = el("td", null, el("div", { class: "login-cell" }, known ? el("img", { class: "avatar", src: avatarFor(s.login), alt: "" }) : null, el("span", { class: known ? "" : "login unknown", text: s.login || "(unknown)" }), s.is_self ? el("span", { class: "badge you", text: "you" }) : null));
-        return el("tr", null, loginCell, el("td", { class: "fingerprint", text: s.actor }), ...COUNT_FIELDS.map(([k]) => el("td", { class: "num", text: String(countOf(s.counts, k)) })), el("td", { class: "num", text: String(sumCounts(s.counts)) }), el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }));
+        return el("tr", null, loginCell, el("td", { class: "fingerprint", text: s.actor }), ...COUNT_FIELDS.map(([k]) => el("td", { class: "num", text: String(countOf(s.counts, k)) })), el("td", { class: "num", text: String(sumCounts(s.counts)) }), el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }), el("td", { class: "actions-cell" }, s.actor_id ? scopeActions(s) : null));
     });
-    return el("table", { class: "scopes" }, el("thead", null, el("tr", null, el("th", { text: "Login" }), el("th", { text: "Scope" }), ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })), el("th", { class: "num", text: "Total" }), el("th", { text: "Last seen" }))), el("tbody", null, rows));
+    return el("table", { class: "scopes" }, el("thead", null, el("tr", null, el("th", { text: "Login" }), el("th", { text: "Scope" }), ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })), el("th", { class: "num", text: "Total" }), el("th", { text: "Last seen" }), el("th", { text: "Inspect" }))), el("tbody", null, rows));
+}
+// scopeActions renders the per-scope admin actions: browse the cached rows, or
+// run a consistency check against GitHub. Both open a modal.
+function scopeActions(s) {
+    return el("div", { class: "scope-actions" }, el("button", { class: "btn btn-sm", onclick: () => void openBrowse(s) }, "Browse"), el("button", { class: "btn btn-sm", onclick: () => void openCheck(s) }, "Check"));
 }
 // ---- webhook activity (admin only) ----
 async function loadWebhooks() {
@@ -315,6 +326,168 @@ function webhookTable(deliveries) {
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { class: "num", text: "Scopes" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
 }
+// ---- admin: browse + consistency check (modal) ----
+function scopeLabel(s) {
+    return s.login && s.login !== "(unknown)" ? s.login : "scope " + s.actor;
+}
+// openModal creates a dismissable overlay and returns its (empty) body element.
+function openModal(titleText) {
+    const body = el("div", { class: "modal-body" });
+    const closeBtn = el("button", { class: "btn btn-ghost modal-close", title: "Close" }, "✕");
+    const card = el("div", { class: "modal-card" }, el("div", { class: "modal-head" }, el("div", { class: "modal-title", text: titleText }), closeBtn), body);
+    const backdrop = el("div", { class: "modal-backdrop" }, card);
+    const close = () => {
+        backdrop.remove();
+        document.removeEventListener("keydown", onKey);
+    };
+    function onKey(e) { if (e.key === "Escape")
+        close(); }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop)
+        close(); });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+    return { body, close };
+}
+// jsonBlock renders a pretty-printed, copyable JSON view. This is the artifact
+// the operator pastes back for analysis.
+function jsonBlock(obj, copyLabel) {
+    const text = JSON.stringify(obj, null, 2);
+    const copyBtn = el("button", { class: "btn btn-sm" }, copyLabel);
+    copyBtn.addEventListener("click", () => {
+        const done = (ok) => {
+            copyBtn.textContent = ok ? "Copied!" : "Copy failed";
+            setTimeout(() => { copyBtn.textContent = copyLabel; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+        }
+        else {
+            done(false);
+        }
+    });
+    return el("div", { class: "json-wrap" }, el("div", { class: "json-toolbar" }, copyBtn), el("pre", { class: "json-block", text }));
+}
+async function openBrowse(s) {
+    const actorId = s.actor_id;
+    if (!actorId)
+        return;
+    const { body } = openModal("Cache contents — " + scopeLabel(s));
+    body.appendChild(el("div", { class: "loading", text: "Loading cached rows…" }));
+    let data;
+    try {
+        data = await api("/api/cache/data?actor=" + encodeURIComponent(actorId));
+    }
+    catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load cache contents: " + e.message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderBrowse(data));
+}
+function renderBrowse(d) {
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text: "Full fingerprint " + d.actor_id + (d.login ? " · " + d.login : "") }));
+    wrap.appendChild(totalsGrid(d.counts, 1));
+    if (d.repos.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Repositories (" + d.repos.length + ")" }));
+        wrap.appendChild(browseRepoTable(d.repos));
+    }
+    if (d.pull_requests.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Pull requests (" + d.pull_requests.length + ")" }));
+        wrap.appendChild(browsePRTable(d.pull_requests));
+    }
+    const extras = [
+        ["Orgs", d.orgs.length], ["Users", d.users.length],
+        ["Comparisons", d.branch_comparisons.length], ["PR files", d.pr_files.length],
+        ["Commit checks", d.commit_checks.length],
+    ];
+    const present = extras.filter(([, n]) => n > 0);
+    if (present.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Also cached" }));
+        wrap.appendChild(el("div", { class: "chips" }, ...present.map(([label, n]) => el("span", { class: "chip" }, label + " " + n))));
+    }
+    const raw = el("details", { class: "raw" }, el("summary", { text: "Raw JSON (everything cached for this scope)" }), jsonBlock(d, "Copy JSON"));
+    wrap.appendChild(raw);
+    return wrap;
+}
+function browseRepoTable(repos) {
+    const rows = repos.map((r) => el("tr", null, el("td", null, el("a", { href: r.url, target: "_blank", rel: "noopener", text: r.name_with_owner })), el("td", { text: r.default_branch || "—" }), statusCell(r.default_branch_status), el("td", { text: r.is_archived ? "archived" : r.is_disabled ? "disabled" : "active" })));
+    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Repo" }), el("th", { text: "Default branch" }), el("th", { text: "Branch status" }), el("th", { text: "Flags" }))), el("tbody", null, rows));
+}
+function browsePRTable(prs) {
+    const rows = prs.map((p) => el("tr", null, el("td", null, el("a", { href: p.url, target: "_blank", rel: "noopener", text: p.owner + "/" + p.repo + " #" + p.number })), el("td", { class: "pr-title", text: p.title }), el("td", { text: p.is_draft ? "draft" : p.state.toLowerCase() }), statusCell(p.last_commit_status), el("td", null, ...(p.labels ?? []).map((l) => el("span", { class: "label-chip", text: l })))));
+    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "PR" }), el("th", { text: "Title" }), el("th", { text: "State" }), el("th", { text: "CI" }), el("th", { text: "Labels" }))), el("tbody", null, rows));
+}
+function statusCell(status) {
+    if (!status)
+        return el("td", { text: "—" });
+    return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
+}
+async function openCheck(s) {
+    const actorId = s.actor_id;
+    if (!actorId)
+        return;
+    const { body } = openModal("Consistency check — " + scopeLabel(s));
+    body.appendChild(el("div", { class: "loading", text: "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
+    let report;
+    try {
+        report = await api("/api/cache/check?actor=" + encodeURIComponent(actorId));
+    }
+    catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Consistency check failed: " + e.message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderCheck(report));
+}
+function renderCheck(r) {
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text: "Fetched as " + r.fetched_as + " · " + r.orgs_checked.length + " org" +
+            (r.orgs_checked.length === 1 ? "" : "s") + " checked · " + fmtTime(r.generated_at) }));
+    // Headline: the copyable JSON is the whole point, so surface it first.
+    wrap.appendChild(jsonBlock(r, "Copy report JSON"));
+    const sm = r.summary;
+    const grid = el("div", { class: "stat-grid" });
+    grid.appendChild(statCard(sm.discrepancies, "Discrepancies"));
+    grid.appendChild(statCard(sm.repos_only_in_cache, "Repos only cached"));
+    grid.appendChild(statCard(sm.repos_only_on_github, "Repos only on GH"));
+    grid.appendChild(statCard(sm.prs_only_in_cache, "PRs only cached"));
+    grid.appendChild(statCard(sm.prs_only_on_github, "PRs only on GH"));
+    grid.appendChild(statCard(sm.field_mismatches, "Field mismatches"));
+    wrap.appendChild(grid);
+    if (r.discrepancies.length === 0) {
+        wrap.appendChild(el("div", { class: "ok-banner", text: "No drift detected. The cache matches GitHub for every org checked." }));
+    }
+    else {
+        wrap.appendChild(el("div", { class: "section-label", text: "Discrepancies (" + r.discrepancies.length + ")" }));
+        wrap.appendChild(discrepancyTable(r.discrepancies));
+    }
+    if (r.orgs_skipped && r.orgs_skipped.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Skipped owners" }));
+        const ul = el("ul", { class: "recent" });
+        for (const o of r.orgs_skipped) {
+            ul.appendChild(el("li", null, el("span", { class: "r-kind", text: o.org }), el("span", { class: "r-key", text: o.reason })));
+        }
+        wrap.appendChild(ul);
+    }
+    if (r.notes && r.notes.length) {
+        const notes = el("div", { class: "notes" });
+        for (const n of r.notes)
+            notes.appendChild(el("div", { class: "note-line", text: n }));
+        wrap.appendChild(notes);
+    }
+    return wrap;
+}
+function discrepancyTable(items) {
+    const rows = items.map((d) => {
+        const where = d.kind === "pr" ? d.repo + " #" + (d.pr ?? "") : d.repo;
+        return el("tr", null, el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })), el("td", { class: "wh-repo", text: where }), el("td", { class: "kind", text: d.field || "—" }), el("td", { class: "diff-cached", text: d.cached || "" }), el("td", { class: "diff-github", text: d.github || "" }), el("td", { class: "wh-detail", text: d.note || "" }));
+    });
+    return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
+}
 // ---- boot ----
 async function boot() {
     if (DEMO)
@@ -338,6 +511,15 @@ async function boot() {
     }
 }
 // ---- demo mode ----
+function demoQuery(path, key) {
+    const q = path.split("?")[1] ?? "";
+    return new URLSearchParams(q).get(key) ?? "";
+}
+function demoReject(status) {
+    const err = new Error("HTTP " + status);
+    err.status = status;
+    return Promise.reject(err);
+}
 function demoApi(path) {
     const cfg = DEMO;
     const state = cfg.current ?? cfg.initial;
@@ -345,13 +527,18 @@ function demoApi(path) {
     if (path === "/api/me") {
         return Promise.resolve((d.me ?? { authenticated: false, login_configured: true, is_admin: false }));
     }
+    if (path.startsWith("/api/cache/data")) {
+        const b = d.browse?.[demoQuery(path, "actor")];
+        return b ? Promise.resolve(b) : demoReject(404);
+    }
+    if (path.startsWith("/api/cache/check")) {
+        const r = d.check?.[demoQuery(path, "actor")];
+        return r ? Promise.resolve(r) : demoReject(503);
+    }
     if (path.startsWith("/api/cache")) {
         const payload = path.includes("scope=all") ? d.all : d.mine;
-        if (!payload) {
-            const err = new Error("HTTP 401");
-            err.status = 401;
-            return Promise.reject(err);
-        }
+        if (!payload)
+            return demoReject(401);
         return Promise.resolve(payload);
     }
     if (path.startsWith("/api/webhooks")) {
