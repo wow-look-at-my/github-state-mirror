@@ -3,7 +3,7 @@
 // file; the CI preview bundle injects a <script> tag for it so app.js renders
 // these payloads instead of calling the backend. Edit this .ts, not the .js.
 
-import type { Counts, ScopeStats, WebhooksResponse, BrowseResponse, ConsistencyReport, RequestsResponse, DemoConfig } from "./types";
+import type { Counts, ScopeStats, WebhooksResponse, BrowseResponse, ConsistencyReport, RequestsResponse, RateLimitResponse, DemoConfig } from "./types";
 
 function ago(seconds: number): string {
     return new Date(Date.now() - seconds * 1000).toISOString();
@@ -61,7 +61,7 @@ const pazerScopeCli: ScopeStats = {
         { kind: "user_orgs", states: { fresh: 1 }, last_fetched: ago(65) },
         { kind: "org_repos", states: { fresh: 4, stale: 1 }, last_fetched: ago(800) },
         { kind: "pr_files", states: { fresh: 70, stale: 12 }, last_fetched: ago(200) },
-        { kind: "compare", states: { fresh: 15, fetching: 2, error: 1 }, last_fetched: ago(30) },
+        { kind: "compare", states: { fresh: 15, fetching: 2, error: 1 }, last_fetched: ago(30), error: "github api GET /repos/wow-look-at-my/buildhost/compare/main...feat: 404 Not Found", error_key: "wow-look-at-my/buildhost/main...feat" },
     ],
     recent: [
         { kind: "compare", key: "wow-look-at-my/buildhost/main...feat", trigger: "lazy", started_at: ago(30), status: "running" },
@@ -146,12 +146,34 @@ const demoRequests: RequestsResponse = {
     by_disposition: { hit: 1503, miss: 71, passthrough: 264, error: 4 },
     recent: [
         { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "passthrough", at: ago(3) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", at: ago(4) },
-        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", at: ago(6) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "passthrough", status: 200, at: ago(3) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
+        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
         { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
-        { actor: "token:9f86d0818", method: "GET", path: "/rate_limit", disposition: "passthrough", at: ago(14) },
-        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "passthrough", at: ago(20) },
+        { actor: "token:9f86d0818", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
+        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "passthrough", status: 502, at: ago(20) },
+    ],
+};
+
+// --- GitHub App rate limit (admin "Rate limit" tab) ---
+const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
+const demoRateLimit: RateLimitResponse = {
+    installations: [
+        {
+            installation: "wow-look-at-my", account_type: "Organization",
+            resources: {
+                core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
+                graphql: { limit: 5000, remaining: 392, used: 4608, reset: resetIn(540) },
+                search: { limit: 30, remaining: 30, used: 0, reset: resetIn(60) },
+            },
+        },
+        {
+            installation: "PazerOP", account_type: "User",
+            resources: {
+                core: { limit: 5000, remaining: 4980, used: 20, reset: resetIn(3300) },
+                graphql: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3300) },
+            },
+        },
     ],
 };
 
@@ -244,6 +266,7 @@ const config: DemoConfig = {
             },
             requests: demoRequests,
             webhooks: demoWebhooks,
+            ratelimit: demoRateLimit,
             browse: adminBrowse,
             check: adminCheck,
         },

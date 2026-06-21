@@ -1,19 +1,66 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
+
+// failOrgFetcher always fails, so the org_repos refresh errors.
+type failOrgFetcher struct{}
+
+func (failOrgFetcher) Fetch(_ context.Context, _ string, _ string) (freshness.RefreshResult, error) {
+	return freshness.RefreshResult{}, errors.New("github api POST /graphql: 502 Bad Gateway")
+}
+
+// When the org_repos fetch fails and nothing is cached, the handler must NOT
+// return an empty "200 OK" (which is indistinguishable from "no repos"); it must
+// surface the upstream error with a non-200 status and the reason in the body.
+func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	store := ghdata.NewStore(db)
+	mgr := freshness.NewManager(freshness.NewStore(db))
+	mgr.RegisterFetcher(freshness.Policy{Kind: syncpkg.KindOrgRepos}, failOrgFetcher{})
+	h := &handlers{mgr: mgr, store: store, reqlog: newRequestLog()}
+
+	body := `{"variables":{"org":"my-org"},"query":"query { organization(login: \"my-org\") { repositories { nodes { name } } } }"}`
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body)).WithContext(seedCtx())
+	w := httptest.NewRecorder()
+	h.graphql(w, req)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	var resp struct {
+		Errors []struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Errors, 1)
+	assert.Contains(t, resp.Errors[0].Message, "502 Bad Gateway")
+	assert.Contains(t, resp.Errors[0].Message, "my-org")
+	assert.Equal(t, "UPSTREAM_FETCH_FAILED", resp.Errors[0].Type)
+}
 
 func TestGraphQL_BasicQuery(t *testing.T) {
 	router, store := setupTestRouter(t)
