@@ -131,6 +131,7 @@ func NewRouter(
 	allowedOrigins []string,
 	authSvc *auth.Service,
 	baseURL string,
+	checker *syncpkg.ConsistencyChecker,
 ) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -149,7 +150,7 @@ func NewRouter(
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
-	newDashboard(authSvc, store, baseURL).routes(r)
+	newDashboard(authSvc, store, baseURL, checker).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group.

@@ -47,11 +47,20 @@ func main() {
 	// Background refreshes sign in as a GitHub App (the service holds no static
 	// token of its own). Without an app configured, periodic refreshes are
 	// disabled; per-request data still works via each caller's Authorization
-	// header.
-	sessions := buildAppSessions(cfg, gh)
+	// header. The same authenticator is reused as the "source of truth" fetcher
+	// for the admin consistency check.
+	app := buildAppAuthenticator(cfg, gh)
+	var sessions syncpkg.SessionFunc
+	if app != nil {
+		sessions = syncpkg.AppSessions(app)
+	}
 
 	// Periodic refresher.
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
+
+	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
+	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
+	checker := syncpkg.NewConsistencyChecker(gh, store, app)
 
 	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
 	authSvc := auth.New(auth.Config{
@@ -65,7 +74,7 @@ func main() {
 	}
 
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -96,29 +105,30 @@ func main() {
 	}
 }
 
-// buildAppSessions constructs the GitHub App-backed SessionFunc for background
-// refreshes, or nil when no app is configured. Misconfiguration (app id set but
-// the key missing or unparseable) is logged and disables refreshes rather than
-// taking down the request-serving path, which needs no service credential.
-func buildAppSessions(cfg config.Config, gh *ghclient.Client) syncpkg.SessionFunc {
+// buildAppAuthenticator constructs the GitHub App authenticator, or nil when no
+// app is configured. It powers both the background-refresh SessionFunc and the
+// admin consistency check. Misconfiguration (app id set but the key missing or
+// unparseable) is logged and returns nil rather than taking down the
+// request-serving path, which needs no service credential.
+func buildAppAuthenticator(cfg config.Config, gh *ghclient.Client) *ghclient.AppAuthenticator {
 	if !cfg.GitHubAppConfigured() {
-		slog.Warn("no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY[_PATH]); periodic background refreshes are disabled (per-request data still works via the caller's Authorization header)")
+		slog.Warn("no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY[_PATH]); periodic background refreshes and the admin consistency check are disabled (per-request data still works via the caller's Authorization header)")
 		return nil
 	}
 
 	keyPEM, err := cfg.AppPrivateKeyPEM()
 	if err != nil {
-		slog.Error("GitHub App background refresher disabled", "error", err)
+		slog.Error("GitHub App disabled", "error", err)
 		return nil
 	}
 	if len(keyPEM) == 0 {
-		slog.Error("GitHub App background refresher disabled", "error", "GITHUB_APP_ID is set but no private key was provided (set GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH)")
+		slog.Error("GitHub App disabled", "error", "GITHUB_APP_ID is set but no private key was provided (set GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH)")
 		return nil
 	}
 
 	app, err := ghclient.NewAppAuthenticator(cfg.GitHubAppID, keyPEM, gh)
 	if err != nil {
-		slog.Error("GitHub App background refresher disabled", "error", err)
+		slog.Error("GitHub App disabled", "error", err)
 		return nil
 	}
 
@@ -130,5 +140,5 @@ func buildAppSessions(cfg config.Config, gh *ghclient.Client) syncpkg.SessionFun
 		slog.Info("GitHub App authenticated", "app_id", cfg.GitHubAppID, "installations", len(installs))
 	}
 
-	return syncpkg.AppSessions(app)
+	return app
 }

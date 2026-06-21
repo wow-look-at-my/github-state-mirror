@@ -217,6 +217,41 @@ func (q *Queries) ListActorIdentities(ctx context.Context) ([]ActorIdentity, err
 	return items, nil
 }
 
+const listBranchComparisonsByActor = `-- name: ListBranchComparisonsByActor :many
+SELECT actor, owner, repo, base_ref, head_ref, ahead_by, behind_by FROM branch_comparisons WHERE actor = ? ORDER BY owner, repo, base_ref, head_ref
+`
+
+func (q *Queries) ListBranchComparisonsByActor(ctx context.Context, actor string) ([]BranchComparison, error) {
+	rows, err := q.db.QueryContext(ctx, listBranchComparisonsByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BranchComparison
+	for rows.Next() {
+		var i BranchComparison
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.BaseRef,
+			&i.HeadRef,
+			&i.AheadBy,
+			&i.BehindBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCachedActors = `-- name: ListCachedActors :many
 
 SELECT DISTINCT actor FROM cache_metadata ORDER BY actor
@@ -241,6 +276,355 @@ func (q *Queries) ListCachedActors(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		items = append(items, actor)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommitChecksByActor = `-- name: ListCommitChecksByActor :many
+SELECT actor, owner, repo, sha, context, state FROM commit_checks WHERE actor = ? ORDER BY owner, repo, sha, context
+`
+
+func (q *Queries) ListCommitChecksByActor(ctx context.Context, actor string) ([]CommitCheck, error) {
+	rows, err := q.db.QueryContext(ctx, listCommitChecksByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CommitCheck
+	for rows.Next() {
+		var i CommitCheck
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.Sha,
+			&i.Context,
+			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDistinctOwnersByActor = `-- name: ListDistinctOwnersByActor :many
+SELECT DISTINCT owner FROM repos WHERE actor = ? ORDER BY owner
+`
+
+// ListDistinctOwnersByActor returns the distinct repo owners cached for an actor,
+// so the consistency check knows which orgs to re-fetch from GitHub.
+func (q *Queries) ListDistinctOwnersByActor(ctx context.Context, actor string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listDistinctOwnersByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var owner string
+		if err := rows.Scan(&owner); err != nil {
+			return nil, err
+		}
+		items = append(items, owner)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenPullRequestsByActor = `-- name: ListOpenPullRequestsByActor :many
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? AND state = 'OPEN' ORDER BY owner, repo, number
+`
+
+// ListOpenPullRequestsByActor returns only OPEN PRs for an actor. The
+// consistency check compares these against GitHub's live open-PR set (the cache
+// only retains open PRs; closed ones are deleted by the webhook dispatcher).
+func (q *Queries) ListOpenPullRequestsByActor(ctx context.Context, actor string) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequest
+	for rows.Next() {
+		var i PullRequest
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.IsDraft,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Additions,
+			&i.Deletions,
+			&i.Mergeable,
+			&i.AuthorLogin,
+			&i.AuthorAvatar,
+			&i.AuthorUrl,
+			&i.HeadRefName,
+			&i.BaseRefName,
+			&i.HeadRefOid,
+			&i.ReviewRequestCount,
+			&i.LastCommitStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrgsByActor = `-- name: ListOrgsByActor :many
+SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? ORDER BY login
+`
+
+func (q *Queries) ListOrgsByActor(ctx context.Context, actor string) ([]Org, error) {
+	rows, err := q.db.QueryContext(ctx, listOrgsByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Org
+	for rows.Next() {
+		var i Org
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Login,
+			&i.AvatarUrl,
+			&i.Url,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRFilesByActor = `-- name: ListPRFilesByActor :many
+SELECT actor, owner, repo, pr_number, path, additions, deletions FROM pr_files WHERE actor = ? ORDER BY owner, repo, pr_number, path
+`
+
+func (q *Queries) ListPRFilesByActor(ctx context.Context, actor string) ([]PrFile, error) {
+	rows, err := q.db.QueryContext(ctx, listPRFilesByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrFile
+	for rows.Next() {
+		var i PrFile
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Path,
+			&i.Additions,
+			&i.Deletions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsByActor = `-- name: ListPRLabelsByActor :many
+SELECT actor, owner, repo, pr_number, name, color FROM pr_labels WHERE actor = ? ORDER BY owner, repo, pr_number, name
+`
+
+func (q *Queries) ListPRLabelsByActor(ctx context.Context, actor string) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPullRequestsByActor = `-- name: ListPullRequestsByActor :many
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? ORDER BY owner, repo, number
+`
+
+func (q *Queries) ListPullRequestsByActor(ctx context.Context, actor string) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listPullRequestsByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequest
+	for rows.Next() {
+		var i PullRequest
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.IsDraft,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Additions,
+			&i.Deletions,
+			&i.Mergeable,
+			&i.AuthorLogin,
+			&i.AuthorAvatar,
+			&i.AuthorUrl,
+			&i.HeadRefName,
+			&i.BaseRefName,
+			&i.HeadRefOid,
+			&i.ReviewRequestCount,
+			&i.LastCommitStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReposByActor = `-- name: ListReposByActor :many
+
+SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? ORDER BY owner, name
+`
+
+// ============================================================================
+// Admin cache browse (dashboard, admin only)
+// ============================================================================
+//
+// These dump the actual cached rows for ONE explicit actor (cache scope). Unlike
+// the per-context reads in store.go (which take the actor from the request
+// context), these take the actor as a parameter so an admin can inspect any
+// scope. They are gated to admins in the API layer; the data tables remain keyed
+// by the opaque fingerprint, so this does not change the storage model -- it only
+// lets the operator read what is already there.
+func (q *Queries) ListReposByActor(ctx context.Context, actor string) ([]Repo, error) {
+	rows, err := q.db.QueryContext(ctx, listReposByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Repo
+	for rows.Next() {
+		var i Repo
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Name,
+			&i.NameWithOwner,
+			&i.Url,
+			&i.IsDisabled,
+			&i.IsArchived,
+			&i.PushedAt,
+			&i.DefaultBranch,
+			&i.DefaultBranchStatus,
+			&i.OwnerLogin,
+			&i.OwnerAvatar,
+			&i.OwnerUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsersByActor = `-- name: ListUsersByActor :many
+SELECT actor, login, avatar_url, url FROM users WHERE actor = ? ORDER BY login
+`
+
+func (q *Queries) ListUsersByActor(ctx context.Context, actor string) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, listUsersByActor, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Login,
+			&i.AvatarUrl,
+			&i.Url,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
