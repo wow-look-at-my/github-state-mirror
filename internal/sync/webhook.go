@@ -2,10 +2,13 @@ package sync
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
+	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -264,8 +267,8 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) ou
 // bootstraps a scope instead of being dropped. One fetch seeds every repo the
 // installation can see, so subsequent deliveries for that org apply directly.
 // Pulling is best-effort: if no app is configured, the delivery carries no
-// installation, or the fetch fails, the repo simply stays uncached and the
-// caller skips.
+// installation, or the fetch fails, the dispatcher falls back to seeding just
+// the event's repo from the signed webhook payload.
 func (d *WebhookDispatcher) actorsForRepo(ctx context.Context, event webhook.Event, owner, repo string) ([]string, error) {
 	actors, err := d.store.ActorsForRepo(ctx, owner, repo)
 	if err != nil {
@@ -274,7 +277,18 @@ func (d *WebhookDispatcher) actorsForRepo(ctx context.Context, event webhook.Eve
 	if len(actors) > 0 {
 		return actors, nil
 	}
-	if !d.pullOnDemand(ctx, event, owner) {
+	if d.pullOnDemand(ctx, event, owner) {
+		actors, err = d.store.ActorsForRepo(ctx, owner, repo)
+		if err != nil {
+			return nil, err
+		}
+		if len(actors) > 0 {
+			return actors, nil
+		}
+	}
+	if err := d.seedRepoScopeFromWebhook(ctx, event, owner, repo); err != nil {
+		slog.Warn("webhook: seed repo scope from payload failed",
+			"installation", event.InstallationID, "repo", owner+"/"+repo, "error", err)
 		return actors, nil
 	}
 	return d.store.ActorsForRepo(ctx, owner, repo)
@@ -302,6 +316,101 @@ func (d *WebhookDispatcher) pullOnDemand(ctx context.Context, event webhook.Even
 	}
 	slog.Info("webhook: pulled org repos on demand", "installation", event.InstallationID, "owner", owner)
 	return true
+}
+
+// seedRepoScopeFromWebhook creates the installation cache partition for the
+// repo named by this delivery when the broader owner pull could not. The signed
+// webhook payload already carries enough repository metadata to establish the
+// repo row, which gives the current event an actor to apply to.
+func (d *WebhookDispatcher) seedRepoScopeFromWebhook(ctx context.Context, event webhook.Event, owner, repo string) error {
+	if d.app == nil || event.InstallationID == 0 || owner == "" || repo == "" {
+		return nil
+	}
+	repoRow, ok := repoFromWebhookPayload(event.Raw, owner, repo)
+	if !ok {
+		return nil
+	}
+	pctx := actor.WithActor(ctx, AppInstallationActor(event.InstallationID))
+	if err := d.store.UpsertRepo(pctx, repoRow); err != nil {
+		return err
+	}
+	slog.Info("webhook: seeded repo scope from payload", "installation", event.InstallationID, "repo", owner+"/"+repo)
+	return nil
+}
+
+func repoFromWebhookPayload(raw json.RawMessage, owner, repo string) (dbgen.Repo, bool) {
+	var body struct {
+		Repository *struct {
+			Name          string `json:"name"`
+			FullName      string `json:"full_name"`
+			HTMLURL       string `json:"html_url"`
+			URL           string `json:"url"`
+			Disabled      bool   `json:"disabled"`
+			Archived      bool   `json:"archived"`
+			PushedAt      string `json:"pushed_at"`
+			DefaultBranch string `json:"default_branch"`
+			Owner         *struct {
+				Login     string `json:"login"`
+				AvatarURL string `json:"avatar_url"`
+				HTMLURL   string `json:"html_url"`
+				URL       string `json:"url"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Repository == nil {
+		return dbgen.Repo{}, false
+	}
+	r := body.Repository
+	if r.Name != "" && r.Name != repo {
+		return dbgen.Repo{}, false
+	}
+	if r.Owner != nil && r.Owner.Login != "" && r.Owner.Login != owner {
+		return dbgen.Repo{}, false
+	}
+
+	fullName := r.FullName
+	if fullName == "" {
+		fullName = owner + "/" + repo
+	}
+	url := r.HTMLURL
+	if url == "" {
+		url = r.URL
+	}
+	if url == "" {
+		url = "https://github.com/" + fullName
+	}
+
+	row := dbgen.Repo{
+		Owner:         owner,
+		Name:          repo,
+		NameWithOwner: fullName,
+		Url:           url,
+		IsDisabled:    boolToInt64(r.Disabled),
+		IsArchived:    boolToInt64(r.Archived),
+	}
+	if r.PushedAt != "" {
+		row.PushedAt = sql.NullString{String: r.PushedAt, Valid: true}
+	}
+	if r.DefaultBranch != "" {
+		row.DefaultBranch = sql.NullString{String: r.DefaultBranch, Valid: true}
+	}
+	if r.Owner != nil {
+		row.OwnerLogin = sql.NullString{String: r.Owner.Login, Valid: r.Owner.Login != ""}
+		row.OwnerAvatar = sql.NullString{String: r.Owner.AvatarURL, Valid: r.Owner.AvatarURL != ""}
+		ownerURL := r.Owner.HTMLURL
+		if ownerURL == "" {
+			ownerURL = r.Owner.URL
+		}
+		row.OwnerUrl = sql.NullString{String: ownerURL, Valid: ownerURL != ""}
+	}
+	return row, true
+}
+
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {

@@ -114,6 +114,64 @@ func TestDispatch_PullsUncachedRepoOnDemand(t *testing.T) {
 	assert.Equal(t, []string{AppInstallationActor(installID)}, actors)
 }
 
+// TestDispatch_SeedsUncachedRepoFromWebhookPayload covers the case where the
+// app is configured and the owner pull runs, but it still does not create the
+// repo row. The signed webhook payload is enough to establish the installation
+// cache scope for this repo, so the current delivery should apply.
+func TestDispatch_SeedsUncachedRepoFromWebhookPayload(t *testing.T) {
+	d, _, _, store := setupDispatcher(t)
+
+	const owner, repo = "wow-look-at-my", "repo-nightmare"
+	const installID int64 = 123
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/app/installations/123/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_inst123"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	gh := ghclient.NewWithBaseURL(srv.URL)
+	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
+	require.NoError(t, err)
+
+	// Keep the default stub org-repos fetcher from setupDispatcher: it succeeds
+	// but does not write any repo row, forcing the payload-seeding fallback.
+	d.app = app
+
+	raw := []byte(`{
+		"sha": "deadbeef",
+		"state": "success",
+		"context": "ci/test",
+		"branches": [{"name": "main"}],
+		"repository": {
+			"name": "repo-nightmare",
+			"full_name": "wow-look-at-my/repo-nightmare",
+			"html_url": "https://github.com/wow-look-at-my/repo-nightmare",
+			"default_branch": "main",
+			"owner": {
+				"login": "wow-look-at-my",
+				"avatar_url": "https://avatars.githubusercontent.com/u/1",
+				"html_url": "https://github.com/wow-look-at-my"
+			}
+		},
+		"installation": {"id": 123}
+	}`)
+	event := webhook.ParseEvent("status", raw)
+	require.Equal(t, installID, event.InstallationID)
+
+	result := d.Dispatch(context.Background(), event)
+
+	assert.Equal(t, webhook.DispApplied, result.Disposition)
+	assert.Equal(t, 1, result.Scopes)
+
+	ctx := actor.WithActor(context.Background(), AppInstallationActor(installID))
+	got, err := store.GetRepo(ctx, owner, repo)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/wow-look-at-my/repo-nightmare", got.Url)
+	assert.Equal(t, sql.NullString{String: "main", Valid: true}, got.DefaultBranch)
+}
+
 // TestDispatch_SkipsWhenNoAppToPull confirms the pull is best-effort: with no
 // app configured the uncached repo cannot be fetched, so the delivery still
 // skips cleanly rather than erroring.
