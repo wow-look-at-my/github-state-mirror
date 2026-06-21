@@ -55,46 +55,14 @@ func TestAppSessions(t *testing.T) {
 	require.Len(t, sessions, 1)
 
 	// The session is partitioned under the stable installation actor.
-	assert.Equal(t, "app-installation:123", actor.FromContext(sessions[0].Ctx))
-
-	// It carries the org the installation covers, so the refresher can populate
-	// that org's repos into the app-installation partition.
-	assert.Equal(t, []string{"acme"}, sessions[0].Orgs)
+	assert.Equal(t, "app-installation:123", actor.FromContext(sessions[0]))
 
 	// ...and carries the minted installation token, so API calls made with the
 	// session context authenticate as that installation.
-	login, err := gh.ResolveActor(sessions[0].Ctx)
+	login, err := gh.ResolveActor(sessions[0])
 	require.NoError(t, err)
 	assert.Equal(t, "acme", login)
 	assert.Equal(t, "Bearer ghs_inst123", userAuth)
-}
-
-func TestAppSessions_UserInstallationSeedsNoOrg(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"id": 7, "account": map[string]any{"login": "alice", "type": "User"}},
-		})
-	})
-	mux.HandleFunc("/app/installations/7/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_inst7"})
-	})
-
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	gh := ghclient.NewWithBaseURL(srv.URL)
-	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
-	require.NoError(t, err)
-
-	sessions, err := AppSessions(app)(context.Background())
-	require.NoError(t, err)
-	require.Len(t, sessions, 1)
-
-	// A User-account installation still yields a session (its token may still be
-	// used elsewhere) but seeds no org-repos: the cached query is org-scoped.
-	assert.Equal(t, "app-installation:7", actor.FromContext(sessions[0].Ctx))
-	assert.Empty(t, sessions[0].Orgs)
 }
 
 func TestAppSessions_InstallationsError(t *testing.T) {
