@@ -9,6 +9,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 // Admin cache browse + consistency check.
@@ -253,6 +254,33 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, report)
+}
+
+type rateLimitResponse struct {
+	Installations []syncpkg.InstallationRateLimit `json:"installations"`
+}
+
+// handleRateLimit reports the GitHub App's rate-limit status per installation
+// (admin only). The App is the credential the background fetches and the
+// consistency check use, so this is what to watch when fetches start failing.
+func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAdmin(w, r); !ok {
+		return
+	}
+	if d.checker == nil || !d.checker.Available() {
+		http.Error(w, "rate limit unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
+		return
+	}
+	limits, err := d.checker.RateLimits(r.Context())
+	if err != nil {
+		slog.Warn("rate limit fetch failed", "error", err)
+		http.Error(w, "rate limit fetch failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if limits == nil {
+		limits = []syncpkg.InstallationRateLimit{}
+	}
+	writeJSON(w, rateLimitResponse{Installations: limits})
 }
 
 // requireAdmin enforces a signed-in admin session. It writes the appropriate

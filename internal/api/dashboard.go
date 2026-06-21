@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -29,11 +31,23 @@ var webFS embed.FS
 // the bearer-token + fingerprint model that guards the data API. It never serves
 // one credential's cached rows to another — it only reports counts and freshness
 // metadata, grouped by login for convenience.
+// contentAsset is an embedded asset served at a content-addressed URL — the
+// filename embeds a hash of the content. A new deploy with changed JS/CSS yields
+// a new URL, so browsers and the CDN/proxy fetch the new file immediately
+// instead of serving a stale copy until a cache TTL expires. Because the URL is
+// unique per content, it is served with a long-lived, immutable cache header.
+type contentAsset struct {
+	url         string // e.g. "/assets/app.1a2b3c4d5e.js"
+	content     []byte
+	contentType string
+}
+
 type dashboard struct {
 	auth    *auth.Service
 	store   *ghdata.Store
 	baseURL string
 	index   []byte
+	assets  []contentAsset
 	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
 }
@@ -44,7 +58,45 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		// Embedded at compile time; a read failure is a programmer error.
 		panic("read embedded index.html: " + err.Error())
 	}
-	return &dashboard{auth: authSvc, store: store, baseURL: strings.TrimRight(baseURL, "/"), index: index, reqlog: reqlog, checker: checker}
+	appJS := mustReadAsset("web/assets/app.js")
+	styleCSS := mustReadAsset("web/assets/style.css")
+	appName := hashedAssetName("app", "js", appJS)
+	cssName := hashedAssetName("style", "css", styleCSS)
+
+	// Rewrite the served HTML to point at the content-addressed URLs. The
+	// committed index.html keeps the stable names (assets/app.js) so the
+	// backend-free CI styling preview still resolves them; only the HTML the Go
+	// server hands out references the hashed URLs.
+	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
+	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
+
+	return &dashboard{
+		auth:    authSvc,
+		store:   store,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		index:   []byte(served),
+		assets: []contentAsset{
+			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
+		},
+		reqlog:  reqlog,
+		checker: checker,
+	}
+}
+
+func mustReadAsset(name string) []byte {
+	b, err := webFS.ReadFile(name)
+	if err != nil {
+		panic("read embedded asset " + name + ": " + err.Error())
+	}
+	return b
+}
+
+// hashedAssetName returns "<stem>.<hash>.<ext>" where hash is the first 10 hex
+// chars of the content's SHA-256 — enough to be collision-free for two files.
+func hashedAssetName(stem, ext string, content []byte) string {
+	sum := sha256.Sum256(content)
+	return stem + "." + hex.EncodeToString(sum[:])[:10] + "." + ext
 }
 
 // routes registers the dashboard's routes on r. These sit outside requireAuth:
@@ -57,7 +109,10 @@ func (d *dashboard) routes(r chi.Router) {
 	if err != nil {
 		panic("sub embedded assets: " + err.Error())
 	}
-	r.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsSub))))
+	// Serve the content-addressed asset URLs with an immutable, long-lived cache;
+	// fall back to the stable filenames (assets/app.js) via the file server.
+	fileServer := http.StripPrefix("/assets/", http.FileServer(http.FS(assetsSub)))
+	r.Handle("/assets/*", d.serveAssets(fileServer))
 
 	r.Get("/login", d.handleLogin)
 	r.Get("/auth/callback", d.handleCallback)
@@ -68,10 +123,31 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/webhooks", d.handleWebhooks)
 	r.Get("/api/requests", d.handleRequests)
 
-	// Admin-only: browse the actual cached rows for one scope, and run a
-	// consistency check that re-fetches the source of truth from GitHub.
+	// Admin-only: browse the actual cached rows for one scope, run a consistency
+	// check that re-fetches the source of truth from GitHub, and read the GitHub
+	// App's rate-limit status.
 	r.Get("/api/cache/data", d.handleCacheData)
 	r.Get("/api/cache/check", d.handleCacheCheck)
+	r.Get("/api/ratelimit", d.handleRateLimit)
+}
+
+// serveAssets serves the content-addressed asset URLs (immutable cache) and
+// delegates everything else under /assets/ to the embedded file server (the
+// stable filenames, e.g. assets/app.js).
+func (d *dashboard) serveAssets(fileServer http.Handler) http.HandlerFunc {
+	byURL := make(map[string]contentAsset, len(d.assets))
+	for _, a := range d.assets {
+		byURL[a.url] = a
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a, ok := byURL[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", a.contentType)
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			_, _ = w.Write(a.content)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}
 }
 
 func (d *dashboard) serveIndex(w http.ResponseWriter, _ *http.Request) {
@@ -237,6 +313,11 @@ type kindFreshness struct {
 	Kind        string           `json:"kind"`
 	States      map[string]int64 `json:"states"`
 	LastFetched string           `json:"last_fetched,omitempty"`
+	// Error is the captured failure reason for a resource of this kind currently
+	// in the error state (ErrorKey identifies which one), so the dashboard can
+	// show *why* a kind is erroring, not just the count.
+	Error    string `json:"error,omitempty"`
+	ErrorKey string `json:"error_key,omitempty"`
 }
 
 type recentRefresh struct {
@@ -377,6 +458,10 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 	if err != nil {
 		return scopeStats{}, err
 	}
+	errs, err := d.store.ErrorMessagesByKind(ctx, in.actor)
+	if err != nil {
+		return scopeStats{}, err
+	}
 
 	s := scopeStats{
 		Actor:    shortFingerprint(in.actor),
@@ -386,7 +471,7 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 		LastSeen: in.lastSeen,
 		Counts:   counts,
 		Total:    sumCounts(counts),
-		Kinds:    groupKinds(fresh),
+		Kinds:    groupKinds(fresh, errs),
 	}
 	if detailed {
 		logs, err := d.store.RecentRefreshes(ctx, in.actor, 12)
@@ -399,8 +484,10 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 }
 
 // groupKinds folds per-(kind,state) rows into one entry per resource kind, with
-// a map of state -> count and the most recent fetch time across that kind.
-func groupKinds(rows []dbgen.ActorFreshnessByKindRow) []kindFreshness {
+// a map of state -> count and the most recent fetch time across that kind. When
+// a kind has an errored resource, the first captured error message (and its key)
+// is attached so the dashboard can show why it failed.
+func groupKinds(rows []dbgen.ActorFreshnessByKindRow, errRows []dbgen.ActorErrorMessagesByKindRow) []kindFreshness {
 	order := make([]string, 0)
 	byKind := make(map[string]*kindFreshness)
 	for _, row := range rows {
@@ -415,6 +502,15 @@ func groupKinds(rows []dbgen.ActorFreshnessByKindRow) []kindFreshness {
 		if lf := asTimeString(row.LastFetched); lf > kf.LastFetched {
 			kf.LastFetched = lf
 		}
+	}
+	// Attach the first error message per kind (rows are ordered by kind, key).
+	for _, e := range errRows {
+		kf, ok := byKind[e.ResourceKind]
+		if !ok || kf.Error != "" {
+			continue
+		}
+		kf.Error = e.ErrorMessage.String
+		kf.ErrorKey = e.ResourceKey
 	}
 	out := make([]kindFreshness, 0, len(order))
 	for _, k := range order {

@@ -26,6 +26,8 @@ export interface KindFreshness {
     kind: string;
     states: Record<string, number>;
     last_fetched?: string;
+    error?: string;
+    error_key?: string;
 }
 
 export interface RecentRefresh {
@@ -79,6 +81,7 @@ export interface RequestEvent {
     method: string;
     path: string;
     disposition: string;
+    status?: number; // upstream HTTP status for a passthrough (0/absent otherwise)
     at: string;
 }
 
@@ -86,6 +89,25 @@ export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
     recent: RequestEvent[] | null;
+}
+
+// ---- GitHub App rate limit ----
+export interface RateLimitResource {
+    limit: number;
+    remaining: number;
+    used: number;
+    reset: number; // Unix epoch seconds
+}
+
+export interface InstallationRateLimit {
+    installation: string;
+    account_type?: string;
+    resources?: Record<string, RateLimitResource>;
+    error?: string;
+}
+
+export interface RateLimitResponse {
+    installations: InstallationRateLimit[] | null;
 }
 
 // ---- admin cache browse ----
@@ -188,6 +210,7 @@ export interface DemoStateData {
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
+    ratelimit?: RateLimitResponse;
     browse?: Record<string, BrowseResponse>; // keyed by actor_id
     check?: Record<string, ConsistencyReport>; // keyed by actor_id
 }

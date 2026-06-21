@@ -83,6 +83,13 @@ func (s *Store) FreshnessByKind(ctx context.Context, actorFP string) ([]dbgen.Ac
 	return s.q.ActorFreshnessByKind(ctx, actorFP)
 }
 
+// ErrorMessagesByKind returns the captured failure reason for every resource
+// currently in the error state for one actor, so the dashboard can show why a
+// kind is erroring (not just that it is).
+func (s *Store) ErrorMessagesByKind(ctx context.Context, actorFP string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
+	return s.q.ActorErrorMessagesByKind(ctx, actorFP)
+}
+
 // RecentRefreshes returns the most recent refresh-log entries for one actor.
 func (s *Store) RecentRefreshes(ctx context.Context, actorFP string, limit int64) ([]dbgen.CacheRefreshLog, error) {
 	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorFP, Limit: limit})

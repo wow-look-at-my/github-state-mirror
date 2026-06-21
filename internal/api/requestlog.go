@@ -26,7 +26,11 @@ type requestEvent struct {
 	Method      string `json:"method"`
 	Path        string `json:"path"`
 	Disposition string `json:"disposition"`
-	At          string `json:"at"` // RFC3339
+	// Status is the upstream HTTP status for a passthrough (so the row shows
+	// whether GitHub actually accepted it — 200 vs 401/404/502). 0 when not
+	// applicable (e.g. a cache hit makes no upstream call).
+	Status int    `json:"status,omitempty"`
+	At     string `json:"at"` // RFC3339
 }
 
 // requestLog is an in-memory, bounded record of recent data-API requests plus
@@ -48,6 +52,10 @@ func newRequestLog() *requestLog {
 }
 
 func (l *requestLog) record(actorKey, method, path, disposition string) {
+	l.recordStatus(actorKey, method, path, disposition, 0)
+}
+
+func (l *requestLog) recordStatus(actorKey, method, path, disposition string, status int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.total++
@@ -57,6 +65,7 @@ func (l *requestLog) record(actorKey, method, path, disposition string) {
 		Method:      method,
 		Path:        path,
 		Disposition: disposition,
+		Status:      status,
 		At:          time.Now().UTC().Format(time.RFC3339),
 	})
 	if len(l.recent) > requestLogRecentCap {
@@ -90,14 +99,45 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 }
 
 // recordPassthrough wraps the GitHub reverse proxy so every request it serves is
-// recorded as a passthrough. Used both as the router's NotFound/MethodNotAllowed
-// fallback and as the GraphQL handler's forward target, so each proxied request
-// is counted exactly once regardless of entry path.
+// recorded as a passthrough — with the upstream HTTP status GitHub returned, so
+// the dashboard shows whether the forwarded call actually succeeded. Used both as
+// the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
+// forward target, so each proxied request is counted exactly once regardless of
+// entry path.
 func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(callerLabel(r), r.Method, r.URL.Path, DispPassthrough)
-		next.ServeHTTP(w, r)
+		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispPassthrough, sw.status)
 	})
+}
+
+// statusRecorder wraps an http.ResponseWriter to capture the status code while
+// otherwise behaving transparently (including flushing, which the reverse proxy
+// relies on to stream responses).
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.written {
+		s.status = code
+		s.written = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.written = true // an implicit 200 when WriteHeader was never called
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // callerLabel derives a best-effort, display-only cache-partition label for a

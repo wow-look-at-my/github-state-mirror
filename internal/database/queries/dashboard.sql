@@ -111,3 +111,13 @@ SELECT * FROM commit_checks WHERE actor = ? ORDER BY owner, repo, sha, context;
 -- so the consistency check knows which orgs to re-fetch from GitHub.
 -- name: ListDistinctOwnersByActor :many
 SELECT DISTINCT owner FROM repos WHERE actor = ? ORDER BY owner;
+
+-- ActorErrorMessagesByKind returns the captured failure reason for every
+-- resource currently in the 'error' state for one actor, so the dashboard can
+-- show *why* a kind is erroring (not just that it is). One row per errored
+-- resource key.
+-- name: ActorErrorMessagesByKind :many
+SELECT resource_kind, resource_key, error_message
+FROM cache_metadata
+WHERE actor = ? AND fetch_state = 'error' AND error_message IS NOT NULL AND error_message <> ''
+ORDER BY resource_kind, resource_key;
