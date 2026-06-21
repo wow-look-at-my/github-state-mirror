@@ -141,16 +141,21 @@ func NewRouter(
 	// so preflight OPTIONS is answered without a token.
 	r.Use(corsMiddleware(allowedOrigins))
 
+	// In-memory record of data-API requests (hit/miss/passthrough) for the
+	// dashboard's "Requests" view.
+	reqlog := newRequestLog()
+
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
-	// requests reach the same upstream (a fake server in tests).
-	ghProxy := newGitHubProxy(gh.BaseURL())
+	// requests reach the same upstream (a fake server in tests). Wrapped so every
+	// proxied request is recorded as a passthrough.
+	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL()), reqlog)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
-	newDashboard(authSvc, store, baseURL, checker).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group.
@@ -166,16 +171,18 @@ func NewRouter(
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's fingerprint.
+	//
+	// IMPORTANT: a route is served from cache ONLY if its response is byte-for-byte
+	// identical to GitHub's (the cache is not a transformative middleman). The only
+	// such route today is the org-repos GraphQL query (the webhook-fed core).
+	// Everything the mirror cannot serve identically — including the REST endpoints
+	// that used to return trimmed shapes (/user, /user/orgs, /compare,
+	// /pulls/{n}/files) — falls through to the verbatim passthrough below.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(gh, newIdentityRecorder(store)))
 
-		// REST endpoints
-		r.Get("/user", h.getUser)
-		r.Get("/user/orgs", h.getUserOrgs)
-		r.Get("/repos/{owner}/{repo}/compare/{base}...{head}", h.getCompare)
-		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.getPRFiles)
-
-		// GraphQL endpoint
+		// GraphQL endpoint (only the org-repos query shape is cached; everything
+		// else h.graphql forwards to the passthrough).
 		r.Post("/graphql", h.graphql)
 	})
 
@@ -184,8 +191,8 @@ func NewRouter(
 	// drop-in for api.github.com — cached endpoints stay fast, and every other
 	// endpoint still works. chi runs r.Use middleware (CORS, recoverer) around
 	// these, so forwarded responses carry CORS headers and preflight is handled.
-	// MethodNotAllowed covers a known path hit with an unregistered method
-	// (e.g. POST /user); the proxy itself enforces the bearer-token requirement.
+	// MethodNotAllowed covers a known path hit with an unregistered method; the
+	// proxy itself enforces the bearer-token requirement.
 	r.NotFound(ghProxy.ServeHTTP)
 	r.MethodNotAllowed(ghProxy.ServeHTTP)
 

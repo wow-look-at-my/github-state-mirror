@@ -34,16 +34,17 @@ type dashboard struct {
 	store   *ghdata.Store
 	baseURL string
 	index   []byte
+	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, checker *syncpkg.ConsistencyChecker) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
 		panic("read embedded index.html: " + err.Error())
 	}
-	return &dashboard{auth: authSvc, store: store, baseURL: strings.TrimRight(baseURL, "/"), index: index, checker: checker}
+	return &dashboard{auth: authSvc, store: store, baseURL: strings.TrimRight(baseURL, "/"), index: index, reqlog: reqlog, checker: checker}
 }
 
 // routes registers the dashboard's routes on r. These sit outside requireAuth:
@@ -65,6 +66,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
 	r.Get("/api/webhooks", d.handleWebhooks)
+	r.Get("/api/requests", d.handleRequests)
 
 	// Admin-only: browse the actual cached rows for one scope, and run a
 	// consistency check that re-fetches the source of truth from GitHub.
@@ -213,6 +215,22 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 		deliveries = []ghdata.WebhookDelivery{}
 	}
 	writeJSON(w, webhooksResponse{Deliveries: deliveries})
+}
+
+// handleRequests returns recent data-API requests and their cache disposition
+// (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
+// so — consistent with the admin-only "all scopes" view — it is admin-only.
+func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
+	login, ok := d.auth.Session(r)
+	if !ok {
+		http.Error(w, "unauthorized: sign in first", http.StatusUnauthorized)
+		return
+	}
+	if !d.auth.IsAdmin(login) {
+		http.Error(w, "forbidden: admin only", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, d.reqlog.snapshot(200))
 }
 
 type kindFreshness struct {

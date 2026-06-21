@@ -1,0 +1,46 @@
+{
+  "data": {
+    "organization": {
+      "repositories": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          {
+            "name": "repo1",
+            "nameWithOwner": "my-org/repo1",
+            "url": "https://github.com/my-org/repo1",
+            "isDisabled": false,
+            "pushedAt": "2024-01-01T00:00:00Z",
+            "owner": { "login": "my-org", "avatarUrl": "https://avatars/u", "url": "https://github.com/my-org" },
+            "defaultBranchRef": {
+              "name": "main",
+              "target": { "statusCheckRollup": { "state": "SUCCESS" } }
+            },
+            "pullRequests": {
+              "pageInfo": { "hasNextPage": false, "endCursor": null },
+              "nodes": [
+                {
+                  "number": 1,
+                  "title": "Example PR",
+                  "url": "https://github.com/my-org/repo1/pull/1",
+                  "isDraft": false,
+                  "createdAt": "2024-01-01T00:00:00Z",
+                  "updatedAt": "2024-01-02T00:00:00Z",
+                  "additions": 5,
+                  "deletions": 2,
+                  "mergeable": "MERGEABLE",
+                  "author": { "login": "dev", "avatarUrl": "https://avatars/dev", "url": "https://github.com/dev" },
+                  "headRefName": "feature",
+                  "baseRefName": "main",
+                  "headRefOid": "abc123",
+                  "labels": { "nodes": [ { "name": "bug", "color": "d73a4a" } ] },
+                  "reviewRequests": { "totalCount": 1 },
+                  "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

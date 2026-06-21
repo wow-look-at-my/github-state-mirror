@@ -143,7 +143,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -159,6 +159,8 @@ async function renderDashboard(me) {
         }
         if (scope === "webhooks")
             void loadWebhooks();
+        else if (scope === "requests")
+            void loadRequests();
         else
             void loadScope(scope);
     }
@@ -330,6 +332,68 @@ function webhookTable(deliveries) {
         return el("tr", null, el("td", null, el("span", { class: "disp " + disp, text: disp })), el("td", { class: "wh-event", text: evt }), el("td", { class: "wh-repo", text: d.repo || "—" }), el("td", { class: "wh-detail", text: d.detail || "" }), el("td", { class: "num", text: String(d.actors) }), el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }), el("td", { class: "wh-when", text: fmtTime(d.received_at) }));
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { class: "num", text: "Scopes" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
+}
+// ---- request activity (admin only) ----
+// Shows data-API requests hitting the cache and how each was served: a cache
+// HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
+// to GitHub uncached). This is the live view of how much the cache is actually
+// used vs. proxied straight through.
+async function loadRequests() {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
+    let data;
+    try {
+        data = await api("/api/requests");
+    }
+    catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load request activity: " + e.message }));
+        return;
+    }
+    body.innerHTML = "";
+    const recent = data.recent ?? [];
+    const by = data.by_disposition ?? {};
+    sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
+        (by.error ? ", error " + by.error : "");
+    body.appendChild(requestLegend());
+    if (recent.length === 0) {
+        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No data-API requests recorded yet." }), el("p", { class: "sub", text: "Requests appear here live as clients call the mirror — cache hits, misses, and passthroughs to GitHub." })));
+        return;
+    }
+    body.appendChild(requestTable(recent));
+}
+const REQUEST_DISPOSITIONS = [
+    ["hit", "served from cache, no GitHub call"],
+    ["miss", "cache miss; fetched from GitHub then cached"],
+    ["passthrough", "forwarded to GitHub uncached"],
+    ["error", "cache lookup/fetch failed"],
+];
+// reqDispClass maps a request disposition onto the existing webhook chip colors,
+// so the Requests view is styled without new CSS.
+function reqDispClass(disp) {
+    switch (disp) {
+        case "hit": return "applied";
+        case "miss": return "invalidated";
+        case "passthrough": return "ignored";
+        default: return "error";
+    }
+}
+function requestLegend() {
+    const legend = el("div", { class: "wh-legend" });
+    for (const [disp, meaning] of REQUEST_DISPOSITIONS) {
+        legend.appendChild(el("span", { class: "wh-legend-item" }, el("span", { class: "disp " + reqDispClass(disp), text: disp }), el("span", { class: "wh-legend-text", text: meaning })));
+    }
+    return legend;
+}
+function requestTable(events) {
+    const rows = events.map((e) => {
+        const disp = e.disposition || "passthrough";
+        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), el("td", { class: "wh-detail", text: e.actor || "" }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
+    });
+    return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Method" }), el("th", { text: "Path" }), el("th", { text: "Caller" }), el("th", { text: "When" }))), el("tbody", null, rows));
 }
 // ---- admin: browse + consistency check (modal) ----
 function scopeLabel(s) {
@@ -553,6 +617,14 @@ function demoApi(path) {
             return Promise.reject(err);
         }
         return Promise.resolve(d.webhooks);
+    }
+    if (path.startsWith("/api/requests")) {
+        if (!d.requests) {
+            const err = new Error("HTTP 403");
+            err.status = 403;
+            return Promise.reject(err);
+        }
+        return Promise.resolve(d.requests);
     }
     return Promise.reject(new Error("unknown demo path " + path));
 }

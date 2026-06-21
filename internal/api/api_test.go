@@ -113,115 +113,17 @@ func authedReq(method, target string, body io.Reader) *http.Request {
 	return req
 }
 
-func TestGetUser(t *testing.T) {
-	router, store := setupTestRouter(t)
-	ctx := seedCtx()
-
-	// Seed data.
-	store.UpsertUser(ctx, dbgen.User{Login: "octocat", AvatarUrl: "http://avatar", Url: "http://url"})
-
-	req := authedReq("GET", "/user", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var body map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-
-	assert.Equal(t, "octocat", body["login"])
-
-}
-
-func TestGetUser_NotFound(t *testing.T) {
-	router, _ := setupTestRouter(t)
-
-	req := authedReq("GET", "/user", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusNotFound, w.Code)
-
-}
-
-func TestGetUserOrgs(t *testing.T) {
-	router, store := setupTestRouter(t)
-	ctx := seedCtx()
-
-	store.UpsertUser(ctx, dbgen.User{Login: "octocat", AvatarUrl: "a", Url: "u"})
-	store.SetUserOrgs(ctx, "octocat", []dbgen.Org{
-		{Login: "org1", AvatarUrl: sql.NullString{String: "a1", Valid: true}, Url: sql.NullString{String: "u1", Valid: true}},
-	})
-
-	req := authedReq("GET", "/user/orgs", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var body []map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-
-	require.Equal(t, 1, len(body))
-
-	assert.Equal(t, "org1", body[0]["login"])
-
-}
-
-func TestGetPRFiles(t *testing.T) {
-	router, store := setupTestRouter(t)
-	ctx := seedCtx()
-
-	store.SetPRFiles(ctx, "org1", "repo1", 42, []dbgen.PrFile{
-		{Owner: "org1", Repo: "repo1", PrNumber: 42, Path: "main.go", Additions: 10, Deletions: 5},
-	})
-
-	req := authedReq("GET", "/repos/org1/repo1/pulls/42/files", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var body []map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-
-	require.Equal(t, 1, len(body))
-
-	assert.Equal(t, "main.go", body[0]["filename"])
-
-}
-
-func TestGetCompare(t *testing.T) {
-	router, store := setupTestRouter(t)
-	ctx := seedCtx()
-
-	store.UpsertComparison(ctx, dbgen.BranchComparison{
-		Owner: "org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 5, BehindBy: 2,
-	})
-
-	req := authedReq("GET", "/repos/org1/repo1/compare/main...feature", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var body map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-
-	assert.Equal(t, float64(5), body["ahead_by"])
-
-	assert.Equal(t, float64(2), body["behind_by"])
-
-}
+// NOTE: the /user, /user/orgs, /compare, and /pulls/{n}/files cached endpoints
+// were removed (they returned trimmed, non-GitHub shapes). They now pass through
+// to GitHub verbatim — see TestProxy_FormerlyCachedNowForwarded in proxy_test.go.
+// The only cached data route left is POST /graphql (the org-repos query).
 
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
-// with no Authorization header instead of silently serving another
-// credential's cached view.
+// with no Authorization header. The formerly-cached REST paths now fall through
+// to the passthrough proxy, which itself enforces the token; the GraphQL route
+// is gated by requireAuth. Either way a tokenless request is 401.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
-	router, store := setupTestRouter(t)
-
-	// Seed data in a credential bucket; an unauthenticated caller must not see it.
-	store.UpsertUser(seedCtx(), dbgen.User{Login: "octocat", AvatarUrl: "a", Url: "u"})
+	router, _ := setupTestRouter(t)
 
 	for _, target := range []string{
 		"/user",
@@ -244,27 +146,31 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestCredentialIsolation verifies that data cached under one credential is not
-// served to a request bearing a different credential, even for the same login.
+// TestCredentialIsolation verifies that data cached under one credential (the
+// org-repos GraphQL cache, the only cached data route) is not served to a request
+// bearing a different credential, even for the same login.
 func TestCredentialIsolation(t *testing.T) {
 	router, store := setupTestRouter(t)
 
-	// Seed PR files visible only to testToken's bucket.
-	store.SetPRFiles(seedCtx(), "org1", "repo1", 42, []dbgen.PrFile{
-		{Owner: "org1", Repo: "repo1", PrNumber: 42, Path: "secret.go", Additions: 1, Deletions: 0},
+	// Seed org repos visible only to testToken's bucket.
+	store.SetOrgRepos(seedCtx(), "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "secret", NameWithOwner: "my-org/secret", Url: "u"},
 	})
 
-	// A different token (same stubbed login) resolves to a different bucket and
-	// must see nothing.
-	req := httptest.NewRequest("GET", "/repos/org1/repo1/pulls/42/files", nil)
+	// A different token (same stubbed login) resolves to a different bucket; the
+	// org-repos query must return nothing for it.
+	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer other-token")
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	var body []map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, 0, len(body), "a different credential must not see another credential's cached files")
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+	assert.Equal(t, 0, len(nodes), "a different credential must not see another credential's cached repos")
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without

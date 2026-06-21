@@ -4,13 +4,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
 func testAuth() *auth.Service {
@@ -156,27 +156,35 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
 }
 
-// TestProxy_CachedEndpointNotForwarded verifies that a cached REST endpoint is
-// served from the store and does NOT reach the GitHub passthrough.
-func TestProxy_CachedEndpointNotForwarded(t *testing.T) {
-	var proxyHits int32
-	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// /user is the only path requireAuth legitimately calls; any other path
-		// reaching here means a cached endpoint leaked into the proxy.
-		if r.URL.Path != "/user" {
-			atomic.AddInt32(&proxyHits, 1)
-		}
-		_, _ = io.WriteString(w, `{"login":"testuser"}`)
-	})
-	router, store, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+// TestProxy_FormerlyCachedNowForwarded verifies the endpoints the mirror used to
+// cache with TRIMMED shapes (/user, /compare, /pulls/{n}/files) now pass through
+// to GitHub verbatim, so callers get GitHub's full response — not a subset. This
+// is the "identical-or-passthrough" rule: not served from cache => served as-is.
+func TestProxy_FormerlyCachedNowForwarded(t *testing.T) {
+	cases := []struct{ name, path, body string }{
+		{"user", "/user", `{"login":"octocat","id":1,"node_id":"MDQ6VXNlcjE=","type":"User","site_admin":false}`},
+		{"compare", "/repos/o/r/compare/main...feat", `{"ahead_by":2,"behind_by":0,"total_commits":2,"files":[{"filename":"a.go","patch":"@@ -1 +1 @@"}]}`},
+		{"pr-files", "/repos/o/r/pulls/5/files", `[{"filename":"a.go","status":"modified","additions":1,"deletions":0,"patch":"@@ -1 +1 @@"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits int32
+			gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			})
+			router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	store.UpsertUser(seedCtx(), dbgen.User{Login: "octocat", AvatarUrl: "a", Url: "u"})
+			req := authedReq("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
 
-	req := authedReq("GET", "/user", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "octocat")
-	assert.Equal(t, int32(0), atomic.LoadInt32(&proxyHits), "cached /user must not be forwarded")
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, tc.body, strings.TrimSpace(w.Body.String()),
+				"passthrough must return GitHub's body verbatim, not a trimmed cache shape")
+			assert.Equal(t, int32(1), atomic.LoadInt32(&hits),
+				"request must reach GitHub (no longer served from a trimmed cache)")
+		})
+	}
 }

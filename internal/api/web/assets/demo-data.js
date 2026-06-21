@@ -129,6 +129,20 @@ const demoWebhooks = {
         { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at", actors: 2 },
     ],
 };
+// --- request activity log (admin "Requests" tab) ---
+const demoRequests = {
+    total: 1842,
+    by_disposition: { hit: 1503, miss: 71, passthrough: 264, error: 4 },
+    recent: [
+        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "passthrough", at: ago(3) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", at: ago(4) },
+        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", at: ago(6) },
+        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
+        { actor: "token:9f86d0818", method: "GET", path: "/rate_limit", disposition: "passthrough", at: ago(14) },
+        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "passthrough", at: ago(20) },
+    ],
+};
 const pazerMine = [pazerScopeCli, pazerScopeCi];
 const allScopes = [serviceScope, octocatScope, pazerScopeCli, pazerScopeCi, unknownScope].map((s) => ({ ...s, is_self: s.login === "PazerOP" }));
 // --- admin: browse + consistency check demo payloads (keyed by actor_id) ---
@@ -211,6 +225,7 @@ const config = {
                 login: "PazerOP", is_admin: true, scope: "all", scope_count: allScopes.length,
                 totals: sumScopes(allScopes), scopes: allScopes,
             },
+            requests: demoRequests,
             webhooks: demoWebhooks,
             browse: adminBrowse,
             check: adminCheck,

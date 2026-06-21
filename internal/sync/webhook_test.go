@@ -163,9 +163,10 @@ func TestDispatch_PullRequest(t *testing.T) {
 	ctx := context.Background()
 
 	seed(t, mgr, KindOrgRepos, "my-org")
-	seed(t, mgr, KindPRFiles, "my-org/my-repo/42")
-	seed(t, mgr, KindCompare, "my-org/my-repo/main...feature")
 
+	// This event carries no parseable Raw payload, so the dispatcher falls back to
+	// invalidating the org-repos cache. (PR file lists and branch comparisons are
+	// no longer cached, so there is nothing content-dependent to invalidate.)
 	event := webhook.Event{
 		Type:           "pull_request",
 		Action:         "opened",
@@ -178,14 +179,6 @@ func TestDispatch_PullRequest(t *testing.T) {
 	dispatcher.Dispatch(ctx, event)
 
 	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "my-org"})
-	require.Nil(t, err)
-	assert.Equal(t, freshness.StateStale, meta.State)
-
-	meta, err = fStore.Get(ctx, freshness.ResourceID{Kind: KindPRFiles, Key: "my-org/my-repo/42"})
-	require.Nil(t, err)
-	assert.Equal(t, freshness.StateStale, meta.State)
-
-	meta, err = fStore.Get(ctx, freshness.ResourceID{Kind: KindCompare, Key: "my-org/my-repo/main...feature"})
 	require.Nil(t, err)
 	assert.Equal(t, freshness.StateStale, meta.State)
 }
@@ -314,28 +307,6 @@ func TestDispatch_UnknownEvent(t *testing.T) {
 	dispatcher.Dispatch(ctx, event)
 }
 
-func TestDispatch_PullRequest_NoBranches(t *testing.T) {
-	dispatcher, mgr, fStore, _ := setupDispatcher(t)
-	ctx := context.Background()
-
-	seed(t, mgr, KindOrgRepos, "my-org")
-	seed(t, mgr, KindPRFiles, "my-org/my-repo/10")
-
-	// PR event without branch info — should not invalidate compare.
-	event := webhook.Event{
-		Type:           "pull_request",
-		Action:         "labeled",
-		RepoOwnerLogin: "my-org",
-		RepoNameStr:    "my-repo",
-		PRNumber:       10,
-	}
-	dispatcher.Dispatch(ctx, event)
-
-	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindPRFiles, Key: "my-org/my-repo/10"})
-	require.Nil(t, err)
-	assert.Equal(t, freshness.StateStale, meta.State)
-}
-
 // makePRPayload builds a realistic pull_request webhook JSON payload.
 func makePRPayload(t *testing.T, action, state, owner, repo string, number int, title string) json.RawMessage {
 	t.Helper()
@@ -386,7 +357,6 @@ func TestDispatch_PullRequest_PayloadApplied(t *testing.T) {
 	}))
 
 	seed(t, mgr, KindOrgRepos, "my-org")
-	seed(t, mgr, KindPRFiles, "my-org/my-repo/42")
 
 	raw := makePRPayload(t, "opened", "open", "my-org", "my-repo", 42, "Add feature")
 	event := webhook.ParseEvent("pull_request", raw)
@@ -396,11 +366,6 @@ func TestDispatch_PullRequest_PayloadApplied(t *testing.T) {
 	meta, err := fStore.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "my-org"})
 	require.Nil(t, err)
 	assert.Equal(t, freshness.StateFresh, meta.State)
-
-	// PRFiles should still be invalidated (webhook doesn't carry file diffs).
-	meta, err = fStore.Get(ctx, freshness.ResourceID{Kind: KindPRFiles, Key: "my-org/my-repo/42"})
-	require.Nil(t, err)
-	assert.Equal(t, freshness.StateStale, meta.State)
 
 	// Verify the PR was written to the DB.
 	pr, err := store.GetPullRequest(actorCtx, "my-org", "my-repo", 42)

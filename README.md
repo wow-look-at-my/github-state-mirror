@@ -50,14 +50,18 @@ A **GitHub App backend** whose installation tokens rotate hourly would get a fre
 
 ### REST
 
-- `GET /user` — authenticated user info (login, avatar)
-- `GET /user/orgs` — user's organization list
-- `GET /repos/{owner}/{repo}/compare/{base}...{head}` — ahead_by, behind_by
-- `GET /repos/{owner}/{repo}/pulls/{number}/files` — changed files (path, additions, deletions)
+The mirror serves **no** REST endpoint from cache. It used to cache `/user`,
+`/user/orgs`, `/repos/{owner}/{repo}/compare/{base}...{head}`, and
+`/repos/{owner}/{repo}/pulls/{number}/files`, but with *trimmed* response shapes
+(a subset of GitHub's fields). **A cache must be byte-for-byte identical to the
+origin — not a transformative middleman** — so those routes were removed; they
+now **pass through** to GitHub verbatim (see below). New cached REST endpoints
+will be added back only when they return GitHub's exact shape, each gated by an
+identity test.
 
 ### GraphQL
 
-- `POST /graphql` — the org-repos query (an `organization { repositories { ... pullRequests ... } }` shape) is served from the cache, assembled from SQLite. Any other GraphQL query is forwarded to GitHub (see passthrough below).
+- `POST /graphql` — the org-repos query (an `organization { repositories { ... pullRequests ... } }` shape) is served from the cache, assembled from SQLite **to match exactly the fields GitHub returns for that query's selection set** (validated by an identity test against a recorded GitHub response). Any other GraphQL query is forwarded to GitHub (see passthrough below).
 
 ### GitHub passthrough (everything else)
 
@@ -85,7 +89,7 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache for your account: how many repos, pull requests, orgs, etc. are cached, the freshness of each resource kind (fresh / stale / fetching / error), and recent refresh activity.
 
 - **What you see is yours.** The dashboard groups cache scopes by GitHub login. You only ever see scopes that *your own* tokens populated (a user may hold several tokens, each its own scope). This is a read-only view of counts and freshness metadata — it never exposes another credential's cached rows.
-- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity. They also get a **Webhooks** tab: a global log of recent webhook deliveries and each one's disposition (`applied` / `skipped` / `invalidated` / `ignored` / `error`), so you can confirm at a glance whether incoming events are actually updating the cache. The log spans every repo, so it is admin-only.
+- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get an **All scopes** view: per-scope stats across every cache partition, including the GitHub App's background-refresh partitions and any scope without a recorded identity. They also get two global, admin-only activity logs: a **Requests** tab — live data-API traffic and how each request was served (`hit` from cache / `miss` then fetched / `passthrough` to GitHub uncached), so you can see at a glance how much the cache is actually used vs. proxied through — and a **Webhooks** tab — recent webhook deliveries and each one's disposition (`applied` / `skipped` / `invalidated` / `ignored` / `error`), confirming whether incoming events update the cache. Both span every repo, so they are admin-only.
 - **Admins can browse and audit each scope.** Every scope (in both the **My cache** and **All scopes** views) gets two admin-only actions:
   - **Browse** opens the actual cached rows for that scope — repositories, open pull requests with their labels and CI status, orgs, users, PR files, branch comparisons, and commit checks — plus a copyable raw-JSON dump of everything cached. This is a read-only window onto what is already stored; the data tables stay keyed by the opaque fingerprint.
   - **Check** runs a **consistency check**: it re-fetches the source of truth from GitHub (as the mirror's own GitHub App) and emits a JSON diff of any drift — repos/PRs that are only in the cache or only on GitHub, and field mismatches such as a stale `last_commit_status`, `default_branch_status`, draft flag, or labels. The report is designed to be copied and handed to a tool/assistant for analysis. It needs a configured GitHub App (the same one used for background refresh); without one the action reports "unavailable". Owners the app is not installed on are listed as skipped rather than reported as missing.
@@ -98,6 +102,7 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `POST /logout` — clear the session
 - `GET /api/me` — `{ authenticated, login_configured, login, is_admin }`
 - `GET /api/cache?scope=mine|all` — cache stats for the signed-in user (`mine`) or every scope (`all`, admin only)
+- `GET /api/requests` — recent data-API requests and their cache disposition (hit/miss/passthrough), plus per-disposition totals (admin only; in-memory, resets on restart)
 - `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
 - `GET /api/cache/data?actor=<fingerprint>` — the actual cached rows for one scope, as flattened JSON (admin only)
 - `GET /api/cache/check?actor=<fingerprint>[&org=<owner>]` — consistency-check diff of one scope against GitHub's live state (admin only; requires a configured GitHub App)

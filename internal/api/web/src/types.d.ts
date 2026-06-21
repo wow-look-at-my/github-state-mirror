@@ -73,6 +73,21 @@ export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
 }
 
+// ---- request activity (cache hit/miss/passthrough) ----
+export interface RequestEvent {
+    actor: string;
+    method: string;
+    path: string;
+    disposition: string;
+    at: string;
+}
+
+export interface RequestsResponse {
+    total: number;
+    by_disposition: Record<string, number>;
+    recent: RequestEvent[] | null;
+}
+
 // ---- admin cache browse ----
 export interface BrowseRepo {
     owner: string;
@@ -172,6 +187,7 @@ export interface DemoStateData {
     mine?: CacheResponse;
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
+    requests?: RequestsResponse;
     browse?: Record<string, BrowseResponse>; // keyed by actor_id
     check?: Record<string, ConsistencyReport>; // keyed by actor_id
 }

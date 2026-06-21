@@ -14,7 +14,8 @@
 import type {
     Me, Counts, KindFreshness, RecentRefresh, ScopeStats, CacheResponse,
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
-    Discrepancy, ConsistencyReport, DemoStateData, DemoConfig,
+    Discrepancy, ConsistencyReport, RequestEvent, RequestsResponse,
+    DemoStateData, DemoConfig,
 } from "./types";
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
@@ -174,6 +175,7 @@ async function renderDashboard(me: Me): Promise<void> {
         tabs = el("div", { class: "tabs" },
             el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"),
             el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"),
+            el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
         );
         head.appendChild(tabs);
@@ -192,6 +194,7 @@ async function renderDashboard(me: Me): Promise<void> {
             b.classList.toggle("active", (b as HTMLElement).dataset.scope === scope);
         }
         if (scope === "webhooks") void loadWebhooks();
+        else if (scope === "requests") void loadRequests();
         else void loadScope(scope);
     }
 }
@@ -451,6 +454,94 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
             el("th", { class: "num", text: "Scopes" }),
             el("th", { text: "Delivery" }),
             el("th", { text: "Received" }),
+        )),
+        el("tbody", null, rows),
+    );
+}
+
+// ---- request activity (admin only) ----
+// Shows data-API requests hitting the cache and how each was served: a cache
+// HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
+// to GitHub uncached). This is the live view of how much the cache is actually
+// used vs. proxied straight through.
+async function loadRequests(): Promise<void> {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
+    let data: RequestsResponse;
+    try {
+        data = await api<RequestsResponse>("/api/requests");
+    } catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load request activity: " + (e as Error).message }));
+        return;
+    }
+    body.innerHTML = "";
+    const recent = data.recent ?? [];
+    const by = data.by_disposition ?? {};
+    sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
+        (by.error ? ", error " + by.error : "");
+
+    body.appendChild(requestLegend());
+    if (recent.length === 0) {
+        body.appendChild(el("div", { class: "empty" },
+            el("p", { text: "No data-API requests recorded yet." }),
+            el("p", { class: "sub", text: "Requests appear here live as clients call the mirror — cache hits, misses, and passthroughs to GitHub." }),
+        ));
+        return;
+    }
+    body.appendChild(requestTable(recent));
+}
+
+const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
+    ["hit", "served from cache, no GitHub call"],
+    ["miss", "cache miss; fetched from GitHub then cached"],
+    ["passthrough", "forwarded to GitHub uncached"],
+    ["error", "cache lookup/fetch failed"],
+];
+
+// reqDispClass maps a request disposition onto the existing webhook chip colors,
+// so the Requests view is styled without new CSS.
+function reqDispClass(disp: string): string {
+    switch (disp) {
+        case "hit": return "applied";
+        case "miss": return "invalidated";
+        case "passthrough": return "ignored";
+        default: return "error";
+    }
+}
+
+function requestLegend(): HTMLElement {
+    const legend = el("div", { class: "wh-legend" });
+    for (const [disp, meaning] of REQUEST_DISPOSITIONS) {
+        legend.appendChild(el("span", { class: "wh-legend-item" },
+            el("span", { class: "disp " + reqDispClass(disp), text: disp }),
+            el("span", { class: "wh-legend-text", text: meaning }),
+        ));
+    }
+    return legend;
+}
+
+function requestTable(events: RequestEvent[]): HTMLElement {
+    const rows = events.map((e) => {
+        const disp = e.disposition || "passthrough";
+        return el("tr", null,
+            el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })),
+            el("td", { class: "wh-event", text: e.method }),
+            el("td", { class: "wh-repo", text: e.path }),
+            el("td", { class: "wh-detail", text: e.actor || "" }),
+            el("td", { class: "wh-when", text: fmtTime(e.at) }),
+        );
+    });
+    return el("table", { class: "webhooks" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Result" }),
+            el("th", { text: "Method" }),
+            el("th", { text: "Path" }),
+            el("th", { text: "Caller" }),
+            el("th", { text: "When" }),
         )),
         el("tbody", null, rows),
     );
@@ -740,6 +831,14 @@ function demoApi<T>(path: string): Promise<T> {
             return Promise.reject(err);
         }
         return Promise.resolve(d.webhooks as unknown as T);
+    }
+    if (path.startsWith("/api/requests")) {
+        if (!d.requests) {
+            const err: ApiError = new Error("HTTP 403");
+            err.status = 403;
+            return Promise.reject(err);
+        }
+        return Promise.resolve(d.requests as unknown as T);
     }
     return Promise.reject(new Error("unknown demo path " + path));
 }
