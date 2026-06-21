@@ -43,8 +43,9 @@ func main() {
 
 	// The service's only credential: a GitHub App (there is no static service
 	// token). nil when no app is configured. It signs in for the periodic
-	// background refreshes and lets the webhook dispatcher pull an as-yet-uncached
-	// repo on demand. Requests never use it — they carry the caller's own token.
+	// background refreshes, lets the webhook dispatcher pull an as-yet-uncached
+	// repo on demand, and is the source-of-truth fetcher for the admin
+	// consistency check. Requests never use it — they carry the caller's own token.
 	app := buildAppAuthenticator(cfg, gh)
 
 	// Webhook dispatcher.
@@ -59,6 +60,10 @@ func main() {
 	}
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
+	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
+	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
+	checker := syncpkg.NewConsistencyChecker(gh, store, app)
+
 	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
 	authSvc := auth.New(auth.Config{
 		ClientID:     cfg.OAuthClientID,
@@ -71,7 +76,7 @@ func main() {
 	}
 
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -103,14 +108,14 @@ func main() {
 }
 
 // buildAppAuthenticator constructs the GitHub App authenticator that signs the
-// service's background work (periodic refreshes and the webhook dispatcher's
-// on-demand repo pulls), or nil when no app is configured. Misconfiguration
-// (app id set but the key missing or unparseable) is logged and disables that
-// work rather than taking down the request-serving path, which needs no service
-// credential.
+// service's background work (periodic refreshes, the webhook dispatcher's
+// on-demand repo pulls, and the admin consistency check), or nil when no app is
+// configured. Misconfiguration (app id set but the key missing or unparseable)
+// is logged and disables that work rather than taking down the request-serving
+// path, which needs no service credential.
 func buildAppAuthenticator(cfg config.Config, gh *ghclient.Client) *ghclient.AppAuthenticator {
 	if !cfg.GitHubAppConfigured() {
-		slog.Warn("no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY[_PATH]); periodic background refreshes and on-demand webhook pulls are disabled (per-request data still works via the caller's Authorization header)")
+		slog.Warn("no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY[_PATH]); periodic background refreshes, on-demand webhook pulls, and the admin consistency check are disabled (per-request data still works via the caller's Authorization header)")
 		return nil
 	}
 
