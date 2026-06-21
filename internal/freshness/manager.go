@@ -92,6 +92,13 @@ func (m *Manager) InvalidateAllActors(ctx context.Context, kind, key string) err
 	return m.store.MarkStaleAllActors(ctx, kind, key)
 }
 
+// InvalidateAllActorsByPrefix marks all resources of a kind whose key starts
+// with keyPrefix stale. Used for raw REST pages where one webhook invalidates
+// every cached query/page variant for the same repo.
+func (m *Manager) InvalidateAllActorsByPrefix(ctx context.Context, kind, keyPrefix string) error {
+	return m.store.MarkStaleAllActorsByPrefix(ctx, kind, keyPrefix)
+}
+
 // InvalidateAndRefresh marks stale then immediately fetches.
 func (m *Manager) InvalidateAndRefresh(ctx context.Context, id ResourceID, trigger TriggerSource) error {
 	id = m.fillActor(ctx, id)

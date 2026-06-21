@@ -172,14 +172,19 @@ func NewRouter(
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's fingerprint.
 	//
-	// IMPORTANT: a route is served from cache ONLY if its response is byte-for-byte
-	// identical to GitHub's (the cache is not a transformative middleman). The only
-	// such route today is the org-repos GraphQL query (the webhook-fed core).
-	// Everything the mirror cannot serve identically — including the REST endpoints
-	// that used to return trimmed shapes (/user, /user/orgs, /compare,
-	// /pulls/{n}/files) — falls through to the verbatim passthrough below.
+	// Cached REST routes store GitHub's JSON after removing URL/link fields. Other
+	// REST endpoints fall through to the passthrough proxy, which applies the same
+	// JSON cleanup but does not populate freshness/cache rows.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(gh, newIdentityRecorder(store)))
+
+		// REST endpoints cached per caller credential. The stored body is fetched
+		// with the caller's token, URL-stripped, and served while fresh; webhook
+		// deliveries mark matching responses stale.
+		r.Get("/repos/{owner}/{repo}/pulls", h.listPullRequests)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.pullRequest)
+		r.Get("/repos/{owner}/{repo}/contents", h.repoContents)
+		r.Get("/repos/{owner}/{repo}/contents/*", h.repoContents)
 
 		// GraphQL endpoint (only the org-repos query shape is cached; everything
 		// else h.graphql forwards to the passthrough).

@@ -307,6 +307,21 @@ func (q *Queries) MarkStaleByKindKey(ctx context.Context, arg MarkStaleByKindKey
 	return err
 }
 
+const markStaleByKindKeyPrefix = `-- name: MarkStaleByKindKeyPrefix :exec
+UPDATE cache_metadata SET fetch_state = 'stale'
+WHERE resource_kind = ?1 AND substr(resource_key, 1, length(?2)) = ?2
+`
+
+type MarkStaleByKindKeyPrefixParams struct {
+	ResourceKind string
+	KeyPrefix    interface{}
+}
+
+func (q *Queries) MarkStaleByKindKeyPrefix(ctx context.Context, arg MarkStaleByKindKeyPrefixParams) error {
+	_, err := q.db.ExecContext(ctx, markStaleByKindKeyPrefix, arg.ResourceKind, arg.KeyPrefix)
+	return err
+}
+
 const upsertCacheMetadata = `-- name: UpsertCacheMetadata :exec
 INSERT INTO cache_metadata (actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

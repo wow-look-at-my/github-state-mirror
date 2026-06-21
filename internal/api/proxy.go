@@ -1,15 +1,21 @@
 package api
 
 import (
+	"bytes"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghjson"
 )
 
-// newGitHubProxy returns an http.Handler that transparently reverse-proxies a
-// request to GitHub (rooted at baseURL, normally https://api.github.com) and
-// returns the upstream response verbatim and uncached.
+// newGitHubProxy returns an http.Handler that reverse-proxies a request to
+// GitHub (rooted at baseURL, normally https://api.github.com), strips URL/link
+// noise from JSON responses, and otherwise leaves the response uncached.
 //
 // It is the mirror's fallback for any endpoint it does not specifically cache,
 // so a client can point its entire GitHub REST/GraphQL surface at the mirror:
@@ -55,13 +61,8 @@ func newGitHubProxy(baseURL string) http.Handler {
 	})
 }
 
-// stripUpstreamCORS removes the Access-Control-Allow-* / Max-Age headers from a
-// forwarded GitHub response. The mirror's own corsMiddleware is the single
-// authority for those, so leaving GitHub's copies in place would duplicate them
-// — most importantly Access-Control-Allow-Origin, which browsers reject when it
-// appears more than once ("multiple values"). Access-Control-Expose-Headers is
-// intentionally preserved: the mirror does not set it, and it lets cross-origin
-// clients read GitHub's X-RateLimit-*, Link, and similar headers.
+// stripUpstreamCORS removes duplicate CORS headers, URL-bearing Link headers,
+// and URL/link fields inside JSON response bodies.
 func stripUpstreamCORS(resp *http.Response) error {
 	h := resp.Header
 	h.Del("Access-Control-Allow-Origin")
@@ -69,5 +70,32 @@ func stripUpstreamCORS(resp *http.Response) error {
 	h.Del("Access-Control-Allow-Headers")
 	h.Del("Access-Control-Allow-Credentials")
 	h.Del("Access-Control-Max-Age")
+	h.Del("Link")
+
+	if !isJSONResponse(resp) {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	stripped, err := ghjson.StripURLFields(body)
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		h.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(stripped))
+	resp.ContentLength = int64(len(stripped))
+	h.Set("Content-Length", strconv.Itoa(len(stripped)))
+	h.Del("Etag")
+	h.Del("Last-Modified")
 	return nil
+}
+
+func isJSONResponse(resp *http.Response) bool {
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	return strings.Contains(ct, "application/json") || strings.Contains(ct, "+json")
 }

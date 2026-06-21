@@ -55,7 +55,7 @@ func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *fre
 	store := ghdata.NewStore(db)
 
 	// Register stub fetchers so invalidate can find metadata.
-	for _, kind := range []string{KindUser, KindUserOrgs, KindOrgRepos, KindPRFiles, KindCompare} {
+	for _, kind := range []string{KindUser, KindUserOrgs, KindOrgRepos, KindPullRequestRaw, KindRepoPullList, KindRepoContents, KindPRFiles, KindCompare} {
 		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
 	}
 

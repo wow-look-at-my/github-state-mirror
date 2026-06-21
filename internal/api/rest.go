@@ -22,12 +22,11 @@ type handlers struct {
 	reqlog *requestLog
 }
 
-// NOTE: the mirror used to serve /user, /user/orgs, /compare, and /pulls/{n}/files
-// from cache, but with TRIMMED response shapes (a subset of GitHub's fields). A
-// cache must be byte-for-byte identical to the origin, not a transformative
-// middleman, so those routes were removed; they now fall through to the verbatim
-// passthrough proxy (router.go). Re-introduce one only when it can return GitHub's
-// exact shape, gated by an identity test (see api_test.go).
+// NOTE: the mirror used to serve /user, /user/orgs, /compare, and
+// /pulls/{n}/files from cache, but with TRIMMED response shapes (a subset of
+// GitHub's fields). Those reconstructed caches remain removed; unsupported REST
+// routes fall through to the passthrough proxy, which strips URL/link noise from
+// JSON but does not populate the cache.
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

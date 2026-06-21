@@ -10,11 +10,14 @@ import (
 
 // Resource kind constants used in cache_metadata.
 const (
-	KindUser     = "user"
-	KindUserOrgs = "user_orgs"
-	KindOrgRepos = "org_repos"
-	KindPRFiles  = "pr_files"
-	KindCompare  = "compare"
+	KindUser           = "user"
+	KindUserOrgs       = "user_orgs"
+	KindOrgRepos       = "org_repos"
+	KindPullRequestRaw = "pull_request_raw"
+	KindRepoPullList   = "repo_pull_list"
+	KindRepoContents   = "repo_contents"
+	KindPRFiles        = "pr_files"
+	KindCompare        = "compare"
 )
 
 // RegisterAll wires all fetchers into the freshness.Manager.
@@ -36,6 +39,24 @@ func RegisterAll(mgr *freshness.Manager, gh *ghclient.Client, store *ghdata.Stor
 		DefaultTTL:    6 * time.Hour,
 		ErrorRetryMin: 1 * time.Minute,
 	}, &OrgReposFetcher{gh: gh, store: store})
+
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          KindPullRequestRaw,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, &PullRequestRawFetcher{gh: gh, store: store})
+
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          KindRepoContents,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, &RepoContentsFetcher{gh: gh, store: store})
+
+	mgr.RegisterFetcher(freshness.Policy{
+		Kind:          KindRepoPullList,
+		DefaultTTL:    30 * time.Minute,
+		ErrorRetryMin: 30 * time.Second,
+	}, &RepoPullListFetcher{gh: gh, store: store})
 
 	mgr.RegisterFetcher(freshness.Policy{
 		Kind:          KindPRFiles,
