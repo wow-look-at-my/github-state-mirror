@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -22,6 +24,23 @@ type stubFetcher struct{}
 
 func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (freshness.RefreshResult, error) {
 	return freshness.RefreshResult{RecordsChanged: 1}, nil
+}
+
+// repoSeedingFetcher stands in for the org-repos fetcher: it writes a single
+// repo row into whatever partition asked for it (read from the context actor),
+// so an on-demand pull establishes a cache scope without a real GitHub call.
+type repoSeedingFetcher struct {
+	store       *ghdata.Store
+	owner, repo string
+}
+
+func (f *repoSeedingFetcher) Fetch(ctx context.Context, key, etag string) (freshness.RefreshResult, error) {
+	err := f.store.UpsertRepo(ctx, dbgen.Repo{
+		Owner:         f.owner,
+		Name:          f.repo,
+		NameWithOwner: f.owner + "/" + f.repo,
+	})
+	return freshness.RefreshResult{RecordsChanged: 1}, err
 }
 
 func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *freshness.Store, *ghdata.Store) {
@@ -40,8 +59,78 @@ func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *fre
 		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
 	}
 
-	dispatcher := NewWebhookDispatcher(mgr, store)
+	dispatcher := NewWebhookDispatcher(mgr, store, nil)
 	return dispatcher, mgr, fStore, store
+}
+
+// TestDispatch_PullsUncachedRepoOnDemand is the regression test for the webhook
+// "no cached scope" bug. A status delivery arrives for a repo no partition has
+// cached; rather than skip, the dispatcher pulls the repo on demand (as the
+// installation named in the delivery) and then applies the status.
+func TestDispatch_PullsUncachedRepoOnDemand(t *testing.T) {
+	_, mgr, _, store := setupDispatcher(t)
+
+	const owner, repo = "wow-look-at-my", "repo-nightmare"
+	const installID int64 = 123
+
+	// Fake GitHub: the dispatcher only needs an installation token; the org-repos
+	// fetch itself is stood in for by repoSeedingFetcher below.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/app/installations/123/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_inst123"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	gh := ghclient.NewWithBaseURL(srv.URL)
+	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
+	require.NoError(t, err)
+
+	mgr.RegisterFetcher(freshness.Policy{Kind: KindOrgRepos}, &repoSeedingFetcher{store: store, owner: owner, repo: repo})
+
+	d := NewWebhookDispatcher(mgr, store, app)
+
+	raw := []byte(`{
+		"sha": "deadbeef",
+		"state": "success",
+		"context": "ci/test",
+		"branches": [{"name": "main"}],
+		"repository": {"name": "repo-nightmare", "default_branch": "main", "owner": {"login": "wow-look-at-my"}},
+		"installation": {"id": 123}
+	}`)
+	event := webhook.ParseEvent("status", raw)
+	require.Equal(t, installID, event.InstallationID)
+
+	result := d.Dispatch(context.Background(), event)
+
+	// Applied, not skipped: the uncached repo was pulled first, then the status
+	// rolled up onto the (now cached) installation partition.
+	assert.Equal(t, webhook.DispApplied, result.Disposition)
+	assert.Equal(t, 1, result.Scopes)
+
+	// The pulled repo lives in the installation's partition.
+	actors, err := store.ActorsForRepo(context.Background(), owner, repo)
+	require.NoError(t, err)
+	assert.Equal(t, []string{AppInstallationActor(installID)}, actors)
+}
+
+// TestDispatch_SkipsWhenNoAppToPull confirms the pull is best-effort: with no
+// app configured the uncached repo cannot be fetched, so the delivery still
+// skips cleanly rather than erroring.
+func TestDispatch_SkipsWhenNoAppToPull(t *testing.T) {
+	d, _, _, _ := setupDispatcher(t) // nil app
+
+	raw := []byte(`{
+		"sha": "deadbeef",
+		"state": "success",
+		"context": "ci/test",
+		"repository": {"name": "repo-nightmare", "owner": {"login": "wow-look-at-my"}},
+		"installation": {"id": 123}
+	}`)
+	result := d.Dispatch(context.Background(), webhook.ParseEvent("status", raw))
+
+	assert.Equal(t, webhook.DispSkipped, result.Disposition)
+	assert.Equal(t, 0, result.Scopes)
 }
 
 // seed creates a fresh metadata entry so Invalidate has something to mark stale.
