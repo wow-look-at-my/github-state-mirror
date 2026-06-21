@@ -14,6 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 // Embedded dashboard assets. Only the files the production page references are
@@ -33,15 +34,16 @@ type dashboard struct {
 	store   *ghdata.Store
 	baseURL string
 	index   []byte
+	checker *syncpkg.ConsistencyChecker
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, checker *syncpkg.ConsistencyChecker) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
 		panic("read embedded index.html: " + err.Error())
 	}
-	return &dashboard{auth: authSvc, store: store, baseURL: strings.TrimRight(baseURL, "/"), index: index}
+	return &dashboard{auth: authSvc, store: store, baseURL: strings.TrimRight(baseURL, "/"), index: index, checker: checker}
 }
 
 // routes registers the dashboard's routes on r. These sit outside requireAuth:
@@ -63,6 +65,11 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
 	r.Get("/api/webhooks", d.handleWebhooks)
+
+	// Admin-only: browse the actual cached rows for one scope, and run a
+	// consistency check that re-fetches the source of truth from GitHub.
+	r.Get("/api/cache/data", d.handleCacheData)
+	r.Get("/api/cache/check", d.handleCacheCheck)
 }
 
 func (d *dashboard) serveIndex(w http.ResponseWriter, _ *http.Request) {
@@ -193,13 +200,7 @@ type webhooksResponse struct {
 // per-scope cache stats — it is restricted to admins, consistent with the
 // admin-only "all scopes" view.
 func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
-	login, ok := d.auth.Session(r)
-	if !ok {
-		http.Error(w, "unauthorized: sign in first", http.StatusUnauthorized)
-		return
-	}
-	if !d.auth.IsAdmin(login) {
-		http.Error(w, "forbidden: admin only", http.StatusForbidden)
+	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
 	deliveries, err := d.store.RecentWebhookDeliveries(r.Context(), 100)
@@ -230,7 +231,8 @@ type recentRefresh struct {
 }
 
 type scopeStats struct {
-	Actor    string            `json:"actor"`
+	Actor    string            `json:"actor"`              // short fingerprint (display)
+	ActorID  string            `json:"actor_id,omitempty"` // full partition key (for admin browse/check)
 	Login    string            `json:"login"`
 	IsSelf   bool              `json:"is_self"`
 	LastSeen string            `json:"last_seen,omitempty"`
@@ -360,6 +362,7 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 
 	s := scopeStats{
 		Actor:    shortFingerprint(in.actor),
+		ActorID:  in.actor,
 		Login:    in.login,
 		IsSelf:   in.login == selfLogin && in.login != unknownLogin,
 		LastSeen: in.lastSeen,

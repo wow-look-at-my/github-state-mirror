@@ -65,3 +65,49 @@ SELECT * FROM cache_refresh_log
 WHERE actor = ?
 ORDER BY id DESC
 LIMIT ?;
+
+-- ============================================================================
+-- Admin cache browse (dashboard, admin only)
+-- ============================================================================
+--
+-- These dump the actual cached rows for ONE explicit actor (cache scope). Unlike
+-- the per-context reads in store.go (which take the actor from the request
+-- context), these take the actor as a parameter so an admin can inspect any
+-- scope. They are gated to admins in the API layer; the data tables remain keyed
+-- by the opaque fingerprint, so this does not change the storage model -- it only
+-- lets the operator read what is already there.
+
+-- name: ListReposByActor :many
+SELECT * FROM repos WHERE actor = ? ORDER BY owner, name;
+
+-- name: ListPullRequestsByActor :many
+SELECT * FROM pull_requests WHERE actor = ? ORDER BY owner, repo, number;
+
+-- ListOpenPullRequestsByActor returns only OPEN PRs for an actor. The
+-- consistency check compares these against GitHub's live open-PR set (the cache
+-- only retains open PRs; closed ones are deleted by the webhook dispatcher).
+-- name: ListOpenPullRequestsByActor :many
+SELECT * FROM pull_requests WHERE actor = ? AND state = 'OPEN' ORDER BY owner, repo, number;
+
+-- name: ListPRLabelsByActor :many
+SELECT * FROM pr_labels WHERE actor = ? ORDER BY owner, repo, pr_number, name;
+
+-- name: ListUsersByActor :many
+SELECT * FROM users WHERE actor = ? ORDER BY login;
+
+-- name: ListOrgsByActor :many
+SELECT * FROM orgs WHERE actor = ? ORDER BY login;
+
+-- name: ListPRFilesByActor :many
+SELECT * FROM pr_files WHERE actor = ? ORDER BY owner, repo, pr_number, path;
+
+-- name: ListBranchComparisonsByActor :many
+SELECT * FROM branch_comparisons WHERE actor = ? ORDER BY owner, repo, base_ref, head_ref;
+
+-- name: ListCommitChecksByActor :many
+SELECT * FROM commit_checks WHERE actor = ? ORDER BY owner, repo, sha, context;
+
+-- ListDistinctOwnersByActor returns the distinct repo owners cached for an actor,
+-- so the consistency check knows which orgs to re-fetch from GitHub.
+-- name: ListDistinctOwnersByActor :many
+SELECT DISTINCT owner FROM repos WHERE actor = ? ORDER BY owner;
