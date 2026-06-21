@@ -31,18 +31,39 @@ func (m *Manager) RegisterFetcher(policy Policy, f Fetcher) {
 	m.fetchers[policy.Kind] = f
 }
 
-// EnsureFresh checks if the resource is fresh. If stale or unknown, triggers a synchronous fetch.
+// Outcome reports whether a freshness check served the resource from cache
+// (Hit), triggered an upstream fetch (Miss), or failed (Error). It lets the API
+// layer record per-request cache dispositions for the dashboard.
+type Outcome int
+
+const (
+	OutcomeHit Outcome = iota
+	OutcomeMiss
+	OutcomeError
+)
+
+// EnsureFresh checks if the resource is fresh. If stale or unknown, triggers a
+// synchronous fetch. It is a thin wrapper over EnsureFreshOutcome for callers
+// that don't need the hit/miss outcome.
 func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
+	_, err := m.EnsureFreshOutcome(ctx, id)
+	return err
+}
+
+// EnsureFreshOutcome is EnsureFresh that also reports the cache outcome: Hit when
+// the resource was already fresh (no upstream call), Miss when a fetch was
+// triggered, Error on failure.
+func (m *Manager) EnsureFreshOutcome(ctx context.Context, id ResourceID) (Outcome, error) {
 	id = m.fillActor(ctx, id)
 
 	meta, err := m.store.Get(ctx, id)
 	if err != nil {
-		return err
+		return OutcomeError, err
 	}
 
 	if meta != nil && meta.State == StateFresh {
 		if meta.ExpiresAt != nil && meta.ExpiresAt.After(time.Now()) {
-			return nil // still fresh
+			return OutcomeHit, nil // still fresh
 		}
 	}
 
@@ -78,7 +99,8 @@ func (m *Manager) InvalidateAndRefresh(ctx context.Context, id ResourceID, trigg
 	if err := m.Invalidate(ctx, id); err != nil {
 		slog.Warn("invalidate failed", "resource", id, "error", err)
 	}
-	return m.doFetch(ctx, id, trigger)
+	_, err := m.doFetch(ctx, id, trigger)
+	return err
 }
 
 // RefreshAllOfKind fetches all known resources of a given kind for the current actor.
@@ -89,18 +111,18 @@ func (m *Manager) RefreshAllOfKind(ctx context.Context, kind string, trigger Tri
 		return err
 	}
 	for _, meta := range metas {
-		if err := m.doFetch(ctx, meta.ResourceID, trigger); err != nil {
+		if _, err := m.doFetch(ctx, meta.ResourceID, trigger); err != nil {
 			slog.Warn("refresh failed", "resource", meta.ResourceID, "error", err)
 		}
 	}
 	return nil
 }
 
-func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSource) error {
+func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSource) (Outcome, error) {
 	fetcher, ok := m.fetchers[id.Kind]
 	if !ok {
 		slog.Warn("no fetcher registered", "kind", id.Kind)
-		return nil
+		return OutcomeHit, nil
 	}
 
 	// Per-resource mutex to coalesce concurrent fetches.
@@ -113,7 +135,7 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		meta, err := m.store.Get(ctx, id)
 		if err == nil && meta != nil && meta.State == StateFresh {
 			if meta.ExpiresAt != nil && meta.ExpiresAt.After(time.Now()) {
-				return nil
+				return OutcomeHit, nil
 			}
 		}
 	}
@@ -121,18 +143,18 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	// Ensure metadata row exists before marking fetching.
 	meta, err := m.store.Get(ctx, id)
 	if err != nil {
-		return err
+		return OutcomeError, err
 	}
 	if meta == nil {
 		if err := m.store.Upsert(ctx, &Metadata{
 			ResourceID: id,
 			State:      StateFetching,
 		}); err != nil {
-			return err
+			return OutcomeError, err
 		}
 	} else {
 		if err := m.store.MarkFetching(ctx, id); err != nil {
-			return err
+			return OutcomeError, err
 		}
 	}
 
@@ -158,7 +180,7 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		if logID > 0 {
 			_ = m.store.CompleteRefreshLog(ctx, logID, false, 0, fetchErr.Error())
 		}
-		return fetchErr
+		return OutcomeError, fetchErr
 	}
 
 	ttl := policy.DefaultTTL
@@ -167,13 +189,13 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	}
 	expiresAt := time.Now().Add(ttl)
 	if err := m.store.MarkFresh(ctx, id, result.NewETag, expiresAt); err != nil {
-		return err
+		return OutcomeError, err
 	}
 	if logID > 0 {
 		_ = m.store.CompleteRefreshLog(ctx, logID, true, result.RecordsChanged, "")
 	}
 
-	return nil
+	return OutcomeMiss, nil
 }
 
 func (m *Manager) fillActor(ctx context.Context, id ResourceID) ResourceID {

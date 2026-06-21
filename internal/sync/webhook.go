@@ -112,13 +112,11 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 }
 
 func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {
-	out := d.applyPRPayload(ctx, event)
-
-	// Always invalidate content-dependent caches (PR files, branch comparison)
-	// because the webhook payload doesn't carry file diffs.
-	d.invalidatePRContent(ctx, event)
-
-	return out
+	// Apply the PR payload to the webhook-fed org cache. The PR's file list and
+	// branch comparison are NOT cached by the mirror anymore (those endpoints
+	// passthrough to GitHub verbatim), so there is nothing content-dependent to
+	// invalidate here.
+	return d.applyPRPayload(ctx, event)
 }
 
 // applyPRPayload parses full PR data from the webhook and writes it directly to
@@ -165,20 +163,6 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 	}
 	slog.Info("webhook: applied PR data from webhook payload", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action, "actors", len(actors))
 	return applied(fmt.Sprintf("upserted PR #%d", payload.PR.Number), len(actors))
-}
-
-// invalidatePRContent marks the PR's file list and branch comparison stale; the
-// webhook payload never carries those, so the next read must re-fetch them.
-func (d *WebhookDispatcher) invalidatePRContent(ctx context.Context, event webhook.Event) {
-	owner, repo := event.RepoOwner(), event.RepoName()
-	if event.PRNumber > 0 && owner != "" && repo != "" {
-		key := fmt.Sprintf("%s/%s/%d", owner, repo, event.PRNumber)
-		d.invalidate(ctx, KindPRFiles, key)
-		if event.PRBase != "" && event.PRHead != "" {
-			compKey := fmt.Sprintf("%s/%s/%s...%s", owner, repo, event.PRBase, event.PRHead)
-			d.invalidate(ctx, KindCompare, compKey)
-		}
-	}
 }
 
 func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) outcome {

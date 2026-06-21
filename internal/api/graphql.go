@@ -64,10 +64,20 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure org repos data is fresh.
-	if err := h.mgr.EnsureFresh(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin}); err != nil {
+	// Ensure org repos data is fresh, recording whether this was a cache hit
+	// (served fresh) or a miss (triggered a fetch) for the dashboard.
+	outcome, err := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
+	if err != nil {
 		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", err)
 	}
+	disp := DispHit
+	switch {
+	case err != nil:
+		disp = DispError
+	case outcome == freshness.OutcomeMiss:
+		disp = DispMiss
+	}
+	h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, disp)
 
 	// Read repos from store.
 	repos, err := h.store.ListReposByOwner(ctx, orgLogin)
@@ -174,6 +184,13 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			},
 			"defaultBranchRef": defaultBranchRef,
 			"pullRequests": map[string]interface{}{
+				// The canonical query selects pullRequests.pageInfo (queries.go),
+				// so GitHub returns it; include it to stay shape-identical. The
+				// mirror returns every open PR in one page, so it never advances.
+				"pageInfo": map[string]interface{}{
+					"hasNextPage": false,
+					"endCursor":   nil,
+				},
 				"nodes": prNodes,
 			},
 		}

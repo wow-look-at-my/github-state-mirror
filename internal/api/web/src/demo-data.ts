@@ -69,11 +69,26 @@ interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
 }
 
+interface RequestEvent {
+    actor: string;
+    method: string;
+    path: string;
+    disposition: string;
+    at: string;
+}
+
+interface RequestsResponse {
+    total: number;
+    by_disposition: Record<string, number>;
+    recent: RequestEvent[] | null;
+}
+
 interface DemoStateData {
     me: Me;
     mine?: CacheResponse;
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
+    requests?: RequestsResponse;
 }
 
 interface DemoConfig {
@@ -218,6 +233,21 @@ const demoWebhooks: WebhooksResponse = {
     ],
 };
 
+// --- request activity log (admin "Requests" tab) ---
+const demoRequests: RequestsResponse = {
+    total: 1842,
+    by_disposition: { hit: 1503, miss: 71, passthrough: 264, error: 4 },
+    recent: [
+        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "passthrough", at: ago(3) },
+        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", at: ago(4) },
+        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", at: ago(6) },
+        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
+        { actor: "token:9f86d0818", method: "GET", path: "/rate_limit", disposition: "passthrough", at: ago(14) },
+        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "passthrough", at: ago(20) },
+    ],
+};
+
 const pazerMine = [pazerScopeCli, pazerScopeCi];
 const allScopes = [serviceScope, octocatScope, pazerScopeCli, pazerScopeCi, unknownScope].map((s) =>
     ({ ...s, is_self: s.login === "PazerOP" }));
@@ -245,6 +275,7 @@ const config: DemoConfig = {
                 login: "PazerOP", is_admin: true, scope: "all", scope_count: allScopes.length,
                 totals: sumScopes(allScopes), scopes: allScopes,
             },
+            requests: demoRequests,
             webhooks: demoWebhooks,
         },
     },
