@@ -13,7 +13,9 @@ Data stays fresh via three mechanisms:
    - `label` → recolor/remove the label across the repo's cached PRs
 
    Only low-frequency structural events (`repository`, `organization`, `membership`) — and any payload that can't be parsed — fall back to marking the affected resource stale for lazy refresh.
-2. **Periodic refresh** — Every 6 hours, known resources are re-fetched as a backstop. This runs only when a GitHub App is configured (see Configuration); the service signs in as the app, per installation, and never uses a static service token.
+
+   A webhook is applied to every credential partition that has the affected repo cached. If **no** partition has it yet, the dispatcher **pulls it on demand** — fetching the owner's repos once, as the GitHub App installation named in the delivery, into that installation's partition — and then applies. So the first delivery for a repo bootstraps a scope itself; only when no app is configured (or the fetch fails) does a delivery fall through to `skipped` ("no cached scope").
+2. **Periodic refresh** — When a GitHub App is configured (see Configuration), every 6 hours the service signs in as the app — per installation, never using a static service token — and re-fetches the resources already cached in each installation's partition as a backstop. (It does not pre-enumerate anything; partitions are populated on demand by lazy fetch and the webhook pull above.)
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand before responding
 
 Because high-frequency events are applied in place, an active org's cache no longer gets invalidated (and fully re-fetched) on every CI run or push — which is the point: serve from local state, only call GitHub on a genuine miss.
@@ -99,11 +101,11 @@ Sign-in requires a GitHub OAuth App; set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUT
 
 ## Configuration
 
-The service has **no static service token**. API requests authenticate with the caller's own bearer token; the only credential the service itself uses is an optional GitHub App, exclusively for background (periodic) refreshes.
+The service has **no static service token**. API requests authenticate with the caller's own bearer token; the only credential the service itself uses is an optional GitHub App, exclusively for background work — periodic refreshes and pulling an as-yet-uncached repo on demand when a webhook arrives for it.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_APP_ID` | No | — | GitHub App ID. When set (together with a private key), the service signs in as this app to run background (periodic) refreshes — minting a short-lived access token per installation. The app's data lives in its own credential partition and is **never** served to API callers, who always authenticate with their own `Authorization` header. Leave unset to disable periodic refreshes entirely. |
+| `GITHUB_APP_ID` | No | — | GitHub App ID. When set (together with a private key), the service signs in as this app for background work — periodic refreshes and the webhook dispatcher's on-demand repo pulls — minting a short-lived access token per installation. The app's data lives in its own credential partition and is **never** served to API callers, who always authenticate with their own `Authorization` header. Leave unset to disable periodic refreshes and on-demand pulls (webhooks for uncached repos then skip). |
 | `GITHUB_APP_PRIVATE_KEY` | With `GITHUB_APP_ID` | — | The app's PEM private key (PKCS#1 or PKCS#8). May be `\n`-escaped onto a single line for convenience in env vars. |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | Alt. to inline | — | Path to a PEM private-key file. Takes precedence over `GITHUB_APP_PRIVATE_KEY`. |
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |

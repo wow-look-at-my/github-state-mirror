@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -14,10 +16,15 @@ import (
 type WebhookDispatcher struct {
 	mgr   *freshness.Manager
 	store *ghdata.Store
+	// app, when configured, lets the dispatcher pull an as-yet-uncached repo on
+	// demand (minting an installation token from the delivery's installation.id)
+	// so the first webhook for a repo bootstraps a cache scope. nil disables the
+	// on-demand pull — deliveries for uncached repos are then skipped.
+	app *ghclient.AppAuthenticator
 }
 
-func NewWebhookDispatcher(mgr *freshness.Manager, store *ghdata.Store) *WebhookDispatcher {
-	return &WebhookDispatcher{mgr: mgr, store: store}
+func NewWebhookDispatcher(mgr *freshness.Manager, store *ghdata.Store, app *ghclient.AppAuthenticator) *WebhookDispatcher {
+	return &WebhookDispatcher{mgr: mgr, store: store, app: app}
 }
 
 // outcome is the internal per-handler result: a disposition (one of the
@@ -96,7 +103,7 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
-	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
 	if err != nil {
 		slog.Warn("webhook: list actors for push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("list actors failed")
@@ -135,7 +142,7 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 		return d.invalidateRepoOrg(ctx, event, "PR payload missing owner/repo")
 	}
 
-	actors, err := d.store.ActorsForRepo(ctx, owner, repo)
+	actors, err := d.actorsForRepo(ctx, event, owner, repo)
 	if err != nil {
 		slog.Warn("webhook: failed to list actors for repo", "repo", owner+"/"+repo, "error", err)
 		return errored("list actors failed")
@@ -192,7 +199,7 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
-	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
 	if err != nil {
 		slog.Warn("webhook: list actors for status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("list actors failed")
@@ -241,7 +248,7 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) ou
 	if payload.Action == "edited" && payload.OldName != "" && payload.OldName != payload.Name {
 		return d.invalidateRepoOrg(ctx, event, "label renamed")
 	}
-	actors, err := d.store.ActorsForRepo(ctx, payload.Owner, payload.Repo)
+	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
 	if err != nil {
 		slog.Warn("webhook: list actors for label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("list actors failed")
@@ -265,6 +272,52 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) ou
 	default:
 		return ignored("label action " + payload.Action + " not tracked")
 	}
+}
+
+// actorsForRepo returns the actors that have this repo cached. When none do, it
+// pulls the repo on demand — fetching the owner's repos once, as the GitHub App
+// installation named in the delivery — so a webhook for an as-yet-uncached repo
+// bootstraps a scope instead of being dropped. One fetch seeds every repo the
+// installation can see, so subsequent deliveries for that org apply directly.
+// Pulling is best-effort: if no app is configured, the delivery carries no
+// installation, or the fetch fails, the repo simply stays uncached and the
+// caller skips.
+func (d *WebhookDispatcher) actorsForRepo(ctx context.Context, event webhook.Event, owner, repo string) ([]string, error) {
+	actors, err := d.store.ActorsForRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	if len(actors) > 0 {
+		return actors, nil
+	}
+	if !d.pullOnDemand(ctx, event, owner) {
+		return actors, nil
+	}
+	return d.store.ActorsForRepo(ctx, owner, repo)
+}
+
+// pullOnDemand fetches owner's repos into the delivery's app-installation
+// partition, returning whether the fetch ran. It reports true only when the
+// fetch actually completed, so the caller knows a re-query is worthwhile.
+func (d *WebhookDispatcher) pullOnDemand(ctx context.Context, event webhook.Event, owner string) bool {
+	if d.app == nil || event.InstallationID == 0 || owner == "" {
+		return false
+	}
+	token, err := d.app.InstallationToken(ctx, event.InstallationID)
+	if err != nil {
+		slog.Warn("webhook: on-demand pull: mint installation token failed",
+			"installation", event.InstallationID, "owner", owner, "error", err)
+		return false
+	}
+	pctx := ghclient.WithToken(ctx, token)
+	pctx = actor.WithActor(pctx, AppInstallationActor(event.InstallationID))
+	if err := d.mgr.EnsureFresh(pctx, freshness.ResourceID{Kind: KindOrgRepos, Key: owner}); err != nil {
+		slog.Warn("webhook: on-demand pull org repos failed",
+			"installation", event.InstallationID, "owner", owner, "error", err)
+		return false
+	}
+	slog.Info("webhook: pulled org repos on demand", "installation", event.InstallationID, "owner", owner)
+	return true
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
