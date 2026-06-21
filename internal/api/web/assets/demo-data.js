@@ -34,7 +34,7 @@ const octocatScope = {
         { kind: "pr_files", key: "octo-org/api/142", trigger: "lazy", started_at: ago(300), status: "success" },
         { kind: "compare", key: "octo-org/api/main...release", trigger: "webhook", started_at: ago(640), status: "success" },
         { kind: "org_repos", key: "octo-org", trigger: "periodic", started_at: ago(3600), status: "success" },
-        { kind: "pr_files", key: "octo-org/web/77", trigger: "lazy", started_at: ago(5400), status: "error" },
+        { kind: "pr_files", key: "octo-org/web/77", trigger: "lazy", started_at: ago(5400), status: "error", error: "github api GET /repos/octo-org/web/pulls/77/files: 404 Not Found" },
     ],
 };
 // --- PazerOP (admin): two of their own token scopes ---

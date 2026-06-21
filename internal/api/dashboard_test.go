@@ -419,3 +419,32 @@ func TestSumAndShortAndTime(t *testing.T) {
 	assert.Equal(t, "", asTimeString(nil))
 	assert.Equal(t, "", asTimeString(42))
 }
+
+// TestToRecent_SurfacesError verifies a failed refresh carries its captured
+// error_message through to the dashboard response, while a successful one does
+// not — so the UI can show *why* a refresh errored, not just that it did.
+func TestToRecent_SurfacesError(t *testing.T) {
+	logs := []dbgen.CacheRefreshLog{
+		{
+			ResourceKind: "org_repos", ResourceKey: "wow-look-at-my", TriggeredBy: "lazy",
+			StartedAt:    "2024-01-01T00:00:00Z",
+			CompletedAt:  sql.NullString{String: "2024-01-01T00:00:01Z", Valid: true},
+			Success:      sql.NullInt64{Int64: 0, Valid: true},
+			ErrorMessage: sql.NullString{String: "github graphql: 403 Forbidden", Valid: true},
+		},
+		{
+			ResourceKind: "user", ResourceKey: "self", TriggeredBy: "lazy",
+			StartedAt:   "2024-01-01T00:00:00Z",
+			CompletedAt: sql.NullString{String: "2024-01-01T00:00:01Z", Valid: true},
+			Success:     sql.NullInt64{Int64: 1, Valid: true},
+		},
+	}
+	out := toRecent(logs)
+	require.Len(t, out, 2)
+
+	assert.Equal(t, "error", out[0].Status)
+	assert.Equal(t, "github graphql: 403 Forbidden", out[0].Error, "errored refresh must carry its failure reason")
+
+	assert.Equal(t, "success", out[1].Status)
+	assert.Empty(t, out[1].Error, "successful refresh has no error detail")
+}
