@@ -66,13 +66,13 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure org repos data is fresh, recording whether this was a cache hit
 	// (served fresh) or a miss (triggered a fetch) for the dashboard.
-	outcome, err := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
-	if err != nil {
-		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", err)
+	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
+	if ensureErr != nil {
+		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", ensureErr)
 	}
 	disp := DispHit
 	switch {
-	case err != nil:
+	case ensureErr != nil:
 		disp = DispError
 	case outcome == freshness.OutcomeMiss:
 		disp = DispMiss
@@ -83,6 +83,25 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	repos, err := h.store.ListReposByOwner(ctx, orgLogin)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// If the refresh failed and there is no cached data to fall back on, surface
+	// the upstream error instead of returning an empty-but-"200 OK" success — a
+	// silent empty result is indistinguishable from "this org has no repos" and
+	// hides real failures (bad token, GitHub 5xx, rate limit, ...). When cached
+	// repos DO exist we serve them (stale is better than an error). The body is a
+	// GitHub-style GraphQL error envelope so clients can read errors[].message.
+	if ensureErr != nil && len(repos) == 0 {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"organization": nil},
+			"errors": []map[string]interface{}{{
+				"message": "github-state-mirror: failed to fetch repositories for organization " + orgLogin + ": " + ensureErr.Error(),
+				"type":    "UPSTREAM_FETCH_FAILED",
+			}},
+		})
 		return
 	}
 

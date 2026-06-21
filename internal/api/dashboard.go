@@ -237,6 +237,11 @@ type kindFreshness struct {
 	Kind        string           `json:"kind"`
 	States      map[string]int64 `json:"states"`
 	LastFetched string           `json:"last_fetched,omitempty"`
+	// Error is the captured failure reason for a resource of this kind currently
+	// in the error state (ErrorKey identifies which one), so the dashboard can
+	// show *why* a kind is erroring, not just the count.
+	Error    string `json:"error,omitempty"`
+	ErrorKey string `json:"error_key,omitempty"`
 }
 
 type recentRefresh struct {
@@ -377,6 +382,10 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 	if err != nil {
 		return scopeStats{}, err
 	}
+	errs, err := d.store.ErrorMessagesByKind(ctx, in.actor)
+	if err != nil {
+		return scopeStats{}, err
+	}
 
 	s := scopeStats{
 		Actor:    shortFingerprint(in.actor),
@@ -386,7 +395,7 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 		LastSeen: in.lastSeen,
 		Counts:   counts,
 		Total:    sumCounts(counts),
-		Kinds:    groupKinds(fresh),
+		Kinds:    groupKinds(fresh, errs),
 	}
 	if detailed {
 		logs, err := d.store.RecentRefreshes(ctx, in.actor, 12)
@@ -399,8 +408,10 @@ func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin str
 }
 
 // groupKinds folds per-(kind,state) rows into one entry per resource kind, with
-// a map of state -> count and the most recent fetch time across that kind.
-func groupKinds(rows []dbgen.ActorFreshnessByKindRow) []kindFreshness {
+// a map of state -> count and the most recent fetch time across that kind. When
+// a kind has an errored resource, the first captured error message (and its key)
+// is attached so the dashboard can show why it failed.
+func groupKinds(rows []dbgen.ActorFreshnessByKindRow, errRows []dbgen.ActorErrorMessagesByKindRow) []kindFreshness {
 	order := make([]string, 0)
 	byKind := make(map[string]*kindFreshness)
 	for _, row := range rows {
@@ -415,6 +426,15 @@ func groupKinds(rows []dbgen.ActorFreshnessByKindRow) []kindFreshness {
 		if lf := asTimeString(row.LastFetched); lf > kf.LastFetched {
 			kf.LastFetched = lf
 		}
+	}
+	// Attach the first error message per kind (rows are ordered by kind, key).
+	for _, e := range errRows {
+		kf, ok := byKind[e.ResourceKind]
+		if !ok || kf.Error != "" {
+			continue
+		}
+		kf.Error = e.ErrorMessage.String
+		kf.ErrorKey = e.ResourceKey
 	}
 	out := make([]kindFreshness, 0, len(order))
 	for _, k := range order {

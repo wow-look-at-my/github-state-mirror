@@ -7,7 +7,48 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 )
+
+const actorErrorMessagesByKind = `-- name: ActorErrorMessagesByKind :many
+SELECT resource_kind, resource_key, error_message
+FROM cache_metadata
+WHERE actor = ? AND fetch_state = 'error' AND error_message IS NOT NULL AND error_message <> ''
+ORDER BY resource_kind, resource_key
+`
+
+type ActorErrorMessagesByKindRow struct {
+	ResourceKind string
+	ResourceKey  string
+	ErrorMessage sql.NullString
+}
+
+// ActorErrorMessagesByKind returns the captured failure reason for every
+// resource currently in the 'error' state for one actor, so the dashboard can
+// show *why* a kind is erroring (not just that it is). One row per errored
+// resource key.
+func (q *Queries) ActorErrorMessagesByKind(ctx context.Context, actor string) ([]ActorErrorMessagesByKindRow, error) {
+	rows, err := q.db.QueryContext(ctx, actorErrorMessagesByKind, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActorErrorMessagesByKindRow
+	for rows.Next() {
+		var i ActorErrorMessagesByKindRow
+		if err := rows.Scan(&i.ResourceKind, &i.ResourceKey, &i.ErrorMessage); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const actorFreshnessByKind = `-- name: ActorFreshnessByKind :many
 SELECT

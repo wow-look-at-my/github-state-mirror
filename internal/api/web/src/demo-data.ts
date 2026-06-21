@@ -61,7 +61,7 @@ const pazerScopeCli: ScopeStats = {
         { kind: "user_orgs", states: { fresh: 1 }, last_fetched: ago(65) },
         { kind: "org_repos", states: { fresh: 4, stale: 1 }, last_fetched: ago(800) },
         { kind: "pr_files", states: { fresh: 70, stale: 12 }, last_fetched: ago(200) },
-        { kind: "compare", states: { fresh: 15, fetching: 2, error: 1 }, last_fetched: ago(30) },
+        { kind: "compare", states: { fresh: 15, fetching: 2, error: 1 }, last_fetched: ago(30), error: "github api GET /repos/wow-look-at-my/buildhost/compare/main...feat: 404 Not Found", error_key: "wow-look-at-my/buildhost/main...feat" },
     ],
     recent: [
         { kind: "compare", key: "wow-look-at-my/buildhost/main...feat", trigger: "lazy", started_at: ago(30), status: "running" },

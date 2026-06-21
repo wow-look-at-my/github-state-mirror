@@ -295,18 +295,29 @@ function scopeCard(s: ScopeStats, detailed: boolean): HTMLElement {
 }
 
 function kindsTable(kinds: KindFreshness[]): HTMLElement {
-    const rows = kinds.map((k) => {
+    const rows: HTMLElement[] = [];
+    for (const k of kinds) {
         const pills = el("td");
         for (const st of STATE_ORDER) {
             const v = k.states ? k.states[st] : 0;
             if (v) pills.appendChild(el("span", { class: "pill " + st, text: st + " " + v }));
         }
-        return el("tr", null,
+        rows.push(el("tr", null,
             el("td", { class: "kind", text: k.kind }),
             pills,
             el("td", { text: k.last_fetched ? fmtTime(k.last_fetched) : "—" }),
-        );
-    });
+        ));
+        // Show the captured failure reason for an errored kind, so the panel
+        // explains *why* it errored instead of only counting it.
+        if (k.error) {
+            rows.push(el("tr", { class: "kind-error-row" },
+                el("td", { class: "kind-error", colspan: "3" },
+                    k.error_key ? el("span", { class: "kind-error-key", text: k.error_key }) : null,
+                    el("span", { class: "kind-error-msg", text: k.error }),
+                ),
+            ));
+        }
+    }
     return el("table", { class: "kinds" },
         el("thead", null, el("tr", null,
             el("th", { text: "Resource" }),

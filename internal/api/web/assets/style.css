@@ -206,6 +206,19 @@ table.kinds th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 table.kinds td.kind { font-family: var(--mono); font-size: 12px; }
 table.kinds tr:last-child td { border-bottom: none; }
 
+/* Error detail row under an errored resource kind. */
+table.kinds tr.kind-error-row td.kind-error {
+    padding: 4px 10px 9px;
+    font-size: 12px;
+    background: rgba(248,81,73,0.06);
+}
+.kind-error-key {
+    font-family: var(--mono); font-size: 11px; color: var(--fg-muted);
+    margin-right: 8px; padding: 1px 6px; border-radius: 6px;
+    border: 1px solid var(--border-muted); background: var(--bg);
+}
+.kind-error-msg { color: var(--red); font-family: var(--mono); font-size: 12px; word-break: break-word; }
+
 .pill {
     display: inline-block; font-size: 11px; font-weight: 600;
     padding: 1px 8px; border-radius: 999px; margin-right: 5px;

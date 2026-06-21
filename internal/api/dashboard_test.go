@@ -396,15 +396,22 @@ func TestGroupKinds(t *testing.T) {
 	rows := []dbgen.ActorFreshnessByKindRow{
 		{ResourceKind: "org_repos", FetchState: "fresh", Count: 2, LastFetched: "2026-01-01T00:00:00Z"},
 		{ResourceKind: "org_repos", FetchState: "stale", Count: 1, LastFetched: "2026-02-01T00:00:00Z"},
+		{ResourceKind: "org_repos", FetchState: "error", Count: 1, LastFetched: "2026-02-02T00:00:00Z"},
 		{ResourceKind: "pr_files", FetchState: "fresh", Count: 5, LastFetched: []byte("2026-03-01T00:00:00Z")},
 	}
-	out := groupKinds(rows)
+	errRows := []dbgen.ActorErrorMessagesByKindRow{
+		{ResourceKind: "org_repos", ResourceKey: "wow-look-at-my", ErrorMessage: sql.NullString{String: "github api POST /graphql: 502", Valid: true}},
+	}
+	out := groupKinds(rows, errRows)
 	require.Len(t, out, 2)
 	assert.Equal(t, "org_repos", out[0].Kind)
 	assert.Equal(t, int64(2), out[0].States["fresh"])
 	assert.Equal(t, int64(1), out[0].States["stale"])
-	assert.Equal(t, "2026-02-01T00:00:00Z", out[0].LastFetched) // max across states
+	assert.Equal(t, "2026-02-02T00:00:00Z", out[0].LastFetched) // max across states
+	assert.Equal(t, "github api POST /graphql: 502", out[0].Error)
+	assert.Equal(t, "wow-look-at-my", out[0].ErrorKey)
 	assert.Equal(t, "2026-03-01T00:00:00Z", out[1].LastFetched) // []byte coerced
+	assert.Empty(t, out[1].Error)
 }
 
 func TestSumAndShortAndTime(t *testing.T) {

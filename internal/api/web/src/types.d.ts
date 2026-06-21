@@ -26,6 +26,8 @@ export interface KindFreshness {
     kind: string;
     states: Record<string, number>;
     last_fetched?: string;
+    error?: string;
+    error_key?: string;
 }
 
 export interface RecentRefresh {
