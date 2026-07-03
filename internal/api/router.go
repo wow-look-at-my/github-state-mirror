@@ -176,7 +176,7 @@ func NewRouter(
 	// proxied request is recorded as a passthrough.
 	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL()), reqlog)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
@@ -194,22 +194,37 @@ func NewRouter(
 	// github.com — not the api.github.com passthrough.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
 
+	// Installation-token mint cache. Registered OUTSIDE requireAuth: the
+	// bearer token here is a GitHub App JWT (it cannot resolve GET /user), so
+	// the handler verifies it itself via VerifyAppIdentity and partitions by
+	// the verified app id. Unverifiable callers are forwarded unchanged.
+	r.Post("/app/installations/{id}/access_tokens", h.cachedInstallationToken)
+
 	// Data endpoints — every request must carry a valid GitHub token, and all
-	// cache access is scoped to that token's GitHub user (or, for non-user
-	// tokens, to the token's fingerprint).
+	// cache access is scoped to that credential's partition (the requireAuth
+	// actor): the token's GitHub user ("user:<id>"), app:<id> for verified
+	// X-Mirror-Identity callers, or the token's fingerprint for non-user
+	// tokens.
 	//
-	// IMPORTANT: a route is served from cache ONLY if its response is byte-for-byte
-	// identical to GitHub's (the cache is not a transformative middleman). The only
-	// such route today is the org-repos GraphQL query (the webhook-fed core).
-	// Everything the mirror cannot serve identically — including the REST endpoints
-	// that used to return trimmed shapes (/user, /user/orgs, /compare,
-	// /pulls/{n}/files) — falls through to the verbatim passthrough below.
+	// The cache contract is three-tiered (see CLAUDE.md): the org-repos GraphQL
+	// query is served byte-identical to GitHub (identity-test-locked); the
+	// cached REST routes below ABSORB the response's state and REBUILD a
+	// TRIMMED body with every URL field (url, *_url, _links) dropped; and
+	// everything else falls through to the verbatim passthrough, uncached.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(gh, newIdentityRecorder(store)))
 
 		// GraphQL endpoint (only the org-repos query shape is cached; everything
 		// else h.graphql forwards to the passthrough).
 		r.Post("/graphql", h.graphql)
+
+		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
+		// the 404 "config absent" answer; push/repository webhooks invalidate)
+		// and immutable git commits (also absorbed from push payloads).
+		// GET /repos/{o}/{r}/pulls/{n} is deliberately NOT cached — its
+		// `mergeable` field is lazily computed and polled-for; see CLAUDE.md.
+		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
+		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded
