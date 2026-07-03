@@ -10,27 +10,18 @@ import (
 
 // Resource kind constants used in cache_metadata.
 const (
-	KindUser     = "user"
-	KindUserOrgs = "user_orgs"
+	// KindOrgRepos is a PRINCIPAL's org list-sync marker (actor = principal,
+	// key = org login): freshness of that principal's grant set for the owner.
+	// The fetch refreshes global truth as a side effect.
 	KindOrgRepos = "org_repos"
-	KindPRFiles  = "pr_files"
-	KindCompare  = "compare"
+	// KindRepoPulls is GLOBAL truth freshness for one repo's open-PR list
+	// (actor = freshness.GlobalActor, key = "owner/repo"): any principal's
+	// fetch refreshes it for everyone.
+	KindRepoPulls = "repo_pulls"
 )
 
 // RegisterAll wires all fetchers into the freshness.Manager.
 func RegisterAll(mgr *freshness.Manager, gh *ghclient.Client, store *ghdata.Store) {
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindUser,
-		DefaultTTL:    6 * time.Hour,
-		ErrorRetryMin: 1 * time.Minute,
-	}, &UserFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindUserOrgs,
-		DefaultTTL:    6 * time.Hour,
-		ErrorRetryMin: 1 * time.Minute,
-	}, &UserOrgsFetcher{gh: gh, store: store})
-
 	mgr.RegisterFetcher(freshness.Policy{
 		Kind:          KindOrgRepos,
 		DefaultTTL:    6 * time.Hour,
@@ -38,14 +29,10 @@ func RegisterAll(mgr *freshness.Manager, gh *ghclient.Client, store *ghdata.Stor
 	}, &OrgReposFetcher{gh: gh, store: store})
 
 	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindPRFiles,
-		DefaultTTL:    1 * time.Hour,
-		ErrorRetryMin: 30 * time.Second,
-	}, &PRFilesFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindCompare,
+		// Webhooks keep the open-PR set live; the TTL only bounds how long a
+		// missed webhook could mislead the /pulls list.
+		Kind:          KindRepoPulls,
 		DefaultTTL:    30 * time.Minute,
 		ErrorRetryMin: 30 * time.Second,
-	}, &CompareFetcher{gh: gh, store: store})
+	}, &RepoPullsFetcher{gh: gh, store: store})
 }

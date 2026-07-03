@@ -1,5 +1,14 @@
 -- Schema version: bump this constant in db.go when changing this file.
--- The DB is a cache — on version mismatch, the file gets deleted and recreated.
+-- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
+--
+-- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
+-- pull_requests, pr_labels, commit_checks, contents_cache, git_commits_cache)
+-- hold ONE row per resource -- no actor/scope dimension. Webhooks and fetches
+-- by any principal all write the same truth. What a caller may READ is decided
+-- at serve time by the reveal-by-permission layer: a repo's cached state is
+-- revealed to a principal iff the repo is public in global truth, or the
+-- principal holds a fresh access_grants row for it (earned from GitHub's own
+-- answers to that principal's requests). See CLAUDE.md "security model".
 
 -- ============================================================================
 -- Freshness / Cache Metadata (generic, no GitHub knowledge)
@@ -9,6 +18,15 @@ CREATE TABLE schema_version (
     version INTEGER NOT NULL
 );
 
+-- Freshness markers. Two kinds of rows share this table:
+--   - actor = a principal ("user:<id>", "app:<id>", "app-installation:<id>",
+--     or a token fingerprint): that principal's per-owner org-repos LIST-SYNC
+--     marker (kind 'org_repos'). Freshness of the principal's GRANT SET for
+--     the owner, not of the data itself -- truth is refreshed as a side effect
+--     of any principal's sync.
+--   - actor = 'global': freshness of a piece of GLOBAL truth that has a
+--     dedicated fetch path (kind 'repo_pulls', key 'owner/repo'). Any
+--     principal's fetch refreshes it for everyone.
 CREATE TABLE cache_metadata (
     actor           TEXT NOT NULL DEFAULT '',
     resource_kind   TEXT NOT NULL,
@@ -37,51 +55,46 @@ CREATE TABLE cache_refresh_log (
 );
 
 -- ============================================================================
--- GitHub Data Tables
+-- GitHub Data Tables (GLOBAL truth -- one row per resource)
 -- ============================================================================
 
-CREATE TABLE users (
-    actor       TEXT NOT NULL DEFAULT '',
-    login       TEXT NOT NULL,
-    avatar_url  TEXT NOT NULL,
-    url         TEXT NOT NULL,
-    PRIMARY KEY (actor, login)
-);
-
-CREATE TABLE orgs (
-    actor       TEXT NOT NULL DEFAULT '',
-    login       TEXT NOT NULL,
-    avatar_url  TEXT,
-    url         TEXT,
-    PRIMARY KEY (actor, login)
-);
-
-CREATE TABLE user_org_memberships (
-    actor       TEXT NOT NULL DEFAULT '',
-    user_login  TEXT NOT NULL,
-    org_login   TEXT NOT NULL,
-    PRIMARY KEY (actor, user_login, org_login)
-);
-
+-- visibility is the reveal layer's fast path: 'public' rows are readable by any
+-- authenticated principal without a grant. It is learned from webhook payloads
+-- (repository.private / repository.visibility, flipped by publicized/privatized
+-- events) and from REST fetch payloads that carry it; the identity-locked
+-- GraphQL org-repos selection set does NOT carry it, so a repo seeded only by
+-- that fetch stays '' (unknown) and is treated as PRIVATE (fail closed) until a
+-- webhook or REST absorb reveals it.
 CREATE TABLE repos (
-    actor                 TEXT NOT NULL DEFAULT '',
     owner                 TEXT NOT NULL,
     name                  TEXT NOT NULL,
     name_with_owner       TEXT NOT NULL,
     url                   TEXT NOT NULL,
     is_disabled           INTEGER NOT NULL DEFAULT 0,
     is_archived           INTEGER NOT NULL DEFAULT 0,
+    visibility            TEXT NOT NULL DEFAULT '',  -- '' unknown | public | private | internal
     pushed_at             TEXT,
     default_branch        TEXT,
     default_branch_status TEXT,
     owner_login           TEXT,
     owner_avatar          TEXT,
     owner_url             TEXT,
-    PRIMARY KEY (actor, owner, name)
+    PRIMARY KEY (owner, name)
 );
 
+-- touched_at guards the fetch-reconcile against racing webhooks: an org/pulls
+-- fetch only deletes an open-PR row absent from its snapshot when the row was
+-- not webhook-touched after the fetch began (GraphQL/REST list reads are
+-- eventually consistent, so a just-webhooked PR can be missing from a fetch
+-- that started moments later).
+--
+-- Nullable TEXT columns hold state only SOME sources carry (the GraphQL org
+-- fetch carries none of node_id/body/auto_merge/mergeable_state/
+-- merge_commit_sha/base_sha/head_repo_full_name; REST fetches and webhook
+-- payloads carry all of them, mapping a JSON null to '' so NULL always means
+-- "never absorbed from a REST-complete source"). A row with a non-empty
+-- node_id is "REST-complete" and can back the trimmed /pulls rebuilds.
 CREATE TABLE pull_requests (
-    actor                TEXT NOT NULL DEFAULT '',
     owner                TEXT NOT NULL,
     repo                 TEXT NOT NULL,
     number               INTEGER NOT NULL,
@@ -102,53 +115,86 @@ CREATE TABLE pull_requests (
     head_ref_oid         TEXT,
     review_request_count INTEGER,
     last_commit_status   TEXT,
-    PRIMARY KEY (actor, owner, repo, number)
+    node_id              TEXT,
+    body                 TEXT,
+    auto_merge           TEXT,  -- trimmed JSON object; '' = carried and null (not armed)
+    mergeable_state      TEXT,
+    merge_commit_sha     TEXT,  -- '' = carried and null (test merge not computed)
+    base_sha             TEXT,
+    head_repo_full_name  TEXT,  -- '' = carried and null (head repo deleted)
+    touched_at           TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner, repo, number)
 );
 
 CREATE TABLE pr_labels (
-    actor       TEXT NOT NULL DEFAULT '',
     owner       TEXT NOT NULL,
     repo        TEXT NOT NULL,
     pr_number   INTEGER NOT NULL,
     name        TEXT NOT NULL,
     color       TEXT NOT NULL,
-    PRIMARY KEY (actor, owner, repo, pr_number, name)
-);
-
-CREATE TABLE pr_files (
-    actor       TEXT NOT NULL DEFAULT '',
-    owner       TEXT NOT NULL,
-    repo        TEXT NOT NULL,
-    pr_number   INTEGER NOT NULL,
-    path        TEXT NOT NULL,
-    additions   INTEGER NOT NULL,
-    deletions   INTEGER NOT NULL,
-    PRIMARY KEY (actor, owner, repo, pr_number, path)
-);
-
-CREATE TABLE branch_comparisons (
-    actor       TEXT NOT NULL DEFAULT '',
-    owner       TEXT NOT NULL,
-    repo        TEXT NOT NULL,
-    base_ref    TEXT NOT NULL,
-    head_ref    TEXT NOT NULL,
-    ahead_by    INTEGER NOT NULL,
-    behind_by   INTEGER NOT NULL,
-    PRIMARY KEY (actor, owner, repo, base_ref, head_ref)
+    PRIMARY KEY (owner, repo, pr_number, name)
 );
 
 -- Per-check state for a commit, fed by status/check_run/check_suite webhooks.
 -- We aggregate these into the PR's last_commit_status rollup without re-fetching
 -- from GitHub. context is the status context or check name (latest state wins).
 CREATE TABLE commit_checks (
-    actor       TEXT NOT NULL DEFAULT '',
     owner       TEXT NOT NULL,
     repo        TEXT NOT NULL,
     sha         TEXT NOT NULL,
     context     TEXT NOT NULL,
     state       TEXT NOT NULL,   -- normalized: SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
-    PRIMARY KEY (actor, owner, repo, sha, context)
+    PRIMARY KEY (owner, repo, sha, context)
 );
+
+-- ============================================================================
+-- Reveal-by-permission: grants and deny verdicts
+-- ============================================================================
+
+-- A grant records that GitHub itself proved a principal can read a repo:
+--   - source 'list_sync': the repo appeared in an org-repos fetch made with
+--     that principal's own token (replace-synced per principal+owner on every
+--     sync; absence from a sync revokes list_sync grants).
+--   - source 'probe': a repo-scoped cached-route fetch with the principal's
+--     token answered 2xx.
+-- Grants expire (expires_at = granted_at + the grant TTL) so revoked access
+-- ages out; an authoritative 403 on a later fetch deletes the grant
+-- immediately. A plain 404 does NOT revoke (it is ambiguous with
+-- "resource missing inside an accessible repo").
+CREATE TABLE access_grants (
+    principal  TEXT NOT NULL,  -- "user:<id>", "app:<id>", "app-installation:<id>", or token fingerprint
+    owner      TEXT NOT NULL,  -- lowercased
+    repo       TEXT NOT NULL,  -- lowercased
+    granted_at TEXT NOT NULL,  -- RFC3339
+    expires_at TEXT NOT NULL,  -- RFC3339
+    source     TEXT NOT NULL,  -- list_sync | probe
+    PRIMARY KEY (principal, owner, repo)
+);
+
+CREATE INDEX idx_access_grants_repo ON access_grants (owner, repo);
+
+-- A deny verdict caches GitHub's own authoritative "no" (404, or a
+-- non-rate-limit 403) to ONE principal's probe of ONE resource, so an
+-- unauthorized caller repeating the same request does not hammer GitHub.
+-- Short TTL (~5m); only authoritative answers are stored -- transient
+-- failures (5xx, 429, rate-limited 403) are never cached as denials. Keyed by
+-- the exact resource (not the whole repo) because GitHub's 404 cannot be told
+-- apart from "file/PR missing inside a repo the principal CAN see". Earning a
+-- grant for the repo clears the principal's verdicts for it.
+CREATE TABLE deny_cache (
+    principal     TEXT NOT NULL,
+    resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull
+    resource_key  TEXT NOT NULL,  -- route-specific resource key
+    owner         TEXT NOT NULL,  -- lowercased
+    repo          TEXT NOT NULL,  -- lowercased
+    status        INTEGER NOT NULL,  -- 404 or 403
+    message       TEXT NOT NULL DEFAULT '',
+    denied_at     TEXT NOT NULL,  -- RFC3339
+    expires_at    TEXT NOT NULL,  -- RFC3339
+    PRIMARY KEY (principal, resource_kind, resource_key)
+);
+
+CREATE INDEX idx_deny_cache_repo ON deny_cache (principal, owner, repo);
 
 -- ============================================================================
 -- Cached-route response state (trimmed rebuilds; see internal/api/respcache.go)
@@ -157,18 +203,20 @@ CREATE TABLE commit_checks (
 -- These tables back the cached REST routes. They store the STATE contained in a
 -- GitHub response (never the raw response bytes); the API layer rebuilds a
 -- trimmed response body from this state, dropping every URL field (url, *_url,
--- _links). Rows are actor-partitioned like every other data table; invalidation
--- (webhook-driven) is global across actors, like MarkStaleByKindKey.
+-- _links). Global truth like every other data table; who may read a row is the
+-- reveal layer's job. Invalidation (webhook-driven) deletes rows outright.
 
 -- State for GET /repos/{owner}/{repo}/contents/{path}?ref=... responses.
 -- owner/repo are stored lowercased (GitHub treats them case-insensitively in
 -- URLs, and webhook invalidation must match regardless of the caller's casing);
 -- path and ref are exact. kind is 'file' (name/sha/size/encoding/content set),
 -- 'dir' (entries = JSON array of trimmed {type,size,name,path,sha} objects), or
--- 'missing' (a cached 404; message = GitHub's error message).
+-- 'missing' (a cached 404; message = GitHub's error message). A 'missing' row
+-- is only ever absorbed from a REVEALED principal's fetch (public repo or
+-- grant held) -- an unauthorized probe's 404 is ambiguous and goes to
+-- deny_cache instead, never into global truth.
 CREATE TABLE contents_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor        TEXT NOT NULL,
     owner        TEXT NOT NULL,              -- lowercased
     repo         TEXT NOT NULL,              -- lowercased
     path         TEXT NOT NULL,              -- exact file path ('' never cached; route requires one)
@@ -186,8 +234,7 @@ CREATE TABLE contents_cache (
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_contents_cache_key ON contents_cache (actor, owner, repo, path, ref);
-CREATE INDEX idx_contents_cache_repo ON contents_cache (owner, repo);
+CREATE UNIQUE INDEX idx_contents_cache_key ON contents_cache (owner, repo, path, ref);
 CREATE INDEX idx_contents_cache_lru ON contents_cache (last_used_at);
 
 -- State for GET /repos/{owner}/{repo}/git/commits/{sha} responses. A git commit
@@ -197,7 +244,6 @@ CREATE INDEX idx_contents_cache_lru ON contents_cache (last_used_at);
 -- rebuild to the same trimmed shape. parents is a comma-joined parent-sha list.
 CREATE TABLE git_commits_cache (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor           TEXT NOT NULL,
     owner           TEXT NOT NULL,           -- lowercased
     repo            TEXT NOT NULL,           -- lowercased
     sha             TEXT NOT NULL,           -- lowercased full hex
@@ -214,17 +260,19 @@ CREATE TABLE git_commits_cache (
     last_used_at    TEXT NOT NULL             -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_git_commits_cache_key ON git_commits_cache (actor, owner, repo, sha);
+CREATE UNIQUE INDEX idx_git_commits_cache_key ON git_commits_cache (owner, repo, sha);
 CREATE INDEX idx_git_commits_cache_lru ON git_commits_cache (last_used_at);
 
 -- State for POST /app/installations/{id}/access_tokens responses (the
--- installation-token mint cache). actor is the verified app identity
--- ("app:<id>"); body_hash is the SHA-256 of the canonicalized request body
--- (empty body vs permissions/repositories subsets mint DIFFERENT tokens).
--- token is a live short-lived credential at rest -- same trust domain as the
--- traffic itself, bounded by expiry (see the security notes in CLAUDE.md).
--- expires_at is the serve-until time: GitHub's token expiry minus a safety
--- buffer; past it the row is a miss and a fresh mint replaces it.
+-- installation-token mint cache). This table stays keyed by the verified app
+-- identity ("app:<id>") -- it caches a CREDENTIAL minted for that app, not
+-- GitHub state, so it is deliberately outside the global-truth model.
+-- body_hash is the SHA-256 of the canonicalized request body (empty body vs
+-- permissions/repositories subsets mint DIFFERENT tokens). token is a live
+-- short-lived credential at rest -- same trust domain as the traffic itself,
+-- bounded by expiry (see the security notes in CLAUDE.md). expires_at is the
+-- serve-until time: GitHub's token expiry minus a safety buffer; past it the
+-- row is a miss and a fresh mint replaces it.
 CREATE TABLE install_token_cache (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     actor                TEXT NOT NULL,             -- "app:<verified app id>"
@@ -243,20 +291,36 @@ CREATE UNIQUE INDEX idx_install_token_cache_key ON install_token_cache (actor, i
 CREATE INDEX idx_install_token_cache_install ON install_token_cache (installation_id);
 CREATE INDEX idx_install_token_cache_lru ON install_token_cache (last_used_at);
 
+-- State for GET /repos/{owner}/{repo}/installation responses (which App
+-- installation covers a repo). Keyed by the verified app identity like the
+-- token-mint cache: the answer is app-specific (each app has its own
+-- installations), not shared GitHub state. installation/installation_repos
+-- webhooks invalidate by installation id; a TTL backstops missed ones.
+CREATE TABLE repo_installations (
+    actor           TEXT NOT NULL,   -- "app:<verified app id>"
+    owner           TEXT NOT NULL,   -- lowercased
+    repo            TEXT NOT NULL,   -- lowercased
+    installation_id INTEGER NOT NULL,
+    fetched_at      TEXT NOT NULL,   -- RFC3339
+    expires_at      TEXT NOT NULL,   -- RFC3339
+    PRIMARY KEY (actor, owner, repo)
+);
+
+CREATE INDEX idx_repo_installations_install ON repo_installations (installation_id);
+
 -- ============================================================================
--- Actor Identities (dashboard only)
+-- Principal Identities (dashboard only)
 -- ============================================================================
 --
--- Maps a cache partition (actor = SHA-256 fingerprint of a token) to the GitHub
--- login that token authenticated as. Populated in requireAuth whenever a token
--- is validated. This does NOT relax data isolation: the data tables remain keyed
--- by the opaque fingerprint. It exists purely so the web dashboard can group a
--- user's own scopes (a user may hold several tokens) under their login, and so
--- an admin can attribute every scope. The raw token is never stored — only its
--- fingerprint and the login GitHub reports for it.
+-- Maps a principal (the reveal-layer identity: "user:<id>", "app:<id>", or a
+-- token fingerprint) to the GitHub login it authenticated as. Populated in
+-- requireAuth whenever a token is validated. Purely for the dashboard: it
+-- groups a signed-in user's principal under their login and lets an admin
+-- attribute every principal. The raw token is never stored -- only the
+-- principal key and the login GitHub reports for it.
 CREATE TABLE actor_identities (
-    actor       TEXT NOT NULL PRIMARY KEY,  -- token fingerprint (matches the actor column elsewhere)
-    login       TEXT NOT NULL,              -- GitHub login the token authenticated as
+    actor       TEXT NOT NULL PRIMARY KEY,  -- principal key (matches access_grants.principal)
+    login       TEXT NOT NULL,              -- GitHub login the credential authenticated as
     first_seen  TEXT NOT NULL,              -- RFC3339
     last_seen   TEXT NOT NULL               -- RFC3339
 );
@@ -267,13 +331,14 @@ CREATE INDEX idx_actor_identities_login ON actor_identities (login);
 -- Webhook delivery log (dashboard observability)
 -- ============================================================================
 
--- Every received webhook delivery and what the dispatcher did with it. Unlike
--- the per-credential data tables, this log is global (not actor-scoped): a
--- delivery is a single GitHub event, recorded once with its disposition so an
--- operator can see whether the cache was actually updated. delivery_id is the
--- X-GitHub-Delivery UUID, which matches the row in GitHub's "Recent Deliveries"
--- UI, so the two can be lined up. The log is capped to the most recent rows
--- (see PruneWebhookDeliveries) since it is observability, not source-of-truth.
+-- Every received webhook delivery and what the dispatcher did with it. Global
+-- (one GitHub event = one row). Since v9 every stateful event applies straight
+-- to global truth, so the old 'skipped' disposition ("no cache scope had this
+-- repo") no longer exists; 'ignored' remains for genuinely untracked event
+-- types/actions. delivery_id is the X-GitHub-Delivery UUID, which matches the
+-- row in GitHub's "Recent Deliveries" UI, so the two can be lined up. The log
+-- is capped to the most recent rows (see PruneWebhookDeliveries) since it is
+-- observability, not source-of-truth.
 CREATE TABLE webhook_deliveries (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     delivery_id  TEXT NOT NULL DEFAULT '',   -- X-GitHub-Delivery header (UUID)
@@ -281,9 +346,8 @@ CREATE TABLE webhook_deliveries (
     action       TEXT NOT NULL DEFAULT '',   -- payload "action", when present
     repo         TEXT NOT NULL DEFAULT '',   -- owner/name, when derivable
     received_at  TEXT NOT NULL,              -- RFC3339
-    disposition  TEXT NOT NULL,              -- applied | skipped | invalidated | ignored | error
-    detail       TEXT NOT NULL DEFAULT '',   -- human summary, e.g. "upserted PR #42"
-    actors       INTEGER NOT NULL DEFAULT 0  -- number of cache scopes touched
+    disposition  TEXT NOT NULL,              -- applied | invalidated | ignored | error
+    detail       TEXT NOT NULL DEFAULT ''    -- human summary, e.g. "upserted PR #42"
 );
 
 -- ============================================================================
@@ -291,12 +355,9 @@ CREATE TABLE webhook_deliveries (
 -- ============================================================================
 
 -- GitHub Actions job state, fed by workflow_job webhooks (in_progress and
--- completed actions; queued/waiting churn is deliberately not recorded). Like
--- webhook_deliveries, this table is GLOBAL (not actor-scoped): it is webhook-fed
--- operational telemetry with no per-credential fetch path — a job's state only
--- ever arrives via the HMAC-verified delivery, never through a caller's token,
--- so there is no credential to partition by (and the read path is admin-only).
--- Empty string means "not reported" for the optional TEXT fields, matching the
+-- completed actions; queued/waiting churn is deliberately not recorded). Global
+-- webhook-fed operational telemetry (the read path is admin-only). Empty string
+-- means "not reported" for the optional TEXT fields, matching the
 -- webhook_deliveries convention. Rows are bounded by pruning on write: completed
 -- jobs older than a retention window are deleted after each upsert (see
 -- PruneWorkflowJobs and ghdata.workflowJobRetention).

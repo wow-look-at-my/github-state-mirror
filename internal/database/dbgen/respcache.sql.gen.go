@@ -41,6 +41,15 @@ func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredRepoInstallations = `-- name: DeleteExpiredRepoInstallations :exec
+DELETE FROM repo_installations WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredRepoInstallations(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredRepoInstallations, expiresAt)
+	return err
+}
+
 const deleteInstallTokenCacheByInstallation = `-- name: DeleteInstallTokenCacheByInstallation :exec
 DELETE FROM install_token_cache WHERE installation_id = ?
 `
@@ -50,15 +59,23 @@ func (q *Queries) DeleteInstallTokenCacheByInstallation(ctx context.Context, ins
 	return err
 }
 
+const deleteRepoInstallationsByInstallation = `-- name: DeleteRepoInstallationsByInstallation :exec
+DELETE FROM repo_installations WHERE installation_id = ?
+`
+
+func (q *Queries) DeleteRepoInstallationsByInstallation(ctx context.Context, installationID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoInstallationsByInstallation, installationID)
+	return err
+}
+
 const getContentsCache = `-- name: GetContentsCache :one
 
 
-SELECT id, actor, owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at FROM contents_cache
-WHERE actor = ? AND owner = ? AND repo = ? AND path = ? AND ref = ?
+SELECT id, owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at FROM contents_cache
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?
 `
 
 type GetContentsCacheParams struct {
-	Actor string
 	Owner string
 	Repo  string
 	Path  string
@@ -69,13 +86,15 @@ type GetContentsCacheParams struct {
 // Cached-route response state (contents / git commits / installation tokens)
 // ============================================================================
 //
-// Reads are keyed by actor (per-credential isolation). Invalidation deletes
-// span ALL actors: a webhook is a single global fact (the repo changed, the
-// installation changed), so every partition's rows for it are stale.
+// contents_cache and git_commits_cache are GLOBAL truth (one row per resource);
+// whether a caller may read a row is the reveal layer's job (see the
+// access_grants queries in ghdata.sql). install_token_cache and
+// repo_installations stay keyed by the verified app identity: they cache
+// app-specific answers (a minted credential; which installation covers a
+// repo), not shared GitHub state.
 // ---- contents_cache ----
 func (q *Queries) GetContentsCache(ctx context.Context, arg GetContentsCacheParams) (ContentsCache, error) {
 	row := q.db.QueryRowContext(ctx, getContentsCache,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Path,
@@ -84,7 +103,6 @@ func (q *Queries) GetContentsCache(ctx context.Context, arg GetContentsCachePara
 	var i ContentsCache
 	err := row.Scan(
 		&i.ID,
-		&i.Actor,
 		&i.Owner,
 		&i.Repo,
 		&i.Path,
@@ -106,12 +124,11 @@ func (q *Queries) GetContentsCache(ctx context.Context, arg GetContentsCachePara
 
 const getGitCommitCache = `-- name: GetGitCommitCache :one
 
-SELECT id, actor, owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at FROM git_commits_cache
-WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+SELECT id, owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at FROM git_commits_cache
+WHERE owner = ? AND repo = ? AND sha = ?
 `
 
 type GetGitCommitCacheParams struct {
-	Actor string
 	Owner string
 	Repo  string
 	Sha   string
@@ -119,16 +136,10 @@ type GetGitCommitCacheParams struct {
 
 // ---- git_commits_cache ----
 func (q *Queries) GetGitCommitCache(ctx context.Context, arg GetGitCommitCacheParams) (GitCommitsCache, error) {
-	row := q.db.QueryRowContext(ctx, getGitCommitCache,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Sha,
-	)
+	row := q.db.QueryRowContext(ctx, getGitCommitCache, arg.Owner, arg.Repo, arg.Sha)
 	var i GitCommitsCache
 	err := row.Scan(
 		&i.ID,
-		&i.Actor,
 		&i.Owner,
 		&i.Repo,
 		&i.Sha,
@@ -179,6 +190,33 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 	return i, err
 }
 
+const getRepoInstallation = `-- name: GetRepoInstallation :one
+
+SELECT actor, owner, repo, installation_id, fetched_at, expires_at FROM repo_installations
+WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type GetRepoInstallationParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// ---- repo_installations ----
+func (q *Queries) GetRepoInstallation(ctx context.Context, arg GetRepoInstallationParams) (RepoInstallation, error) {
+	row := q.db.QueryRowContext(ctx, getRepoInstallation, arg.Actor, arg.Owner, arg.Repo)
+	var i RepoInstallation
+	err := row.Scan(
+		&i.Actor,
+		&i.Owner,
+		&i.Repo,
+		&i.InstallationID,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const pruneContentsCacheLRU = `-- name: PruneContentsCacheLRU :exec
 DELETE FROM contents_cache WHERE id IN (
     SELECT id FROM contents_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -217,12 +255,11 @@ func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) e
 
 const touchContentsCache = `-- name: TouchContentsCache :exec
 UPDATE contents_cache SET last_used_at = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND path = ? AND ref = ?
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?
 `
 
 type TouchContentsCacheParams struct {
 	LastUsedAt string
-	Actor      string
 	Owner      string
 	Repo       string
 	Path       string
@@ -232,7 +269,6 @@ type TouchContentsCacheParams struct {
 func (q *Queries) TouchContentsCache(ctx context.Context, arg TouchContentsCacheParams) error {
 	_, err := q.db.ExecContext(ctx, touchContentsCache,
 		arg.LastUsedAt,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Path,
@@ -243,12 +279,11 @@ func (q *Queries) TouchContentsCache(ctx context.Context, arg TouchContentsCache
 
 const touchGitCommitCache = `-- name: TouchGitCommitCache :exec
 UPDATE git_commits_cache SET last_used_at = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+WHERE owner = ? AND repo = ? AND sha = ?
 `
 
 type TouchGitCommitCacheParams struct {
 	LastUsedAt string
-	Actor      string
 	Owner      string
 	Repo       string
 	Sha        string
@@ -257,7 +292,6 @@ type TouchGitCommitCacheParams struct {
 func (q *Queries) TouchGitCommitCache(ctx context.Context, arg TouchGitCommitCacheParams) error {
 	_, err := q.db.ExecContext(ctx, touchGitCommitCache,
 		arg.LastUsedAt,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Sha,
@@ -266,9 +300,9 @@ func (q *Queries) TouchGitCommitCache(ctx context.Context, arg TouchGitCommitCac
 }
 
 const upsertContentsCache = `-- name: UpsertContentsCache :exec
-INSERT INTO contents_cache (actor, owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, path, ref) DO UPDATE SET
+INSERT INTO contents_cache (owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, path, ref) DO UPDATE SET
     kind = excluded.kind,
     name = excluded.name,
     sha = excluded.sha,
@@ -283,7 +317,6 @@ ON CONFLICT (actor, owner, repo, path, ref) DO UPDATE SET
 `
 
 type UpsertContentsCacheParams struct {
-	Actor      string
 	Owner      string
 	Repo       string
 	Path       string
@@ -303,7 +336,6 @@ type UpsertContentsCacheParams struct {
 
 func (q *Queries) UpsertContentsCache(ctx context.Context, arg UpsertContentsCacheParams) error {
 	_, err := q.db.ExecContext(ctx, upsertContentsCache,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Path,
@@ -324,9 +356,9 @@ func (q *Queries) UpsertContentsCache(ctx context.Context, arg UpsertContentsCac
 }
 
 const upsertGitCommitCache = `-- name: UpsertGitCommitCache :exec
-INSERT INTO git_commits_cache (actor, owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, sha) DO UPDATE SET
+INSERT INTO git_commits_cache (owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha) DO UPDATE SET
     message = excluded.message,
     author_name = excluded.author_name,
     author_email = excluded.author_email,
@@ -341,7 +373,6 @@ ON CONFLICT (actor, owner, repo, sha) DO UPDATE SET
 `
 
 type UpsertGitCommitCacheParams struct {
-	Actor          string
 	Owner          string
 	Repo           string
 	Sha            string
@@ -360,7 +391,6 @@ type UpsertGitCommitCacheParams struct {
 
 func (q *Queries) UpsertGitCommitCache(ctx context.Context, arg UpsertGitCommitCacheParams) error {
 	_, err := q.db.ExecContext(ctx, upsertGitCommitCache,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Sha,
@@ -417,6 +447,36 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertRepoInstallation = `-- name: UpsertRepoInstallation :exec
+INSERT INTO repo_installations (actor, owner, repo, installation_id, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    installation_id = excluded.installation_id,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at
+`
+
+type UpsertRepoInstallationParams struct {
+	Actor          string
+	Owner          string
+	Repo           string
+	InstallationID int64
+	FetchedAt      string
+	ExpiresAt      string
+}
+
+func (q *Queries) UpsertRepoInstallation(ctx context.Context, arg UpsertRepoInstallationParams) error {
+	_, err := q.db.ExecContext(ctx, upsertRepoInstallation,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.InstallationID,
+		arg.FetchedAt,
+		arg.ExpiresAt,
 	)
 	return err
 }

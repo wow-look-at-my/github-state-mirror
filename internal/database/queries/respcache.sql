@@ -2,20 +2,23 @@
 -- Cached-route response state (contents / git commits / installation tokens)
 -- ============================================================================
 --
--- Reads are keyed by actor (per-credential isolation). Invalidation deletes
--- span ALL actors: a webhook is a single global fact (the repo changed, the
--- installation changed), so every partition's rows for it are stale.
+-- contents_cache and git_commits_cache are GLOBAL truth (one row per resource);
+-- whether a caller may read a row is the reveal layer's job (see the
+-- access_grants queries in ghdata.sql). install_token_cache and
+-- repo_installations stay keyed by the verified app identity: they cache
+-- app-specific answers (a minted credential; which installation covers a
+-- repo), not shared GitHub state.
 
 -- ---- contents_cache ----
 
 -- name: GetContentsCache :one
 SELECT * FROM contents_cache
-WHERE actor = ? AND owner = ? AND repo = ? AND path = ? AND ref = ?;
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?;
 
 -- name: UpsertContentsCache :exec
-INSERT INTO contents_cache (actor, owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, path, ref) DO UPDATE SET
+INSERT INTO contents_cache (owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, path, ref) DO UPDATE SET
     kind = excluded.kind,
     name = excluded.name,
     sha = excluded.sha,
@@ -30,7 +33,7 @@ ON CONFLICT (actor, owner, repo, path, ref) DO UPDATE SET
 
 -- name: TouchContentsCache :exec
 UPDATE contents_cache SET last_used_at = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND path = ? AND ref = ?;
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?;
 
 -- name: DeleteContentsCacheByRepo :exec
 DELETE FROM contents_cache WHERE owner = ? AND repo = ?;
@@ -50,12 +53,12 @@ DELETE FROM contents_cache WHERE id IN (
 
 -- name: GetGitCommitCache :one
 SELECT * FROM git_commits_cache
-WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
+WHERE owner = ? AND repo = ? AND sha = ?;
 
 -- name: UpsertGitCommitCache :exec
-INSERT INTO git_commits_cache (actor, owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, sha) DO UPDATE SET
+INSERT INTO git_commits_cache (owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha) DO UPDATE SET
     message = excluded.message,
     author_name = excluded.author_name,
     author_email = excluded.author_email,
@@ -70,7 +73,7 @@ ON CONFLICT (actor, owner, repo, sha) DO UPDATE SET
 
 -- name: TouchGitCommitCache :exec
 UPDATE git_commits_cache SET last_used_at = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
+WHERE owner = ? AND repo = ? AND sha = ?;
 
 -- name: PruneGitCommitsCacheLRU :exec
 DELETE FROM git_commits_cache WHERE id IN (
@@ -105,3 +108,23 @@ DELETE FROM install_token_cache WHERE expires_at <= ?;
 DELETE FROM install_token_cache WHERE id IN (
     SELECT id FROM install_token_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- repo_installations ----
+
+-- name: GetRepoInstallation :one
+SELECT * FROM repo_installations
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: UpsertRepoInstallation :exec
+INSERT INTO repo_installations (actor, owner, repo, installation_id, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    installation_id = excluded.installation_id,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at;
+
+-- name: DeleteRepoInstallationsByInstallation :exec
+DELETE FROM repo_installations WHERE installation_id = ?;
+
+-- name: DeleteExpiredRepoInstallations :exec
+DELETE FROM repo_installations WHERE expires_at <= ?;
