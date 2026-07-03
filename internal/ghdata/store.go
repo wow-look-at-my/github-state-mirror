@@ -309,6 +309,14 @@ func (s *Store) ActorsForRepo(ctx context.Context, owner, repo string) ([]string
 }
 
 // UpsertPRForActors upserts a PR and its labels for every given actor.
+//
+// After the upsert it derives last_commit_status from the commit checks already
+// recorded for the PR's head commit: a PR webhook carries no CI state, so a PR
+// opened AFTER its head commit's checks finished (e.g. a pr-minder auto-opened
+// PR) would otherwise stay NULL forever — the check/status rollup only runs when
+// a LATER check event arrives for that sha. The rollup is computed per actor
+// from that actor's own commit_checks rows, so it never crosses scopes; when no
+// checks are recorded, the (COALESCE-preserved) status is left untouched.
 func (s *Store) UpsertPRForActors(ctx context.Context, actors []string, pr dbgen.PullRequest, labels []dbgen.PrLabel) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -320,6 +328,25 @@ func (s *Store) UpsertPRForActors(ctx context.Context, actors []string, pr dbgen
 	for _, act := range actors {
 		if err := q.UpsertPullRequest(ctx, prToParams(act, pr)); err != nil {
 			return err
+		}
+		if pr.HeadRefOid.Valid && pr.HeadRefOid.String != "" {
+			states, err := q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{
+				Actor: act, Owner: pr.Owner, Repo: pr.Repo, Sha: pr.HeadRefOid.String,
+			})
+			if err != nil {
+				return err
+			}
+			if rollup := rollupState(states); rollup != "" {
+				if err := q.SetPRStatusByHeadSha(ctx, dbgen.SetPRStatusByHeadShaParams{
+					LastCommitStatus: sql.NullString{String: rollup, Valid: true},
+					Actor:            act,
+					Owner:            pr.Owner,
+					Repo:             pr.Repo,
+					HeadRefOid:       pr.HeadRefOid,
+				}); err != nil {
+					return err
+				}
+			}
 		}
 		if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{
 			Actor: act, Owner: pr.Owner, Repo: pr.Repo, PrNumber: pr.Number,
@@ -478,6 +505,11 @@ func (s *Store) forEachActorTx(ctx context.Context, fn func(q *dbgen.Queries, ac
 
 // rollupState aggregates per-check states into a single GitHub-style rollup:
 // any failure dominates, then pending, then success.
+//
+// TODO: a missed check-completion delivery leaves its commit_checks row stuck at
+// PENDING, pinning the rollup at PENDING even after every real check finished.
+// Reconciling stuck-PENDING rows (e.g. re-reading the sha's checks from GitHub)
+// is deliberately deferred — do not add it here without that design discussion.
 func rollupState(states []string) string {
 	var hasFailure, hasPending, hasSuccess bool
 	for _, st := range states {
