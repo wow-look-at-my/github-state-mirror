@@ -84,6 +84,8 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 
   The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
 
+  Besides the PR/check/push/label events that feed the per-credential cache, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`; `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these; expect high volume in a CI-heavy org — each delivery costs one cheap synchronous SQLite upsert.
+
 ## Web Dashboard
 
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache for your account: how many repos, pull requests, orgs, etc. are cached, the freshness of each resource kind (fresh / stale / fetching / error), and recent refresh activity.
@@ -104,6 +106,7 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `GET /api/cache?scope=mine|all` — cache stats for the signed-in user (`mine`) or every scope (`all`, admin only)
 - `GET /api/requests` — recent data-API requests and their cache disposition (hit/miss/passthrough), plus per-disposition totals (admin only; in-memory, resets on restart)
 - `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
+- `GET /api/jobs?limit=<n>` — recent GitHub Actions jobs recorded from `workflow_job` webhooks: running jobs first (newest started first), then completed (newest completed first); `limit` defaults to 100, capped at 500 (admin only)
 - `GET /api/cache/data?actor=<fingerprint>` — the actual cached rows for one scope, as flattened JSON (admin only)
 - `GET /api/cache/check?actor=<fingerprint>[&org=<owner>]` — consistency-check diff of one scope against GitHub's live state (admin only; requires a configured GitHub App)
 

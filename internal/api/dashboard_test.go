@@ -488,3 +488,119 @@ func TestToRecent_SurfacesError(t *testing.T) {
 	assert.Equal(t, "success", out[1].Status)
 	assert.Empty(t, out[1].Error, "successful refresh has no error detail")
 }
+
+// seedJob writes one workflow job row (global — no actor scoping).
+func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusion, startedAt, completedAt string) {
+	t.Helper()
+	require.NoError(t, store.RecordWorkflowJob(context.Background(), ghdata.WorkflowJob{
+		Owner: "o", Repo: "r", JobID: id, RunID: 5, RunAttempt: 1,
+		Name: name, WorkflowName: "CI", Status: status, Conclusion: conclusion,
+		HeadSHA: "cafe", HeadBranch: "main", HTMLURL: "https://github.com/o/r/actions/runs/5/job/1",
+		StartedAt: startedAt, CompletedAt: completedAt,
+	}))
+}
+
+func TestDashboard_Jobs_Admin(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, _ := newTestStack(t, svc)
+	seedJob(t, store, 1, "done-old", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
+	seedJob(t, store, 2, "done-new", "completed", "failure", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
+	seedJob(t, store, 3, "running", "in_progress", "", "2026-07-03T10:00:00Z", "")
+
+	req := httptest.NewRequest("GET", "/api/jobs", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp jobsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Jobs, 3)
+	// Running first, then completed newest-completed first.
+	assert.Equal(t, "running", resp.Jobs[0].Name)
+	assert.Equal(t, "done-new", resp.Jobs[1].Name)
+	assert.Equal(t, "done-old", resp.Jobs[2].Name)
+	assert.Equal(t, "failure", resp.Jobs[1].Conclusion)
+	assert.Equal(t, int64(2), resp.Jobs[1].JobID)
+	assert.Equal(t, "o", resp.Jobs[0].Owner)
+	assert.Equal(t, "r", resp.Jobs[0].Repo)
+}
+
+func TestDashboard_Jobs_Limit(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, _ := newTestStack(t, svc)
+	seedJob(t, store, 1, "a", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
+	seedJob(t, store, 2, "b", "completed", "success", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
+	seedJob(t, store, 3, "c", "in_progress", "", "2026-07-03T10:00:00Z", "")
+
+	// limit honored.
+	req := httptest.NewRequest("GET", "/api/jobs?limit=1", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp jobsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Jobs, 1)
+	assert.Equal(t, "c", resp.Jobs[0].Name)
+
+	// A limit beyond the cap is clamped (still 200; returns what exists).
+	req = httptest.NewRequest("GET", "/api/jobs?limit=99999", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	resp = jobsResponse{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Jobs, 3)
+
+	// Garbage limit is a 400.
+	req = httptest.NewRequest("GET", "/api/jobs?limit=zero", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestDashboard_Jobs_LimitCapEnforced seeds more rows than the cap and
+// verifies the response is clamped to jobsMaxLimit even when a larger limit is
+// requested.
+func TestDashboard_Jobs_LimitCapEnforced(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, _ := newTestStack(t, svc)
+	for i := 1; i <= jobsMaxLimit+10; i++ {
+		seedJob(t, store, int64(i), "j", "in_progress", "", "2026-07-03T10:00:00Z", "")
+	}
+
+	req := httptest.NewRequest("GET", "/api/jobs?limit=10000", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp jobsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Jobs, jobsMaxLimit)
+}
+
+func TestDashboard_Jobs_NonAdminForbidden(t *testing.T) {
+	svc := configuredAuth(t)
+	router, store, db := newTestStack(t, svc)
+	seedScope(t, store, db, "fp-octocat", "octocat")
+
+	req := httptest.NewRequest("GET", "/api/jobs", nil)
+	req.AddCookie(mintSession(t, svc, "octocat")) // not an admin
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestDashboard_Jobs_Unauthenticated(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+
+	req := httptest.NewRequest("GET", "/api/jobs", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}

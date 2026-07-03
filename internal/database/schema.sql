@@ -192,3 +192,42 @@ CREATE TABLE webhook_deliveries (
     detail       TEXT NOT NULL DEFAULT '',   -- human summary, e.g. "upserted PR #42"
     actors       INTEGER NOT NULL DEFAULT 0  -- number of cache scopes touched
 );
+
+-- ============================================================================
+-- Workflow jobs (webhook-fed Actions job state)
+-- ============================================================================
+
+-- GitHub Actions job state, fed by workflow_job webhooks (in_progress and
+-- completed actions; queued/waiting churn is deliberately not recorded). Like
+-- webhook_deliveries, this table is GLOBAL (not actor-scoped): it is webhook-fed
+-- operational telemetry with no per-credential fetch path — a job's state only
+-- ever arrives via the HMAC-verified delivery, never through a caller's token,
+-- so there is no credential to partition by (and the read path is admin-only).
+-- Empty string means "not reported" for the optional TEXT fields, matching the
+-- webhook_deliveries convention. Rows are bounded by pruning on write: completed
+-- jobs older than a retention window are deleted after each upsert (see
+-- PruneWorkflowJobs and ghdata.workflowJobRetention).
+CREATE TABLE workflow_jobs (
+    owner         TEXT NOT NULL,
+    repo          TEXT NOT NULL,
+    job_id        INTEGER NOT NULL,
+    run_id        INTEGER NOT NULL DEFAULT 0,
+    run_attempt   INTEGER NOT NULL DEFAULT 0,
+    name          TEXT NOT NULL DEFAULT '',   -- job name
+    workflow_name TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL,              -- in_progress | completed
+    conclusion    TEXT NOT NULL DEFAULT '',   -- success | failure | ... (completed only)
+    head_sha      TEXT NOT NULL DEFAULT '',
+    head_branch   TEXT NOT NULL DEFAULT '',
+    html_url      TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL DEFAULT '',   -- RFC3339
+    completed_at  TEXT NOT NULL DEFAULT '',   -- RFC3339
+    runner_name   TEXT NOT NULL DEFAULT '',   -- null in the payload until assigned
+    updated_at    TEXT NOT NULL,              -- RFC3339: when the last webhook was applied
+    PRIMARY KEY (owner, repo, job_id)
+);
+
+-- Makes the on-write prune (DELETE ... WHERE status='completed' AND
+-- completed_at < cutoff) a single indexed scan of only the completed rows.
+CREATE INDEX idx_workflow_jobs_completed_at
+    ON workflow_jobs (completed_at) WHERE status = 'completed';
