@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,17 +22,29 @@ import (
 )
 
 // requireAuth enforces that every data request carries a usable GitHub token.
-// It validates the token against GitHub (rejecting absent, malformed, or
-// revoked credentials with 401), injects the token into the request context,
-// and scopes all cache operations to a fingerprint of that token.
+// It resolves the token's identity against GitHub (rejecting absent, malformed,
+// or revoked credentials with 401), injects the token into the request context,
+// and scopes all cache operations to a per-USER partition.
 //
-// The cache partition (actor) is derived from the token itself, NOT the GitHub
-// login, so that each credential only ever reads data it fetched. Two tokens
-// belonging to the same user — e.g. a full-scope PAT and a read-only token
-// granted to a third-party app — get separate buckets and can never observe
-// each other's cached private data. Requests must never fall through to the
-// service's own credentials (the GitHub App used for background refreshes),
-// which may have far broader access than the caller.
+// The cache partition (actor) is "user:<numeric GitHub user id>" — 1 GitHub
+// user == 1 cache scope (operator decision, 2026-07-03). All of a user's
+// tokens (rotating sandbox PATs, OAuth logins, narrow and broad PATs alike)
+// share one warm, webhook-fed bucket, so a user is never isolated from
+// themselves just because their tokens rotate. The numeric id (not the login)
+// keys the bucket because ids survive login renames and are never recycled.
+// Accepted trade-off: ANY token of a user reads what any of that user's tokens
+// cached, including private-repo data cached by a broader-scoped token.
+// DISTINCT users remain fully isolated from each other, and requests must
+// never fall through to the service's own credentials (the GitHub App used for
+// background refreshes), which may have far broader access than the caller.
+//
+// A token that is definitively NOT a user — GET /user answers 403/404, e.g. a
+// GitHub App installation token — keeps the old per-token fingerprint
+// partition (and the verdict is cached per token). When the identity cannot be
+// resolved at all (network error, 5xx, rate limit) and no verdict is cached,
+// the request FAILS with 503: mis-partitioning is worse than a failed request,
+// so there is no silent fingerprint fallback for a token that might belong to
+// a user.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,25 +81,37 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				return
 			}
 
-			// Validate the credential with GitHub up front (and warm the
-			// token->login cache). The login does NOT become the bucket key —
-			// the fingerprint does — but we remember the fingerprint->login
-			// mapping so the dashboard can group a user's scopes by login.
-			login, err := gh.ResolveActor(ctx)
+			// Resolve the credential's identity with GitHub up front (cached
+			// per token, including the definitive not-a-user verdict). A user
+			// token lands in that user's shared bucket; a non-user token keeps
+			// per-token fingerprint isolation. An unresolvable identity is a
+			// hard failure — see the function comment.
+			ident, err := gh.ResolveTokenIdentity(ctx)
 			if err != nil {
-				slog.Warn("resolve actor failed", "error", err)
-				http.Error(w, "unauthorized: could not validate GitHub credential", http.StatusUnauthorized)
+				if errors.Is(err, ghclient.ErrBadCredential) {
+					slog.Warn("resolve token identity: bad credential", "error", err)
+					http.Error(w, "unauthorized: could not validate GitHub credential", http.StatusUnauthorized)
+					return
+				}
+				slog.Warn("resolve token identity failed; refusing to guess a cache partition", "error", err)
+				http.Error(w, "service unavailable: could not resolve the credential's GitHub identity (required for cache partitioning); please retry", http.StatusServiceUnavailable)
 				return
 			}
-			fp := ghclient.Fingerprint(token)
-			ctx = actor.WithActor(ctx, fp)
-			record(ctx, fp, login)
+			actorKey := ghclient.Fingerprint(token)
+			if ident.IsUser {
+				actorKey = fmt.Sprintf("user:%d", ident.ID)
+			}
+			ctx = actor.WithActor(ctx, actorKey)
+			// Remember the actor->login mapping so the dashboard can group a
+			// user's scope by login. A non-user token has no login and is
+			// skipped by the recorder.
+			record(ctx, actorKey, ident.Login)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// identityRecorder persists a fingerprint->login mapping for the dashboard.
+// identityRecorder persists an actor->login mapping for the dashboard.
 type identityRecorder func(ctx context.Context, actorFP, login string)
 
 // newIdentityRecorder returns a recorder that upserts the actor->login mapping,
@@ -177,7 +202,9 @@ func NewRouter(
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
-	// actor: token fingerprint, or app:<id> for X-Mirror-Identity callers).
+	// actor): the token's GitHub user ("user:<id>"), app:<id> for verified
+	// X-Mirror-Identity callers, or the token's fingerprint for non-user
+	// tokens.
 	//
 	// The cache contract is three-tiered (see CLAUDE.md): the org-repos GraphQL
 	// query is served byte-identical to GitHub (identity-test-locked); the

@@ -12,10 +12,12 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 7: adds the global workflow_jobs table. Bumping past
-// master's 6 (the response-cache tables) nukes existing DBs on deploy so the
-// new table exists; the cache rebuilds lazily.
-const SchemaVersion = 7
+// SchemaVersion 8: cache partitions moved from per-token fingerprints to
+// per-user ("user:<id>") actors. Bumping nukes the DB on deploy, flushing all
+// old fingerprint partitions (including dormant ones); the cache rebuilds
+// lazily under the new keying. (7 added the global workflow_jobs table; 6
+// added the response-cache tables.)
+const SchemaVersion = 8
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

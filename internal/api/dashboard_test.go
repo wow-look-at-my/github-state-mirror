@@ -453,6 +453,11 @@ func TestSumAndShortAndTime(t *testing.T) {
 
 	assert.Equal(t, "0123456789ab", shortFingerprint("0123456789abcdef"))
 	assert.Equal(t, "short", shortFingerprint("short"))
+	// Structured actors are never truncated — cutting "user:12345678901" at 12
+	// chars would drop significant id digits.
+	assert.Equal(t, "user:12345678901", shortFingerprint("user:12345678901"))
+	assert.Equal(t, "app-installation:123", shortFingerprint("app-installation:123"))
+	assert.Equal(t, "app:99", shortFingerprint("app:99"))
 
 	assert.Equal(t, "x", asTimeString("x"))
 	assert.Equal(t, "y", asTimeString([]byte("y")))

@@ -66,7 +66,15 @@ func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/user":
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+			// Per-user partitioning resolves every bearer token here (id AND
+			// login required). Answer the shared test identity for testToken
+			// and a DISTINCT user for any other token, so cross-credential
+			// tests exercise two separate user scopes.
+			if r.Header.Get("Authorization") == "Bearer "+testToken {
+				_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{"login": "otheruser", "id": testUserID + 1})
+			}
 		case r.URL.Path == "/app":
 			if r.Header.Get("Authorization") != "Bearer "+goodAppJWT {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -285,9 +293,11 @@ func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "both refs served from their own entries")
 }
 
-// TestCachedContents_ActorPartitioning: one credential's absorbed state is
-// never served to another. Token B's first request is its own miss (its own
-// upstream fetch with its own Authorization), not token A's cached row.
+// TestCachedContents_ActorPartitioning: one scope's absorbed state is never
+// served to another. Under per-user partitioning the two tokens resolve to
+// DISTINCT users (the fake /user answers a different id for "other-token"), so
+// token B's first request is its own miss (its own upstream fetch with its own
+// Authorization), not token A's cached row.
 func TestCachedContents_ActorPartitioning(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/contents/secret.txt"

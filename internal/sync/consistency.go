@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
@@ -514,9 +515,7 @@ func boolStr(v int64) string {
 	return "false"
 }
 
-func shortFP(fp string) string {
-	if len(fp) > 12 {
-		return fp[:12]
-	}
-	return fp
-}
+// shortFP abbreviates an actor for display: opaque hex token fingerprints
+// shorten to 12 chars, structured actors ("user:<id>", "app-installation:<id>")
+// are shown whole.
+func shortFP(fp string) string { return actor.Short(fp) }

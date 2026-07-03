@@ -16,10 +16,13 @@ import (
 //
 // These two endpoints are the operator's window into the cache. They are gated
 // to admins (the same logins that get the all-scopes view): the cache stays
-// partitioned by the opaque token fingerprint, and a normal signed-in user still
-// only ever sees counts for their own scopes. An admin, who already sees every
-// scope's counts, can additionally read the actual rows and diff a scope against
-// GitHub. Nothing here writes to the cache.
+// partitioned per GitHub user (per token fingerprint for non-user tokens), and
+// a normal signed-in user still only ever sees counts for their own scope. An
+// admin, who already sees every scope's counts, can additionally read the
+// actual rows and diff a scope against GitHub. Nothing here writes to the
+// cache. The `actor` query parameter is the full partition key exactly as the
+// dashboard's `actor_id` reports it ("user:<id>", a hex fingerprint, or
+// "app-installation:<id>").
 
 // ---- clean JSON views of the cached rows ----
 //
