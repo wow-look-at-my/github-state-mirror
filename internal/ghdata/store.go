@@ -65,6 +65,12 @@ func (s *Store) GetRepo(ctx context.Context, owner, name string) (dbgen.Repo, er
 	return s.q.GetRepo(ctx, dbgen.GetRepoParams{Owner: owner, Name: name})
 }
 
+// GetRepoInsensitive looks a repo up by URL-supplied casing (truth rows keep
+// GitHub's canonical casing; GitHub treats URLs case-insensitively).
+func (s *Store) GetRepoInsensitive(ctx context.Context, owner, name string) (dbgen.Repo, error) {
+	return s.q.GetRepoInsensitive(ctx, dbgen.GetRepoInsensitiveParams{Owner: owner, Name: name})
+}
+
 func (s *Store) ListReposByOwner(ctx context.Context, owner string) ([]dbgen.Repo, error) {
 	return s.q.ListReposByOwner(ctx, owner)
 }
@@ -112,6 +118,11 @@ func (s *Store) DeleteRepoCascade(ctx context.Context, owner, name string) error
 		return err
 	}
 	if err := q.DeleteGrantsByRepo(ctx, dbgen.DeleteGrantsByRepoParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(name),
+	}); err != nil {
+		return err
+	}
+	if err := q.DeletePullsListMarkersByRepo(ctx, dbgen.DeletePullsListMarkersByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(name),
 	}); err != nil {
 		return err
@@ -318,18 +329,27 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 	return tx.Commit()
 }
 
-// ResetPRMergeable marks one PR's mergeable/mergeable_state/merge_commit_sha
-// as unknown: its head moved, so GitHub is recomputing them and the cached
-// values are stale. The /pulls/{n} known-mergeable gate misses on NULL.
+// ResetPRMergeable marks one PR's mergeable and test-merge sha as unknown:
+// its head moved (a synchronize event), so GitHub is recomputing them and the
+// cached values are stale. The /pulls/{n} known-mergeable gate misses on NULL.
 func (s *Store) ResetPRMergeable(ctx context.Context, owner, repo string, number int64) error {
 	return s.q.ResetPRMergeable(ctx, dbgen.ResetPRMergeableParams{Owner: owner, Repo: repo, Number: number})
 }
 
-// ResetMergeableByBaseRef marks every open PR targeting the just-pushed base
-// branch as mergeability-unknown (the base moved under them).
-func (s *Store) ResetMergeableByBaseRef(ctx context.Context, owner, repo, baseRef string) error {
-	return s.q.ResetMergeableByBaseRef(ctx, dbgen.ResetMergeableByBaseRefParams{
-		Owner: owner, Repo: repo, BaseRefName: sql.NullString{String: baseRef, Valid: baseRef != ""},
+// NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) on
+// every open PR whose base or head is the pushed branch: GitHub recomputes
+// mergeability when either side moves and never webhooks the result, so the
+// last-known value is stale the moment the push lands. This keeps the
+// single-PR route's known-mergeable gate honest (it misses and re-fetches
+// instead of serving the pre-push answer).
+func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch string) error {
+	if branch == "" {
+		return nil
+	}
+	return s.q.NullPRMergeableByBranch(ctx, dbgen.NullPRMergeableByBranchParams{
+		Owner: owner, Repo: repo,
+		BaseRefName: sql.NullString{String: branch, Valid: true},
+		HeadRefName: sql.NullString{String: branch, Valid: true},
 	})
 }
 
@@ -624,11 +644,11 @@ func prToParams(pr dbgen.PullRequest) dbgen.UpsertPullRequestParams {
 		LastCommitStatus:   pr.LastCommitStatus,
 		NodeID:             pr.NodeID,
 		Body:               pr.Body,
-		AutoMerge:          pr.AutoMerge,
-		MergeableState:     pr.MergeableState,
-		MergeCommitSha:     pr.MergeCommitSha,
-		BaseSha:            pr.BaseSha,
+		AuthorType:         pr.AuthorType,
+		BaseRefOid:         pr.BaseRefOid,
 		HeadRepoFullName:   pr.HeadRepoFullName,
+		AutoMergeMethod:    pr.AutoMergeMethod,
+		MergeCommitSha:     pr.MergeCommitSha,
 		TouchedAt:          pr.TouchedAt,
 	}
 }

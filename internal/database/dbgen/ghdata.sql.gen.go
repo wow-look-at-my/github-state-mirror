@@ -286,8 +286,58 @@ func (q *Queries) GetDenyVerdict(ctx context.Context, arg GetDenyVerdictParams) 
 	return i, err
 }
 
+const getOpenPullRequestNoCase = `-- name: GetOpenPullRequestNoCase :one
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at FROM pull_requests
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN'
+`
+
+type GetOpenPullRequestNoCaseParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+// GetOpenPullRequestNoCase is the cached single-PR route's read: owner/repo
+// matched case-insensitively (rows carry GitHub's canonical casing; the
+// request URL may not), open PRs only (the cache never retains closed ones).
+func (q *Queries) GetOpenPullRequestNoCase(ctx context.Context, arg GetOpenPullRequestNoCaseParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, getOpenPullRequestNoCase, arg.Owner, arg.Repo, arg.Number)
+	var i PullRequest
+	err := row.Scan(
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.Title,
+		&i.Url,
+		&i.IsDraft,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Additions,
+		&i.Deletions,
+		&i.Mergeable,
+		&i.AuthorLogin,
+		&i.AuthorAvatar,
+		&i.AuthorUrl,
+		&i.HeadRefName,
+		&i.BaseRefName,
+		&i.HeadRefOid,
+		&i.ReviewRequestCount,
+		&i.LastCommitStatus,
+		&i.NodeID,
+		&i.Body,
+		&i.AuthorType,
+		&i.BaseRefOid,
+		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
+		&i.TouchedAt,
+	)
+	return i, err
+}
+
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, auto_merge, mergeable_state, merge_commit_sha, base_sha, head_repo_full_name, touched_at FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
 `
 
 type GetPullRequestParams struct {
@@ -322,11 +372,11 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 		&i.LastCommitStatus,
 		&i.NodeID,
 		&i.Body,
-		&i.AutoMerge,
-		&i.MergeableState,
-		&i.MergeCommitSha,
-		&i.BaseSha,
+		&i.AuthorType,
+		&i.BaseRefOid,
 		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
 		&i.TouchedAt,
 	)
 	return i, err
@@ -343,6 +393,39 @@ type GetRepoParams struct {
 
 func (q *Queries) GetRepo(ctx context.Context, arg GetRepoParams) (Repo, error) {
 	row := q.db.QueryRowContext(ctx, getRepo, arg.Owner, arg.Name)
+	var i Repo
+	err := row.Scan(
+		&i.Owner,
+		&i.Name,
+		&i.NameWithOwner,
+		&i.Url,
+		&i.IsDisabled,
+		&i.IsArchived,
+		&i.Visibility,
+		&i.PushedAt,
+		&i.DefaultBranch,
+		&i.DefaultBranchStatus,
+		&i.OwnerLogin,
+		&i.OwnerAvatar,
+		&i.OwnerUrl,
+	)
+	return i, err
+}
+
+const getRepoInsensitive = `-- name: GetRepoInsensitive :one
+SELECT owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? COLLATE NOCASE AND name = ? COLLATE NOCASE
+`
+
+type GetRepoInsensitiveParams struct {
+	Owner string
+	Name  string
+}
+
+// GetRepoInsensitive looks a repo up by URL-supplied casing. GitHub treats
+// owner/repo case-insensitively in URLs while truth rows keep GitHub's
+// canonical casing, so API-route lookups must fold case.
+func (q *Queries) GetRepoInsensitive(ctx context.Context, arg GetRepoInsensitiveParams) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, getRepoInsensitive, arg.Owner, arg.Name)
 	var i Repo
 	err := row.Scan(
 		&i.Owner,
@@ -536,7 +619,7 @@ func (q *Queries) ListOpenPullRequestNumbersByRepo(ctx context.Context, arg List
 }
 
 const listOpenPullRequestsByRepo = `-- name: ListOpenPullRequestsByRepo :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, auto_merge, mergeable_state, merge_commit_sha, base_sha, head_repo_full_name, touched_at FROM pull_requests
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at FROM pull_requests
 WHERE owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number
 `
@@ -578,11 +661,76 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 			&i.LastCommitStatus,
 			&i.NodeID,
 			&i.Body,
-			&i.AutoMerge,
-			&i.MergeableState,
-			&i.MergeCommitSha,
-			&i.BaseSha,
+			&i.AuthorType,
+			&i.BaseRefOid,
 			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
+			&i.TouchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenPullRequestsByRepoNoCase = `-- name: ListOpenPullRequestsByRepoNoCase :many
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at FROM pull_requests
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
+ORDER BY created_at DESC, number DESC
+`
+
+type ListOpenPullRequestsByRepoNoCaseParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListOpenPullRequestsByRepoNoCase is the cached list route's read. Ordered
+// newest-created first to match GitHub's default list-pulls sort.
+func (q *Queries) ListOpenPullRequestsByRepoNoCase(ctx context.Context, arg ListOpenPullRequestsByRepoNoCaseParams) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepoNoCase, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequest
+	for rows.Next() {
+		var i PullRequest
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.IsDraft,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Additions,
+			&i.Deletions,
+			&i.Mergeable,
+			&i.AuthorLogin,
+			&i.AuthorAvatar,
+			&i.AuthorUrl,
+			&i.HeadRefName,
+			&i.BaseRefName,
+			&i.HeadRefOid,
+			&i.ReviewRequestCount,
+			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
 			&i.TouchedAt,
 		); err != nil {
 			return nil, err
@@ -610,6 +758,90 @@ type ListPRLabelsParams struct {
 
 func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]PrLabel, error) {
 	rows, err := q.db.QueryContext(ctx, listPRLabels, arg.Owner, arg.Repo, arg.PrNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsByRepoNoCase = `-- name: ListPRLabelsByRepoNoCase :many
+SELECT owner, repo, pr_number, name, color FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE
+ORDER BY pr_number, name
+`
+
+type ListPRLabelsByRepoNoCaseParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListPRLabelsByRepoNoCase feeds the cached /pulls list rebuild: all of a
+// repo's PR labels in one query (grouped by pr_number in Go), owner/repo
+// matched case-insensitively like the row reads.
+func (q *Queries) ListPRLabelsByRepoNoCase(ctx context.Context, arg ListPRLabelsByRepoNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsByRepoNoCase, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsNoCase = `-- name: ListPRLabelsNoCase :many
+SELECT owner, repo, pr_number, name, color FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND pr_number = ?
+ORDER BY name
+`
+
+type ListPRLabelsNoCaseParams struct {
+	Owner    string
+	Repo     string
+	PrNumber int64
+}
+
+func (q *Queries) ListPRLabelsNoCase(ctx context.Context, arg ListPRLabelsNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsNoCase, arg.Owner, arg.Repo, arg.PrNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -736,26 +968,35 @@ func (q *Queries) ListVisibleReposByOwner(ctx context.Context, arg ListVisibleRe
 	return items, nil
 }
 
-const resetMergeableByBaseRef = `-- name: ResetMergeableByBaseRef :exec
-UPDATE pull_requests SET mergeable = NULL, mergeable_state = NULL, merge_commit_sha = NULL
-WHERE owner = ? AND repo = ? AND base_ref_name = ? AND state = 'OPEN'
+const nullPRMergeableByBranch = `-- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
+  AND (base_ref_name = ? OR head_ref_name = ?)
 `
 
-type ResetMergeableByBaseRefParams struct {
+type NullPRMergeableByBranchParams struct {
 	Owner       string
 	Repo        string
 	BaseRefName sql.NullString
+	HeadRefName sql.NullString
 }
 
-// ResetMergeableByBaseRef marks every open PR targeting a just-pushed base
-// branch as mergeability-unknown (the base moved under them).
-func (q *Queries) ResetMergeableByBaseRef(ctx context.Context, arg ResetMergeableByBaseRefParams) error {
-	_, err := q.db.ExecContext(ctx, resetMergeableByBaseRef, arg.Owner, arg.Repo, arg.BaseRefName)
+// NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
+// every open PR whose base or head is the pushed branch: GitHub recomputes
+// mergeability after either side moves (and emits NO webhook with the result),
+// so the last-known value is stale the moment the push lands.
+func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeableByBranchParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableByBranch,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.HeadRefName,
+	)
 	return err
 }
 
 const resetPRMergeable = `-- name: ResetPRMergeable :exec
-UPDATE pull_requests SET mergeable = NULL, mergeable_state = NULL, merge_commit_sha = NULL
+UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
 WHERE owner = ? AND repo = ? AND number = ?
 `
 
@@ -765,10 +1006,10 @@ type ResetPRMergeableParams struct {
 	Number int64
 }
 
-// ResetPRMergeable marks one PR's mergeability as being recomputed by GitHub
-// (head moved: a synchronize event). The stale resolved values must not keep
-// serving -- the /pulls/{n} known-mergeable gate misses on NULL and re-asks
-// GitHub, which is exactly how a poll converges on the fresh answer.
+// ResetPRMergeable marks one PR's mergeable and test-merge sha as being
+// recomputed by GitHub (its head moved: a synchronize event). The stale
+// resolved values must not keep serving -- the /pulls/{n} known-mergeable gate
+// misses on NULL and re-asks GitHub, which is exactly how a poll converges.
 func (q *Queries) ResetPRMergeable(ctx context.Context, arg ResetPRMergeableParams) error {
 	_, err := q.db.ExecContext(ctx, resetPRMergeable, arg.Owner, arg.Repo, arg.Number)
 	return err
@@ -792,6 +1033,33 @@ func (q *Queries) SetPRLabelColorByName(ctx context.Context, arg SetPRLabelColor
 		arg.Owner,
 		arg.Repo,
 		arg.Name,
+	)
+	return err
+}
+
+const setPRMergeable = `-- name: SetPRMergeable :exec
+UPDATE pull_requests SET mergeable = ?
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type SetPRMergeableParams struct {
+	Mergeable sql.NullString
+	Owner     string
+	Repo      string
+	Number    int64
+}
+
+// SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
+// fetched answer, INCLUDING null (recomputing). The upsert's COALESCE keeps
+// old values on null payloads; a direct REST read of the PR is authoritative
+// about "currently unresolved", so the cached single-PR route uses this after
+// absorbing to make a null answer miss again until GitHub resolves it.
+func (q *Queries) SetPRMergeable(ctx context.Context, arg SetPRMergeableParams) error {
+	_, err := q.db.ExecContext(ctx, setPRMergeable,
+		arg.Mergeable,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
 	)
 	return err
 }
@@ -985,7 +1253,7 @@ func (q *Queries) UpsertDenyVerdict(ctx context.Context, arg UpsertDenyVerdictPa
 
 const upsertPullRequest = `-- name: UpsertPullRequest :exec
 
-INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, auto_merge, mergeable_state, merge_commit_sha, base_sha, head_repo_full_name, touched_at)
+INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, number) DO UPDATE SET
     title = excluded.title,
@@ -1006,12 +1274,12 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
     review_request_count = COALESCE(excluded.review_request_count, pull_requests.review_request_count),
     last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status),
     node_id = COALESCE(excluded.node_id, pull_requests.node_id),
-    body = COALESCE(excluded.body, pull_requests.body),
-    auto_merge = COALESCE(excluded.auto_merge, pull_requests.auto_merge),
-    mergeable_state = COALESCE(excluded.mergeable_state, pull_requests.mergeable_state),
-    merge_commit_sha = COALESCE(excluded.merge_commit_sha, pull_requests.merge_commit_sha),
-    base_sha = COALESCE(excluded.base_sha, pull_requests.base_sha),
+    body = CASE WHEN excluded.node_id IS NULL THEN pull_requests.body ELSE excluded.body END,
+    author_type = COALESCE(excluded.author_type, pull_requests.author_type),
+    base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
     head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
+    auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
+    merge_commit_sha = CASE WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha ELSE excluded.merge_commit_sha END,
     touched_at = excluded.touched_at
 `
 
@@ -1038,25 +1306,32 @@ type UpsertPullRequestParams struct {
 	LastCommitStatus   sql.NullString
 	NodeID             sql.NullString
 	Body               sql.NullString
-	AutoMerge          sql.NullString
-	MergeableState     sql.NullString
-	MergeCommitSha     sql.NullString
-	BaseSha            sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
 	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
 	TouchedAt          string
 }
 
 // ============================================================================
 // Pull Requests (global truth -- one row per PR)
 // ============================================================================
-// UpsertPullRequest merges one source's view of a PR into truth. Sources carry
-// different field subsets (GraphQL org fetch, REST list, REST single, webhook
-// payload), so every sometimes-absent column COALESCEs: a NULL argument means
-// "this source does not carry the field", never "clear it". Sources that carry
-// a field with a JSON-null value pass ” (see the schema comment). mergeable
-// and last_commit_status additionally COALESCE because GitHub computes them
-// asynchronously (a payload's null must not clobber a known value); the
-// explicit reset queries below express "GitHub is recomputing this now".
+// UpsertPullRequest merges one source's view of a PR into truth, stamping
+// touched_at. Sources carry different field subsets (GraphQL org fetch, REST
+// list, REST single, webhook payload). The REST-only columns (node_id ..
+// merge_commit_sha) COALESCE against the existing row so a GraphQL-shaped
+// upsert (which cannot know them) never wipes values a REST/webhook write
+// recorded -- with two exceptions that are real state, not "unknown": body and
+// auto_merge_method overwrite whenever the source knows the REST fields at all
+// (node_id present), because a null body and a disarmed auto-merge are
+// meaningful values a COALESCE would resurrect. That conditional is expressed
+// as CASE WHEN excluded.node_id IS NULL (the GraphQL-source signature) THEN
+// keep ELSE take END. mergeable and last_commit_status COALESCE because GitHub
+// computes them asynchronously (a payload's null must not clobber a known
+// value); the explicit reset/set queries below express "GitHub is recomputing"
+// and "a direct read said so". additions/deletions COALESCE because the REST
+// LIST shape omits them (a NULL there means "not carried", never "zero").
 func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPullRequest,
 		arg.Owner,
@@ -1081,11 +1356,11 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		arg.LastCommitStatus,
 		arg.NodeID,
 		arg.Body,
-		arg.AutoMerge,
-		arg.MergeableState,
-		arg.MergeCommitSha,
-		arg.BaseSha,
+		arg.AuthorType,
+		arg.BaseRefOid,
 		arg.HeadRepoFullName,
+		arg.AutoMergeMethod,
+		arg.MergeCommitSha,
 		arg.TouchedAt,
 	)
 	return err

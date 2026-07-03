@@ -28,19 +28,24 @@ import (
 // webhook dispatcher maintains, so pull_request webhooks keep served state
 // current without invalidating anything. What gates serving:
 //
-//   LIST: a per-(actor, repo) "open-PR list complete" marker (pulls_list_cache)
-//   proves the rows are the WHOLE open set. Absorbing a complete unfiltered
-//   page sets it (24h TTL backstop); the GraphQL org-repos fetch clears it
-//   (its replacement rows lack the REST-only columns); webhooks never touch it
-//   (they ARE the maintenance). A rebuilt list as long as the request's
-//   per_page may be truncated upstream -- served as a miss, never from state.
+//   REVEAL (both PR routes): the caller must pass the reveal layer first --
+//   public repo, a fresh grant, or a probe against GitHub (reveal.go). A
+//   cached deny verdict answers repeat probes without touching GitHub.
 //
-//   SINGLE: the row must be rest-complete AND its mergeable KNOWN. GitHub
-//   computes `mergeable` lazily and pr-minder polls this endpoint waiting for
-//   it to resolve, so an unknown/null mergeable always misses (fetch + absorb
-//   the computed answer) -- the cache must never wedge that poll. Branch
-//   pushes un-resolve the stored value (see NullPRMergeableForBranchForActors)
-//   so a known answer can't go silently stale after either side moves.
+//   LIST: a per-repo GLOBAL "open-PR list complete" marker (pulls_list_cache)
+//   proves the rows are the WHOLE open set. Absorbing a complete unfiltered
+//   page sets it (24h TTL backstop); webhooks never touch it (they ARE the
+//   maintenance). A rebuilt list as long as the request's per_page may be
+//   truncated upstream -- served as a miss, never from state.
+//
+//   SINGLE: the row must be rest-complete, RECENTLY TOUCHED (PRRowFresh --
+//   the staleness backstop for a missed `closed` delivery), AND its mergeable
+//   KNOWN. GitHub computes `mergeable` lazily and pr-minder polls this
+//   endpoint waiting for it to resolve, so an unknown/null mergeable always
+//   misses (fetch + absorb the computed answer) -- the cache must never wedge
+//   that poll. Branch pushes un-resolve the stored value (see
+//   NullPRMergeableByBranch) so a known answer can't go silently stale after
+//   either side moves.
 //
 // getPullDiff-style requests (Accept: application/vnd.github.diff etc.) pass
 // through verbatim, exactly like the contents route's raw/html media types.
@@ -152,6 +157,15 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindRepoPulls, ghdata.NormalizeRepoKey(owner)+"/"+ghdata.NormalizeRepoKey(repo)+"/pulls"); outcome {
+	case revealDenied:
+		h.serveDenyVerdict(w, r, verdict, cached)
+		return
+	case revealError:
+		h.revealFailed(w, r)
+		return
+	}
+
 	now := time.Now()
 	if fresh, err := h.store.PullsListFresh(r.Context(), owner, repo, now); err != nil {
 		slog.Warn("pulls list marker read failed", "owner", owner, "repo", repo, "error", err)
@@ -172,6 +186,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Miss: fetch from GitHub with the caller's own credentials.
+	fetchStart := time.Now()
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
 	if err != nil {
 		h.upstreamError(w, r, err)
@@ -193,9 +208,10 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 0 {
 		absorbOwner, absorbRepo = rows[0].Owner, rows[0].Repo
 	}
-	if err := h.store.AbsorbPullsList(r.Context(), absorbOwner, absorbRepo, rows, labelsByPR, complete, now, pullsListCacheTTL); err != nil {
+	if err := h.store.AbsorbPullsList(r.Context(), absorbOwner, absorbRepo, rows, labelsByPR, complete, fetchStart, now, pullsListCacheTTL); err != nil {
 		slog.Warn("pulls list absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
+	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.servePullsList(w, r, rows, labelsByPR, false)
 }
@@ -252,9 +268,18 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindPull, ghdata.NormalizeRepoKey(owner)+"/"+ghdata.NormalizeRepoKey(repo)+"#"+numStr); outcome {
+	case revealDenied:
+		h.serveDenyVerdict(w, r, verdict, cached)
+		return
+	case revealError:
+		h.revealFailed(w, r)
+		return
+	}
+
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
-	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) {
+	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
 		return
 	}
@@ -283,15 +308,16 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	if pr.State != "OPEN" {
 		// Closed/merged: the cache retains open PRs only. Drop any stale row
 		// and hand GitHub's own answer through, unstored.
-		if err := h.store.DeletePullForActor(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
+		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.AbsorbSinglePull(r.Context(), pr, labels); err != nil {
+	if err := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now()); err != nil {
 		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 	}
+	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.serveSinglePull(w, r, pr, labels, false)
 }
@@ -610,7 +636,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
 	now := time.Now()
-	if c, ok, err := h.store.GetCachedRepoInstallation(ctx, owner, repo, now); err == nil && ok {
+	if c, ok, err := h.store.GetCachedRepoInstallation(ctx, actorKey, owner, repo, now); err == nil && ok {
 		h.reqlog.record(actorKey, r.Method, r.URL.Path, DispHit)
 		h.serveRepoInstallation(w, c, true)
 		return
@@ -630,7 +656,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedRepoInstallation(ctx, c, now, repoInstallationCacheTTL); err != nil {
+	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
 		slog.Warn("repo installation cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.reqlog.recordStatus(actorKey, r.Method, r.URL.Path, DispMiss, resp.StatusCode)

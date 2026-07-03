@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -263,53 +262,11 @@ func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t Ca
 	return s.q.PruneInstallTokenCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateInstallTokenCache drops every cached mint for an installation, and
-// the repo-installation rows pointing at it -- an installation/
-// installation_repositories webhook means the installation's grants changed
-// (or it was suspended/deleted), so cached answers must not keep serving.
+// InvalidateInstallTokenCache drops every cached mint for an installation --
+// an installation/installation_repositories webhook means the installation's
+// grants changed (or it was suspended/deleted), so cached tokens must not keep
+// serving. (The dispatcher also flushes the repo-installation answers via
+// InvalidateRepoInstallationCache.)
 func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID string) error {
-	if err := s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID); err != nil {
-		return err
-	}
-	id, err := strconv.ParseInt(installationID, 10, 64)
-	if err != nil {
-		return nil // token rows flushed; no numeric id to match repo rows on
-	}
-	return s.q.DeleteRepoInstallationsByInstallation(ctx, id)
-}
-
-// ---- Repo installations (GET /repos/{owner}/{repo}/installation) ----
-
-// repoInstallationTTL backstops missed installation webhooks; installations
-// change rarely.
-const repoInstallationTTL = 6 * time.Hour
-
-// GetRepoInstallation returns the cached installation id covering a repo for
-// one app, or (0, false) on a miss.
-func (s *Store) GetRepoInstallation(ctx context.Context, appActor, owner, repo string, now time.Time) (int64, bool, error) {
-	row, err := s.q.GetRepoInstallation(ctx, dbgen.GetRepoInstallationParams{
-		Actor: appActor, Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
-		return 0, false, nil
-	}
-	return row.InstallationID, true, nil
-}
-
-// PutRepoInstallation stores which installation covers a repo for one app.
-func (s *Store) PutRepoInstallation(ctx context.Context, appActor, owner, repo string, installationID int64, now time.Time) error {
-	if err := s.q.UpsertRepoInstallation(ctx, dbgen.UpsertRepoInstallationParams{
-		Actor: appActor, Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
-		InstallationID: installationID,
-		FetchedAt:      rfc3339(now), ExpiresAt: rfc3339(now.Add(repoInstallationTTL)),
-	}); err != nil {
-		return err
-	}
-	return s.q.DeleteExpiredRepoInstallations(ctx, rfc3339(now))
+	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
 }

@@ -57,7 +57,7 @@ func (p *PeriodicRefresher) refreshAll(ctx context.Context) {
 	}
 
 	slog.Info("periodic refresh starting", "sessions", len(sessions))
-	kinds := []string{KindUser, KindUserOrgs, KindOrgRepos}
+	kinds := []string{KindOrgRepos}
 	for _, sctx := range sessions {
 		for _, kind := range kinds {
 			if err := p.mgr.RefreshAllOfKind(sctx, kind, freshness.TriggerPeriodic); err != nil {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -204,6 +205,16 @@ func ParseRepositoryPayload(raw json.RawMessage) (dbgen.Repo, bool) {
 	return body.Repository.toRepo()
 }
 
+// ParseRepositoryObject parses a BARE repository object (e.g. the body of
+// GET /repos/{owner}/{repo} -- the reveal probe's answer) into a truth row.
+func ParseRepositoryObject(raw []byte) (dbgen.Repo, bool) {
+	var obj repositoryObject
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return dbgen.Repo{}, false
+	}
+	return obj.toRepo()
+}
+
 // ParseRenameFrom returns changes.repository.name.from for a repository
 // renamed event ("" when absent).
 func ParseRenameFrom(raw json.RawMessage) string {
@@ -229,193 +240,157 @@ type PRPayload struct {
 	Labels []dbgen.PrLabel
 }
 
-// RESTPullRequest is GitHub's REST pull-request object shape, shared by the
-// pull_request webhook payload (payload.pull_request IS a REST PR object) and
-// the cached /pulls routes' upstream fetches. Pointer fields distinguish a
-// JSON null (carried, empty -> stored '') from the field being consumed by a
-// source that omits it entirely (never happens for REST; the GraphQL absorb
-// path leaves the corresponding columns NULL = unknown).
-type RESTPullRequest struct {
-	Number         int             `json:"number"`
-	NodeID         string          `json:"node_id"`
-	Title          string          `json:"title"`
-	Body           *string         `json:"body"`
-	HTMLURL        string          `json:"html_url"`
-	Draft          bool            `json:"draft"`
-	State          string          `json:"state"`
-	CreatedAt      string          `json:"created_at"`
-	UpdatedAt      string          `json:"updated_at"`
-	Additions      *int            `json:"additions"`
-	Deletions      *int            `json:"deletions"`
-	Mergeable      *bool           `json:"mergeable"`
-	MergeableState *string         `json:"mergeable_state"`
-	MergeCommitSHA *string         `json:"merge_commit_sha"`
-	AutoMerge      json.RawMessage `json:"auto_merge"`
-	User           *struct {
-		Login     string `json:"login"`
-		AvatarURL string `json:"avatar_url"`
-		HTMLURL   string `json:"html_url"`
-	} `json:"user"`
-	Head struct {
-		Ref  string `json:"ref"`
-		SHA  string `json:"sha"`
-		Repo *struct {
-			FullName string `json:"full_name"`
-		} `json:"repo"`
-	} `json:"head"`
-	Base struct {
-		Ref  string            `json:"ref"`
-		SHA  string            `json:"sha"`
-		Repo *repositoryObject `json:"repo"`
-	} `json:"base"`
-	Labels []struct {
-		Name  string `json:"name"`
-		Color string `json:"color"`
-	} `json:"labels"`
-	RequestedReviewers []json.RawMessage `json:"requested_reviewers"`
-	RequestedTeams     []json.RawMessage `json:"requested_teams"`
-}
-
-// hasDetailFields reports whether this object carries the single-PR-only
-// fields (mergeable/mergeable_state/additions/deletions). The REST LIST
-// endpoint omits them; the single-PR GET and webhook payloads carry them.
-// Detection is by mergeable_state, which the detailed shape always includes
-// (as a string) and the list shape never does.
-func (g *RESTPullRequest) hasDetailFields() bool { return g.MergeableState != nil }
-
-// ToPullRequest converts a REST PR object into a truth row (plus its labels).
-// ownerFallback/repoFallback are used when base.repo is absent (the /pulls
-// routes know them from the URL; webhook payloads carry base.repo).
-func (g *RESTPullRequest) ToPullRequest(ownerFallback, repoFallback string) (dbgen.PullRequest, []dbgen.PrLabel, error) {
-	owner, repo := ownerFallback, repoFallback
-	if g.Base.Repo != nil && g.Base.Repo.Name != "" && g.Base.Repo.Owner.Login != "" {
-		owner = g.Base.Repo.Owner.Login
-		repo = g.Base.Repo.Name
-	}
-	if owner == "" || repo == "" || g.Number == 0 {
-		return dbgen.PullRequest{}, nil, fmt.Errorf("parse REST pull request: missing owner/repo/number")
-	}
-
-	// Map REST state to the UPPER format used across the truth store.
-	state := "OPEN"
-	if g.State == "closed" {
-		state = "CLOSED"
-	}
-
-	pr := dbgen.PullRequest{
-		Owner:       owner,
-		Repo:        repo,
-		Number:      int64(g.Number),
-		Title:       g.Title,
-		Url:         g.HTMLURL,
-		IsDraft:     boolToInt(g.Draft),
-		State:       state,
-		CreatedAt:   normaliseTime(g.CreatedAt),
-		UpdatedAt:   normaliseTime(g.UpdatedAt),
-		HeadRefName: nullStr(g.Head.Ref),
-		BaseRefName: nullStr(g.Base.Ref),
-		HeadRefOid:  nullStr(g.Head.SHA),
-		// REST-complete fields. JSON null maps to '' ("carried and empty") so
-		// the COALESCE upsert distinguishes it from NULL ("source doesn't
-		// carry it", the GraphQL absorb path).
-		NodeID:           sql.NullString{String: g.NodeID, Valid: true},
-		Body:             sql.NullString{String: strOrEmpty(g.Body), Valid: true},
-		MergeCommitSha:   sql.NullString{String: strOrEmpty(g.MergeCommitSHA), Valid: true},
-		BaseSha:          sql.NullString{String: g.Base.SHA, Valid: true},
-		AutoMerge:        sql.NullString{String: trimmedAutoMerge(g.AutoMerge), Valid: true},
-		HeadRepoFullName: sql.NullString{String: "", Valid: true},
-	}
-	if g.Head.Repo != nil {
-		pr.HeadRepoFullName.String = g.Head.Repo.FullName
-	}
-	if g.MergeableState != nil {
-		pr.MergeableState = sql.NullString{String: *g.MergeableState, Valid: true}
-	}
-	if g.Additions != nil {
-		pr.Additions = sql.NullInt64{Int64: int64(*g.Additions), Valid: true}
-	}
-	if g.Deletions != nil {
-		pr.Deletions = sql.NullInt64{Int64: int64(*g.Deletions), Valid: true}
-	}
-	if g.Mergeable != nil {
-		m := "CONFLICTING"
-		if *g.Mergeable {
-			m = "MERGEABLE"
-		}
-		pr.Mergeable = sql.NullString{String: m, Valid: true}
-	}
-	if g.User != nil {
-		pr.AuthorLogin = nullStr(g.User.Login)
-		pr.AuthorAvatar = nullStr(g.User.AvatarURL)
-		pr.AuthorUrl = nullStr(g.User.HTMLURL)
-	}
-	reviewCount := len(g.RequestedReviewers) + len(g.RequestedTeams)
-	pr.ReviewRequestCount = sql.NullInt64{Int64: int64(reviewCount), Valid: true}
-
-	var labels []dbgen.PrLabel
-	for _, l := range g.Labels {
-		labels = append(labels, dbgen.PrLabel{
-			Owner:    owner,
-			Repo:     repo,
-			PrNumber: int64(g.Number),
-			Name:     l.Name,
-			Color:    l.Color,
-		})
-	}
-	return pr, labels, nil
-}
-
-// trimmedAutoMerge reduces GitHub's auto_merge object to the state fields
-// consumers read, dropping the enabled_by user's URL clutter. A JSON null (not
-// armed) becomes '' -- carried-and-empty.
-func trimmedAutoMerge(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	var am struct {
-		EnabledBy *struct {
-			Login string `json:"login"`
-		} `json:"enabled_by"`
-		MergeMethod   string  `json:"merge_method"`
-		CommitTitle   *string `json:"commit_title"`
-		CommitMessage *string `json:"commit_message"`
-	}
-	if err := json.Unmarshal(raw, &am); err != nil {
-		return ""
-	}
-	out := map[string]any{
-		"merge_method":   am.MergeMethod,
-		"commit_title":   am.CommitTitle,
-		"commit_message": am.CommitMessage,
-	}
-	if am.EnabledBy != nil {
-		out["enabled_by"] = map[string]any{"login": am.EnabledBy.Login}
-	} else {
-		out["enabled_by"] = nil
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
 // ParsePRPayload extracts a full PR and its labels from a pull_request
-// webhook's raw JSON (the embedded pull_request IS a REST PR object).
+// webhook's raw JSON (the embedded pull_request is a full REST-shaped PR
+// object, so webhook-maintained rows stay rest-complete for the cached
+// /pulls routes).
 func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	var body struct {
-		PullRequest *RESTPullRequest `json:"pull_request"`
+		PullRequest *struct {
+			Number    int     `json:"number"`
+			NodeID    string  `json:"node_id"`
+			Title     string  `json:"title"`
+			Body      *string `json:"body"`
+			HTMLURL   string  `json:"html_url"`
+			Draft     bool    `json:"draft"`
+			State     string  `json:"state"`
+			CreatedAt string  `json:"created_at"`
+			UpdatedAt string  `json:"updated_at"`
+			Additions *int    `json:"additions"`
+			Deletions *int    `json:"deletions"`
+			Mergeable *bool   `json:"mergeable"`
+			User      *struct {
+				Login     string `json:"login"`
+				Type      string `json:"type"`
+				AvatarURL string `json:"avatar_url"`
+				HTMLURL   string `json:"html_url"`
+			} `json:"user"`
+			Head struct {
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo *struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
+			} `json:"head"`
+			Base struct {
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo *struct {
+					Name  string `json:"name"`
+					Owner struct {
+						Login string `json:"login"`
+					} `json:"owner"`
+				} `json:"repo"`
+			} `json:"base"`
+			AutoMerge *struct {
+				MergeMethod string `json:"merge_method"`
+			} `json:"auto_merge"`
+			MergeCommitSHA *string `json:"merge_commit_sha"`
+			Labels         []struct {
+				Name  string `json:"name"`
+				Color string `json:"color"`
+			} `json:"labels"`
+			RequestedReviewers []json.RawMessage `json:"requested_reviewers"`
+			RequestedTeams     []json.RawMessage `json:"requested_teams"`
+		} `json:"pull_request"`
 	}
+
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return PRPayload{}, fmt.Errorf("parse PR webhook payload: %w", err)
 	}
 	if body.PullRequest == nil {
 		return PRPayload{}, fmt.Errorf("parse PR webhook payload: no pull_request field")
 	}
-	pr, labels, err := body.PullRequest.ToPullRequest("", "")
-	if err != nil {
-		return PRPayload{}, err
+	gpr := body.PullRequest
+
+	// Derive owner/repo from base.repo (always present for PR webhooks).
+	var owner, repo string
+	if gpr.Base.Repo != nil {
+		owner = gpr.Base.Repo.Owner.Login
+		repo = gpr.Base.Repo.Name
 	}
+
+	// Map REST state to the UPPER format used by the GraphQL-origin cache.
+	state := "OPEN"
+	switch gpr.State {
+	case "closed":
+		state = "CLOSED"
+	case "open":
+		state = "OPEN"
+	}
+
+	// Normalise timestamps to RFC3339 (GitHub REST already sends them this way).
+	createdAt := normaliseTime(gpr.CreatedAt)
+	updatedAt := normaliseTime(gpr.UpdatedAt)
+
+	pr := dbgen.PullRequest{
+		Owner:       owner,
+		Repo:        repo,
+		Number:      int64(gpr.Number),
+		Title:       gpr.Title,
+		Url:         gpr.HTMLURL,
+		IsDraft:     boolToInt(gpr.Draft),
+		State:       state,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		HeadRefName: nullStr(gpr.Head.Ref),
+		BaseRefName: nullStr(gpr.Base.Ref),
+		HeadRefOid:  nullStr(gpr.Head.SHA),
+		// REST-only fields (absent from the GraphQL org-repos selection set)
+		// that the cached /pulls routes rebuild from. Webhook payloads carry
+		// them all, so webhook-maintained rows stay rebuild-complete.
+		NodeID:     nullStr(gpr.NodeID),
+		BaseRefOid: nullStr(gpr.Base.SHA),
+	}
+	if gpr.Body != nil {
+		pr.Body = sql.NullString{String: *gpr.Body, Valid: true}
+	}
+	if gpr.Head.Repo != nil {
+		pr.HeadRepoFullName = nullStr(gpr.Head.Repo.FullName)
+	}
+	if gpr.AutoMerge != nil {
+		pr.AutoMergeMethod = nullStr(gpr.AutoMerge.MergeMethod)
+	}
+	if gpr.MergeCommitSHA != nil {
+		pr.MergeCommitSha = nullStr(*gpr.MergeCommitSHA)
+	}
+
+	if gpr.Additions != nil {
+		pr.Additions = sql.NullInt64{Int64: int64(*gpr.Additions), Valid: true}
+	}
+	if gpr.Deletions != nil {
+		pr.Deletions = sql.NullInt64{Int64: int64(*gpr.Deletions), Valid: true}
+	}
+	if gpr.Mergeable != nil {
+		m := "UNKNOWN"
+		if *gpr.Mergeable {
+			m = "MERGEABLE"
+		} else {
+			m = "CONFLICTING"
+		}
+		pr.Mergeable = sql.NullString{String: m, Valid: true}
+	}
+	if gpr.User != nil {
+		pr.AuthorLogin = nullStr(gpr.User.Login)
+		pr.AuthorAvatar = nullStr(gpr.User.AvatarURL)
+		pr.AuthorUrl = nullStr(gpr.User.HTMLURL)
+		pr.AuthorType = nullStr(gpr.User.Type)
+	}
+
+	reviewCount := len(gpr.RequestedReviewers) + len(gpr.RequestedTeams)
+	pr.ReviewRequestCount = sql.NullInt64{Int64: int64(reviewCount), Valid: true}
+
+	var labels []dbgen.PrLabel
+	for _, l := range gpr.Labels {
+		labels = append(labels, dbgen.PrLabel{
+			Owner:    owner,
+			Repo:     repo,
+			PrNumber: int64(gpr.Number),
+			Name:     l.Name,
+			Color:    l.Color,
+		})
+	}
+
 	return PRPayload{PR: pr, Labels: labels}, nil
 }
 

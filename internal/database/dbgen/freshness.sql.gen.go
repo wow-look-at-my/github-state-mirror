@@ -154,6 +154,53 @@ func (q *Queries) ListByKind(ctx context.Context, arg ListByKindParams) ([]Cache
 	return items, nil
 }
 
+const listByKindKey = `-- name: ListByKindKey :many
+SELECT actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
+WHERE resource_kind = ? AND resource_key = ?
+`
+
+type ListByKindKeyParams struct {
+	ResourceKind string
+	ResourceKey  string
+}
+
+// ListByKindKey returns every actor's marker for one resource (e.g. all
+// principals' org-sync markers for an owner; the consistency report reads the
+// newest to bound truth staleness).
+func (q *Queries) ListByKindKey(ctx context.Context, arg ListByKindKeyParams) ([]CacheMetadatum, error) {
+	rows, err := q.db.QueryContext(ctx, listByKindKey, arg.ResourceKind, arg.ResourceKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CacheMetadatum
+	for rows.Next() {
+		var i CacheMetadatum
+		if err := rows.Scan(
+			&i.Actor,
+			&i.ResourceKind,
+			&i.ResourceKey,
+			&i.LastFetchedAt,
+			&i.LastChangedAt,
+			&i.Etag,
+			&i.ExpiresAt,
+			&i.FetchState,
+			&i.ErrorMessage,
+			&i.RetryAfter,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStale = `-- name: ListStale :many
 SELECT actor, resource_kind, resource_key, last_fetched_at, last_changed_at, etag, expires_at, fetch_state, error_message, retry_after FROM cache_metadata
 WHERE actor = ? AND (

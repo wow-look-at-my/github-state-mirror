@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -14,11 +15,43 @@ import (
 
 // Request dispositions recorded for the dashboard's "Requests" view.
 const (
-	DispHit         = "hit"         // served from a fresh cache, no upstream call
-	DispMiss        = "miss"        // cache miss -> fetched from GitHub, then cached
-	DispPassthrough = "passthrough" // forwarded to GitHub uncached (not a cached endpoint)
+	DispHit         = "hit"         // served from cached global truth, no upstream call
+	DispMiss        = "miss"        // fetched from GitHub with the caller's token, absorbed, then served
+	DispPassthrough = "passthrough" // a READ forwarded to GitHub uncached (unknown route / non-default shape)
+	DispWrite       = "write"       // a MUTATING method proxied to GitHub (never cacheable by design)
 	DispError       = "error"       // the cache lookup/fetch failed
 )
+
+// dispositionHintKey lets a handler that forwards to the passthrough proxy
+// override the recorded disposition (e.g. the GraphQL route marking a
+// forwarded mutation as a write).
+type dispositionHintKey struct{}
+
+func withDispositionHint(ctx context.Context, disp string) context.Context {
+	return context.WithValue(ctx, dispositionHintKey{}, disp)
+}
+
+func dispositionHint(ctx context.Context) string {
+	if v, ok := ctx.Value(dispositionHintKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// passthroughDisposition classifies a proxied request: mutating methods are
+// writes (forwarded because GitHub is the only writer, not because a read
+// failed to cache); reads keep the passthrough label. A context hint wins.
+func passthroughDisposition(r *http.Request) string {
+	if hint := dispositionHint(r.Context()); hint != "" {
+		return hint
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return DispPassthrough
+	default:
+		return DispWrite
+	}
+}
 
 // requestEvent is one recorded data-API request.
 type requestEvent struct {
@@ -108,7 +141,7 @@ func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispPassthrough, sw.status)
+		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, passthroughDisposition(r), sw.status)
 	})
 }
 

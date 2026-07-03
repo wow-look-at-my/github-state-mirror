@@ -82,18 +82,20 @@ CREATE TABLE repos (
     PRIMARY KEY (owner, name)
 );
 
--- touched_at guards the fetch-reconcile against racing webhooks: an org/pulls
--- fetch only deletes an open-PR row absent from its snapshot when the row was
--- not webhook-touched after the fetch began (GraphQL/REST list reads are
--- eventually consistent, so a just-webhooked PR can be missing from a fetch
--- that started moments later).
+-- pull_requests rows come from three writers: the GraphQL org-repos fetch
+-- (the org sync, which selects only the identity-locked GraphQL field set),
+-- pull_request/pull_request_review webhooks (ParsePRPayload, full REST-shaped
+-- objects), and the cached REST /pulls routes (absorbed responses). The
+-- REST-only columns (node_id .. merge_commit_sha) are NULL on GraphQL-sourced
+-- rows; a row is "rest-complete" (rebuildable as a trimmed REST response)
+-- only when node_id and base_ref_oid are set -- see ghdata.PRRestComplete.
 --
--- Nullable TEXT columns hold state only SOME sources carry (the GraphQL org
--- fetch carries none of node_id/body/auto_merge/mergeable_state/
--- merge_commit_sha/base_sha/head_repo_full_name; REST fetches and webhook
--- payloads carry all of them, mapping a JSON null to '' so NULL always means
--- "never absorbed from a REST-complete source"). A row with a non-empty
--- node_id is "REST-complete" and can back the trimmed /pulls rebuilds.
+-- touched_at guards reconciles against racing webhooks (an org/pulls fetch
+-- only deletes an open-PR row absent from its snapshot when the row was not
+-- touched after the fetch began; GraphQL/REST list reads are eventually
+-- consistent, so a just-webhooked PR can be missing from a snapshot taken
+-- moments later) AND backstops missed close deliveries: a row untouched for
+-- longer than the staleness window is not served by the single-PR route.
 CREATE TABLE pull_requests (
     owner                TEXT NOT NULL,
     repo                 TEXT NOT NULL,
@@ -115,13 +117,13 @@ CREATE TABLE pull_requests (
     head_ref_oid         TEXT,
     review_request_count INTEGER,
     last_commit_status   TEXT,
-    node_id              TEXT,
-    body                 TEXT,
-    auto_merge           TEXT,  -- trimmed JSON object; '' = carried and null (not armed)
-    mergeable_state      TEXT,
-    merge_commit_sha     TEXT,  -- '' = carried and null (test merge not computed)
-    base_sha             TEXT,
-    head_repo_full_name  TEXT,  -- '' = carried and null (head repo deleted)
+    node_id              TEXT,   -- GraphQL node id (REST/webhook sources only)
+    body                 TEXT,   -- PR description; NULL = GitHub null body (or GraphQL-sourced row)
+    author_type          TEXT,   -- user.type: User | Bot | Organization
+    base_ref_oid         TEXT,   -- base.sha
+    head_repo_full_name  TEXT,   -- head.repo.full_name; NULL when the head repo is gone (deleted fork)
+    auto_merge_method    TEXT,   -- native auto-merge method when armed (merge|squash|rebase); NULL = not armed
+    merge_commit_sha     TEXT,   -- GitHub's test-merge sha; NULL until computed
     touched_at           TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner, repo, number)
 );
@@ -291,22 +293,52 @@ CREATE UNIQUE INDEX idx_install_token_cache_key ON install_token_cache (actor, i
 CREATE INDEX idx_install_token_cache_install ON install_token_cache (installation_id);
 CREATE INDEX idx_install_token_cache_lru ON install_token_cache (last_used_at);
 
--- State for GET /repos/{owner}/{repo}/installation responses (which App
--- installation covers a repo). Keyed by the verified app identity like the
--- token-mint cache: the answer is app-specific (each app has its own
--- installations), not shared GitHub state. installation/installation_repos
--- webhooks invalidate by installation id; a TTL backstops missed ones.
-CREATE TABLE repo_installations (
-    actor           TEXT NOT NULL,   -- "app:<verified app id>"
-    owner           TEXT NOT NULL,   -- lowercased
-    repo            TEXT NOT NULL,   -- lowercased
-    installation_id INTEGER NOT NULL,
-    fetched_at      TEXT NOT NULL,   -- RFC3339
-    expires_at      TEXT NOT NULL,   -- RFC3339
-    PRIMARY KEY (actor, owner, repo)
+-- "Open-PR list complete" markers for GET /repos/{owner}/{repo}/pulls (the
+-- cached open-PR list). A valid row means: the GLOBAL pull_requests table
+-- holds the repo's COMPLETE open-PR set (absorbed from a full REST list
+-- response), so the route may rebuild the list from state. Webhook
+-- pull_request events do NOT touch the marker -- they ARE the maintenance
+-- (rows stay current); expires_at is only the TTL backstop bounding missed
+-- deliveries. Who may READ the rebuilt list is the reveal layer's job. owner
+-- and repo are stored lowercased, like the other cached-route tables.
+CREATE TABLE pulls_list_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,   -- lowercased
+    repo         TEXT NOT NULL,   -- lowercased
+    fetched_at   TEXT NOT NULL,   -- RFC3339
+    expires_at   TEXT NOT NULL,   -- RFC3339 TTL backstop (webhooks maintain rows, never the marker)
+    last_used_at TEXT NOT NULL    -- RFC3339, for LRU pruning
 );
 
-CREATE INDEX idx_repo_installations_install ON repo_installations (installation_id);
+CREATE UNIQUE INDEX idx_pulls_list_cache_key ON pulls_list_cache (owner, repo);
+CREATE INDEX idx_pulls_list_cache_lru ON pulls_list_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/installation responses (an App-JWT-authed
+-- endpoint, like the token mint: actor is the verified "app:<id>"). The answer
+-- is app-specific -- each app has its own installations -- so this stays keyed
+-- by app identity, deliberately outside the global-truth model. Invalidated by
+-- installation/installation_repositories events for the stored installation
+-- id, plus the TTL backstop. owner/repo lowercased.
+CREATE TABLE repo_installation_cache (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor                TEXT NOT NULL,             -- "app:<verified app id>"
+    owner                TEXT NOT NULL,             -- lowercased
+    repo                 TEXT NOT NULL,             -- lowercased
+    installation_id      INTEGER NOT NULL,
+    account_login        TEXT NOT NULL DEFAULT '',
+    account_type         TEXT NOT NULL DEFAULT '',  -- Organization | User
+    repository_selection TEXT NOT NULL DEFAULT '',  -- all | selected
+    app_id               INTEGER NOT NULL DEFAULT 0,
+    app_slug             TEXT NOT NULL DEFAULT '',
+    target_type          TEXT NOT NULL DEFAULT '',
+    fetched_at           TEXT NOT NULL,             -- RFC3339
+    expires_at           TEXT NOT NULL,             -- RFC3339 TTL backstop
+    last_used_at         TEXT NOT NULL              -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_repo_installation_cache_key ON repo_installation_cache (actor, owner, repo);
+CREATE INDEX idx_repo_installation_cache_install ON repo_installation_cache (installation_id);
+CREATE INDEX idx_repo_installation_cache_lru ON repo_installation_cache (last_used_at);
 
 -- ============================================================================
 -- Principal Identities (dashboard only)

@@ -97,6 +97,16 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reveal: may this caller read the repo's cached state?
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindContents, contentsResourceKey(owner, repo, path, ref)); outcome {
+	case revealDenied:
+		h.serveDenyVerdict(w, r, verdict, cached)
+		return
+	case revealError:
+		h.revealFailed(w, r)
+		return
+	}
+
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedContents(r.Context(), owner, repo, path, ref, now); err == nil && ok {
 		h.serveContents(w, r, c, true)
@@ -121,6 +131,10 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.PutCachedContents(r.Context(), c, now, contentsCacheTTL); err != nil {
 		slog.Warn("contents cache write failed", "owner", owner, "repo", repo, "path", path, "error", err)
 	}
+	// A 2xx with the caller's own token is fresh proof of access -- renew the
+	// grant so steady consumers never age out mid-use. (A 404 is not proof
+	// either way; the reveal layer already vouched for this read.)
+	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.serveContents(w, r, c, false)
 }
@@ -277,6 +291,15 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindGitCommit, owner+"/"+repo+"@"+sha); outcome {
+	case revealDenied:
+		h.serveDenyVerdict(w, r, verdict, cached)
+		return
+	case revealError:
+		h.revealFailed(w, r)
+		return
+	}
+
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedGitCommit(r.Context(), owner, repo, sha, now); err == nil && ok {
 		h.serveGitCommit(w, r, c, true)
@@ -302,6 +325,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.PutCachedGitCommit(r.Context(), c, now); err != nil {
 		slog.Warn("git commit cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
 	}
+	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.serveGitCommit(w, r, c, false)
 }
@@ -455,7 +479,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	bodyHash := canonicalBodyHash(reqBody)
 
 	now := time.Now()
-	if t, ok, err := h.store.GetCachedInstallToken(ctx, installID, bodyHash, now); err == nil && ok {
+	if t, ok, err := h.store.GetCachedInstallToken(ctx, actorKey, installID, bodyHash, now); err == nil && ok {
 		h.reqlog.record(actorKey, r.Method, r.URL.Path, DispHit)
 		h.serveInstallToken(w, t, true)
 		return
@@ -475,7 +499,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 		h.replayUnstored(w, r, resp, respBody)
 		return
 	}
-	if err := h.store.PutCachedInstallToken(ctx, t, now, serveUntil); err != nil {
+	if err := h.store.PutCachedInstallToken(ctx, actorKey, t, now, serveUntil); err != nil {
 		slog.Warn("install token cache write failed", "installation", installID, "error", err)
 	}
 	h.reqlog.recordStatus(actorKey, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
@@ -557,6 +581,26 @@ func canonicalBodyHash(body []byte) string {
 }
 
 // ---- shared plumbing ----
+
+// contentsResourceKey is the deny-cache resource key for one contents read.
+func contentsResourceKey(owner, repo, path, ref string) string {
+	return owner + "/" + repo + "/" + path + "?ref=" + ref
+}
+
+// refreshGrantOn2xx renews the caller's grant after a successful repo-scoped
+// fetch with their own token: GitHub just re-proved their access. Best-effort.
+func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status int) {
+	if status < 200 || status >= 300 {
+		return
+	}
+	principal := actor.FromContext(r.Context())
+	if principal == "" {
+		return
+	}
+	if err := h.store.RecordGrant(r.Context(), principal, owner, repo, ghdata.GrantSourceProbe, time.Now()); err != nil {
+		slog.Warn("refresh grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+	}
+}
 
 // acceptsDefaultJSON reports whether the request asks for GitHub's default
 // JSON representation — the only one the cache models. Media types that
