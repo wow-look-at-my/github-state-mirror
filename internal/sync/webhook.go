@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
@@ -78,6 +80,12 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 
 // handle routes an event to its handler, returning the outcome.
 func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) outcome {
+	// Cached-route invalidation runs alongside (never instead of) the normal
+	// apply/invalidate logic, and is deliberately disposition-neutral: it is
+	// best-effort bookkeeping for the trimmed response caches and must not
+	// change what the delivery reports.
+	d.invalidateResponseCaches(ctx, event)
+
 	switch event.Type {
 	case "push":
 		return d.onPush(ctx, event)
@@ -156,11 +164,93 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	if len(actors) == 0 {
 		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
 	}
+	d.absorbPushCommits(ctx, actors, payload)
 	if err := d.store.SetRepoPushedAtForActors(ctx, actors, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
 		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("apply push failed")
 	}
 	return applied("updated pushed_at", len(actors))
+}
+
+// absorbPushCommits upserts the pushed commits into the git-commits cache for
+// every actor that has the repo cached, so a subsequent
+// GET /repos/{o}/{r}/git/commits/{sha} hits without any GitHub fetch ever
+// having happened. The push payload states each commit's id, tree, message,
+// timestamp, and author/committer -- exactly the state the endpoint returns --
+// and parents come from the payload's linear chain (ChainedCommits declines
+// forced/new-ref/possibly-truncated pushes rather than derive wrong parents).
+// Best-effort and disposition-neutral: a failure is logged, never reported.
+func (d *WebhookDispatcher) absorbPushCommits(ctx context.Context, actors []string, payload webhook.PushPayload) {
+	chain := payload.ChainedCommits()
+	if len(chain) == 0 {
+		return
+	}
+	owner := ghdata.NormalizeRepoKey(payload.Owner)
+	repo := ghdata.NormalizeRepoKey(payload.Repo)
+	commits := make([]ghdata.CachedGitCommit, 0, len(chain))
+	for i, c := range chain {
+		if !fullHexSHA(c.ID) || c.TreeID == "" {
+			return // malformed payload; absorb nothing rather than partial state
+		}
+		commits = append(commits, ghdata.CachedGitCommit{
+			Owner: owner, Repo: repo, SHA: strings.ToLower(c.ID), Message: c.Message,
+			// The payload states one identity timestamp; GitHub's git-commit
+			// object dates author and committer separately, and for the pushed
+			// commits webhooks describe they are the same wall-clock instant.
+			AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.Timestamp,
+			CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.Timestamp,
+			TreeSHA: c.TreeID,
+			Parents: []string{strings.ToLower(payload.ParentForChained(chain, i))},
+		})
+	}
+	if err := d.store.UpsertGitCommitsForActors(ctx, actors, commits, time.Now()); err != nil {
+		slog.Warn("webhook: absorb push commits failed", "repo", owner+"/"+repo, "error", err)
+		return
+	}
+	slog.Info("webhook: absorbed push commits into git-commit cache",
+		"repo", owner+"/"+repo, "commits", len(commits), "actors", len(actors))
+}
+
+// fullHexSHA reports whether s is a full-length hex object id.
+func fullHexSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
+// stale. Deletes span ALL actors (the event is a global fact about the repo or
+// installation). push/repository events flush the repo's contents rows -- the
+// conservative whole-repo flush; the payload's modified-paths refinement can
+// come later. installation events flush the installation's cached token mints
+// (a suspended/deleted installation must not keep serving tokens). Git-commit
+// rows are immutable and are deliberately never invalidated.
+func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
+	switch event.Type {
+	case "push", "repository":
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return
+		}
+		if err := d.store.InvalidateContentsCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate contents cache failed", "repo", owner+"/"+repo, "error", err)
+		}
+	case "installation", "installation_repositories":
+		if event.InstallationID == 0 {
+			return
+		}
+		id := fmt.Sprintf("%d", event.InstallationID)
+		if err := d.store.InvalidateInstallTokenCache(ctx, id); err != nil {
+			slog.Warn("webhook: invalidate install token cache failed", "installation", id, "error", err)
+		}
+	}
 }
 
 func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {

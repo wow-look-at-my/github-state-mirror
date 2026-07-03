@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
@@ -20,14 +21,23 @@ type handlers struct {
 	// reqlog records per-request cache dispositions (hit/miss/passthrough) for the
 	// dashboard's "Requests" view.
 	reqlog *requestLog
+	// gh supplies the GitHub base URL for the cached routes' upstream fetches and
+	// VerifyAppIdentity for the token-mint route (respcache.go).
+	gh *ghclient.Client
+	// upstream is the HTTP client the cached routes fetch misses with. Distinct
+	// from the passthrough proxy: a cached route must buffer and absorb the
+	// response, not stream it.
+	upstream *http.Client
 }
 
-// NOTE: the mirror used to serve /user, /user/orgs, /compare, and /pulls/{n}/files
-// from cache, but with TRIMMED response shapes (a subset of GitHub's fields). A
-// cache must be byte-for-byte identical to the origin, not a transformative
-// middleman, so those routes were removed; they now fall through to the verbatim
-// passthrough proxy (router.go). Re-introduce one only when it can return GitHub's
-// exact shape, gated by an identity test (see api_test.go).
+// NOTE: the mirror once served /user, /user/orgs, /compare, and /pulls/{n}/files
+// from cache with ad-hoc trimmed shapes and no contract; those routes were
+// removed and now fall through to the verbatim passthrough proxy (router.go).
+// Today's cached REST routes (respcache.go) are deliberately trimmed again —
+// but under an explicit contract: absorb the response's state, rebuild it
+// without any URL field (url, *_url, _links), same shape on hit and miss.
+// Byte-identity applies only to the GraphQL org-repos route (identity test in
+// identity_shape_test.go).
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

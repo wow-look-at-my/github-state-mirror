@@ -12,7 +12,10 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = 6
+// SchemaVersion 7: adds the global workflow_jobs table. Bumping past
+// master's 6 (the response-cache tables) nukes existing DBs on deploy so the
+// new table exists; the cache rebuilds lazily.
+const SchemaVersion = 7
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

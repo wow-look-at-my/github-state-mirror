@@ -48,16 +48,48 @@ This service is designed to be safe to expose to multiple, mutually-untrusting c
 
 A **GitHub App backend** whose installation tokens rotate hourly would get a fresh, empty fingerprint bucket every hour. Such a caller may instead assert a stable identity by sending its **GitHub App JWT** in an `X-Mirror-Identity` header. The mirror verifies that JWT against GitHub (`GET /app` — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partitions the caller as `app:<id>`, so all of the app's rotating tokens share **one** warm, webhook-fed bucket. The `Authorization` token is still used for upstream fetches, so per-repo authorization is preserved. Callers that send no identity header keep the fingerprint isolation above unchanged — this mode is opt-in and additive. It is appropriate **only** for a first-party app (within an app's bucket, any of that app's tokens reads what the bucket cached), never as a way to relax the default isolation.
 
-### REST
+### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-The mirror serves **no** REST endpoint from cache. It used to cache `/user`,
-`/user/orgs`, `/repos/{owner}/{repo}/compare/{base}...{head}`, and
-`/repos/{owner}/{repo}/pulls/{number}/files`, but with *trimmed* response shapes
-(a subset of GitHub's fields). **A cache must be byte-for-byte identical to the
-origin — not a transformative middleman** — so those routes were removed; they
-now **pass through** to GitHub verbatim (see below). New cached REST endpoints
-will be added back only when they return GitHub's exact shape, each gated by an
-identity test.
+Three REST routes are served from cache. They do **not** replay GitHub's bytes:
+the mirror **absorbs the state** contained in the response into structured
+tables and **rebuilds a trimmed response** from that state, with **every URL
+field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
+`download_url`, `documentation_url`, ...), and `_links`. Consumers are
+first-party tooling (pr-minder etc.) that read state fields only. Hits and
+misses both serve the rebuilt shape, marked with an `X-GSM-Cache: hit|miss`
+header; requests the route cannot model (a non-default `Accept` such as
+`application/vnd.github.raw`, unknown query params, an unexpected body shape)
+pass through verbatim, uncached.
+
+- `GET /repos/{owner}/{repo}/contents/{path}` (incl. `?ref=`) — a `200` file
+  (`{type, encoding, size, name, path, content, sha}`), a `200` directory
+  listing (entries as `{type, size, name, path, sha}`), **and a `404`**
+  (rebuilt as `{"message": ..., "status": "404"}`) are all cached — the 404
+  "config file absent" answer is half the win for config probes. Invalidated
+  by `push` and `repository` webhooks (conservative whole-repo flush) with a
+  24 h TTL backstop so a missed webhook can never serve stale state forever.
+- `GET /repos/{owner}/{repo}/git/commits/{sha}` — rebuilt as
+  `{sha, author, committer, message, tree: {sha}, parents: [{sha}, ...]}`.
+  Immutable content: no invalidation, no TTL, bounded only by LRU pruning.
+  **Push webhooks also feed this cache**: the payload's commits (id, tree,
+  message, timestamp, author/committer, with parents derived from the
+  payload's linear chain) are absorbed on delivery, so the common post-push
+  read hits without any GitHub fetch ever having happened.
+- `POST /app/installations/{id}/access_tokens` — the installation-token mint.
+  The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
+  caches the minted `201` per (app, installation, request-body hash), serving
+  `{token, expires_at, permissions, repository_selection}` until 10 minutes
+  before the token's real expiry. Invalidated by `installation` /
+  `installation_repositories` events. Unverifiable callers pass through.
+
+Cached rows are actor-partitioned exactly like everything else; caps + LRU
+pruning bound each table. `GET /repos/{o}/{r}/pulls/{n}` is deliberately NOT
+cached: its `mergeable` field is computed lazily by GitHub and polled-for by
+pr-minder — a cached body would wedge that poll — so it stays passthrough.
+
+(The byte-identity rule now applies only to the GraphQL org-repos route below;
+the trimmed rebuild contract above is the operator-chosen model for cached REST
+routes.)
 
 ### GraphQL
 

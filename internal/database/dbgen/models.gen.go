@@ -60,6 +60,59 @@ type CommitCheck struct {
 	State   string
 }
 
+type ContentsCache struct {
+	ID         int64
+	Actor      string
+	Owner      string
+	Repo       string
+	Path       string
+	Ref        string
+	Kind       string
+	Name       string
+	Sha        string
+	Size       int64
+	Encoding   string
+	Content    string
+	Entries    string
+	Message    string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type GitCommitsCache struct {
+	ID             int64
+	Actor          string
+	Owner          string
+	Repo           string
+	Sha            string
+	Message        string
+	AuthorName     string
+	AuthorEmail    string
+	AuthorDate     string
+	CommitterName  string
+	CommitterEmail string
+	CommitterDate  string
+	TreeSha        string
+	Parents        string
+	FetchedAt      string
+	LastUsedAt     string
+}
+
+type InstallTokenCache struct {
+	ID                  int64
+	Actor               string
+	InstallationID      string
+	BodyHash            string
+	Token               string
+	TokenExpiresAt      string
+	Permissions         string
+	RepositorySelection string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
+}
+
 type Org struct {
 	Actor     string
 	Login     string
