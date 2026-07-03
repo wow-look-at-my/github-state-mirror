@@ -19,7 +19,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
-	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -89,7 +88,7 @@ func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
 	lastFetched := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
 	expired := time.Now().Add(-1 * time.Hour)
 	require.NoError(t, fStore.Upsert(context.Background(), &freshness.Metadata{
-		ResourceID:    freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: "my-org", Actor: ghclient.Fingerprint(testToken)},
+		ResourceID:    freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: "my-org", Actor: testUserActor},
 		State:         freshness.StateFresh,
 		LastFetchedAt: &lastFetched,
 		ExpiresAt:     &expired,
@@ -315,8 +314,8 @@ func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 func TestGraphQL_NonCachedQueryForwarded(t *testing.T) {
 	var gotPath, gotAuth, gotBody string
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user" { // requireAuth's token validation
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		if r.URL.Path == "/user" { // requireAuth's identity resolution
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			return
 		}
 		gotPath = r.URL.Path

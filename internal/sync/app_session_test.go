@@ -40,7 +40,7 @@ func TestAppSessions(t *testing.T) {
 	})
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		userAuth = r.Header.Get("Authorization")
-		_ = json.NewEncoder(w).Encode(map[string]any{"login": "acme"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "acme", "id": 555})
 	})
 
 	srv := httptest.NewServer(mux)
@@ -59,9 +59,9 @@ func TestAppSessions(t *testing.T) {
 
 	// ...and carries the minted installation token, so API calls made with the
 	// session context authenticate as that installation.
-	login, err := gh.ResolveActor(sessions[0])
+	ident, err := gh.ResolveTokenIdentity(sessions[0])
 	require.NoError(t, err)
-	assert.Equal(t, "acme", login)
+	assert.Equal(t, "acme", ident.Login)
 	assert.Equal(t, "Bearer ghs_inst123", userAuth)
 }
 

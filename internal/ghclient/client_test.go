@@ -27,46 +27,133 @@ func testServer(t *testing.T, handler http.HandlerFunc) *Client {
 	return NewWithBaseURL(srv.URL)
 }
 
-func TestResolveActor_NoToken(t *testing.T) {
+func TestResolveTokenIdentity_NoToken(t *testing.T) {
 	c := New()
-	login, err := c.ResolveActor(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "", login)
+	_, err := c.ResolveTokenIdentity(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no token")
 }
 
-func TestResolveActor_FromContext(t *testing.T) {
+func TestResolveTokenIdentity_UserCached(t *testing.T) {
 	callCount := 0
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		assert.Equal(t, "/user", r.URL.Path)
 		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
-		json.NewEncoder(w).Encode(userResp{Login: "octocat"})
+		json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "id": 42})
 	})
 
 	ctx := WithToken(context.Background(), "test-token")
 
-	login, err := c.ResolveActor(ctx)
+	ident, err := c.ResolveTokenIdentity(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "octocat", login)
+	assert.Equal(t, TokenIdentity{IsUser: true, ID: 42, Login: "octocat"}, ident)
 	assert.Equal(t, 1, callCount)
 
-	// Second call should use cache.
-	login, err = c.ResolveActor(ctx)
+	// Second call is served from the per-token cache.
+	ident, err = c.ResolveTokenIdentity(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "octocat", login)
+	assert.Equal(t, int64(42), ident.ID)
 	assert.Equal(t, 1, callCount) // no additional API call
 }
 
-func TestResolveActor_APIError(t *testing.T) {
+func TestResolveTokenIdentity_BadCredential(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"message":"Bad credentials"}`))
 	})
 
 	ctx := WithToken(context.Background(), "bad-token")
-	_, err := c.ResolveActor(ctx)
-	assert.Error(t, err)
+	_, err := c.ResolveTokenIdentity(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBadCredential)
 	assert.Contains(t, err.Error(), "401")
+}
+
+// TestResolveTokenIdentity_NotAUserVerdictCached: a plain 403 (no rate-limit
+// headers) or a 404 is a DEFINITIVE "not a user" answer (e.g. an installation
+// token) — returned as IsUser=false, not an error, and cached per token.
+func TestResolveTokenIdentity_NotAUserVerdictCached(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		callCount := 0
+		c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			w.WriteHeader(status)
+			w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+		})
+
+		ctx := WithToken(context.Background(), "ghs_installation-token")
+		ident, err := c.ResolveTokenIdentity(ctx)
+		require.NoError(t, err, "status %d", status)
+		assert.False(t, ident.IsUser)
+		assert.Empty(t, ident.Login)
+
+		// The verdict is cached: no second upstream call.
+		_, err = c.ResolveTokenIdentity(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 1, callCount, "status %d", status)
+	}
+}
+
+// TestResolveTokenIdentity_TransientNotCached: a 5xx is an error and must NOT
+// be cached — the next call retries and can succeed without a restart.
+func TestResolveTokenIdentity_TransientNotCached(t *testing.T) {
+	callCount := 0
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "id": 42})
+	})
+
+	ctx := WithToken(context.Background(), "flaky-token")
+	_, err := c.ResolveTokenIdentity(ctx)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrBadCredential)
+
+	ident, err := c.ResolveTokenIdentity(ctx)
+	require.NoError(t, err, "a transient failure must not be cached")
+	assert.Equal(t, int64(42), ident.ID)
+	assert.Equal(t, 2, callCount)
+}
+
+// TestResolveTokenIdentity_RateLimited403IsTransient: a 403 that looks like
+// rate limiting is NOT a "not a user" verdict — caching one for a rate-limited
+// USER token would mis-partition that user for the process lifetime.
+func TestResolveTokenIdentity_RateLimited403IsTransient(t *testing.T) {
+	headers := []map[string]string{
+		{"X-RateLimit-Remaining": "0"},
+		{"Retry-After": "60"},
+	}
+	for _, hdrs := range headers {
+		c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+			for k, v := range hdrs {
+				w.Header().Set(k, v)
+			}
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+		})
+
+		ctx := WithToken(context.Background(), "rate-limited-token")
+		_, err := c.ResolveTokenIdentity(ctx)
+		require.Error(t, err, "headers %v", hdrs)
+		assert.NotErrorIs(t, err, ErrBadCredential)
+	}
+}
+
+// TestResolveTokenIdentity_MalformedUserResponse: a 200 with no id/login is
+// malformed and must fail (uncached) rather than partition on garbage.
+func TestResolveTokenIdentity_MalformedUserResponse(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{}`))
+	})
+
+	ctx := WithToken(context.Background(), "weird-token")
+	_, err := c.ResolveTokenIdentity(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing id or login")
 }
 
 func TestGetAuthenticatedUser(t *testing.T) {

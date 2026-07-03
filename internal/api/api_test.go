@@ -30,6 +30,15 @@ import (
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
 
+// testUserID/testUserLogin are the identity the default fake GitHub answers on
+// GET /user for any token; testUserActor is therefore the cache partition every
+// authenticated test request lands in ("user:<id>").
+const (
+	testUserID    = 7001
+	testUserLogin = "testuser"
+	testUserActor = "user:7001"
+)
+
 // testWebhookSecret is the HMAC secret the test router verifies webhooks against.
 const testWebhookSecret = "test-webhook-secret"
 
@@ -45,10 +54,10 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 // Its fake GitHub answers every path with a login JSON, enough for requireAuth.
 func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
 	t.Helper()
-	// Stub GitHub's /user endpoint so requireAuth can validate the test token
-	// without reaching the real API.
+	// Stub GitHub's /user endpoint so requireAuth can resolve the test token to
+	// a user (id + login) without reaching the real API.
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	})
 	router, store, db, _ := newTestStackWithGitHub(t, authSvc, gh)
 	return router, store, db
@@ -101,9 +110,10 @@ func sign(secret string, body []byte) string {
 }
 
 // seedCtx returns a context scoped to the same cache partition that an
-// authenticated request bearing testToken resolves to.
+// authenticated request bearing testToken resolves to: the per-user partition
+// of the stubbed test user.
 func seedCtx() context.Context {
-	return actor.WithActor(context.Background(), ghclient.Fingerprint(testToken))
+	return actor.WithActor(context.Background(), testUserActor)
 }
 
 // authedReq builds a request carrying a valid bearer token.
@@ -146,22 +156,36 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestCredentialIsolation verifies that data cached under one credential (the
-// org-repos GraphQL cache, the only cached data route) is not served to a request
-// bearing a different credential, even for the same login.
-func TestCredentialIsolation(t *testing.T) {
-	router, store := setupTestRouter(t)
+// TestUserIsolation verifies that data cached under one USER's partition (the
+// org-repos GraphQL cache, the only cached data route) is not served to a
+// request whose token resolves to a DIFFERENT user. (Two tokens of the SAME
+// user deliberately share a partition — see partition_test.go.)
+func TestUserIsolation(t *testing.T) {
+	// Fake GitHub resolves each token to its own user.
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/user", r.URL.Path)
 
-	// Seed org repos visible only to testToken's bucket.
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + testToken:
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+		case "Bearer other-user-token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "otheruser", "id": 8002})
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	})
+	router, store, _, _ := newTestStackWithGitHub(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}), gh)
+
+	// Seed org repos visible only to the test user's bucket.
 	store.SetOrgRepos(seedCtx(), "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "secret", NameWithOwner: "my-org/secret", Url: "u"},
 	})
 
-	// A different token (same stubbed login) resolves to a different bucket; the
+	// A token resolving to a different user lands in a different bucket; the
 	// org-repos query must return nothing for it.
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer other-token")
+	req.Header.Set("Authorization", "Bearer other-user-token")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -170,7 +194,7 @@ func TestCredentialIsolation(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
-	assert.Equal(t, 0, len(nodes), "a different credential must not see another credential's cached repos")
+	assert.Equal(t, 0, len(nodes), "a different user must not see another user's cached repos")
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without

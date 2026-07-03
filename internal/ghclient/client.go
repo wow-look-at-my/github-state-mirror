@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,12 +33,12 @@ func tokenFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Fingerprint returns a stable, non-reversible identifier for a token, suitable
-// for use as a per-credential cache partition key. Cached data is keyed by this
-// fingerprint (not the GitHub login) so that two distinct tokens never share a
-// cache bucket — a narrow-scoped token can never read data a broader token
-// fetched, even when both belong to the same GitHub user. The raw token is
-// never stored or logged.
+// Fingerprint returns a stable, non-reversible identifier for a token (the hex
+// SHA-256 of the raw token; the raw token is never stored or logged). It is the
+// cache partition key for tokens that are definitively NOT a user credential
+// (e.g. GitHub App installation tokens, which 403 on GET /user): those keep
+// per-token isolation. User tokens are partitioned per USER instead — see
+// ResolveTokenIdentity and requireAuth in internal/api/router.go.
 func Fingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -46,7 +47,7 @@ func Fingerprint(token string) string {
 type Client struct {
 	httpClient       *http.Client
 	baseURL          string
-	actorCache       sync.Map // token -> GitHub login
+	identityCache    sync.Map // token -> TokenIdentity (incl. the definitive not-a-user verdict)
 	appIdentityCache sync.Map // app JWT -> AppIdentity
 }
 
@@ -77,26 +78,112 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// ResolveActor resolves the GitHub login for the token in the given context.
-// Results are cached in memory so /user is only called once per unique token.
-// With no token in context it returns ("", nil).
-func (c *Client) ResolveActor(ctx context.Context) (string, error) {
+// ErrBadCredential marks a token GitHub itself rejected (401 on GET /user):
+// the credential is invalid or revoked. Callers translate it into their own
+// 401 — distinct from a transient resolution failure, which must NOT be
+// treated as an invalid credential.
+var ErrBadCredential = errors.New("github rejected the credential")
+
+// TokenIdentity is the resolved identity of a bearer token, learned from
+// GET /user with that token.
+type TokenIdentity struct {
+	// IsUser reports whether the token authenticates a GitHub user account.
+	// False is a DEFINITIVE verdict (GitHub answered /user with a non-rate-limit
+	// 403 or a 404 — e.g. an installation token, which has no user identity),
+	// not a failure.
+	IsUser bool
+	// ID is the user's numeric id — stable across login renames, and GitHub
+	// never recycles ids. Zero when !IsUser.
+	ID int64
+	// Login is the user's current login. Empty when !IsUser.
+	Login string
+}
+
+// ResolveTokenIdentity resolves the token in ctx to its GitHub user via
+// GET /user, caching the answer — including the definitive "not a user"
+// verdict — per token, so GitHub is asked once per unique token.
+//
+// Outcomes:
+//   - user token: TokenIdentity{IsUser: true, ID, Login}, cached
+//   - definitively not a user (403/404 — installation tokens and the like):
+//     TokenIdentity{IsUser: false}, cached
+//   - invalid credential (401): an error wrapping ErrBadCredential, uncached
+//   - anything transient (network error, 5xx, 429, a rate-limited 403): an
+//     error, and NOTHING is cached — the next call retries
+//
+// A 403 counts as transient (not a verdict) when it looks like rate limiting
+// (Retry-After, or X-RateLimit-Remaining: 0): caching "not a user" for a
+// rate-limited USER token would silently mis-partition that user for the
+// process lifetime.
+func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error) {
 	token := tokenFromContext(ctx)
 	if token == "" {
-		return "", nil
+		return TokenIdentity{}, errors.New("resolve token identity: no token in context")
+	}
+	if v, ok := c.identityCache.Load(token); ok {
+		return v.(TokenIdentity), nil
 	}
 
-	if login, ok := c.actorCache.Load(token); ok {
-		return login.(string), nil
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/user", nil)
+	if err != nil {
+		return TokenIdentity{}, err
 	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
 
-	var resp userResp
-	if err := c.doJSON(ctx, "GET", "/user", nil, &resp); err != nil {
-		return "", err
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return TokenIdentity{}, fmt.Errorf("resolve token identity: %w", err)
 	}
+	defer resp.Body.Close()
 
-	c.actorCache.Store(token, resp.Login)
-	return resp.Login, nil
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		var u struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+			return TokenIdentity{}, fmt.Errorf("resolve token identity: decode /user: %w", err)
+		}
+		if u.ID == 0 || u.Login == "" {
+			// A 200 missing id/login is malformed; failing (transient, uncached)
+			// beats partitioning on garbage.
+			return TokenIdentity{}, errors.New("resolve token identity: /user response missing id or login")
+		}
+		ident := TokenIdentity{IsUser: true, ID: u.ID, Login: u.Login}
+		c.identityCache.Store(token, ident)
+		return ident, nil
+
+	case resp.StatusCode == http.StatusUnauthorized:
+		data, _ := io.ReadAll(resp.Body)
+		return TokenIdentity{}, fmt.Errorf("%w: 401 %s", ErrBadCredential, string(data))
+
+	case resp.StatusCode == http.StatusNotFound,
+		resp.StatusCode == http.StatusForbidden && !looksRateLimited(resp):
+		// Definitive: a valid credential with no user identity behind it (e.g.
+		// a GitHub App installation token). Cache the verdict so we never
+		// re-ask for this token.
+		ident := TokenIdentity{IsUser: false}
+		c.identityCache.Store(token, ident)
+		return ident, nil
+
+	default:
+		// 5xx, 429, rate-limited 403, anything unexpected: transient. Cache
+		// nothing so the next request retries.
+		data, _ := io.ReadAll(resp.Body)
+		return TokenIdentity{}, fmt.Errorf("resolve token identity: GET /user: %d %s", resp.StatusCode, string(data))
+	}
+}
+
+// looksRateLimited reports whether a 4xx response is GitHub rate limiting
+// rather than a permissions answer (primary limit: X-RateLimit-Remaining: 0;
+// secondary/abuse limits: Retry-After).
+func looksRateLimited(resp *http.Response) bool {
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return resp.Header.Get("X-RateLimit-Remaining") == "0"
 }
 
 // AppIdentity is a GitHub App identity proven by a valid App JWT.

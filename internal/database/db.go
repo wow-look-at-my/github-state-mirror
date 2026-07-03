@@ -12,7 +12,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = 5
+// SchemaVersion 6: cache partitions moved from per-token fingerprints to
+// per-user ("user:<id>") actors. Bumping nukes the DB on deploy, flushing all
+// old fingerprint partitions (including dormant ones); the cache rebuilds
+// lazily under the new keying.
+const SchemaVersion = 6
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

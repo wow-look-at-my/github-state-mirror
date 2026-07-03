@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -30,9 +31,9 @@ var webFS embed.FS
 
 // dashboard serves the login flow, the static page, and the cache-stats API.
 // Its authorization model is by GitHub login (via OAuth session), distinct from
-// the bearer-token + fingerprint model that guards the data API. It never serves
-// one credential's cached rows to another — it only reports counts and freshness
-// metadata, grouped by login for convenience.
+// the bearer-token + per-user partition model that guards the data API. It never
+// serves one scope's cached rows to another user — it only reports counts and
+// freshness metadata, grouped by login for convenience.
 // contentAsset is an embedded asset served at a content-addressed URL — the
 // filename embeds a hash of the content. A new deploy with changed JS/CSS yields
 // a new URL, so browsers and the CDN/proxy fetch the new file immediately
@@ -336,7 +337,7 @@ type recentRefresh struct {
 }
 
 type scopeStats struct {
-	Actor    string            `json:"actor"`              // short fingerprint (display)
+	Actor    string            `json:"actor"`              // short actor (display)
 	ActorID  string            `json:"actor_id,omitempty"` // full partition key (for admin browse/check)
 	Login    string            `json:"login"`
 	IsSelf   bool              `json:"is_self"`
@@ -563,12 +564,10 @@ func asTimeString(v interface{}) string {
 	}
 }
 
-func shortFingerprint(fp string) string {
-	if len(fp) > 12 {
-		return fp[:12]
-	}
-	return fp
-}
+// shortFingerprint abbreviates an actor for display: opaque hex token
+// fingerprints shorten to 12 chars, structured actors ("user:<id>",
+// "app:<id>", "app-installation:<id>") are shown whole.
+func shortFingerprint(fp string) string { return actor.Short(fp) }
 
 func sumCounts(c ghdata.DataCounts) int64 {
 	return c.Repos + c.PullRequests + c.Orgs + c.Users + c.CommitChecks + c.PRFiles + c.BranchComparisons

@@ -109,8 +109,8 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 	svc := configuredAuth(t)
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user" { // token validation, if reached
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		if r.URL.Path == "/user" { // identity resolution, if reached
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			return
 		}
 		w.WriteHeader(http.StatusBadGateway) // simulate GitHub 502 on the proxied path
