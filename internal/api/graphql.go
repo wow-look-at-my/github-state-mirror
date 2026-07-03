@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -68,7 +70,8 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	// (served fresh) or a miss (triggered a fetch) for the dashboard.
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
-		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", ensureErr)
+		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
+			"org", orgLogin, "actor", actor.FromContext(ctx), "error", ensureErr)
 	}
 	disp := DispHit
 	switch {
@@ -103,6 +106,16 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			}},
 		})
 		return
+	}
+
+	// Serving stale-on-error: flag it in response HEADERS so clients can tell
+	// (and see how old the data is). Headers only — the body must stay
+	// byte-identical to GitHub's shape (the identity-test contract).
+	if ensureErr != nil {
+		w.Header().Set("X-GSM-Stale", "true")
+		if meta, merr := h.mgr.Metadata(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin}); merr == nil && meta != nil && meta.LastFetchedAt != nil {
+			w.Header().Set("X-GSM-Last-Fetched", meta.LastFetchedAt.UTC().Format(time.RFC3339))
+		}
 	}
 
 	// Build response matching GraphQL shape.
