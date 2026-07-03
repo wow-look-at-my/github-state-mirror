@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"testing"
 	"time"
 
@@ -373,23 +374,55 @@ func TestDashboard_ServeIndex(t *testing.T) {
 func TestDashboard_ServeAssets(t *testing.T) {
 	router, _, _ := newTestStack(t, configuredAuth(t))
 
-	js := httptest.NewRequest("GET", "/assets/app.js", nil)
-	jsW := httptest.NewRecorder()
-	router.ServeHTTP(jsW, js)
-	require.Equal(t, http.StatusOK, jsW.Code)
-	assert.Contains(t, jsW.Header().Get("Content-Type"), "javascript")
-
-	css := httptest.NewRequest("GET", "/assets/style.css", nil)
-	cssW := httptest.NewRecorder()
-	router.ServeHTTP(cssW, css)
-	require.Equal(t, http.StatusOK, cssW.Code)
-	assert.Contains(t, cssW.Header().Get("Content-Type"), "css")
+	// Every embedded asset is also reachable at its stable name (the fallback
+	// path the backend-free preview relies on).
+	for path, wantType := range map[string]string{
+		"/assets/app.js":        "javascript",
+		"/assets/rate-meter.js": "javascript",
+		"/assets/style.css":     "css",
+	} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, path)
+		assert.Contains(t, w.Header().Get("Content-Type"), wantType, path)
+	}
 
 	// demo-data.js is preview-only and must NOT be embedded/served.
 	demo := httptest.NewRequest("GET", "/assets/demo-data.js", nil)
 	demoW := httptest.NewRecorder()
 	router.ServeHTTP(demoW, demo)
 	assert.Equal(t, http.StatusNotFound, demoW.Code)
+}
+
+// TestDashboard_HashedAssets verifies the served index references the
+// content-addressed asset URLs (never the stable names) for every embedded
+// asset, and that those hashed URLs are served with the immutable cache header.
+func TestDashboard_HashedAssets(t *testing.T) {
+	router, _, _ := newTestStack(t, configuredAuth(t))
+
+	idx := httptest.NewRequest("GET", "/", nil)
+	idxW := httptest.NewRecorder()
+	router.ServeHTTP(idxW, idx)
+	require.Equal(t, http.StatusOK, idxW.Code)
+	html := idxW.Body.String()
+
+	for _, a := range []struct{ stem, ext string }{
+		{"app", "js"},
+		{"rate-meter", "js"},
+		{"style", "css"},
+	} {
+		re := regexp.MustCompile(`assets/` + regexp.QuoteMeta(a.stem) + `\.[0-9a-f]{10}\.` + a.ext)
+		hashed := re.FindString(html)
+		require.NotEmpty(t, hashed, "index must reference a hashed URL for %s.%s", a.stem, a.ext)
+		assert.NotContains(t, html, `"assets/`+a.stem+`.`+a.ext+`"`, "stable name must be rewritten")
+
+		req := httptest.NewRequest("GET", "/"+hashed, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, hashed)
+		assert.Contains(t, w.Header().Get("Cache-Control"), "immutable", hashed)
+	}
 }
 
 func TestGroupKinds(t *testing.T) {

@@ -21,9 +21,11 @@ import (
 
 // Embedded dashboard assets. Only the files the production page references are
 // embedded; src/*.ts and the preview-only demo-data.js are deliberately left
-// out. assets/app.js is generated from src/app.ts by `npm run build` (tsc).
+// out. assets/*.js is generated from src/*.ts by `npm run build` (tsc). A new
+// asset must also be added to newDashboard's hashed-name rewrite and to the CI
+// preview job's copied-assets list (.github/workflows/ci.yml).
 //
-//go:embed web/index.html web/assets/app.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/style.css
 var webFS embed.FS
 
 // dashboard serves the login flow, the static page, and the cache-stats API.
@@ -59,8 +61,10 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		panic("read embedded index.html: " + err.Error())
 	}
 	appJS := mustReadAsset("web/assets/app.js")
+	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
+	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// Rewrite the served HTML to point at the content-addressed URLs. The
@@ -68,6 +72,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	// backend-free CI styling preview still resolves them; only the HTML the Go
 	// server hands out references the hashed URLs.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
+	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -77,6 +82,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		index:   []byte(served),
 		assets: []contentAsset{
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
 		reqlog:  reqlog,

@@ -145,6 +145,8 @@ npm run build # tsc: src/*.ts -> assets/*.js
 
 CI's `web-check` job fails if the committed JS is out of date with the TypeScript source (run `npm run build` and commit). A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.
 
+Each `src/*.ts` file emits its own standalone ES module loaded by its own `<script type="module">` tag (`rate-meter.ts` self-registers the `<rate-meter>` web component behind the rate-limit tiles). A new asset file must also be added to the `//go:embed` + hashed-URL wiring in `internal/api/dashboard.go` and the `preview` job's copied-assets list in `.github/workflows/ci.yml`.
+
 ## Docker
 
 A container image is published to the GitHub Container Registry on every push to `master`:
