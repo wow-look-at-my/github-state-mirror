@@ -103,25 +103,44 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
+	contentDetail := "invalidated repo contents"
+	if err := d.invalidateRepoContents(ctx, payload); err != nil {
+		slog.Warn("webhook: invalidate repo contents failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		return errored("invalidate contents failed")
+	} else if payload.HasChangedList && len(payload.ChangedPaths) > 0 {
+		contentDetail = fmt.Sprintf("invalidated %d content path(s)", len(payload.ChangedPaths))
+	}
 	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
 	if err != nil {
 		slog.Warn("webhook: list actors for push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("list actors failed")
 	}
 	if len(actors) == 0 {
-		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
+		return outcome{disposition: webhook.DispInvalidated, detail: contentDetail}
 	}
 	if err := d.store.SetRepoPushedAtForActors(ctx, actors, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
 		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("apply push failed")
 	}
-	return applied("updated pushed_at", len(actors))
+	return applied("updated pushed_at; "+contentDetail, len(actors))
+}
+
+func (d *WebhookDispatcher) invalidateRepoContents(ctx context.Context, payload webhook.PushPayload) error {
+	if payload.HasChangedList && len(payload.ChangedPaths) > 0 {
+		for _, path := range payload.ChangedPaths {
+			if err := d.store.MarkRESTResponsesStaleByKeyPrefix(ctx, KindRepoContents, RepoContentsPathKeyPrefix(payload.Owner, payload.Repo, path)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return d.store.MarkRESTResponsesStaleByKeyPrefix(ctx, KindRepoContents, RepoContentsRepoKeyPrefix(payload.Owner, payload.Repo))
 }
 
 func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {
 	// Apply the PR payload to the webhook-fed org cache. The PR's file list and
 	// branch comparison are NOT cached by the mirror anymore (those endpoints
-	// passthrough to GitHub verbatim), so there is nothing content-dependent to
+	// passthrough to GitHub without populating cache rows), so there is nothing content-dependent to
 	// invalidate here.
 	return d.applyPRPayload(ctx, event)
 }
@@ -138,6 +157,15 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 	owner, repo := payload.PR.Owner, payload.PR.Repo
 	if owner == "" || repo == "" {
 		return d.invalidateRepoOrg(ctx, event, "PR payload missing owner/repo")
+	}
+
+	// The REST single-PR and PR-list endpoints cache URL-stripped GitHub JSON. A
+	// PR webhook means those bodies may no longer be current, so mark them stale
+	// across actors. This does not depend on ActorsForRepo: a caller may have
+	// warmed only a REST endpoint and never populated the org-repos cache.
+	d.invalidate(ctx, KindPullRequestRaw, PullRequestKey(owner, repo, payload.PR.Number))
+	if err := d.store.MarkRESTResponsesStaleByKeyPrefix(ctx, KindRepoPullList, RepoPullListKeyPrefix(owner, repo)); err != nil {
+		slog.Warn("webhook: failed to mark raw PR list stale", "repo", owner+"/"+repo, "error", err)
 	}
 
 	actors, err := d.actorsForRepo(ctx, event, owner, repo)

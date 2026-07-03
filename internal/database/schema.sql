@@ -137,6 +137,19 @@ CREATE TABLE branch_comparisons (
     PRIMARY KEY (actor, owner, repo, base_ref, head_ref)
 );
 
+-- Cached GitHub REST responses. The freshness table owns TTL/staleness; this
+-- table owns the raw body and selected response headers.
+CREATE TABLE rest_responses (
+    actor         TEXT NOT NULL DEFAULT '',
+    resource_kind TEXT NOT NULL,
+    resource_key  TEXT NOT NULL,
+    status_code   INTEGER NOT NULL,
+    content_type  TEXT,
+    body          BLOB NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (actor, resource_kind, resource_key)
+);
+
 -- Per-check state for a commit, fed by status/check_run/check_suite webhooks.
 -- We aggregate these into the PR's last_commit_status rollup without re-fetching
 -- from GitHub. context is the status context or check name (latest state wins).

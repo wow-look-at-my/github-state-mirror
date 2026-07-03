@@ -36,6 +36,10 @@ WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 UPDATE cache_metadata SET fetch_state = 'stale'
 WHERE resource_kind = ? AND resource_key = ?;
 
+-- name: MarkStaleByKindKeyPrefix :exec
+UPDATE cache_metadata SET fetch_state = 'stale'
+WHERE resource_kind = @resource_kind AND substr(resource_key, 1, length(@key_prefix)) = @key_prefix;
+
 -- name: MarkError :exec
 UPDATE cache_metadata SET
     fetch_state = 'error',

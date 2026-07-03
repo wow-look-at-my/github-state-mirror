@@ -82,6 +82,13 @@ func (s *Store) MarkStaleAllActors(ctx context.Context, kind, key string) error 
 	})
 }
 
+func (s *Store) MarkStaleAllActorsByPrefix(ctx context.Context, kind, keyPrefix string) error {
+	return s.q.MarkStaleByKindKeyPrefix(ctx, dbgen.MarkStaleByKindKeyPrefixParams{
+		ResourceKind: kind,
+		KeyPrefix:    keyPrefix,
+	})
+}
+
 func (s *Store) MarkError(ctx context.Context, id ResourceID, errMsg string, retryAfter time.Time) error {
 	return s.q.MarkError(ctx, dbgen.MarkErrorParams{
 		ErrorMessage: nullString(errMsg),
