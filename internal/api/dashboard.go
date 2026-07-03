@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -128,6 +129,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
 	r.Get("/api/webhooks", d.handleWebhooks)
+	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
 
 	// Admin-only: browse the actual cached rows for one scope, run a consistency
@@ -298,6 +300,46 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 		deliveries = []ghdata.WebhookDelivery{}
 	}
 	writeJSON(w, webhooksResponse{Deliveries: deliveries})
+}
+
+type jobsResponse struct {
+	Jobs []ghdata.WorkflowJob `json:"jobs"`
+}
+
+// Bounds for the /api/jobs limit query param.
+const (
+	jobsDefaultLimit = 100
+	jobsMaxLimit     = 500
+)
+
+// handleJobs returns recent GitHub Actions jobs recorded from workflow_job
+// webhooks: running jobs first (newest started first), then completed jobs
+// (newest completed first). Like the webhook log, the job table is global (it
+// spans every repo/tenant), so it is restricted to admins. `limit` caps the
+// row count (default 100, max 500).
+func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAdmin(w, r); !ok {
+		return
+	}
+	limit := int64(jobsDefaultLimit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid 'limit' query parameter", http.StatusBadRequest)
+			return
+		}
+		limit = min(n, jobsMaxLimit)
+	}
+	jobs, err := d.store.RecentWorkflowJobs(r.Context(), limit)
+	if err != nil {
+		slog.Warn("list workflow jobs failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if jobs == nil {
+		jobs = []ghdata.WorkflowJob{}
+	}
+	writeJSON(w, jobsResponse{Jobs: jobs})
 }
 
 // handleRequests returns recent data-API requests and their cache disposition

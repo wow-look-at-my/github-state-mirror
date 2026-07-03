@@ -533,12 +533,12 @@ func TestDispatch_SkippedWhenRepoNotCached(t *testing.T) {
 }
 
 // TestDispatch_IgnoredUntrackedEvent verifies an event the mirror does not track
-// (e.g. workflow_job) is recorded as "ignored" rather than dropped invisibly.
+// (e.g. deployment_status) is recorded as "ignored" rather than dropped invisibly.
 func TestDispatch_IgnoredUntrackedEvent(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
 
-	event := webhook.Event{Type: "workflow_job", Action: "completed"}
+	event := webhook.Event{Type: "deployment_status", Action: "created"}
 	result := dispatcher.Dispatch(ctx, event)
 
 	assert.Equal(t, webhook.DispIgnored, result.Disposition)
@@ -547,7 +547,7 @@ func TestDispatch_IgnoredUntrackedEvent(t *testing.T) {
 	deliveries, err := store.RecentWebhookDeliveries(ctx, 10)
 	require.Nil(t, err)
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "workflow_job", deliveries[0].EventType)
+	assert.Equal(t, "deployment_status", deliveries[0].EventType)
 	assert.Equal(t, webhook.DispIgnored, deliveries[0].Disposition)
 }
 

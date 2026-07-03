@@ -573,6 +573,96 @@ func ParseLabelPayload(raw json.RawMessage) (LabelPayload, error) {
 	return p, nil
 }
 
+// WorkflowJobPayload is a GitHub Actions job's state parsed from a
+// workflow_job webhook. Only the in_progress and completed actions are
+// tracked (the dispatcher drops queued/waiting churn); this struct carries just
+// what the global workflow_jobs table stores. Empty string means the payload
+// didn't report the field (e.g. Conclusion until completed, RunnerName until a
+// runner is assigned).
+type WorkflowJobPayload struct {
+	Owner        string
+	Repo         string
+	JobID        int64
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	WorkflowName string
+	Status       string // in_progress | completed
+	Conclusion   string // success | failure | cancelled | ... (completed only)
+	HeadSHA      string
+	HeadBranch   string
+	HTMLURL      string
+	StartedAt    string // RFC3339
+	CompletedAt  string // RFC3339
+	RunnerName   string
+}
+
+// ParseWorkflowJobPayload extracts a job's state from a workflow_job webhook.
+func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
+	var body struct {
+		WorkflowJob *struct {
+			ID           int64   `json:"id"`
+			RunID        int64   `json:"run_id"`
+			RunAttempt   int64   `json:"run_attempt"`
+			Name         string  `json:"name"`
+			WorkflowName *string `json:"workflow_name"`
+			Status       string  `json:"status"`
+			Conclusion   *string `json:"conclusion"`
+			HeadSHA      string  `json:"head_sha"`
+			HeadBranch   *string `json:"head_branch"`
+			HTMLURL      string  `json:"html_url"`
+			StartedAt    *string `json:"started_at"`
+			CompletedAt  *string `json:"completed_at"`
+			RunnerName   *string `json:"runner_name"`
+		} `json:"workflow_job"`
+		Repository *struct {
+			Name  string `json:"name"`
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: %w", err)
+	}
+	if body.WorkflowJob == nil || body.Repository == nil {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: missing workflow_job/repository")
+	}
+	j := body.WorkflowJob
+	p := WorkflowJobPayload{
+		Owner:        body.Repository.Owner.Login,
+		Repo:         body.Repository.Name,
+		JobID:        j.ID,
+		RunID:        j.RunID,
+		RunAttempt:   j.RunAttempt,
+		Name:         j.Name,
+		WorkflowName: strOrEmpty(j.WorkflowName),
+		Status:       j.Status,
+		Conclusion:   strOrEmpty(j.Conclusion),
+		HeadSHA:      j.HeadSHA,
+		HeadBranch:   strOrEmpty(j.HeadBranch),
+		HTMLURL:      j.HTMLURL,
+		RunnerName:   strOrEmpty(j.RunnerName),
+	}
+	if ts := strOrEmpty(j.StartedAt); ts != "" {
+		p.StartedAt = normaliseTime(ts)
+	}
+	if ts := strOrEmpty(j.CompletedAt); ts != "" {
+		p.CompletedAt = normaliseTime(ts)
+	}
+	if p.Owner == "" || p.Repo == "" || p.JobID == 0 {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: missing owner/repo/job id")
+	}
+	return p, nil
+}
+
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func boolToInt(b bool) int64 {
 	if b {
 		return 1

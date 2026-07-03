@@ -6,7 +6,7 @@ import "net/http"
 // returned to GitHub in the HTTP response and recorded in the webhook delivery
 // log shown on the dashboard.
 const (
-	DispApplied     = "applied"     // webhook data was written into >=1 cache scope
+	DispApplied     = "applied"     // webhook data was written (>=1 cache scope, or a global table)
 	DispSkipped     = "skipped"     // parsed fine, but no cache scope had this repo
 	DispInvalidated = "invalidated" // marked cache stale (fallback / structural change)
 	DispIgnored     = "ignored"     // an event or action the mirror does not track

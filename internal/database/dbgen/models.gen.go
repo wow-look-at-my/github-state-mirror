@@ -207,3 +207,22 @@ type WebhookDelivery struct {
 	Detail      string
 	Actors      int64
 }
+
+type WorkflowJob struct {
+	Owner        string
+	Repo         string
+	JobID        int64
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	WorkflowName string
+	Status       string
+	Conclusion   string
+	HeadSha      string
+	HeadBranch   string
+	HtmlUrl      string
+	StartedAt    string
+	CompletedAt  string
+	RunnerName   string
+	UpdatedAt    string
+}
