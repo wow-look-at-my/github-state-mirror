@@ -995,26 +995,6 @@ func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeab
 	return err
 }
 
-const resetPRMergeable = `-- name: ResetPRMergeable :exec
-UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
-WHERE owner = ? AND repo = ? AND number = ?
-`
-
-type ResetPRMergeableParams struct {
-	Owner  string
-	Repo   string
-	Number int64
-}
-
-// ResetPRMergeable marks one PR's mergeable and test-merge sha as being
-// recomputed by GitHub (its head moved: a synchronize event). The stale
-// resolved values must not keep serving -- the /pulls/{n} known-mergeable gate
-// misses on NULL and re-asks GitHub, which is exactly how a poll converges.
-func (q *Queries) ResetPRMergeable(ctx context.Context, arg ResetPRMergeableParams) error {
-	_, err := q.db.ExecContext(ctx, resetPRMergeable, arg.Owner, arg.Repo, arg.Number)
-	return err
-}
-
 const setPRLabelColorByName = `-- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
 WHERE owner = ? AND repo = ? AND name = ?

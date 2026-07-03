@@ -233,11 +233,12 @@ func TestDispatch_PullRequest_ClosedDeletesPR(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
-// TestDispatch_PullRequest_SynchronizeResetsMergeable: a synchronize means the
-// head moved and GitHub is recomputing mergeability -- the cached value must
-// go unknown (so the /pulls/{n} gate misses) even though the payload's
-// COALESCE-preserving upsert kept it.
-func TestDispatch_PullRequest_SynchronizeResetsMergeable(t *testing.T) {
+// TestDispatch_PullRequest_NullMergeableCoalesces: a PR payload carrying
+// mergeable:null (GitHub still computing) must not clobber a known cached
+// value -- the upsert COALESCEs it. The un-resolve signal is the PUSH event
+// (see TestDispatch_Push_UnresolvesMergeableByBranch), not the PR event's
+// transient null.
+func TestDispatch_PullRequest_NullMergeableCoalesces(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
 
@@ -246,11 +247,18 @@ func TestDispatch_PullRequest_SynchronizeResetsMergeable(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, pr.Mergeable.Valid, "the opened payload carried a resolved mergeable")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", makePRPayload(t, "synchronize", "open", "my-org", "my-repo", 42, "PR")))
+	// Same PR, synchronize, mergeable null (recomputing).
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(makePRPayload(t, "synchronize", "open", "my-org", "my-repo", 42, "PR"), &payload))
+	payload["pull_request"].(map[string]interface{})["mergeable"] = nil
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", raw))
+
 	pr, err = store.GetPullRequest(ctx, "my-org", "my-repo", 42)
 	require.NoError(t, err)
-	assert.False(t, pr.Mergeable.Valid, "synchronize must reset mergeable to unknown")
-	assert.False(t, pr.MergeCommitSha.Valid, "synchronize must reset the test-merge sha")
+	assert.True(t, pr.Mergeable.Valid, "a null-mergeable payload must not clobber the known value")
+	assert.Equal(t, "MERGEABLE", pr.Mergeable.String)
 }
 
 func makeStatusPayload(t *testing.T, owner, repo, sha, state, context string) json.RawMessage {

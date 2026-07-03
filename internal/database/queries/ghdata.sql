@@ -115,14 +115,6 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
 UPDATE pull_requests SET mergeable = ?
 WHERE owner = ? AND repo = ? AND number = ?;
 
--- ResetPRMergeable marks one PR's mergeable and test-merge sha as being
--- recomputed by GitHub (its head moved: a synchronize event). The stale
--- resolved values must not keep serving -- the /pulls/{n} known-mergeable gate
--- misses on NULL and re-asks GitHub, which is exactly how a poll converges.
--- name: ResetPRMergeable :exec
-UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
-WHERE owner = ? AND repo = ? AND number = ?;
-
 -- NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
 -- every open PR whose base or head is the pushed branch: GitHub recomputes
 -- mergeability after either side moves (and emits NO webhook with the result),

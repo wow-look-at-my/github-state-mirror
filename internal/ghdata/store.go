@@ -329,13 +329,6 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 	return tx.Commit()
 }
 
-// ResetPRMergeable marks one PR's mergeable and test-merge sha as unknown:
-// its head moved (a synchronize event), so GitHub is recomputing them and the
-// cached values are stale. The /pulls/{n} known-mergeable gate misses on NULL.
-func (s *Store) ResetPRMergeable(ctx context.Context, owner, repo string, number int64) error {
-	return s.q.ResetPRMergeable(ctx, dbgen.ResetPRMergeableParams{Owner: owner, Repo: repo, Number: number})
-}
-
 // NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) on
 // every open PR whose base or head is the pushed branch: GitHub recomputes
 // mergeability when either side moves and never webhooks the result, so the

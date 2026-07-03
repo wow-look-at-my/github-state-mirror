@@ -326,15 +326,6 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 		slog.Warn("webhook: failed to upsert PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
 		return errored("upsert PR failed")
 	}
-	// A synchronize means the head moved: GitHub is recomputing mergeability,
-	// so the cached mergeable/mergeable_state/merge_commit_sha are stale even
-	// though the upsert's COALESCE preserved them (the payload carries nulls
-	// while GitHub recomputes). Reset them so reads re-ask GitHub.
-	if event.Action == "synchronize" {
-		if err := d.store.ResetPRMergeable(ctx, owner, repo, payload.PR.Number); err != nil {
-			slog.Warn("webhook: reset PR mergeable failed", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		}
-	}
 	slog.Info("webhook: applied PR data from webhook payload", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action)
 	return applied(fmt.Sprintf("upserted PR #%d", payload.PR.Number))
 }
