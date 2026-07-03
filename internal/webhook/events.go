@@ -115,27 +115,34 @@ type PRPayload struct {
 func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	var body struct {
 		PullRequest *struct {
-			Number    int    `json:"number"`
-			Title     string `json:"title"`
-			HTMLURL   string `json:"html_url"`
-			Draft     bool   `json:"draft"`
-			State     string `json:"state"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-			Additions *int   `json:"additions"`
-			Deletions *int   `json:"deletions"`
-			Mergeable *bool  `json:"mergeable"`
+			Number    int     `json:"number"`
+			NodeID    string  `json:"node_id"`
+			Title     string  `json:"title"`
+			Body      *string `json:"body"`
+			HTMLURL   string  `json:"html_url"`
+			Draft     bool    `json:"draft"`
+			State     string  `json:"state"`
+			CreatedAt string  `json:"created_at"`
+			UpdatedAt string  `json:"updated_at"`
+			Additions *int    `json:"additions"`
+			Deletions *int    `json:"deletions"`
+			Mergeable *bool   `json:"mergeable"`
 			User      *struct {
 				Login     string `json:"login"`
+				Type      string `json:"type"`
 				AvatarURL string `json:"avatar_url"`
 				HTMLURL   string `json:"html_url"`
 			} `json:"user"`
 			Head struct {
-				Ref string `json:"ref"`
-				SHA string `json:"sha"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo *struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
 				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
 				Repo *struct {
 					Name  string `json:"name"`
 					Owner struct {
@@ -143,7 +150,11 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 					} `json:"owner"`
 				} `json:"repo"`
 			} `json:"base"`
-			Labels []struct {
+			AutoMerge *struct {
+				MergeMethod string `json:"merge_method"`
+			} `json:"auto_merge"`
+			MergeCommitSHA *string `json:"merge_commit_sha"`
+			Labels         []struct {
 				Name  string `json:"name"`
 				Color string `json:"color"`
 			} `json:"labels"`
@@ -193,6 +204,23 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		HeadRefName: nullStr(gpr.Head.Ref),
 		BaseRefName: nullStr(gpr.Base.Ref),
 		HeadRefOid:  nullStr(gpr.Head.SHA),
+		// REST-only fields (absent from the GraphQL org-repos selection set)
+		// that the cached /pulls routes rebuild from. Webhook payloads carry
+		// them all, so webhook-maintained rows stay rebuild-complete.
+		NodeID:     nullStr(gpr.NodeID),
+		BaseRefOid: nullStr(gpr.Base.SHA),
+	}
+	if gpr.Body != nil {
+		pr.Body = sql.NullString{String: *gpr.Body, Valid: true}
+	}
+	if gpr.Head.Repo != nil {
+		pr.HeadRepoFullName = nullStr(gpr.Head.Repo.FullName)
+	}
+	if gpr.AutoMerge != nil {
+		pr.AutoMergeMethod = nullStr(gpr.AutoMerge.MergeMethod)
+	}
+	if gpr.MergeCommitSHA != nil {
+		pr.MergeCommitSha = nullStr(*gpr.MergeCommitSHA)
 	}
 
 	if gpr.Additions != nil {
@@ -214,6 +242,7 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		pr.AuthorLogin = nullStr(gpr.User.Login)
 		pr.AuthorAvatar = nullStr(gpr.User.AvatarURL)
 		pr.AuthorUrl = nullStr(gpr.User.HTMLURL)
+		pr.AuthorType = nullStr(gpr.User.Type)
 	}
 
 	reviewCount := len(gpr.RequestedReviewers) + len(gpr.RequestedTeams)
@@ -374,12 +403,23 @@ type PushPayload struct {
 	Owner    string
 	Repo     string
 	PushedAt string // RFC3339
+	Ref      string // the pushed ref, e.g. "refs/heads/main" ("" when absent)
 
 	// Fields for absorbing the pushed commits into the git-commits cache.
 	Before  string // sha of the ref before the push (all-zeros for a new ref)
 	After   string // sha of the ref after the push
 	Forced  bool
 	Commits []PushCommit // pushed commits, payload order (oldest first)
+}
+
+// Branch returns the branch name for a refs/heads/* push, or "" for tag
+// pushes and other refs.
+func (p PushPayload) Branch() string {
+	const prefix = "refs/heads/"
+	if len(p.Ref) > len(prefix) && p.Ref[:len(prefix)] == prefix {
+		return p.Ref[len(prefix):]
+	}
+	return ""
 }
 
 // PushCommit is one commit object from a push payload. The payload states the
@@ -410,6 +450,7 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 		HeadCommit *struct {
 			Timestamp string `json:"timestamp"`
 		} `json:"head_commit"`
+		Ref     string `json:"ref"`
 		Before  string `json:"before"`
 		After   string `json:"after"`
 		Forced  bool   `json:"forced"`
@@ -437,6 +478,7 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 	p := PushPayload{
 		Owner:  body.Repository.Owner.Login,
 		Repo:   body.Repository.Name,
+		Ref:    body.Ref,
 		Before: body.Before,
 		After:  body.After,
 		Forced: body.Forced,

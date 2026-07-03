@@ -391,7 +391,7 @@ func (q *Queries) ListDistinctOwnersByActor(ctx context.Context, actor string) (
 }
 
 const listOpenPullRequestsByActor = `-- name: ListOpenPullRequestsByActor :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? AND state = 'OPEN' ORDER BY owner, repo, number
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests WHERE actor = ? AND state = 'OPEN' ORDER BY owner, repo, number
 `
 
 // ListOpenPullRequestsByActor returns only OPEN PRs for an actor. The
@@ -428,6 +428,13 @@ func (q *Queries) ListOpenPullRequestsByActor(ctx context.Context, actor string)
 			&i.HeadRefOid,
 			&i.ReviewRequestCount,
 			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}
@@ -544,7 +551,7 @@ func (q *Queries) ListPRLabelsByActor(ctx context.Context, actor string) ([]PrLa
 }
 
 const listPullRequestsByActor = `-- name: ListPullRequestsByActor :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? ORDER BY owner, repo, number
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests WHERE actor = ? ORDER BY owner, repo, number
 `
 
 func (q *Queries) ListPullRequestsByActor(ctx context.Context, actor string) ([]PullRequest, error) {
@@ -578,6 +585,13 @@ func (q *Queries) ListPullRequestsByActor(ctx context.Context, actor string) ([]
 			&i.HeadRefOid,
 			&i.ReviewRequestCount,
 			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}

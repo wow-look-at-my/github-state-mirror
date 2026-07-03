@@ -165,6 +165,16 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
 	}
 	d.absorbPushCommits(ctx, actors, payload)
+	// A branch push makes GitHub recompute mergeability for every open PR
+	// based on (or heading from) that branch, and no webhook ever carries the
+	// recomputed value -- so un-resolve the cached mergeable rather than let
+	// the single-PR cache keep serving the pre-push answer. Best-effort and
+	// disposition-neutral, like the commit absorption above.
+	if branch := payload.Branch(); branch != "" {
+		if err := d.store.NullPRMergeableForBranchForActors(ctx, actors, payload.Owner, payload.Repo, branch); err != nil {
+			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
+		}
+	}
 	if err := d.store.SetRepoPushedAtForActors(ctx, actors, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
 		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("apply push failed")
@@ -229,9 +239,13 @@ func fullHexSHA(s string) bool {
 // stale. Deletes span ALL actors (the event is a global fact about the repo or
 // installation). push/repository events flush the repo's contents rows -- the
 // conservative whole-repo flush; the payload's modified-paths refinement can
-// come later. installation events flush the installation's cached token mints
-// (a suspended/deleted installation must not keep serving tokens). Git-commit
-// rows are immutable and are deliberately never invalidated.
+// come later. repository events (rename/delete/visibility) additionally flush
+// the repo's "open-PR list complete" markers; pull_request events deliberately
+// do NOT -- they maintain the PR rows, which is what the marker asserts.
+// installation events flush the installation's cached token mints AND cached
+// repo-installation answers (a suspended/deleted/re-scoped installation must
+// not keep serving either). Git-commit rows are immutable and are deliberately
+// never invalidated.
 func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
 	switch event.Type {
 	case "push", "repository":
@@ -242,6 +256,11 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if err := d.store.InvalidateContentsCache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate contents cache failed", "repo", owner+"/"+repo, "error", err)
 		}
+		if event.Type == "repository" {
+			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {
+				slog.Warn("webhook: invalidate pulls list markers failed", "repo", owner+"/"+repo, "error", err)
+			}
+		}
 	case "installation", "installation_repositories":
 		if event.InstallationID == 0 {
 			return
@@ -249,6 +268,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		id := fmt.Sprintf("%d", event.InstallationID)
 		if err := d.store.InvalidateInstallTokenCache(ctx, id); err != nil {
 			slog.Warn("webhook: invalidate install token cache failed", "installation", id, "error", err)
+		}
+		if err := d.store.InvalidateRepoInstallationCache(ctx, event.InstallationID); err != nil {
+			slog.Warn("webhook: invalidate repo installation cache failed", "installation", id, "error", err)
 		}
 	}
 }

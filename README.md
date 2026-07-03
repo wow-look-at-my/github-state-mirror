@@ -53,7 +53,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would get a fre
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Three REST routes are served from cache. They do **not** replay GitHub's bytes:
+Six REST routes are served from cache. They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -84,11 +84,33 @@ pass through verbatim, uncached.
   `{token, expires_at, permissions, repository_selection}` until 10 minutes
   before the token's real expiry. Invalidated by `installation` /
   `installation_repositories` events. Unverifiable callers pass through.
+- `GET /repos/{owner}/{repo}/pulls` — the open-PR list, rebuilt from the same
+  webhook-maintained PR state the GraphQL cache uses. Serving a list needs a
+  completeness proof, so it is gated by a per-(caller, repo) "open-PR list
+  complete" marker: set when a full unfiltered page-1 response is absorbed,
+  maintained by `pull_request` webhooks (which update the rows, never the
+  marker), cleared by the GraphQL org-repos refresh, and bounded by a 24 h
+  TTL. Only the query shapes its consumers send are modeled (`state=open`,
+  `per_page`, `page=1`, `head=owner:branch`); anything else — and any rebuilt
+  list as long as the requested `per_page` (more pages may exist upstream) —
+  passes through/misses.
+- `GET /repos/{owner}/{repo}/pulls/{number}` — a single open PR, served from
+  state only when the cached row carries the REST fields AND a **known**
+  `mergeable`. GitHub computes `mergeable` lazily and pr-minder polls this
+  endpoint waiting for it to resolve, so a null/unknown mergeable always
+  misses (the fetch absorbs GitHub's computed answer), and a push to a PR's
+  base or head branch un-resolves the stored value — the cache can never
+  wedge that poll on a stale answer. Closed PRs are never stored (absorbing
+  one deletes the cached row); `Accept: application/vnd.github.diff` (the
+  pr-minder diff read) passes through.
+- `GET /repos/{owner}/{repo}/installation` — the App-level "which installation
+  covers this repo" lookup. App-JWT verified like the token mint, cached per
+  app as `{id, account{login,type}, repository_selection, app_id, app_slug,
+  target_type}`, flushed by `installation`/`installation_repositories` events
+  plus a 24 h TTL.
 
 Cached rows are actor-partitioned exactly like everything else; caps + LRU
-pruning bound each table. `GET /repos/{o}/{r}/pulls/{n}` is deliberately NOT
-cached: its `mergeable` field is computed lazily by GitHub and polled-for by
-pr-minder — a cached body would wedge that poll — so it stays passthrough.
+pruning bound each table.
 
 (The byte-identity rule now applies only to the GraphQL org-repos route below;
 the trimmed rebuild contract above is the operator-chosen model for cached REST

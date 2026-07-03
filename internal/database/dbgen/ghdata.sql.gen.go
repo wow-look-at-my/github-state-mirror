@@ -247,6 +247,62 @@ func (q *Queries) GetFirstUser(ctx context.Context, actor string) (User, error) 
 	return i, err
 }
 
+const getOpenPullRequestNoCase = `-- name: GetOpenPullRequestNoCase :one
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN'
+`
+
+type GetOpenPullRequestNoCaseParams struct {
+	Actor  string
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+// GetOpenPullRequestNoCase is the cached single-PR route's read: owner/repo
+// matched case-insensitively (rows carry GitHub's canonical casing; the
+// request URL may not), open PRs only (the cache never retains closed ones).
+func (q *Queries) GetOpenPullRequestNoCase(ctx context.Context, arg GetOpenPullRequestNoCaseParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, getOpenPullRequestNoCase,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.Actor,
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.Title,
+		&i.Url,
+		&i.IsDraft,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Additions,
+		&i.Deletions,
+		&i.Mergeable,
+		&i.AuthorLogin,
+		&i.AuthorAvatar,
+		&i.AuthorUrl,
+		&i.HeadRefName,
+		&i.BaseRefName,
+		&i.HeadRefOid,
+		&i.ReviewRequestCount,
+		&i.LastCommitStatus,
+		&i.NodeID,
+		&i.Body,
+		&i.AuthorType,
+		&i.BaseRefOid,
+		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
+	)
+	return i, err
+}
+
 const getOrg = `-- name: GetOrg :one
 SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? AND login = ?
 `
@@ -269,7 +325,7 @@ func (q *Queries) GetOrg(ctx context.Context, arg GetOrgParams) (Org, error) {
 }
 
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
 `
 
 type GetPullRequestParams struct {
@@ -309,6 +365,13 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 		&i.HeadRefOid,
 		&i.ReviewRequestCount,
 		&i.LastCommitStatus,
+		&i.NodeID,
+		&i.Body,
+		&i.AuthorType,
+		&i.BaseRefOid,
+		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
 	)
 	return i, err
 }
@@ -432,8 +495,34 @@ func (q *Queries) InsertPRLabel(ctx context.Context, arg InsertPRLabelParams) er
 	return err
 }
 
+const insertRepoIfMissing = `-- name: InsertRepoIfMissing :exec
+INSERT INTO repos (actor, owner, name, name_with_owner, url)
+VALUES (?, ?, ?, ?, '')
+ON CONFLICT (actor, owner, name) DO NOTHING
+`
+
+type InsertRepoIfMissingParams struct {
+	Actor         string
+	Owner         string
+	Name          string
+	NameWithOwner string
+}
+
+// InsertRepoIfMissing seeds a minimal repos row so ActorsForRepo includes the
+// actor (webhook maintenance targets partitions via repos rows). It never
+// overwrites an existing row: a real org-repos fetch owns those fields.
+func (q *Queries) InsertRepoIfMissing(ctx context.Context, arg InsertRepoIfMissingParams) error {
+	_, err := q.db.ExecContext(ctx, insertRepoIfMissing,
+		arg.Actor,
+		arg.Owner,
+		arg.Name,
+		arg.NameWithOwner,
+	)
+	return err
+}
+
 const listActorsForRepo = `-- name: ListActorsForRepo :many
-SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?
+SELECT DISTINCT actor FROM repos WHERE owner = ? COLLATE NOCASE AND name = ? COLLATE NOCASE
 `
 
 type ListActorsForRepoParams struct {
@@ -441,6 +530,10 @@ type ListActorsForRepoParams struct {
 	Name  string
 }
 
+// ListActorsForRepo matches owner/name case-insensitively: GitHub treats both
+// case-insensitively, and repos rows can carry request-URL casing (the cached
+// /pulls routes ensure a row on absorb) while webhook payloads carry canonical
+// casing -- a casing mismatch must not hide a partition from maintenance.
 func (q *Queries) ListActorsForRepo(ctx context.Context, arg ListActorsForRepoParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listActorsForRepo, arg.Owner, arg.Name)
 	if err != nil {
@@ -504,7 +597,7 @@ func (q *Queries) ListCommitCheckStates(ctx context.Context, arg ListCommitCheck
 }
 
 const listOpenPullRequestsByOwner = `-- name: ListOpenPullRequestsByOwner :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests
 WHERE actor = ? AND owner = ? AND state = 'OPEN'
 ORDER BY repo, number
 `
@@ -545,6 +638,13 @@ func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, arg ListOpenP
 			&i.HeadRefOid,
 			&i.ReviewRequestCount,
 			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}
@@ -560,7 +660,7 @@ func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, arg ListOpenP
 }
 
 const listOpenPullRequestsByRepo = `-- name: ListOpenPullRequestsByRepo :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests
 WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number
 `
@@ -602,6 +702,79 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 			&i.HeadRefOid,
 			&i.ReviewRequestCount,
 			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenPullRequestsByRepoNoCase = `-- name: ListOpenPullRequestsByRepoNoCase :many
+SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha FROM pull_requests
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
+ORDER BY created_at DESC, number DESC
+`
+
+type ListOpenPullRequestsByRepoNoCaseParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// ListOpenPullRequestsByRepoNoCase is the cached list route's read. Ordered
+// newest-created first to match GitHub's default list-pulls sort.
+func (q *Queries) ListOpenPullRequestsByRepoNoCase(ctx context.Context, arg ListOpenPullRequestsByRepoNoCaseParams) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepoNoCase, arg.Actor, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PullRequest
+	for rows.Next() {
+		var i PullRequest
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.IsDraft,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Additions,
+			&i.Deletions,
+			&i.Mergeable,
+			&i.AuthorLogin,
+			&i.AuthorAvatar,
+			&i.AuthorUrl,
+			&i.HeadRefName,
+			&i.BaseRefName,
+			&i.HeadRefOid,
+			&i.ReviewRequestCount,
+			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}
@@ -741,6 +914,99 @@ func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]P
 	return items, nil
 }
 
+const listPRLabelsByRepoNoCase = `-- name: ListPRLabelsByRepoNoCase :many
+SELECT actor, owner, repo, pr_number, name, color FROM pr_labels
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE
+ORDER BY pr_number, name
+`
+
+type ListPRLabelsByRepoNoCaseParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// ListPRLabelsByRepoNoCase feeds the cached /pulls list rebuild: all of a
+// repo's PR labels in one query (grouped by pr_number in Go), owner/repo
+// matched case-insensitively like the row reads.
+func (q *Queries) ListPRLabelsByRepoNoCase(ctx context.Context, arg ListPRLabelsByRepoNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsByRepoNoCase, arg.Actor, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsNoCase = `-- name: ListPRLabelsNoCase :many
+SELECT actor, owner, repo, pr_number, name, color FROM pr_labels
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND pr_number = ?
+ORDER BY name
+`
+
+type ListPRLabelsNoCaseParams struct {
+	Actor    string
+	Owner    string
+	Repo     string
+	PrNumber int64
+}
+
+func (q *Queries) ListPRLabelsNoCase(ctx context.Context, arg ListPRLabelsNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsNoCase,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.PrNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReposByOwner = `-- name: ListReposByOwner :many
 SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? AND owner = ? ORDER BY name
 `
@@ -819,6 +1085,37 @@ func (q *Queries) ListUserOrgMemberships(ctx context.Context, arg ListUserOrgMem
 	return items, nil
 }
 
+const nullPRMergeableByBranch = `-- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET mergeable = NULL
+WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
+  AND (base_ref_name = ? OR head_ref_name = ?)
+`
+
+type NullPRMergeableByBranchParams struct {
+	Actor       string
+	Owner       string
+	Repo        string
+	BaseRefName sql.NullString
+	HeadRefName sql.NullString
+}
+
+// NullPRMergeableByBranch un-resolves mergeable for every open PR whose base
+// or head is the pushed branch: GitHub recomputes mergeability after either
+// side moves (and emits NO webhook with the result), so the last-known value
+// is stale the moment the push lands. Nulling makes the cached single-PR
+// route's known-mergeable gate miss and re-fetch, mirroring GitHub's own
+// null-while-recomputing behavior.
+func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeableByBranchParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableByBranch,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.HeadRefName,
+	)
+	return err
+}
+
 const setPRLabelColorByName = `-- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
 WHERE actor = ? AND owner = ? AND repo = ? AND name = ?
@@ -839,6 +1136,35 @@ func (q *Queries) SetPRLabelColorByName(ctx context.Context, arg SetPRLabelColor
 		arg.Owner,
 		arg.Repo,
 		arg.Name,
+	)
+	return err
+}
+
+const setPRMergeable = `-- name: SetPRMergeable :exec
+UPDATE pull_requests SET mergeable = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
+`
+
+type SetPRMergeableParams struct {
+	Mergeable sql.NullString
+	Actor     string
+	Owner     string
+	Repo      string
+	Number    int64
+}
+
+// SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
+// fetched answer, INCLUDING null (recomputing). The upsert's COALESCE keeps
+// old values on null payloads; a direct REST read of the PR is authoritative
+// about "currently unresolved", so the cached single-PR route uses this after
+// absorbing to make a null answer miss again until GitHub resolves it.
+func (q *Queries) SetPRMergeable(ctx context.Context, arg SetPRMergeableParams) error {
+	_, err := q.db.ExecContext(ctx, setPRMergeable,
+		arg.Mergeable,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
 	)
 	return err
 }
@@ -1030,8 +1356,8 @@ func (q *Queries) UpsertOrg(ctx context.Context, arg UpsertOrgParams) error {
 
 const upsertPullRequest = `-- name: UpsertPullRequest :exec
 
-INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
@@ -1049,7 +1375,14 @@ ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
     review_request_count = excluded.review_request_count,
-    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status)
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status),
+    node_id = COALESCE(excluded.node_id, pull_requests.node_id),
+    body = CASE WHEN excluded.node_id IS NULL THEN pull_requests.body ELSE excluded.body END,
+    author_type = COALESCE(excluded.author_type, pull_requests.author_type),
+    base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
+    head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
+    auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
+    merge_commit_sha = CASE WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha ELSE excluded.merge_commit_sha END
 `
 
 type UpsertPullRequestParams struct {
@@ -1074,11 +1407,26 @@ type UpsertPullRequestParams struct {
 	HeadRefOid         sql.NullString
 	ReviewRequestCount sql.NullInt64
 	LastCommitStatus   sql.NullString
+	NodeID             sql.NullString
+	Body               sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
+	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
 }
 
 // ============================================================================
 // Pull Requests
 // ============================================================================
+// The REST-only columns (node_id .. merge_commit_sha) COALESCE against the
+// existing row so a GraphQL-shaped upsert (which cannot know them) never wipes
+// values a REST/webhook write recorded -- with two exceptions that are real
+// state, not "unknown": body and auto_merge_method overwrite whenever the
+// source knows the REST fields at all (node_id present), because a null body
+// and a disarmed auto-merge are meaningful values a COALESCE would resurrect.
+// That conditional is expressed as CASE WHEN excluded.node_id IS NULL (the
+// GraphQL-source signature) THEN keep ELSE take END.
 func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPullRequest,
 		arg.Actor,
@@ -1102,6 +1450,13 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		arg.HeadRefOid,
 		arg.ReviewRequestCount,
 		arg.LastCommitStatus,
+		arg.NodeID,
+		arg.Body,
+		arg.AuthorType,
+		arg.BaseRefOid,
+		arg.HeadRepoFullName,
+		arg.AutoMergeMethod,
+		arg.MergeCommitSha,
 	)
 	return err
 }

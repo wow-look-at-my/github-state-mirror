@@ -12,12 +12,17 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 8: cache partitions moved from per-token fingerprints to
-// per-user ("user:<id>") actors. Bumping nukes the DB on deploy, flushing all
-// old fingerprint partitions (including dormant ones); the cache rebuilds
-// lazily under the new keying. (7 added the global workflow_jobs table; 6
+// SchemaVersion 9: PR read cache — REST-only pull_requests columns (node_id,
+// body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method,
+// merge_commit_sha) plus the pulls_list_cache and repo_installation_cache
+// tables. (8 moved partitions to per-user actors; 7 added workflow_jobs; 6
 // added the response-cache tables.)
-const SchemaVersion = 8
+//
+// NOTE for concurrent schema branches: bump strictly ABOVE master's current
+// value AND rewrite this comment to describe YOUR change, so two branches
+// picking the same number collide as a textual merge conflict instead of
+// silently merging and skipping the DB nuke.
+const SchemaVersion = 9
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

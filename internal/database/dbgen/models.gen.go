@@ -161,6 +161,23 @@ type PullRequest struct {
 	HeadRefOid         sql.NullString
 	ReviewRequestCount sql.NullInt64
 	LastCommitStatus   sql.NullString
+	NodeID             sql.NullString
+	Body               sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
+	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
+}
+
+type PullsListCache struct {
+	ID         int64
+	Actor      string
+	Owner      string
+	Repo       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type Repo struct {
@@ -177,6 +194,23 @@ type Repo struct {
 	OwnerLogin          sql.NullString
 	OwnerAvatar         sql.NullString
 	OwnerUrl            sql.NullString
+}
+
+type RepoInstallationCache struct {
+	ID                  int64
+	Actor               string
+	Owner               string
+	Repo                string
+	InstallationID      int64
+	AccountLogin        string
+	AccountType         string
+	RepositorySelection string
+	AppID               int64
+	AppSlug             string
+	TargetType          string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
 }
 
 type SchemaVersion struct {

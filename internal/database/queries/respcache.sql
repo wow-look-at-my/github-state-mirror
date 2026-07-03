@@ -105,3 +105,74 @@ DELETE FROM install_token_cache WHERE expires_at <= ?;
 DELETE FROM install_token_cache WHERE id IN (
     SELECT id FROM install_token_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- pulls_list_cache (the "open-PR list complete" markers) ----
+
+-- name: GetPullsListMarker :one
+SELECT * FROM pulls_list_cache
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: UpsertPullsListMarker :exec
+INSERT INTO pulls_list_cache (actor, owner, repo, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullsListMarker :exec
+UPDATE pulls_list_cache SET last_used_at = ?
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- DeletePullsListMarker drops ONE actor's marker: used by SetRepoPRs, whose
+-- GraphQL-sourced replacement rows lack the REST-only columns the list
+-- rebuild needs (the replace is per-actor, so the clear is too).
+-- name: DeletePullsListMarker :exec
+DELETE FROM pulls_list_cache WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: DeletePullsListMarkersByRepo :exec
+DELETE FROM pulls_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredPullsListMarkers :exec
+DELETE FROM pulls_list_cache WHERE expires_at <= ?;
+
+-- name: PrunePullsListMarkersLRU :exec
+DELETE FROM pulls_list_cache WHERE id IN (
+    SELECT id FROM pulls_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- repo_installation_cache (GET /repos/{owner}/{repo}/installation) ----
+
+-- name: GetRepoInstallationCache :one
+SELECT * FROM repo_installation_cache
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: UpsertRepoInstallationCache :exec
+INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    installation_id = excluded.installation_id,
+    account_login = excluded.account_login,
+    account_type = excluded.account_type,
+    repository_selection = excluded.repository_selection,
+    app_id = excluded.app_id,
+    app_slug = excluded.app_slug,
+    target_type = excluded.target_type,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchRepoInstallationCache :exec
+UPDATE repo_installation_cache SET last_used_at = ?
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteRepoInstallationCacheByInstallation :exec
+DELETE FROM repo_installation_cache WHERE installation_id = ?;
+
+-- name: DeleteExpiredRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE expires_at <= ?;
+
+-- name: PruneRepoInstallationCacheLRU :exec
+DELETE FROM repo_installation_cache WHERE id IN (
+    SELECT id FROM repo_installation_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

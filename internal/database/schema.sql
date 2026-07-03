@@ -80,6 +80,14 @@ CREATE TABLE repos (
     PRIMARY KEY (actor, owner, name)
 );
 
+-- pull_requests rows come from three writers: the GraphQL org-repos fetch
+-- (SetRepoPRs, which selects only the identity-locked GraphQL field set),
+-- pull_request/pull_request_review webhooks (ParsePRPayload, full REST-shaped
+-- objects), and the cached REST /pulls routes (absorbed responses). The
+-- REST-only columns below (node_id .. merge_commit_sha) are NULL on
+-- GraphQL-sourced rows; a row is "rest-complete" (rebuildable as a trimmed
+-- REST response) only when node_id and base_ref_oid are set -- see
+-- ghdata.PRRestComplete.
 CREATE TABLE pull_requests (
     actor                TEXT NOT NULL DEFAULT '',
     owner                TEXT NOT NULL,
@@ -102,6 +110,13 @@ CREATE TABLE pull_requests (
     head_ref_oid         TEXT,
     review_request_count INTEGER,
     last_commit_status   TEXT,
+    node_id              TEXT,   -- GraphQL node id (REST/webhook sources only)
+    body                 TEXT,   -- PR description; NULL = GitHub null body (or GraphQL-sourced row)
+    author_type          TEXT,   -- user.type: User | Bot | Organization
+    base_ref_oid         TEXT,   -- base.sha
+    head_repo_full_name  TEXT,   -- head.repo.full_name; NULL when the head repo is gone (deleted fork)
+    auto_merge_method    TEXT,   -- native auto-merge method when armed (merge|squash|rebase); NULL = not armed
+    merge_commit_sha     TEXT,   -- GitHub's test-merge sha; NULL until computed
     PRIMARY KEY (actor, owner, repo, number)
 );
 
@@ -242,6 +257,55 @@ CREATE TABLE install_token_cache (
 CREATE UNIQUE INDEX idx_install_token_cache_key ON install_token_cache (actor, installation_id, body_hash);
 CREATE INDEX idx_install_token_cache_install ON install_token_cache (installation_id);
 CREATE INDEX idx_install_token_cache_lru ON install_token_cache (last_used_at);
+
+-- "Open-PR list complete" markers for GET /repos/{owner}/{repo}/pulls (the
+-- cached open-PR list). A valid row means: for this actor, the pull_requests
+-- table holds the repo's COMPLETE open-PR set (absorbed from a full REST
+-- list response), so the route may rebuild the list from state. Webhook
+-- pull_request events do NOT touch the marker -- they ARE the maintenance
+-- (rows stay current); expires_at is only the TTL backstop bounding missed
+-- deliveries. The GraphQL org-repos fetch (SetRepoPRs) REPLACES a repo's PR
+-- rows with GraphQL-sourced rows that lack the REST-only columns, so it
+-- deletes the marker (DeletePullsListMarker inside its transaction). owner
+-- and repo are stored lowercased, like the other cached-route tables.
+CREATE TABLE pulls_list_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor        TEXT NOT NULL,
+    owner        TEXT NOT NULL,   -- lowercased
+    repo         TEXT NOT NULL,   -- lowercased
+    fetched_at   TEXT NOT NULL,   -- RFC3339
+    expires_at   TEXT NOT NULL,   -- RFC3339 TTL backstop (webhooks maintain rows, never the marker)
+    last_used_at TEXT NOT NULL    -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_pulls_list_cache_key ON pulls_list_cache (actor, owner, repo);
+CREATE INDEX idx_pulls_list_cache_repo ON pulls_list_cache (owner, repo);
+CREATE INDEX idx_pulls_list_cache_lru ON pulls_list_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/installation responses (an App-JWT-authed
+-- endpoint, like the token mint: actor is the verified "app:<id>"). Invalidated
+-- by installation/installation_repositories events for the stored installation
+-- id, plus the TTL backstop. owner/repo lowercased.
+CREATE TABLE repo_installation_cache (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor                TEXT NOT NULL,             -- "app:<verified app id>"
+    owner                TEXT NOT NULL,             -- lowercased
+    repo                 TEXT NOT NULL,             -- lowercased
+    installation_id      INTEGER NOT NULL,
+    account_login        TEXT NOT NULL DEFAULT '',
+    account_type         TEXT NOT NULL DEFAULT '',  -- Organization | User
+    repository_selection TEXT NOT NULL DEFAULT '',  -- all | selected
+    app_id               INTEGER NOT NULL DEFAULT 0,
+    app_slug             TEXT NOT NULL DEFAULT '',
+    target_type          TEXT NOT NULL DEFAULT '',
+    fetched_at           TEXT NOT NULL,             -- RFC3339
+    expires_at           TEXT NOT NULL,             -- RFC3339 TTL backstop
+    last_used_at         TEXT NOT NULL              -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_repo_installation_cache_key ON repo_installation_cache (actor, owner, repo);
+CREATE INDEX idx_repo_installation_cache_install ON repo_installation_cache (installation_id);
+CREATE INDEX idx_repo_installation_cache_lru ON repo_installation_cache (last_used_at);
 
 -- ============================================================================
 -- Actor Identities (dashboard only)

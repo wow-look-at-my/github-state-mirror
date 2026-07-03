@@ -75,16 +75,36 @@ SELECT * FROM repos WHERE actor = ? AND owner = ? ORDER BY name;
 -- name: DeleteReposByOwner :exec
 DELETE FROM repos WHERE actor = ? AND owner = ?;
 
+-- ListActorsForRepo matches owner/name case-insensitively: GitHub treats both
+-- case-insensitively, and repos rows can carry request-URL casing (the cached
+-- /pulls routes ensure a row on absorb) while webhook payloads carry canonical
+-- casing -- a casing mismatch must not hide a partition from maintenance.
 -- name: ListActorsForRepo :many
-SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?;
+SELECT DISTINCT actor FROM repos WHERE owner = ? COLLATE NOCASE AND name = ? COLLATE NOCASE;
+
+-- InsertRepoIfMissing seeds a minimal repos row so ActorsForRepo includes the
+-- actor (webhook maintenance targets partitions via repos rows). It never
+-- overwrites an existing row: a real org-repos fetch owns those fields.
+-- name: InsertRepoIfMissing :exec
+INSERT INTO repos (actor, owner, name, name_with_owner, url)
+VALUES (?, ?, ?, ?, '')
+ON CONFLICT (actor, owner, name) DO NOTHING;
 
 -- ============================================================================
 -- Pull Requests
 -- ============================================================================
 
+-- The REST-only columns (node_id .. merge_commit_sha) COALESCE against the
+-- existing row so a GraphQL-shaped upsert (which cannot know them) never wipes
+-- values a REST/webhook write recorded -- with two exceptions that are real
+-- state, not "unknown": body and auto_merge_method overwrite whenever the
+-- source knows the REST fields at all (node_id present), because a null body
+-- and a disarmed auto-merge are meaningful values a COALESCE would resurrect.
+-- That conditional is expressed as CASE WHEN excluded.node_id IS NULL (the
+-- GraphQL-source signature) THEN keep ELSE take END.
 -- name: UpsertPullRequest :exec
-INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
@@ -102,10 +122,31 @@ ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
     review_request_count = excluded.review_request_count,
-    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status);
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status),
+    node_id = COALESCE(excluded.node_id, pull_requests.node_id),
+    body = CASE WHEN excluded.node_id IS NULL THEN pull_requests.body ELSE excluded.body END,
+    author_type = COALESCE(excluded.author_type, pull_requests.author_type),
+    base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
+    head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
+    auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
+    merge_commit_sha = CASE WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha ELSE excluded.merge_commit_sha END;
 
 -- name: GetPullRequest :one
 SELECT * FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?;
+
+-- GetOpenPullRequestNoCase is the cached single-PR route's read: owner/repo
+-- matched case-insensitively (rows carry GitHub's canonical casing; the
+-- request URL may not), open PRs only (the cache never retains closed ones).
+-- name: GetOpenPullRequestNoCase :one
+SELECT * FROM pull_requests
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN';
+
+-- ListOpenPullRequestsByRepoNoCase is the cached list route's read. Ordered
+-- newest-created first to match GitHub's default list-pulls sort.
+-- name: ListOpenPullRequestsByRepoNoCase :many
+SELECT * FROM pull_requests
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
+ORDER BY created_at DESC, number DESC;
 
 -- name: ListOpenPullRequestsByRepo :many
 SELECT * FROM pull_requests
@@ -138,6 +179,19 @@ DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number =
 
 -- name: ListPRLabels :many
 SELECT * FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?;
+
+-- ListPRLabelsByRepoNoCase feeds the cached /pulls list rebuild: all of a
+-- repo's PR labels in one query (grouped by pr_number in Go), owner/repo
+-- matched case-insensitively like the row reads.
+-- name: ListPRLabelsByRepoNoCase :many
+SELECT * FROM pr_labels
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE
+ORDER BY pr_number, name;
+
+-- name: ListPRLabelsNoCase :many
+SELECT * FROM pr_labels
+WHERE actor = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND pr_number = ?
+ORDER BY name;
 
 -- name: DeletePRLabelsByRepo :exec
 DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ?;
@@ -197,6 +251,26 @@ DELETE FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
 -- name: SetPRStatusByHeadSha :exec
 UPDATE pull_requests SET last_commit_status = ?
 WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?;
+
+-- SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
+-- fetched answer, INCLUDING null (recomputing). The upsert's COALESCE keeps
+-- old values on null payloads; a direct REST read of the PR is authoritative
+-- about "currently unresolved", so the cached single-PR route uses this after
+-- absorbing to make a null answer miss again until GitHub resolves it.
+-- name: SetPRMergeable :exec
+UPDATE pull_requests SET mergeable = ?
+WHERE actor = ? AND owner = ? AND repo = ? AND number = ?;
+
+-- NullPRMergeableByBranch un-resolves mergeable for every open PR whose base
+-- or head is the pushed branch: GitHub recomputes mergeability after either
+-- side moves (and emits NO webhook with the result), so the last-known value
+-- is stale the moment the push lands. Nulling makes the cached single-PR
+-- route's known-mergeable gate miss and re-fetch, mirroring GitHub's own
+-- null-while-recomputing behavior.
+-- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET mergeable = NULL
+WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
+  AND (base_ref_name = ? OR head_ref_name = ?);
 
 -- name: SetRepoPushedAt :exec
 UPDATE repos SET pushed_at = ?

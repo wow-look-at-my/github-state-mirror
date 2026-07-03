@@ -146,6 +146,12 @@ func (s *Store) UpsertRepo(ctx context.Context, r dbgen.Repo) error {
 // ---- Pull Requests ----
 
 // SetRepoPRs replaces all PRs (and their labels) for a repo in a single transaction.
+//
+// The replacement rows come from the GraphQL org-repos fetch, whose
+// identity-locked selection set lacks the REST-only columns (node_id, body,
+// base_ref_oid, ...) the cached /pulls list rebuild needs -- so the actor's
+// "open-PR list complete" marker is deleted in the same transaction. The next
+// cached-list read misses and re-absorbs REST-complete rows.
 func (s *Store) SetRepoPRs(ctx context.Context, owner, repo string, prs []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel) error {
 	act := actor.FromContext(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -159,6 +165,11 @@ func (s *Store) SetRepoPRs(ctx context.Context, owner, repo string, prs []dbgen.
 		return err
 	}
 	if err := q.DeletePRLabelsByRepo(ctx, dbgen.DeletePRLabelsByRepoParams{Actor: act, Owner: owner, Repo: repo}); err != nil {
+		return err
+	}
+	if err := q.DeletePullsListMarker(ctx, dbgen.DeletePullsListMarkerParams{
+		Actor: act, Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	}); err != nil {
 		return err
 	}
 	for _, pr := range prs {
@@ -577,5 +588,12 @@ func prToParams(act string, pr dbgen.PullRequest) dbgen.UpsertPullRequestParams 
 		HeadRefOid:         pr.HeadRefOid,
 		ReviewRequestCount: pr.ReviewRequestCount,
 		LastCommitStatus:   pr.LastCommitStatus,
+		NodeID:             pr.NodeID,
+		Body:               pr.Body,
+		AuthorType:         pr.AuthorType,
+		BaseRefOid:         pr.BaseRefOid,
+		HeadRepoFullName:   pr.HeadRepoFullName,
+		AutoMergeMethod:    pr.AutoMergeMethod,
+		MergeCommitSha:     pr.MergeCommitSha,
 	}
 }

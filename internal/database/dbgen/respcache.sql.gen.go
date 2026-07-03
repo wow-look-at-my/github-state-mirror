@@ -41,12 +41,71 @@ func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredPullsListMarkers = `-- name: DeleteExpiredPullsListMarkers :exec
+DELETE FROM pulls_list_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredPullsListMarkers(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredPullsListMarkers, expiresAt)
+	return err
+}
+
+const deleteExpiredRepoInstallationCache = `-- name: DeleteExpiredRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredRepoInstallationCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredRepoInstallationCache, expiresAt)
+	return err
+}
+
 const deleteInstallTokenCacheByInstallation = `-- name: DeleteInstallTokenCacheByInstallation :exec
 DELETE FROM install_token_cache WHERE installation_id = ?
 `
 
 func (q *Queries) DeleteInstallTokenCacheByInstallation(ctx context.Context, installationID string) error {
 	_, err := q.db.ExecContext(ctx, deleteInstallTokenCacheByInstallation, installationID)
+	return err
+}
+
+const deletePullsListMarker = `-- name: DeletePullsListMarker :exec
+DELETE FROM pulls_list_cache WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type DeletePullsListMarkerParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// DeletePullsListMarker drops ONE actor's marker: used by SetRepoPRs, whose
+// GraphQL-sourced replacement rows lack the REST-only columns the list
+// rebuild needs (the replace is per-actor, so the clear is too).
+func (q *Queries) DeletePullsListMarker(ctx context.Context, arg DeletePullsListMarkerParams) error {
+	_, err := q.db.ExecContext(ctx, deletePullsListMarker, arg.Actor, arg.Owner, arg.Repo)
+	return err
+}
+
+const deletePullsListMarkersByRepo = `-- name: DeletePullsListMarkersByRepo :exec
+DELETE FROM pulls_list_cache WHERE owner = ? AND repo = ?
+`
+
+type DeletePullsListMarkersByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeletePullsListMarkersByRepo(ctx context.Context, arg DeletePullsListMarkersByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deletePullsListMarkersByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteRepoInstallationCacheByInstallation = `-- name: DeleteRepoInstallationCacheByInstallation :exec
+DELETE FROM repo_installation_cache WHERE installation_id = ?
+`
+
+func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
 	return err
 }
 
@@ -179,6 +238,69 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 	return i, err
 }
 
+const getPullsListMarker = `-- name: GetPullsListMarker :one
+
+SELECT id, actor, owner, repo, fetched_at, expires_at, last_used_at FROM pulls_list_cache
+WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type GetPullsListMarkerParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// ---- pulls_list_cache (the "open-PR list complete" markers) ----
+func (q *Queries) GetPullsListMarker(ctx context.Context, arg GetPullsListMarkerParams) (PullsListCache, error) {
+	row := q.db.QueryRowContext(ctx, getPullsListMarker, arg.Actor, arg.Owner, arg.Repo)
+	var i PullsListCache
+	err := row.Scan(
+		&i.ID,
+		&i.Actor,
+		&i.Owner,
+		&i.Repo,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getRepoInstallationCache = `-- name: GetRepoInstallationCache :one
+
+SELECT id, actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at FROM repo_installation_cache
+WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type GetRepoInstallationCacheParams struct {
+	Actor string
+	Owner string
+	Repo  string
+}
+
+// ---- repo_installation_cache (GET /repos/{owner}/{repo}/installation) ----
+func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInstallationCacheParams) (RepoInstallationCache, error) {
+	row := q.db.QueryRowContext(ctx, getRepoInstallationCache, arg.Actor, arg.Owner, arg.Repo)
+	var i RepoInstallationCache
+	err := row.Scan(
+		&i.ID,
+		&i.Actor,
+		&i.Owner,
+		&i.Repo,
+		&i.InstallationID,
+		&i.AccountLogin,
+		&i.AccountType,
+		&i.RepositorySelection,
+		&i.AppID,
+		&i.AppSlug,
+		&i.TargetType,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const pruneContentsCacheLRU = `-- name: PruneContentsCacheLRU :exec
 DELETE FROM contents_cache WHERE id IN (
     SELECT id FROM contents_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -212,6 +334,28 @@ DELETE FROM install_token_cache WHERE id IN (
 
 func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneInstallTokenCacheLRU, offset)
+	return err
+}
+
+const prunePullsListMarkersLRU = `-- name: PrunePullsListMarkersLRU :exec
+DELETE FROM pulls_list_cache WHERE id IN (
+    SELECT id FROM pulls_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PrunePullsListMarkersLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, prunePullsListMarkersLRU, offset)
+	return err
+}
+
+const pruneRepoInstallationCacheLRU = `-- name: PruneRepoInstallationCacheLRU :exec
+DELETE FROM repo_installation_cache WHERE id IN (
+    SELECT id FROM repo_installation_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
 	return err
 }
 
@@ -261,6 +405,50 @@ func (q *Queries) TouchGitCommitCache(ctx context.Context, arg TouchGitCommitCac
 		arg.Owner,
 		arg.Repo,
 		arg.Sha,
+	)
+	return err
+}
+
+const touchPullsListMarker = `-- name: TouchPullsListMarker :exec
+UPDATE pulls_list_cache SET last_used_at = ?
+WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type TouchPullsListMarkerParams struct {
+	LastUsedAt string
+	Actor      string
+	Owner      string
+	Repo       string
+}
+
+func (q *Queries) TouchPullsListMarker(ctx context.Context, arg TouchPullsListMarkerParams) error {
+	_, err := q.db.ExecContext(ctx, touchPullsListMarker,
+		arg.LastUsedAt,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+	)
+	return err
+}
+
+const touchRepoInstallationCache = `-- name: TouchRepoInstallationCache :exec
+UPDATE repo_installation_cache SET last_used_at = ?
+WHERE actor = ? AND owner = ? AND repo = ?
+`
+
+type TouchRepoInstallationCacheParams struct {
+	LastUsedAt string
+	Actor      string
+	Owner      string
+	Repo       string
+}
+
+func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoInstallationCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchRepoInstallationCache,
+		arg.LastUsedAt,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
 	)
 	return err
 }
@@ -414,6 +602,87 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.TokenExpiresAt,
 		arg.Permissions,
 		arg.RepositorySelection,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertPullsListMarker = `-- name: UpsertPullsListMarker :exec
+INSERT INTO pulls_list_cache (actor, owner, repo, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertPullsListMarkerParams struct {
+	Actor      string
+	Owner      string
+	Repo       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertPullsListMarker(ctx context.Context, arg UpsertPullsListMarkerParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPullsListMarker,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertRepoInstallationCache = `-- name: UpsertRepoInstallationCache :exec
+INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    installation_id = excluded.installation_id,
+    account_login = excluded.account_login,
+    account_type = excluded.account_type,
+    repository_selection = excluded.repository_selection,
+    app_id = excluded.app_id,
+    app_slug = excluded.app_slug,
+    target_type = excluded.target_type,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertRepoInstallationCacheParams struct {
+	Actor               string
+	Owner               string
+	Repo                string
+	InstallationID      int64
+	AccountLogin        string
+	AccountType         string
+	RepositorySelection string
+	AppID               int64
+	AppSlug             string
+	TargetType          string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
+}
+
+func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRepoInstallationCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertRepoInstallationCache,
+		arg.Actor,
+		arg.Owner,
+		arg.Repo,
+		arg.InstallationID,
+		arg.AccountLogin,
+		arg.AccountType,
+		arg.RepositorySelection,
+		arg.AppID,
+		arg.AppSlug,
+		arg.TargetType,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
