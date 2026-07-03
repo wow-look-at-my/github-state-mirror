@@ -4,16 +4,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
@@ -33,7 +37,27 @@ func consistencyFakeGitHub(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/app/installations/1/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_org1"})
 	})
-	mux.HandleFunc("/graphql", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		// The checker sends two queries: the shared org-data query and its own
+		// checker-private repo-visibility query. Route on the latter's isPrivate
+		// field. Live visibility: repo1 public, repo2 PRIVATE.
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "isPrivate") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"organization": map[string]any{
+						"repositories": map[string]any{
+							"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+							"nodes": []map[string]any{
+								{"name": "repo1", "isPrivate": false},
+								{"name": "repo2", "isPrivate": true},
+							},
+						},
+					},
+				},
+			})
+			return
+		}
 		// org1 live state: repo1 (default branch status SUCCESS, PR #1 open with
 		// label "bug" and a SUCCESS rollup) and repo2 (no PRs, not cached).
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -92,7 +116,7 @@ func liveOpenPR(number int) map[string]any {
 	}
 }
 
-func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.Store) {
+func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.Store, *freshness.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -101,9 +125,10 @@ func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.S
 
 	gh := ghclient.NewWithBaseURL(srvURL)
 	store := ghdata.NewStore(db)
+	fresh := freshness.NewStore(db)
 	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
 	require.NoError(t, err)
-	return NewConsistencyChecker(gh, store, app), store
+	return NewConsistencyChecker(gh, store, fresh, app), store, fresh
 }
 
 // findDiscrepancy returns the first discrepancy matching repo+field (field may be
@@ -120,10 +145,20 @@ func findDiscrepancy(rep *ConsistencyReport, repo, field, issue string) *Discrep
 
 func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	srv := consistencyFakeGitHub(t)
-	checker, store := newCheckerTest(t, srv.URL)
+	checker, store, fresh := newCheckerTest(t, srv.URL)
 
 	fp := "scope-fingerprint"
 	ctx := actor.WithActor(context.Background(), fp)
+
+	// The scope's own org_repos freshness row: error state after a failed
+	// refresh, with a known last successful fetch. The report must surface it.
+	lastFetched := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, fresh.Upsert(context.Background(), &freshness.Metadata{
+		ResourceID:    freshness.ResourceID{Kind: KindOrgRepos, Key: "org1", Actor: fp},
+		State:         freshness.StateError,
+		ErrorMessage:  "github api POST /graphql: 502 Bad Gateway",
+		LastFetchedAt: &lastFetched,
+	}))
 
 	// Cached state that has drifted from the live state above.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
@@ -173,10 +208,22 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 
 	// Repo-level drift.
 	assert.NotNil(t, findDiscrepancy(rep, "org1/ghost", "", "only_in_cache"), "ghost repo only in cache")
-	assert.NotNil(t, findDiscrepancy(rep, "org1/repo2", "", "only_on_github"), "repo2 only on github")
+	if d := findDiscrepancy(rep, "org1/repo2", "", "only_on_github"); assert.NotNil(t, d, "repo2 only on github") {
+		// repo2 is PRIVATE on GitHub: the report must say the scope's token may
+		// simply not see it, instead of implying a cache failure.
+		assert.Equal(t, "private", d.Visibility)
+		assert.Contains(t, d.Note, "may not be able to see it")
+	}
 	if d := findDiscrepancy(rep, "org1/repo1", "default_branch_status", "field_mismatch"); assert.NotNil(t, d) {
 		assert.Equal(t, "FAILURE", d.Cached)
 		assert.Equal(t, "SUCCESS", d.GitHub)
+	}
+
+	// Scope staleness metadata rides on the report header.
+	if sf, ok := rep.ScopeFreshness["org1"]; assert.True(t, ok, "scope_freshness must include the checked org") {
+		assert.Equal(t, "error", sf.State)
+		assert.Equal(t, "2024-05-01T12:00:00Z", sf.LastFetchedAt)
+		assert.Contains(t, sf.Error, "502 Bad Gateway")
 	}
 
 	// PR-level drift.
@@ -199,13 +246,14 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.Equal(t, 1, rep.Summary.OrgsChecked)
 	assert.GreaterOrEqual(t, rep.Summary.ReposOnlyInCache, 1)
 	assert.GreaterOrEqual(t, rep.Summary.ReposOnlyOnGitHub, 1)
+	assert.Equal(t, 1, rep.Summary.ReposOnlyOnGitHubPrivate, "the private missing repo is tallied separately")
 	assert.GreaterOrEqual(t, rep.Summary.PRsOnlyInCache, 1)
 	assert.GreaterOrEqual(t, rep.Summary.FieldMismatches, 3)
 }
 
 func TestConsistencyChecker_OrgFilter(t *testing.T) {
 	srv := consistencyFakeGitHub(t)
-	checker, store := newCheckerTest(t, srv.URL)
+	checker, store, _ := newCheckerTest(t, srv.URL)
 	fp := "scope-fingerprint"
 	ctx := actor.WithActor(context.Background(), fp)
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
@@ -235,7 +283,7 @@ func TestConsistencyChecker_RateLimits(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	checker, _ := newCheckerTest(t, srv.URL)
+	checker, _, _ := newCheckerTest(t, srv.URL)
 	limits, err := checker.RateLimits(context.Background())
 	require.NoError(t, err)
 	require.Len(t, limits, 1)
@@ -252,7 +300,7 @@ func TestConsistencyChecker_Unavailable(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
 
-	checker := NewConsistencyChecker(ghclient.New(), ghdata.NewStore(db), nil)
+	checker := NewConsistencyChecker(ghclient.New(), ghdata.NewStore(db), freshness.NewStore(db), nil)
 	assert.False(t, checker.Available())
 	_, err = checker.CheckActor(context.Background(), "fp", "", "")
 	assert.Error(t, err)
@@ -263,7 +311,7 @@ func TestConsistencyChecker_InstallationsError(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(srv.Close)
-	checker, store := newCheckerTest(t, srv.URL)
+	checker, store, _ := newCheckerTest(t, srv.URL)
 	fp := "scope-fingerprint"
 	ctx := actor.WithActor(context.Background(), fp)
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
