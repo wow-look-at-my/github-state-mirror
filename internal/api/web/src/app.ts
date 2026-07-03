@@ -12,27 +12,28 @@
 // used.
 
 import type {
-    Me, Counts, KindFreshness, RecentRefresh, ScopeStats, CacheResponse,
+    Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
-    Discrepancy, ConsistencyReport, RequestEvent, RequestsResponse,
+    BrowseGrant, GrantsResponse,
+    Discrepancy, ConsistencyReport, TruthFreshness, RequestEvent, RequestsResponse,
     RateLimitResponse, InstallationRateLimit,
     DemoStateData, DemoConfig,
 } from "./types";
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
 
-// Whether the signed-in user is an admin. Admins get the per-scope Browse /
-// Check actions (the data/check endpoints are admin-only). Set in renderDashboard.
+// Whether the signed-in user is an admin. Admins get the truth Browse / Check
+// actions and per-principal Grants views (admin-only endpoints). Set in
+// renderDashboard.
 let dashIsAdmin = false;
 
 const COUNT_FIELDS: ReadonlyArray<readonly [keyof Counts, string]> = [
     ["repos", "Repos"],
     ["pull_requests", "Pull requests"],
-    ["orgs", "Orgs"],
-    ["users", "Users"],
     ["commit_checks", "Commit checks"],
-    ["pr_files", "PR files"],
-    ["branch_comparisons", "Comparisons"],
+    ["contents", "Contents"],
+    ["git_commits", "Git commits"],
+    ["grants", "Grants"],
 ];
 
 const STATE_ORDER: ReadonlyArray<string> = ["fresh", "stale", "fetching", "error", "unknown"];
@@ -88,10 +89,6 @@ function countOf(c: Counts, k: keyof Counts): number {
     return Number(c[k]) || 0;
 }
 
-function sumCounts(c: Counts): number {
-    return COUNT_FIELDS.reduce((acc, [k]) => acc + countOf(c, k), 0);
-}
-
 interface ApiError extends Error {
     status?: number;
 }
@@ -145,7 +142,7 @@ function renderLogin(me: Me): void {
                 ? el("a", { class: "btn btn-primary", href: DEMO ? "javascript:void 0" : "/login", onclick: onLogin }, githubIcon(), "Sign in with GitHub")
                 : el("button", { class: "btn btn-primary", disabled: true }, githubIcon(), "Sign in with GitHub"),
             configured
-                ? el("div", { class: "note", text: "You only ever see cache scopes that your own tokens populated." })
+                ? el("div", { class: "note", text: "There is one global cache; it reveals to you exactly the repos your own GitHub credentials can access." })
                 : el("div", { class: "note", text: "Login is not configured on this server (set GITHUB_OAUTH_CLIENT_ID / _SECRET)." }),
         ),
     );
@@ -175,7 +172,7 @@ async function renderDashboard(me: Me): Promise<void> {
     if (me.is_admin) {
         tabs = el("div", { class: "tabs" },
             el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"),
-            el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"),
+            el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"),
             el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
             el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"),
@@ -283,33 +280,42 @@ async function loadScope(scope: string, silent = false): Promise<void> {
     }
     if (currentView !== scope) return; // user switched tabs while we were fetching
     body.innerHTML = "";
-    const scopes = data.scopes ?? [];
+    const principals = data.principals ?? [];
 
     if (scope === "all") {
-        sub.textContent = data.scope_count + " cache scope" + (data.scope_count === 1 ? "" : "s") + " across all users";
-        body.appendChild(totalsGrid(data.totals, data.scope_count));
-        body.appendChild(adminTable(scopes));
+        sub.textContent = "One global truth store — " + data.principal_count + " principal" +
+            (data.principal_count === 1 ? "" : "s") + " with reveal-layer grants";
+        body.appendChild(totalsGrid(data.totals, data.principal_count));
+        if (dashIsAdmin) body.appendChild(truthActions());
+        body.appendChild(adminTable(principals));
         return;
     }
 
-    sub.textContent = "Everything your tokens have populated" +
-        (data.scope_count ? " (" + data.scope_count + " token scope" + (data.scope_count === 1 ? "" : "s") + ")" : "");
+    sub.textContent = "One global truth store — you see the slice your GitHub credentials can access";
 
-    if (scopes.length === 0) {
+    body.appendChild(totalsGrid(data.totals, data.principal_count));
+    if (principals.length === 0) {
         body.appendChild(el("div", { class: "empty" },
-            el("p", { text: "Nothing cached yet for " + data.login + "." }),
+            el("p", { text: "No principal recorded yet for " + data.login + "." }),
             el("p", { class: "sub", text: "Use a tool that queries this mirror with your GitHub token, then refresh." }),
         ));
         return;
     }
-
-    body.appendChild(totalsGrid(data.totals, data.scope_count));
-    for (const s of scopes) body.appendChild(scopeCard(s, true));
+    for (const s of principals) body.appendChild(principalCard(s, true));
 }
 
-function totalsGrid(totals: Counts, scopeCount: number): HTMLElement {
+// truthActions renders the admin actions on GLOBAL truth: browse the cached
+// rows, or run a consistency check against GitHub. Both open a modal.
+function truthActions(): HTMLElement {
+    return el("div", { class: "scope-actions", style: "margin: 0 0 12px" },
+        el("button", { class: "btn btn-sm", onclick: () => void openBrowse() }, "Browse truth"),
+        el("button", { class: "btn btn-sm", onclick: () => void openCheck() }, "Run consistency check"),
+    );
+}
+
+function totalsGrid(totals: Counts, principalCount: number): HTMLElement {
     const grid = el("div", { class: "stat-grid" });
-    grid.appendChild(statCard(scopeCount, scopeCount === 1 ? "Scope" : "Scopes"));
+    grid.appendChild(statCard(principalCount, principalCount === 1 ? "Principal" : "Principals"));
     for (const [k, label] of COUNT_FIELDS) {
         grid.appendChild(statCard(countOf(totals, k), label));
     }
@@ -323,7 +329,7 @@ function statCard(n: number, label: string): HTMLElement {
     );
 }
 
-function scopeCard(s: ScopeStats, detailed: boolean): HTMLElement {
+function principalCard(s: PrincipalStats, detailed: boolean): HTMLElement {
     const head = el("div", { class: "scope-head" });
     const id = el("div", { class: "scope-id" });
     const known = !!s.login && s.login !== "(unknown)";
@@ -333,26 +339,23 @@ function scopeCard(s: ScopeStats, detailed: boolean): HTMLElement {
     head.appendChild(id);
 
     const meta = el("div", { class: "scope-meta" });
-    meta.appendChild(el("div", { class: "fingerprint", text: "scope " + s.actor }));
+    meta.appendChild(el("div", { class: "fingerprint", text: "principal " + s.principal }));
     if (s.last_seen) meta.appendChild(el("div", { text: "last seen " + fmtTime(s.last_seen) }));
-    if (dashIsAdmin && s.actor_id) meta.appendChild(scopeActions(s));
+    if (dashIsAdmin && s.principal_id) meta.appendChild(principalActions(s));
     head.appendChild(meta);
 
     const body = el("div", { class: "scope-body" });
 
     const mini = el("div", { class: "mini-grid" });
-    for (const [k, label] of COUNT_FIELDS) {
-        const n = countOf(s.counts, k);
-        mini.appendChild(el("div", { class: n === 0 ? "mini zero" : "mini" },
-            el("div", { class: "n", text: String(n) }),
-            el("div", { class: "l", text: label }),
-        ));
-    }
+    mini.appendChild(el("div", { class: s.live_grants === 0 ? "mini zero" : "mini" },
+        el("div", { class: "n", text: String(s.live_grants) }),
+        el("div", { class: "l", text: "Live repo grants" }),
+    ));
     body.appendChild(mini);
 
     const kinds = s.kinds ?? [];
     if (kinds.length) {
-        body.appendChild(el("div", { class: "section-label", text: "Freshness by resource" }));
+        body.appendChild(el("div", { class: "section-label", text: "Org sync freshness" }));
         body.appendChild(kindsTable(kinds));
     }
 
@@ -417,11 +420,11 @@ function recentList(recent: RecentRefresh[]): HTMLElement {
     return ul;
 }
 
-function adminTable(scopes: ScopeStats[]): HTMLElement {
-    if (scopes.length === 0) {
-        return el("div", { class: "empty", text: "No cache scopes recorded yet." });
+function adminTable(principals: PrincipalStats[]): HTMLElement {
+    if (principals.length === 0) {
+        return el("div", { class: "empty", text: "No principals recorded yet." });
     }
-    const rows = scopes.map((s) => {
+    const rows = principals.map((s) => {
         const known = !!s.login && s.login !== "(unknown)";
         const loginCell = el("td", null,
             el("div", { class: "login-cell" },
@@ -432,19 +435,17 @@ function adminTable(scopes: ScopeStats[]): HTMLElement {
         );
         return el("tr", null,
             loginCell,
-            el("td", { class: "fingerprint", text: s.actor }),
-            ...COUNT_FIELDS.map(([k]) => el("td", { class: "num", text: String(countOf(s.counts, k)) })),
-            el("td", { class: "num", text: String(sumCounts(s.counts)) }),
+            el("td", { class: "fingerprint", text: s.principal }),
+            el("td", { class: "num", text: String(s.live_grants) }),
             el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }),
-            el("td", { class: "actions-cell" }, s.actor_id ? scopeActions(s) : null),
+            el("td", { class: "actions-cell" }, s.principal_id ? principalActions(s) : null),
         );
     });
     return el("table", { class: "scopes" },
         el("thead", null, el("tr", null,
             el("th", { text: "Login" }),
-            el("th", { text: "Scope" }),
-            ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })),
-            el("th", { class: "num", text: "Total" }),
+            el("th", { text: "Principal" }),
+            el("th", { class: "num", text: "Live grants" }),
             el("th", { text: "Last seen" }),
             el("th", { text: "Inspect" }),
         )),
@@ -452,12 +453,11 @@ function adminTable(scopes: ScopeStats[]): HTMLElement {
     );
 }
 
-// scopeActions renders the per-scope admin actions: browse the cached rows, or
-// run a consistency check against GitHub. Both open a modal.
-function scopeActions(s: ScopeStats): HTMLElement {
+// principalActions renders the per-principal admin action: view the grants the
+// reveal layer holds for it (who can see what).
+function principalActions(s: PrincipalStats): HTMLElement {
     return el("div", { class: "scope-actions" },
-        el("button", { class: "btn btn-sm", onclick: () => void openBrowse(s) }, "Browse"),
-        el("button", { class: "btn btn-sm", onclick: () => void openCheck(s) }, "Check"),
+        el("button", { class: "btn btn-sm", onclick: () => void openGrants(s) }, "Grants"),
     );
 }
 
@@ -497,10 +497,9 @@ async function loadWebhooks(silent = false): Promise<void> {
 }
 
 const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
-    ["applied", "data written to the cache"],
-    ["skipped", "no cached scope for the repo"],
+    ["applied", "state written to global truth"],
     ["invalidated", "marked stale; refetched on next read"],
-    ["ignored", "event not tracked"],
+    ["ignored", "event/action not tracked"],
     ["error", "internal error (GitHub retries)"],
 ];
 
@@ -525,7 +524,6 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
             el("td", { class: "wh-event", text: evt }),
             el("td", { class: "wh-repo", text: d.repo || "—" }),
             el("td", { class: "wh-detail", text: d.detail || "" }),
-            el("td", { class: "num", text: String(d.actors) }),
             el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }),
             el("td", { class: "wh-when", text: fmtTime(d.received_at) }),
         );
@@ -536,7 +534,6 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
             el("th", { text: "Event" }),
             el("th", { text: "Repo" }),
             el("th", { text: "Detail" }),
-            el("th", { class: "num", text: "Scopes" }),
             el("th", { text: "Delivery" }),
             el("th", { text: "Received" }),
         )),
@@ -571,6 +568,7 @@ async function loadRequests(silent = false): Promise<void> {
     const by = data.by_disposition ?? {};
     sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
         " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
+        ", write " + (by.write || 0) +
         (by.error ? ", error " + by.error : "");
 
     body.appendChild(requestLegend());
@@ -587,7 +585,8 @@ async function loadRequests(silent = false): Promise<void> {
 const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
     ["hit", "served from cache, no GitHub call"],
     ["miss", "cache miss; fetched from GitHub then cached"],
-    ["passthrough", "forwarded to GitHub uncached"],
+    ["passthrough", "read forwarded to GitHub uncached"],
+    ["write", "mutation proxied to GitHub (never cacheable)"],
     ["error", "cache lookup/fetch failed"],
 ];
 
@@ -598,6 +597,7 @@ function reqDispClass(disp: string): string {
         case "hit": return "applied";
         case "miss": return "invalidated";
         case "passthrough": return "ignored";
+        case "write": return "write";
         default: return "error";
     }
 }
@@ -718,8 +718,8 @@ function rateLimitCard(inst: InstallationRateLimit): HTMLElement {
 
 // ---- admin: browse + consistency check (modal) ----
 
-function scopeLabel(s: ScopeStats): string {
-    return s.login && s.login !== "(unknown)" ? s.login : "scope " + s.actor;
+function principalLabel(s: PrincipalStats): string {
+    return s.login && s.login !== "(unknown)" ? s.login : "principal " + s.principal;
 }
 
 interface Modal { body: HTMLElement; close: () => void; }
@@ -772,14 +772,12 @@ function jsonBlock(obj: unknown, copyLabel: string): HTMLElement {
     );
 }
 
-async function openBrowse(s: ScopeStats): Promise<void> {
-    const actorId = s.actor_id;
-    if (!actorId) return;
-    const { body } = openModal("Cache contents — " + scopeLabel(s));
+async function openBrowse(): Promise<void> {
+    const { body } = openModal("Global truth — cached rows");
     body.appendChild(el("div", { class: "loading", text: "Loading cached rows…" }));
     let data: BrowseResponse;
     try {
-        data = await api<BrowseResponse>("/api/cache/data?actor=" + encodeURIComponent(actorId));
+        data = await api<BrowseResponse>("/api/cache/data");
     } catch (e) {
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Could not load cache contents: " + (e as Error).message }));
@@ -792,8 +790,11 @@ async function openBrowse(s: ScopeStats): Promise<void> {
 function renderBrowse(d: BrowseResponse): HTMLElement {
     const wrap = el("div", { class: "detail" });
     wrap.appendChild(el("div", { class: "detail-sub", text:
-        "Full fingerprint " + d.actor_id + (d.login ? " · " + d.login : "") }));
-    wrap.appendChild(totalsGrid(d.counts, 1));
+        "The one global truth store — what webhooks and principals' fetches have absorbed" }));
+
+    const grid = el("div", { class: "stat-grid" });
+    for (const [k, label] of COUNT_FIELDS) grid.appendChild(statCard(countOf(d.counts, k), label));
+    wrap.appendChild(grid);
 
     if (d.repos.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Repositories (" + d.repos.length + ")" }));
@@ -803,36 +804,85 @@ function renderBrowse(d: BrowseResponse): HTMLElement {
         wrap.appendChild(el("div", { class: "section-label", text: "Pull requests (" + d.pull_requests.length + ")" }));
         wrap.appendChild(browsePRTable(d.pull_requests));
     }
-    const extras: Array<[string, number]> = [
-        ["Orgs", d.orgs.length], ["Users", d.users.length],
-        ["Comparisons", d.branch_comparisons.length], ["PR files", d.pr_files.length],
-        ["Commit checks", d.commit_checks.length],
-    ];
-    const present = extras.filter(([, n]) => n > 0);
-    if (present.length) {
+    if (d.commit_checks.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Also cached" }));
         wrap.appendChild(el("div", { class: "chips" },
-            ...present.map(([label, n]) => el("span", { class: "chip" }, label + " " + n))));
+            el("span", { class: "chip" }, "Commit checks " + d.commit_checks.length)));
     }
 
     const raw = el("details", { class: "raw" },
-        el("summary", { text: "Raw JSON (everything cached for this scope)" }),
+        el("summary", { text: "Raw JSON (every cached truth row)" }),
         jsonBlock(d, "Copy JSON"),
     );
     wrap.appendChild(raw);
     return wrap;
 }
 
+// openGrants shows one principal's reveal-layer grants: exactly which repos
+// the cache will reveal to it, and where each grant came from.
+async function openGrants(s: PrincipalStats): Promise<void> {
+    const principalId = s.principal_id;
+    if (!principalId) return;
+    const { body } = openModal("Access grants — " + principalLabel(s));
+    body.appendChild(el("div", { class: "loading", text: "Loading grants…" }));
+    let data: GrantsResponse;
+    try {
+        data = await api<GrantsResponse>("/api/cache/data?principal=" + encodeURIComponent(principalId));
+    } catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load grants: " + (e as Error).message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderGrants(data));
+}
+
+function renderGrants(d: GrantsResponse): HTMLElement {
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text:
+        "Principal " + d.principal_id + (d.login ? " · " + d.login : "") +
+        " — repos the reveal layer will serve to it (public repos need no grant)" }));
+    const grants = d.grants ?? [];
+    if (grants.length === 0) {
+        wrap.appendChild(el("div", { class: "empty", text: "No live grants. This principal has only public-repo (or no) access so far." }));
+    } else {
+        wrap.appendChild(el("div", { class: "section-label", text: "Grants (" + grants.length + ")" }));
+        wrap.appendChild(grantsTable(grants));
+    }
+    const raw = el("details", { class: "raw" },
+        el("summary", { text: "Raw JSON" }),
+        jsonBlock(d, "Copy JSON"),
+    );
+    wrap.appendChild(raw);
+    return wrap;
+}
+
+function grantsTable(grants: BrowseGrant[]): HTMLElement {
+    const rows = grants.map((g) => el("tr", null,
+        el("td", { class: "wh-repo", text: g.owner + "/" + g.repo }),
+        el("td", null, el("span", { class: "pill fresh", text: g.source })),
+        el("td", { text: fmtTime(g.granted_at) }),
+        el("td", { text: fmtTime(g.expires_at) }),
+    ));
+    return el("table", { class: "kinds detail-table" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Repo" }), el("th", { text: "Source" }),
+            el("th", { text: "Granted" }), el("th", { text: "Expires" }))),
+        el("tbody", null, rows),
+    );
+}
+
 function browseRepoTable(repos: BrowseRepo[]): HTMLElement {
     const rows = repos.map((r) => el("tr", null,
         el("td", null, el("a", { href: r.url, target: "_blank", rel: "noopener", text: r.name_with_owner })),
+        el("td", { text: r.visibility || "unknown" }),
         el("td", { text: r.default_branch || "—" }),
         statusCell(r.default_branch_status),
         el("td", { text: r.is_archived ? "archived" : r.is_disabled ? "disabled" : "active" }),
     ));
     return el("table", { class: "kinds detail-table" },
         el("thead", null, el("tr", null,
-            el("th", { text: "Repo" }), el("th", { text: "Default branch" }),
+            el("th", { text: "Repo" }), el("th", { text: "Visibility" }), el("th", { text: "Default branch" }),
             el("th", { text: "Branch status" }), el("th", { text: "Flags" }))),
         el("tbody", null, rows),
     );
@@ -859,14 +909,12 @@ function statusCell(status?: string): HTMLElement {
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
 
-async function openCheck(s: ScopeStats): Promise<void> {
-    const actorId = s.actor_id;
-    if (!actorId) return;
-    const { body } = openModal("Consistency check — " + scopeLabel(s));
+async function openCheck(): Promise<void> {
+    const { body } = openModal("Consistency check — global truth vs GitHub");
     body.appendChild(el("div", { class: "loading", text: "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
     let report: ConsistencyReport;
     try {
-        report = await api<ConsistencyReport>("/api/cache/check?actor=" + encodeURIComponent(actorId));
+        report = await api<ConsistencyReport>("/api/cache/check");
     } catch (e) {
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Consistency check failed: " + (e as Error).message }));
@@ -890,10 +938,18 @@ function renderCheck(r: ConsistencyReport): HTMLElement {
     grid.appendChild(statCard(sm.discrepancies, "Discrepancies"));
     grid.appendChild(statCard(sm.repos_only_in_cache, "Repos only cached"));
     grid.appendChild(statCard(sm.repos_only_on_github, "Repos only on GH"));
+    grid.appendChild(statCard(sm.repos_only_on_github_private, "…of those, private (lazy truth)"));
     grid.appendChild(statCard(sm.prs_only_in_cache, "PRs only cached"));
     grid.appendChild(statCard(sm.prs_only_on_github, "PRs only on GH"));
     grid.appendChild(statCard(sm.field_mismatches, "Field mismatches"));
     wrap.appendChild(grid);
+
+    const tf = r.truth_freshness ?? {};
+    const owners = Object.keys(tf).sort();
+    if (owners.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Truth freshness (most recent org sync per owner)" }));
+        wrap.appendChild(truthFreshnessTable(owners.map((o) => [o, tf[o]] as const)));
+    }
 
     if (r.discrepancies.length === 0) {
         wrap.appendChild(el("div", { class: "ok-banner", text:
@@ -932,7 +988,10 @@ function discrepancyTable(items: Discrepancy[]): HTMLElement {
             el("td", { class: "kind", text: d.field || "—" }),
             el("td", { class: "diff-cached", text: d.cached || "" }),
             el("td", { class: "diff-github", text: d.github || "" }),
-            el("td", { class: "wh-detail", text: d.note || "" }),
+            el("td", { class: "wh-detail" },
+                d.visibility ? el("span", { class: "badge", text: d.visibility }) : null,
+                d.note ? " " + d.note : "",
+            ),
         );
     });
     return el("table", { class: "webhooks detail-table" },
@@ -940,6 +999,23 @@ function discrepancyTable(items: Discrepancy[]): HTMLElement {
             el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }),
             el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))),
         el("tbody", null, rows),
+    );
+}
+
+function truthFreshnessTable(rows: ReadonlyArray<readonly [string, TruthFreshness]>): HTMLElement {
+    const trs = rows.map(([owner, f]) => el("tr", null,
+        el("td", { class: "kind", text: owner }),
+        el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })),
+        el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }),
+        el("td", { class: "fingerprint", text: f.principal || "—" }),
+        el("td", { class: "wh-detail", text: f.error || "" }),
+    ));
+    return el("table", { class: "kinds detail-table" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Owner" }), el("th", { text: "State" }),
+            el("th", { text: "Last synced" }), el("th", { text: "By principal" }),
+            el("th", { text: "Error" }))),
+        el("tbody", null, trs),
     );
 }
 
@@ -984,12 +1060,15 @@ function demoApi<T>(path: string): Promise<T> {
         return Promise.resolve((d.me ?? { authenticated: false, login_configured: true, is_admin: false }) as unknown as T);
     }
     if (path.startsWith("/api/cache/data")) {
-        const b = d.browse?.[demoQuery(path, "actor")];
-        return b ? Promise.resolve(b as unknown as T) : demoReject(404);
+        const principal = demoQuery(path, "principal");
+        if (principal) {
+            const g = d.grants?.[principal];
+            return g ? Promise.resolve(g as unknown as T) : demoReject(404);
+        }
+        return d.browse ? Promise.resolve(d.browse as unknown as T) : demoReject(404);
     }
     if (path.startsWith("/api/cache/check")) {
-        const r = d.check?.[demoQuery(path, "actor")];
-        return r ? Promise.resolve(r as unknown as T) : demoReject(503);
+        return d.check ? Promise.resolve(d.check as unknown as T) : demoReject(503);
     }
     if (path.startsWith("/api/cache")) {
         const payload = path.includes("scope=all") ? d.all : d.mine;

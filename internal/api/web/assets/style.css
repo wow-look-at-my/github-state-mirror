@@ -298,7 +298,7 @@ table.scopes .avatar { width: 22px; height: 22px; border-radius: 50%; border: 1p
     font-family: var(--mono); letter-spacing: 0.02em;
 }
 .disp.applied     { color: var(--green);  background: rgba(63,185,80,0.12); }
-.disp.skipped     { color: var(--yellow); background: rgba(210,153,34,0.12); }
+.disp.write       { color: var(--yellow); background: rgba(210,153,34,0.12); }
 .disp.invalidated { color: var(--accent); background: rgba(47,129,247,0.12); }
 .disp.ignored     { color: var(--gray);   background: rgba(110,118,129,0.15); }
 .disp.error       { color: var(--red);    background: rgba(248,81,73,0.12); }

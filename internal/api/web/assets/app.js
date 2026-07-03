@@ -11,17 +11,17 @@
 // a state switcher is shown. Production never defines it, so the real backend is
 // used.
 const DEMO = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
-// Whether the signed-in user is an admin. Admins get the per-scope Browse /
-// Check actions (the data/check endpoints are admin-only). Set in renderDashboard.
+// Whether the signed-in user is an admin. Admins get the truth Browse / Check
+// actions and per-principal Grants views (admin-only endpoints). Set in
+// renderDashboard.
 let dashIsAdmin = false;
 const COUNT_FIELDS = [
     ["repos", "Repos"],
     ["pull_requests", "Pull requests"],
-    ["orgs", "Orgs"],
-    ["users", "Users"],
     ["commit_checks", "Commit checks"],
-    ["pr_files", "PR files"],
-    ["branch_comparisons", "Comparisons"],
+    ["contents", "Contents"],
+    ["git_commits", "Git commits"],
+    ["grants", "Grants"],
 ];
 const STATE_ORDER = ["fresh", "stale", "fetching", "error", "unknown"];
 // Minimal hyperscript helper.
@@ -82,9 +82,6 @@ function fmtTime(s) {
 function countOf(c, k) {
     return Number(c[k]) || 0;
 }
-function sumCounts(c) {
-    return COUNT_FIELDS.reduce((acc, [k]) => acc + countOf(c, k), 0);
-}
 async function api(path) {
     if (DEMO)
         return demoApi(path);
@@ -125,7 +122,7 @@ function renderLogin(me) {
     main.appendChild(el("div", { class: "hero" }, el("h1", { text: "Inspect your cache" }), el("p", { text: "Sign in with GitHub to see what the mirror has cached for your account — counts, freshness, and recent refresh activity." }), configured
         ? el("a", { class: "btn btn-primary", href: DEMO ? "javascript:void 0" : "/login", onclick: onLogin }, githubIcon(), "Sign in with GitHub")
         : el("button", { class: "btn btn-primary", disabled: true }, githubIcon(), "Sign in with GitHub"), configured
-        ? el("div", { class: "note", text: "You only ever see cache scopes that your own tokens populated." })
+        ? el("div", { class: "note", text: "There is one global cache; it reveals to you exactly the repos your own GitHub credentials can access." })
         : el("div", { class: "note", text: "Login is not configured on this server (set GITHUB_OAUTH_CLIENT_ID / _SECRET)." })));
 }
 function githubIcon() {
@@ -143,7 +140,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -249,26 +246,33 @@ async function loadScope(scope, silent = false) {
     if (currentView !== scope)
         return; // user switched tabs while we were fetching
     body.innerHTML = "";
-    const scopes = data.scopes ?? [];
+    const principals = data.principals ?? [];
     if (scope === "all") {
-        sub.textContent = data.scope_count + " cache scope" + (data.scope_count === 1 ? "" : "s") + " across all users";
-        body.appendChild(totalsGrid(data.totals, data.scope_count));
-        body.appendChild(adminTable(scopes));
+        sub.textContent = "One global truth store — " + data.principal_count + " principal" +
+            (data.principal_count === 1 ? "" : "s") + " with reveal-layer grants";
+        body.appendChild(totalsGrid(data.totals, data.principal_count));
+        if (dashIsAdmin)
+            body.appendChild(truthActions());
+        body.appendChild(adminTable(principals));
         return;
     }
-    sub.textContent = "Everything your tokens have populated" +
-        (data.scope_count ? " (" + data.scope_count + " token scope" + (data.scope_count === 1 ? "" : "s") + ")" : "");
-    if (scopes.length === 0) {
-        body.appendChild(el("div", { class: "empty" }, el("p", { text: "Nothing cached yet for " + data.login + "." }), el("p", { class: "sub", text: "Use a tool that queries this mirror with your GitHub token, then refresh." })));
+    sub.textContent = "One global truth store — you see the slice your GitHub credentials can access";
+    body.appendChild(totalsGrid(data.totals, data.principal_count));
+    if (principals.length === 0) {
+        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No principal recorded yet for " + data.login + "." }), el("p", { class: "sub", text: "Use a tool that queries this mirror with your GitHub token, then refresh." })));
         return;
     }
-    body.appendChild(totalsGrid(data.totals, data.scope_count));
-    for (const s of scopes)
-        body.appendChild(scopeCard(s, true));
+    for (const s of principals)
+        body.appendChild(principalCard(s, true));
 }
-function totalsGrid(totals, scopeCount) {
+// truthActions renders the admin actions on GLOBAL truth: browse the cached
+// rows, or run a consistency check against GitHub. Both open a modal.
+function truthActions() {
+    return el("div", { class: "scope-actions", style: "margin: 0 0 12px" }, el("button", { class: "btn btn-sm", onclick: () => void openBrowse() }, "Browse truth"), el("button", { class: "btn btn-sm", onclick: () => void openCheck() }, "Run consistency check"));
+}
+function totalsGrid(totals, principalCount) {
     const grid = el("div", { class: "stat-grid" });
-    grid.appendChild(statCard(scopeCount, scopeCount === 1 ? "Scope" : "Scopes"));
+    grid.appendChild(statCard(principalCount, principalCount === 1 ? "Principal" : "Principals"));
     for (const [k, label] of COUNT_FIELDS) {
         grid.appendChild(statCard(countOf(totals, k), label));
     }
@@ -277,7 +281,7 @@ function totalsGrid(totals, scopeCount) {
 function statCard(n, label) {
     return el("div", { class: "stat" }, el("div", { class: "num", text: String(n) }), el("div", { class: "label", text: label }));
 }
-function scopeCard(s, detailed) {
+function principalCard(s, detailed) {
     const head = el("div", { class: "scope-head" });
     const id = el("div", { class: "scope-id" });
     const known = !!s.login && s.login !== "(unknown)";
@@ -288,22 +292,19 @@ function scopeCard(s, detailed) {
         id.appendChild(el("span", { class: "badge you", text: "you" }));
     head.appendChild(id);
     const meta = el("div", { class: "scope-meta" });
-    meta.appendChild(el("div", { class: "fingerprint", text: "scope " + s.actor }));
+    meta.appendChild(el("div", { class: "fingerprint", text: "principal " + s.principal }));
     if (s.last_seen)
         meta.appendChild(el("div", { text: "last seen " + fmtTime(s.last_seen) }));
-    if (dashIsAdmin && s.actor_id)
-        meta.appendChild(scopeActions(s));
+    if (dashIsAdmin && s.principal_id)
+        meta.appendChild(principalActions(s));
     head.appendChild(meta);
     const body = el("div", { class: "scope-body" });
     const mini = el("div", { class: "mini-grid" });
-    for (const [k, label] of COUNT_FIELDS) {
-        const n = countOf(s.counts, k);
-        mini.appendChild(el("div", { class: n === 0 ? "mini zero" : "mini" }, el("div", { class: "n", text: String(n) }), el("div", { class: "l", text: label })));
-    }
+    mini.appendChild(el("div", { class: s.live_grants === 0 ? "mini zero" : "mini" }, el("div", { class: "n", text: String(s.live_grants) }), el("div", { class: "l", text: "Live repo grants" })));
     body.appendChild(mini);
     const kinds = s.kinds ?? [];
     if (kinds.length) {
-        body.appendChild(el("div", { class: "section-label", text: "Freshness by resource" }));
+        body.appendChild(el("div", { class: "section-label", text: "Org sync freshness" }));
         body.appendChild(kindsTable(kinds));
     }
     if (detailed && s.recent && s.recent.length) {
@@ -342,21 +343,21 @@ function recentList(recent) {
     }
     return ul;
 }
-function adminTable(scopes) {
-    if (scopes.length === 0) {
-        return el("div", { class: "empty", text: "No cache scopes recorded yet." });
+function adminTable(principals) {
+    if (principals.length === 0) {
+        return el("div", { class: "empty", text: "No principals recorded yet." });
     }
-    const rows = scopes.map((s) => {
+    const rows = principals.map((s) => {
         const known = !!s.login && s.login !== "(unknown)";
         const loginCell = el("td", null, el("div", { class: "login-cell" }, known ? el("img", { class: "avatar", src: avatarFor(s.login), alt: "" }) : null, el("span", { class: known ? "" : "login unknown", text: s.login || "(unknown)" }), s.is_self ? el("span", { class: "badge you", text: "you" }) : null));
-        return el("tr", null, loginCell, el("td", { class: "fingerprint", text: s.actor }), ...COUNT_FIELDS.map(([k]) => el("td", { class: "num", text: String(countOf(s.counts, k)) })), el("td", { class: "num", text: String(sumCounts(s.counts)) }), el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }), el("td", { class: "actions-cell" }, s.actor_id ? scopeActions(s) : null));
+        return el("tr", null, loginCell, el("td", { class: "fingerprint", text: s.principal }), el("td", { class: "num", text: String(s.live_grants) }), el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }), el("td", { class: "actions-cell" }, s.principal_id ? principalActions(s) : null));
     });
-    return el("table", { class: "scopes" }, el("thead", null, el("tr", null, el("th", { text: "Login" }), el("th", { text: "Scope" }), ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })), el("th", { class: "num", text: "Total" }), el("th", { text: "Last seen" }), el("th", { text: "Inspect" }))), el("tbody", null, rows));
+    return el("table", { class: "scopes" }, el("thead", null, el("tr", null, el("th", { text: "Login" }), el("th", { text: "Principal" }), el("th", { class: "num", text: "Live grants" }), el("th", { text: "Last seen" }), el("th", { text: "Inspect" }))), el("tbody", null, rows));
 }
-// scopeActions renders the per-scope admin actions: browse the cached rows, or
-// run a consistency check against GitHub. Both open a modal.
-function scopeActions(s) {
-    return el("div", { class: "scope-actions" }, el("button", { class: "btn btn-sm", onclick: () => void openBrowse(s) }, "Browse"), el("button", { class: "btn btn-sm", onclick: () => void openCheck(s) }, "Check"));
+// principalActions renders the per-principal admin action: view the grants the
+// reveal layer holds for it (who can see what).
+function principalActions(s) {
+    return el("div", { class: "scope-actions" }, el("button", { class: "btn btn-sm", onclick: () => void openGrants(s) }, "Grants"));
 }
 // ---- webhook activity (admin only) ----
 async function loadWebhooks(silent = false) {
@@ -392,10 +393,9 @@ async function loadWebhooks(silent = false) {
     body.appendChild(webhookTable(deliveries));
 }
 const DISPOSITIONS = [
-    ["applied", "data written to the cache"],
-    ["skipped", "no cached scope for the repo"],
+    ["applied", "state written to global truth"],
     ["invalidated", "marked stale; refetched on next read"],
-    ["ignored", "event not tracked"],
+    ["ignored", "event/action not tracked"],
     ["error", "internal error (GitHub retries)"],
 ];
 function webhookLegend() {
@@ -410,9 +410,9 @@ function webhookTable(deliveries) {
         const disp = d.disposition || "ignored";
         const evt = d.action ? d.event_type + "." + d.action : d.event_type;
         const shortID = d.delivery_id ? d.delivery_id.slice(0, 8) : "—";
-        return el("tr", null, el("td", null, el("span", { class: "disp " + disp, text: disp })), el("td", { class: "wh-event", text: evt }), el("td", { class: "wh-repo", text: d.repo || "—" }), el("td", { class: "wh-detail", text: d.detail || "" }), el("td", { class: "num", text: String(d.actors) }), el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }), el("td", { class: "wh-when", text: fmtTime(d.received_at) }));
+        return el("tr", null, el("td", null, el("span", { class: "disp " + disp, text: disp })), el("td", { class: "wh-event", text: evt }), el("td", { class: "wh-repo", text: d.repo || "—" }), el("td", { class: "wh-detail", text: d.detail || "" }), el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }), el("td", { class: "wh-when", text: fmtTime(d.received_at) }));
     });
-    return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { class: "num", text: "Scopes" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
+    return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
 }
 // ---- request activity (admin only) ----
 // Shows data-API requests hitting the cache and how each was served: a cache
@@ -444,6 +444,7 @@ async function loadRequests(silent = false) {
     const by = data.by_disposition ?? {};
     sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
         " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
+        ", write " + (by.write || 0) +
         (by.error ? ", error " + by.error : "");
     body.appendChild(requestLegend());
     if (recent.length === 0) {
@@ -455,7 +456,8 @@ async function loadRequests(silent = false) {
 const REQUEST_DISPOSITIONS = [
     ["hit", "served from cache, no GitHub call"],
     ["miss", "cache miss; fetched from GitHub then cached"],
-    ["passthrough", "forwarded to GitHub uncached"],
+    ["passthrough", "read forwarded to GitHub uncached"],
+    ["write", "mutation proxied to GitHub (never cacheable)"],
     ["error", "cache lookup/fetch failed"],
 ];
 // reqDispClass maps a request disposition onto the existing webhook chip colors,
@@ -465,6 +467,7 @@ function reqDispClass(disp) {
         case "hit": return "applied";
         case "miss": return "invalidated";
         case "passthrough": return "ignored";
+        case "write": return "write";
         default: return "error";
     }
 }
@@ -551,8 +554,8 @@ function rateLimitCard(inst) {
     return el("div", { class: "scope" }, head, body);
 }
 // ---- admin: browse + consistency check (modal) ----
-function scopeLabel(s) {
-    return s.login && s.login !== "(unknown)" ? s.login : "scope " + s.actor;
+function principalLabel(s) {
+    return s.login && s.login !== "(unknown)" ? s.login : "principal " + s.principal;
 }
 // openModal creates a dismissable overlay and returns its (empty) body element.
 function openModal(titleText) {
@@ -594,15 +597,12 @@ function jsonBlock(obj, copyLabel) {
     });
     return el("div", { class: "json-wrap" }, el("div", { class: "json-toolbar" }, copyBtn), el("pre", { class: "json-block", text }));
 }
-async function openBrowse(s) {
-    const actorId = s.actor_id;
-    if (!actorId)
-        return;
-    const { body } = openModal("Cache contents — " + scopeLabel(s));
+async function openBrowse() {
+    const { body } = openModal("Global truth — cached rows");
     body.appendChild(el("div", { class: "loading", text: "Loading cached rows…" }));
     let data;
     try {
-        data = await api("/api/cache/data?actor=" + encodeURIComponent(actorId));
+        data = await api("/api/cache/data");
     }
     catch (e) {
         body.innerHTML = "";
@@ -614,8 +614,11 @@ async function openBrowse(s) {
 }
 function renderBrowse(d) {
     const wrap = el("div", { class: "detail" });
-    wrap.appendChild(el("div", { class: "detail-sub", text: "Full fingerprint " + d.actor_id + (d.login ? " · " + d.login : "") }));
-    wrap.appendChild(totalsGrid(d.counts, 1));
+    wrap.appendChild(el("div", { class: "detail-sub", text: "The one global truth store — what webhooks and principals' fetches have absorbed" }));
+    const grid = el("div", { class: "stat-grid" });
+    for (const [k, label] of COUNT_FIELDS)
+        grid.appendChild(statCard(countOf(d.counts, k), label));
+    wrap.appendChild(grid);
     if (d.repos.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Repositories (" + d.repos.length + ")" }));
         wrap.appendChild(browseRepoTable(d.repos));
@@ -624,23 +627,57 @@ function renderBrowse(d) {
         wrap.appendChild(el("div", { class: "section-label", text: "Pull requests (" + d.pull_requests.length + ")" }));
         wrap.appendChild(browsePRTable(d.pull_requests));
     }
-    const extras = [
-        ["Orgs", d.orgs.length], ["Users", d.users.length],
-        ["Comparisons", d.branch_comparisons.length], ["PR files", d.pr_files.length],
-        ["Commit checks", d.commit_checks.length],
-    ];
-    const present = extras.filter(([, n]) => n > 0);
-    if (present.length) {
+    if (d.commit_checks.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Also cached" }));
-        wrap.appendChild(el("div", { class: "chips" }, ...present.map(([label, n]) => el("span", { class: "chip" }, label + " " + n))));
+        wrap.appendChild(el("div", { class: "chips" }, el("span", { class: "chip" }, "Commit checks " + d.commit_checks.length)));
     }
-    const raw = el("details", { class: "raw" }, el("summary", { text: "Raw JSON (everything cached for this scope)" }), jsonBlock(d, "Copy JSON"));
+    const raw = el("details", { class: "raw" }, el("summary", { text: "Raw JSON (every cached truth row)" }), jsonBlock(d, "Copy JSON"));
     wrap.appendChild(raw);
     return wrap;
 }
+// openGrants shows one principal's reveal-layer grants: exactly which repos
+// the cache will reveal to it, and where each grant came from.
+async function openGrants(s) {
+    const principalId = s.principal_id;
+    if (!principalId)
+        return;
+    const { body } = openModal("Access grants — " + principalLabel(s));
+    body.appendChild(el("div", { class: "loading", text: "Loading grants…" }));
+    let data;
+    try {
+        data = await api("/api/cache/data?principal=" + encodeURIComponent(principalId));
+    }
+    catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load grants: " + e.message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderGrants(data));
+}
+function renderGrants(d) {
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text: "Principal " + d.principal_id + (d.login ? " · " + d.login : "") +
+            " — repos the reveal layer will serve to it (public repos need no grant)" }));
+    const grants = d.grants ?? [];
+    if (grants.length === 0) {
+        wrap.appendChild(el("div", { class: "empty", text: "No live grants. This principal has only public-repo (or no) access so far." }));
+    }
+    else {
+        wrap.appendChild(el("div", { class: "section-label", text: "Grants (" + grants.length + ")" }));
+        wrap.appendChild(grantsTable(grants));
+    }
+    const raw = el("details", { class: "raw" }, el("summary", { text: "Raw JSON" }), jsonBlock(d, "Copy JSON"));
+    wrap.appendChild(raw);
+    return wrap;
+}
+function grantsTable(grants) {
+    const rows = grants.map((g) => el("tr", null, el("td", { class: "wh-repo", text: g.owner + "/" + g.repo }), el("td", null, el("span", { class: "pill fresh", text: g.source })), el("td", { text: fmtTime(g.granted_at) }), el("td", { text: fmtTime(g.expires_at) })));
+    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Repo" }), el("th", { text: "Source" }), el("th", { text: "Granted" }), el("th", { text: "Expires" }))), el("tbody", null, rows));
+}
 function browseRepoTable(repos) {
-    const rows = repos.map((r) => el("tr", null, el("td", null, el("a", { href: r.url, target: "_blank", rel: "noopener", text: r.name_with_owner })), el("td", { text: r.default_branch || "—" }), statusCell(r.default_branch_status), el("td", { text: r.is_archived ? "archived" : r.is_disabled ? "disabled" : "active" })));
-    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Repo" }), el("th", { text: "Default branch" }), el("th", { text: "Branch status" }), el("th", { text: "Flags" }))), el("tbody", null, rows));
+    const rows = repos.map((r) => el("tr", null, el("td", null, el("a", { href: r.url, target: "_blank", rel: "noopener", text: r.name_with_owner })), el("td", { text: r.visibility || "unknown" }), el("td", { text: r.default_branch || "—" }), statusCell(r.default_branch_status), el("td", { text: r.is_archived ? "archived" : r.is_disabled ? "disabled" : "active" })));
+    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Repo" }), el("th", { text: "Visibility" }), el("th", { text: "Default branch" }), el("th", { text: "Branch status" }), el("th", { text: "Flags" }))), el("tbody", null, rows));
 }
 function browsePRTable(prs) {
     const rows = prs.map((p) => el("tr", null, el("td", null, el("a", { href: p.url, target: "_blank", rel: "noopener", text: p.owner + "/" + p.repo + " #" + p.number })), el("td", { class: "pr-title", text: p.title }), el("td", { text: p.is_draft ? "draft" : p.state.toLowerCase() }), statusCell(p.last_commit_status), el("td", null, ...(p.labels ?? []).map((l) => el("span", { class: "label-chip", text: l })))));
@@ -651,15 +688,12 @@ function statusCell(status) {
         return el("td", { text: "—" });
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
-async function openCheck(s) {
-    const actorId = s.actor_id;
-    if (!actorId)
-        return;
-    const { body } = openModal("Consistency check — " + scopeLabel(s));
+async function openCheck() {
+    const { body } = openModal("Consistency check — global truth vs GitHub");
     body.appendChild(el("div", { class: "loading", text: "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
     let report;
     try {
-        report = await api("/api/cache/check?actor=" + encodeURIComponent(actorId));
+        report = await api("/api/cache/check");
     }
     catch (e) {
         body.innerHTML = "";
@@ -680,10 +714,17 @@ function renderCheck(r) {
     grid.appendChild(statCard(sm.discrepancies, "Discrepancies"));
     grid.appendChild(statCard(sm.repos_only_in_cache, "Repos only cached"));
     grid.appendChild(statCard(sm.repos_only_on_github, "Repos only on GH"));
+    grid.appendChild(statCard(sm.repos_only_on_github_private, "…of those, private (lazy truth)"));
     grid.appendChild(statCard(sm.prs_only_in_cache, "PRs only cached"));
     grid.appendChild(statCard(sm.prs_only_on_github, "PRs only on GH"));
     grid.appendChild(statCard(sm.field_mismatches, "Field mismatches"));
     wrap.appendChild(grid);
+    const tf = r.truth_freshness ?? {};
+    const owners = Object.keys(tf).sort();
+    if (owners.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Truth freshness (most recent org sync per owner)" }));
+        wrap.appendChild(truthFreshnessTable(owners.map((o) => [o, tf[o]])));
+    }
     if (r.discrepancies.length === 0) {
         wrap.appendChild(el("div", { class: "ok-banner", text: "No drift detected. The cache matches GitHub for every org checked." }));
     }
@@ -710,9 +751,13 @@ function renderCheck(r) {
 function discrepancyTable(items) {
     const rows = items.map((d) => {
         const where = d.kind === "pr" ? d.repo + " #" + (d.pr ?? "") : d.repo;
-        return el("tr", null, el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })), el("td", { class: "wh-repo", text: where }), el("td", { class: "kind", text: d.field || "—" }), el("td", { class: "diff-cached", text: d.cached || "" }), el("td", { class: "diff-github", text: d.github || "" }), el("td", { class: "wh-detail", text: d.note || "" }));
+        return el("tr", null, el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })), el("td", { class: "wh-repo", text: where }), el("td", { class: "kind", text: d.field || "—" }), el("td", { class: "diff-cached", text: d.cached || "" }), el("td", { class: "diff-github", text: d.github || "" }), el("td", { class: "wh-detail" }, d.visibility ? el("span", { class: "badge", text: d.visibility }) : null, d.note ? " " + d.note : ""));
     });
     return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
+}
+function truthFreshnessTable(rows) {
+    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), el("td", { class: "fingerprint", text: f.principal || "—" }), el("td", { class: "wh-detail", text: f.error || "" })));
+    return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Owner" }), el("th", { text: "State" }), el("th", { text: "Last synced" }), el("th", { text: "By principal" }), el("th", { text: "Error" }))), el("tbody", null, trs));
 }
 // ---- boot ----
 async function boot() {
@@ -755,12 +800,15 @@ function demoApi(path) {
         return Promise.resolve((d.me ?? { authenticated: false, login_configured: true, is_admin: false }));
     }
     if (path.startsWith("/api/cache/data")) {
-        const b = d.browse?.[demoQuery(path, "actor")];
-        return b ? Promise.resolve(b) : demoReject(404);
+        const principal = demoQuery(path, "principal");
+        if (principal) {
+            const g = d.grants?.[principal];
+            return g ? Promise.resolve(g) : demoReject(404);
+        }
+        return d.browse ? Promise.resolve(d.browse) : demoReject(404);
     }
     if (path.startsWith("/api/cache/check")) {
-        const r = d.check?.[demoQuery(path, "actor")];
-        return r ? Promise.resolve(r) : demoReject(503);
+        return d.check ? Promise.resolve(d.check) : demoReject(503);
     }
     if (path.startsWith("/api/cache")) {
         const payload = path.includes("scope=all") ? d.all : d.mine;
