@@ -194,11 +194,13 @@ func NewRouter(
 	// github.com — not the api.github.com passthrough.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
 
-	// Installation-token mint cache. Registered OUTSIDE requireAuth: the
-	// bearer token here is a GitHub App JWT (it cannot resolve GET /user), so
-	// the handler verifies it itself via VerifyAppIdentity and partitions by
-	// the verified app id. Unverifiable callers are forwarded unchanged.
+	// Installation-token mint cache and the repo-installation lookup.
+	// Registered OUTSIDE requireAuth: the bearer token on both is a GitHub App
+	// JWT (it cannot resolve GET /user), so each handler verifies it itself
+	// via VerifyAppIdentity and partitions by the verified app id.
+	// Unverifiable callers are forwarded unchanged.
 	r.Post("/app/installations/{id}/access_tokens", h.cachedInstallationToken)
+	r.Get("/repos/{owner}/{repo}/installation", h.cachedRepoInstallation)
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
@@ -221,10 +223,20 @@ func NewRouter(
 		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
 		// the 404 "config absent" answer; push/repository webhooks invalidate)
 		// and immutable git commits (also absorbed from push payloads).
-		// GET /repos/{o}/{r}/pulls/{n} is deliberately NOT cached — its
-		// `mergeable` field is lazily computed and polled-for; see CLAUDE.md.
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
+
+		// Cached PR routes (respcache_pulls.go): the open-PR list is served
+		// from webhook-maintained pull_requests state behind a per-(actor,
+		// repo) "list complete" marker; the single PR is served only when the
+		// row is rest-complete AND its `mergeable` is KNOWN — a null/unknown
+		// mergeable always misses so pr-minder's resolve-poll still reaches
+		// GitHub (diff/raw Accepts and unknown query shapes pass through).
+		// Sub-resources (/pulls/{n}/files, /reviews, /merge, ...) don't match
+		// these patterns and keep passing through; writes (POST/PATCH/PUT)
+		// fall to MethodNotAllowed → the proxy.
+		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded

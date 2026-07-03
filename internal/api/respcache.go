@@ -28,15 +28,19 @@ import (
 // unexpected shape, a non-cacheable status, a non-JSON Accept) is forwarded
 // or replayed verbatim, unstored, and recorded as a passthrough.
 //
-// Cached routes in v1:
+// Cached routes:
 //
 //   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404)
 //   - GET /repos/{owner}/{repo}/git/commits/{sha}   (200 only; immutable)
 //   - POST /app/installations/{id}/access_tokens    (201; App-JWT verified)
+//   - GET /repos/{owner}/{repo}/pulls               (respcache_pulls.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}      (respcache_pulls.go)
+//   - GET /repos/{owner}/{repo}/installation        (respcache_pulls.go)
 //
-// GET /repos/{o}/{r}/pulls/{n} is deliberately NOT cached: its body carries
-// the lazily-computed `mergeable` field, and pr-minder polls that endpoint
-// waiting for `mergeable` to resolve — a cached body would wedge the poll.
+// The single-PR route was once deliberately passthrough because its body
+// carries the lazily-computed `mergeable` field that pr-minder polls for; it
+// is now cached behind a known-mergeable gate — an unknown/null mergeable
+// ALWAYS misses, so the resolve-poll still reaches GitHub (respcache_pulls.go).
 
 const (
 	// contentsCacheTTL is the TTL backstop on cached contents rows. Webhooks
