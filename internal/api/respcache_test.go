@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
@@ -39,14 +39,27 @@ type respCacheUpstream struct {
 	contentsHits int32
 	commitHits   int32
 	mintHits     int32
+	probeHits    int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
+	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
+	// per test. The default reports a PRIVATE repo, so callers earn grants.
+	probe func(w http.ResponseWriter, r *http.Request)
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
 }
 
 func newRespCacheUpstream() *respCacheUpstream {
 	u := &respCacheUpstream{tokenExpiry: time.Now().Add(time.Hour)}
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprintf(w, `{
+			"name": %q, "full_name": %q, "private": true, "visibility": "private",
+			"html_url": "https://github.com/%s", "default_branch": "main",
+			"owner": {"login": %q, "avatar_url": "https://a", "html_url": "https://github.com/%s"}
+		}`, parts[1], parts[0]+"/"+parts[1], parts[0]+"/"+parts[1], parts[0], parts[0])
+	}
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.LoadInt32(&u.contentsHits)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -82,6 +95,10 @@ func (u *respCacheUpstream) handler() http.Handler {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
+		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
+			// The reveal probe: is this repo visible to the caller's token?
+			atomic.AddInt32(&u.probeHits, 1)
+			u.probe(w, r)
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)
@@ -293,28 +310,96 @@ func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "both refs served from their own entries")
 }
 
-// TestCachedContents_ActorPartitioning: one scope's absorbed state is never
-// served to another. Under per-user partitioning the two tokens resolve to
-// DISTINCT users (the fake /user answers a different id for "other-token"), so
-// token B's first request is its own miss (its own upstream fetch with its own
-// Authorization), not token A's cached row.
-func TestCachedContents_ActorPartitioning(t *testing.T) {
+// TestCachedContents_GlobalTruthSharedViaReveal: ONE global truth store — a
+// second user's read of the same private resource is answered from the state
+// the first user's fetch absorbed. The second user still pays GitHub exactly
+// one PROBE (their own token proving repo access, earning a grant); the
+// contents themselves are never refetched.
+func TestCachedContents_GlobalTruthSharedViaReveal(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/contents/secret.txt"
 
-	w1 := do(t, router, authedReq("GET", target, nil)) // token A: miss
+	w1 := do(t, router, authedReq("GET", target, nil)) // user A: probe + miss
 	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits), "user A's first touch probes")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits))
 
 	reqB := httptest.NewRequest("GET", target, nil)
 	reqB.Header.Set("Authorization", "Bearer other-token")
-	w2 := do(t, router, reqB) // token B: must not read A's row
+	w2 := do(t, router, reqB) // user B: probe grants, then HITS shared truth
 	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "a different credential must miss")
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "token B fetches with its own credential")
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "global truth serves every granted principal")
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits), "user B pays one probe, not a refetch")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the contents are fetched once, ever")
 
-	w3 := do(t, router, authedReq("GET", target, nil)) // token A again: still its own hit
+	w3 := do(t, router, authedReq("GET", target, nil)) // user A again: grant cached, plain hit
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader))
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits), "grants are remembered; no re-probe")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits))
+}
+
+// TestReveal_DenyVerdictCachedAuthoritativeOnly: a probe GitHub answers 404 is
+// relayed as the caller's truth and remembered briefly (repeat requests are
+// answered from the deny cache without touching GitHub); a TRANSIENT probe
+// failure (500) is never cached — the next request probes again.
+func TestReveal_DenyVerdictCachedAuthoritativeOnly(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com"}`))
+	}
+	target := "/repos/org1/ghost/contents/cfg.jsonc"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader), "a fresh probe denial is a miss")
+	assertNoURLKeys(t, w1.Body.Bytes())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&u.contentsHits), "a denied caller never reaches the contents fetch")
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a cached deny verdict answers without GitHub")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits), "the deny verdict absorbs the repeat probe")
+
+	// Transient probe failures are NEVER cached as denials.
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	target2 := "/repos/org1/flaky/contents/cfg.jsonc"
+	w3 := do(t, router, authedReq("GET", target2, nil))
+	assert.Equal(t, http.StatusBadGateway, w3.Code, "a transient probe failure fails the request")
+	w4 := do(t, router, authedReq("GET", target2, nil))
+	assert.Equal(t, http.StatusBadGateway, w4.Code)
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.probeHits), "transient failures are retried, never cached as denials")
+}
+
+// TestReveal_PublicFastPath: once truth knows a repo is public (here via a
+// repository webhook's payload), any principal reads its cached state with no
+// probe at all.
+func TestReveal_PublicFastPath(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	// A webhook teaches truth the repo exists and is public.
+	postWebhook(t, router, "repository", `{"action":"created","repository":{
+		"name":"pub","full_name":"org1/pub","private":false,"visibility":"public",
+		"html_url":"https://github.com/org1/pub","default_branch":"main",
+		"owner":{"login":"org1"}}}`)
+
+	target := "/repos/org1/pub/contents/readme.md"
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&u.probeHits), "a public repo needs no probe")
+
+	reqB := httptest.NewRequest("GET", target, nil)
+	reqB.Header.Set("Authorization", "Bearer other-token")
+	w2 := do(t, router, reqB)
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "public truth serves any principal")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&u.probeHits))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits))
 }
 
 // TestCachedContents_TTLBackstopExpiry: even without any webhook, a cached row
@@ -367,19 +452,15 @@ func TestCachedGitCommit_HitImmuneToPush(t *testing.T) {
 }
 
 // TestCachedGitCommit_AbsorbedFromPushWebhook: a push payload's commits are
-// upserted into the git-commit cache for every actor that has the repo cached,
-// so the post-push read hits WITHOUT any GitHub fetch ever having happened —
-// and rebuilds to the same trimmed shape a fetch-sourced row does.
+// upserted into GLOBAL truth — for a repo nobody ever fetched — so the
+// post-push read hits WITHOUT any GitHub fetch ever having happened, and
+// rebuilds to the same trimmed shape a fetch-sourced row does. (The reader
+// still pays the reveal probe: their own proof of repo access.)
 func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
-	router, store, _, u := respCacheStack(t)
+	router, _, _, u := respCacheStack(t)
 
-	// The dispatcher absorbs for actors that have the repo cached; seed the
-	// test token's scope with the repo (matching how a real caller's org-repos
-	// query would have populated it).
-	require.NoError(t, store.SetOrgRepos(seedCtx(), "org1", []dbgen.Repo{
-		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"},
-	}))
-
+	// No seeding: the dispatcher applies to GLOBAL truth unconditionally —
+	// this repo has never been fetched by anyone.
 	push := fmt.Sprintf(`{
 		"repository": {"name":"repo1","owner":{"login":"org1"}},
 		"before": %q, "after": %q, "forced": false,
@@ -434,10 +515,7 @@ func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
 // untrustworthy (before is not the parent), so nothing is absorbed and the
 // read falls back to a normal fetch-miss.
 func TestCachedGitCommit_ForcedPushNotAbsorbed(t *testing.T) {
-	router, store, _, u := respCacheStack(t)
-	require.NoError(t, store.SetOrgRepos(seedCtx(), "org1", []dbgen.Repo{
-		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"},
-	}))
+	router, _, _, u := respCacheStack(t)
 
 	push := fmt.Sprintf(`{
 		"repository": {"name":"repo1","owner":{"login":"org1"}},

@@ -416,7 +416,12 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 
 	default:
 		// created/edited/archived/unarchived and anything else carrying a
-		// repository object: the generic absorb above already applied it.
+		// repository object: the generic absorb above already applied it. A
+		// payload WITHOUT a parseable repository object has applied nothing,
+		// so fall back to marking syncs stale instead of claiming success.
+		if _, ok := webhook.ParseRepositoryPayload(event.Raw); !ok {
+			return d.invalidateRepoOrg(ctx, event, "repository payload missing repository object")
+		}
 		return applied("upserted repo " + owner + "/" + name)
 	}
 }

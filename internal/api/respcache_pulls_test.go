@@ -1,15 +1,18 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,6 +94,7 @@ type pullsCacheUpstream struct {
 	listHits    int32
 	singleHits  int32
 	installHits int32
+	probeHits   int32
 	list        func(w http.ResponseWriter, r *http.Request)
 	single      func(w http.ResponseWriter, r *http.Request)
 }
@@ -172,6 +176,14 @@ func (u *pullsCacheUpstream) handler() http.Handler {
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			atomic.AddInt32(&u.listHits, 1)
 			u.list(w, r)
+		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
+			// The reveal probe: report a private repo so callers earn grants.
+			atomic.AddInt32(&u.probeHits, 1)
+			servePRJSON(w, map[string]any{
+				"name": "repo1", "full_name": "org1/repo1", "private": true, "visibility": "private",
+				"html_url": "https://github.com/org1/repo1", "default_branch": "main",
+				"owner": map[string]any{"login": "org1"},
+			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
@@ -238,17 +250,17 @@ func TestCachedPullsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 }
 
-// TestCachedPullsList_WebhookMaintenance is the load-bearing maintenance test,
-// including the ActorsForRepo bootstrap: the repo is NEVER org-fetched for
-// this actor -- the list absorb itself must seed the repos row that makes the
-// webhook dispatcher apply events to this partition. Open/close/label/
-// synchronize events must all be reflected in subsequent list rebuilds with
-// ZERO further upstream fetches.
+// TestCachedPullsList_WebhookMaintenance is the load-bearing maintenance test:
+// the repo is never org-fetched -- global truth is seeded by the list absorb
+// (plus the reveal probe's repository object) and maintained ENTIRELY by
+// webhooks, which apply unconditionally under the global model. Open/close/
+// label/synchronize events must all be reflected in subsequent list rebuilds
+// with ZERO further upstream fetches.
 func TestCachedPullsList_WebhookMaintenance(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"
 
-	// Absorb the complete list (PRs #7, #8). Deliberately NO SetOrgRepos seed.
+	// Absorb the complete list (PRs #7, #8). Nothing pre-seeded.
 	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, "miss", w.Header().Get(cacheHeader))
@@ -298,10 +310,12 @@ func TestCachedPullsList_WebhookMaintenance(t *testing.T) {
 		"webhook maintenance must never trigger an upstream fetch")
 }
 
-// TestCachedPullsList_SetRepoPRsClearsMarker: the GraphQL org-repos fetch
-// replaces a repo's PR rows with rows lacking the REST-only columns, so it
-// must clear the "list complete" marker -- the next list read is a miss.
-func TestCachedPullsList_SetRepoPRsClearsMarker(t *testing.T) {
+// TestCachedPullsList_GraphQLSyncInteraction: the GraphQL org sync merges into
+// the same global rows. Its COALESCE upsert PRESERVES the REST-only columns on
+// PRs it re-writes (the list stays a hit) -- but a PR the sync introduces that
+// no REST source has seen yet is rest-incomplete, and the list must miss
+// rather than rebuild a partial entry.
+func TestCachedPullsList_GraphQLSyncInteraction(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"
 
@@ -310,17 +324,39 @@ func TestCachedPullsList_SetRepoPRsClearsMarker(t *testing.T) {
 	require.Equal(t, "hit", w.Header().Get(cacheHeader))
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 
-	// GraphQL-shaped replacement (no node_id/base sha -- rest-incomplete).
-	require.NoError(t, store.SetRepoPRs(seedCtx(), "org1", "repo1", []dbgen.PullRequest{{
-		Owner: "org1", Repo: "repo1", Number: 7, Title: "First PR", Url: "u",
-		State: "OPEN", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-02T10:00:00Z",
-		Mergeable:   sql.NullString{String: "MERGEABLE", Valid: true},
-		AuthorLogin: sql.NullString{String: "alice", Valid: true},
-	}}, nil))
+	graphqlPR := func(number int64, title string) dbgen.PullRequest {
+		return dbgen.PullRequest{
+			Owner: "org1", Repo: "repo1", Number: number, Title: title, Url: "u",
+			State: "OPEN", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-02T10:00:00Z",
+			Mergeable:   sql.NullString{String: "MERGEABLE", Valid: true},
+			AuthorLogin: sql.NullString{String: "alice", Valid: true},
+		}
+	}
 
+	// A sync re-writing the SAME open set (7, 8): REST columns are preserved
+	// by the COALESCE upsert, so the list keeps hitting.
+	now := time.Now()
+	require.NoError(t, store.SyncOrgTruth(context.Background(), "org1", ghdata.OrgSyncData{
+		Repos: []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}},
+		PRsByRepo: map[string][]dbgen.PullRequest{
+			"org1/repo1": {graphqlPR(7, "First PR"), graphqlPR(8, "Second PR")},
+		},
+	}, testUserActor, now, now))
 	w2 := do(t, router, authedReq("GET", target, nil))
-	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "SetRepoPRs must clear the list marker")
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a GraphQL re-sync must not degrade rest-complete rows")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
+
+	// A sync introducing a NEVER-REST-SEEN PR (#99): rest-incomplete row in
+	// the open set -> the list must miss and refetch.
+	require.NoError(t, store.SyncOrgTruth(context.Background(), "org1", ghdata.OrgSyncData{
+		Repos: []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}},
+		PRsByRepo: map[string][]dbgen.PullRequest{
+			"org1/repo1": {graphqlPR(7, "First PR"), graphqlPR(8, "Second PR"), graphqlPR(99, "Fresh from GraphQL")},
+		},
+	}, testUserActor, now, now))
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a rest-incomplete row in the set forces a refetch")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
@@ -410,24 +446,28 @@ func TestCachedPullsList_HeadFilter(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
-// TestCachedPullsList_PartitionIsolation: one user's absorbed list is never
-// served to another credential's partition.
-func TestCachedPullsList_PartitionIsolation(t *testing.T) {
+// TestCachedPullsList_GlobalSharedViaReveal: the absorbed list is GLOBAL
+// truth. A second user pays one reveal probe (their own token proving repo
+// access) and then reads the same rebuilt list -- the list itself is fetched
+// once, ever.
+func TestCachedPullsList_GlobalSharedViaReveal(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"
 
-	do(t, router, authedReq("GET", target, nil)) // user A absorbs
+	do(t, router, authedReq("GET", target, nil)) // user A: probe + absorb
 
 	reqB := httptest.NewRequest("GET", target, nil)
 	reqB.Header.Set("Authorization", "Bearer other-token")
 	w := do(t, router, reqB)
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a different user must miss")
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits), "user B fetches with its own credential")
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "global truth serves every granted principal")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits), "the list is fetched once, ever")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits), "each principal pays exactly one probe")
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits), "grants are remembered; no re-probe")
 }
 
 // TestCachedPullsList_MarkerTTLBackstop: with webhooks silent, the marker
@@ -573,12 +613,16 @@ func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 
-	require.NoError(t, store.SetRepoPRs(seedCtx(), "org1", "repo1", []dbgen.PullRequest{{
-		Owner: "org1", Repo: "repo1", Number: 7, Title: "First PR", Url: "u",
-		State: "OPEN", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-02T10:00:00Z",
-		Mergeable:   sql.NullString{String: "MERGEABLE", Valid: true},
-		AuthorLogin: sql.NullString{String: "alice", Valid: true},
-	}}, nil))
+	now := time.Now()
+	require.NoError(t, store.SyncOrgTruth(context.Background(), "org1", ghdata.OrgSyncData{
+		Repos: []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}},
+		PRsByRepo: map[string][]dbgen.PullRequest{"org1/repo1": {{
+			Owner: "org1", Repo: "repo1", Number: 7, Title: "First PR", Url: "u",
+			State: "OPEN", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-02T10:00:00Z",
+			Mergeable:   sql.NullString{String: "MERGEABLE", Valid: true},
+			AuthorLogin: sql.NullString{String: "alice", Valid: true},
+		}}},
+	}, testUserActor, now, now))
 
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7", nil))
 	require.Equal(t, http.StatusOK, w.Code)
