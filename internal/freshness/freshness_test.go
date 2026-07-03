@@ -316,6 +316,119 @@ func TestStore_Delete(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+// TestManager_FetchSurvivesCallerCancel locks the detached-fetch behavior: an
+// in-flight fetch is shared work whose result is cached for every future
+// caller, so a client aborting its request mid-fetch must neither cancel the
+// fetch nor prevent the result from being stored. (Previously an impatient
+// browser abort could cancel the multi-page org-repos fetch on every attempt,
+// preventing a scope from ever refreshing.)
+func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	fetchStarted := make(chan struct{})
+	proceed := make(chan struct{})
+	var fetchCtxErr error
+	mgr.RegisterFetcher(Policy{
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		close(fetchStarted)
+		<-proceed // hold the fetch until the caller's context has been canceled
+		fetchCtxErr = ctx.Err()
+		return RefreshResult{RecordsChanged: 1}, nil
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	id := ResourceID{Kind: "test", Key: "key1"}
+	done := make(chan error, 1)
+	go func() { done <- mgr.EnsureFresh(ctx, id) }()
+
+	<-fetchStarted
+	cancel() // the client aborts mid-fetch
+	close(proceed)
+
+	require.NoError(t, <-done, "the fetch must complete despite the caller's cancellation")
+	assert.NoError(t, fetchCtxErr, "the fetcher's context must not be canceled by the caller's abort")
+
+	meta, err := s.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+	assert.Equal(t, StateFresh, meta.State, "the result must be stored even though the requester is gone")
+}
+
+// TestManager_FetchKeepsCallerDeadline: severing cancellation must not unbound
+// bounded callers — an explicit deadline (e.g. the webhook dispatch timeout)
+// still applies to the fetch context.
+func TestManager_FetchKeepsCallerDeadline(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	var hadDeadline bool
+	mgr.RegisterFetcher(Policy{
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		_, hadDeadline = ctx.Deadline()
+		return RefreshResult{}, nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+	require.NoError(t, mgr.EnsureFresh(ctx, ResourceID{Kind: "test", Key: "key1"}))
+	assert.True(t, hadDeadline, "the caller's deadline must be preserved on the fetch context")
+}
+
+// TestManager_ErrorBackoffSkipsRefetch: an error-state row still inside its
+// retry-after window must not re-attempt the fetch on every request (retry
+// storm against a failing upstream); the stored error is reported so callers
+// can deliberately serve stale data. Once the window passes, fetching resumes.
+func TestManager_ErrorBackoffSkipsRefetch(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	fetchCount := 0
+	mgr.RegisterFetcher(Policy{
+		Kind:          "test",
+		DefaultTTL:    1 * time.Hour,
+		ErrorRetryMin: 5 * time.Minute,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		fetchCount++
+		return RefreshResult{}, assert.AnError
+	}))
+
+	ctx := context.Background()
+	id := ResourceID{Kind: "test", Key: "key1"}
+
+	// Real attempt: fails and opens a 5-minute retry window.
+	err := mgr.EnsureFresh(ctx, id)
+	assert.Error(t, err)
+	assert.Equal(t, 1, fetchCount)
+
+	// Within the window: no new attempt, but the stored error is still reported.
+	outcome, err := mgr.EnsureFreshOutcome(ctx, id)
+	assert.Error(t, err, "the stored error must still surface to callers")
+	assert.Equal(t, OutcomeError, outcome)
+	assert.Equal(t, 1, fetchCount, "no refetch within the retry-after window")
+	assert.Contains(t, err.Error(), assert.AnError.Error(), "the error must carry the stored upstream failure")
+
+	// A different resource kind whose window expires immediately: fetching resumes.
+	fetch2 := 0
+	mgr.RegisterFetcher(Policy{
+		Kind:          "test2",
+		DefaultTTL:    1 * time.Hour,
+		ErrorRetryMin: 1 * time.Nanosecond,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		fetch2++
+		return RefreshResult{}, assert.AnError
+	}))
+	id2 := ResourceID{Kind: "test2", Key: "key1"}
+	assert.Error(t, mgr.EnsureFresh(ctx, id2))
+	time.Sleep(5 * time.Millisecond) // let the nanosecond window lapse
+	assert.Error(t, mgr.EnsureFresh(ctx, id2))
+	assert.Equal(t, 2, fetch2, "a lapsed retry-after window must allow a re-attempt")
+}
+
 // FetcherFunc is an adapter to use ordinary functions as Fetcher.
 type FetcherFunc func(ctx context.Context, key string, etag string) (RefreshResult, error)
 

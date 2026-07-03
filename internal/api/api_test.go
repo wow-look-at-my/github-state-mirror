@@ -83,7 +83,7 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
-	checker := syncpkg.NewConsistencyChecker(gh, store, nil)
+	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker)
 	return router, store, db, ghSrv.URL
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
@@ -22,11 +24,12 @@ import (
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
+	fresh *freshness.Store           // read-only: scope staleness metadata for the report
 	app   *ghclient.AppAuthenticator // nil when no GitHub App is configured
 }
 
-func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, app *ghclient.AppAuthenticator) *ConsistencyChecker {
-	return &ConsistencyChecker{gh: gh, store: store, app: app}
+func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, fresh *freshness.Store, app *ghclient.AppAuthenticator) *ConsistencyChecker {
+	return &ConsistencyChecker{gh: gh, store: store, fresh: fresh, app: app}
 }
 
 // Available reports whether the checker can run. The consistency check needs the
@@ -81,16 +84,27 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 // ConsistencyReport is the full drift report for one cache scope, designed to be
 // copy-pasted back for analysis.
 type ConsistencyReport struct {
-	Scope         string        `json:"scope"`           // short fingerprint (display)
-	ScopeFull     string        `json:"scope_full"`      // full actor partition key
-	Login         string        `json:"login,omitempty"` // GitHub login for the scope, if known
-	FetchedAs     string        `json:"fetched_as"`      // identity used to read GitHub (the truth source)
-	GeneratedAt   string        `json:"generated_at"`    // RFC3339
-	OrgsChecked   []string      `json:"orgs_checked"`    // owners actually re-fetched and diffed
-	OrgsSkipped   []OrgSkip     `json:"orgs_skipped,omitempty"`
-	Summary       CheckSummary  `json:"summary"`
-	Discrepancies []Discrepancy `json:"discrepancies"`
-	Notes         []string      `json:"notes,omitempty"` // caveats to keep in mind when reading the report
+	Scope       string    `json:"scope"`           // short fingerprint (display)
+	ScopeFull   string    `json:"scope_full"`      // full actor partition key
+	Login       string    `json:"login,omitempty"` // GitHub login for the scope, if known
+	FetchedAs   string    `json:"fetched_as"`      // identity used to read GitHub (the truth source)
+	GeneratedAt string    `json:"generated_at"`    // RFC3339
+	OrgsChecked []string  `json:"orgs_checked"`    // owners actually re-fetched and diffed
+	OrgsSkipped []OrgSkip `json:"orgs_skipped,omitempty"`
+	// ScopeFreshness is the scope's own org_repos cache metadata per owner, so
+	// drift can be read against how stale the scope actually is (an error-state
+	// scope that hasn't fetched in days explains a lot of "only_on_github").
+	ScopeFreshness map[string]ScopeFreshness `json:"scope_freshness,omitempty"`
+	Summary        CheckSummary              `json:"summary"`
+	Discrepancies  []Discrepancy             `json:"discrepancies"`
+	Notes          []string                  `json:"notes,omitempty"` // caveats to keep in mind when reading the report
+}
+
+// ScopeFreshness is one owner's org_repos cache metadata for the checked scope.
+type ScopeFreshness struct {
+	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown
+	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
+	Error         string `json:"error,omitempty"`           // last fetch error, if any
 }
 
 // OrgSkip records an owner that could not be checked and why (so the absence of
@@ -108,9 +122,13 @@ type CheckSummary struct {
 	Discrepancies     int `json:"discrepancies"`
 	ReposOnlyInCache  int `json:"repos_only_in_cache"`
 	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
-	PRsOnlyInCache    int `json:"prs_only_in_cache"`
-	PRsOnlyOnGitHub   int `json:"prs_only_on_github"`
-	FieldMismatches   int `json:"field_mismatches"`
+	// ReposOnlyOnGitHubPrivate is the subset of ReposOnlyOnGitHub that are
+	// PRIVATE on GitHub — likely invisible to the token that populated the
+	// scope rather than a cache failure.
+	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
+	PRsOnlyInCache           int `json:"prs_only_in_cache"`
+	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
+	FieldMismatches          int `json:"field_mismatches"`
 }
 
 // Discrepancy is one difference between the cache and GitHub. cached/github are
@@ -124,7 +142,11 @@ type Discrepancy struct {
 	Field  string `json:"field,omitempty"` // which field differs (issue==field_mismatch)
 	Cached string `json:"cached,omitempty"`
 	GitHub string `json:"github,omitempty"`
-	Note   string `json:"note,omitempty"`
+	// Visibility is "private" on an only_on_github repo that is private on
+	// GitHub (as seen by the App): the scope's token may simply be unable to
+	// see it, so its absence is not necessarily a cache failure.
+	Visibility string `json:"visibility,omitempty"`
+	Note       string `json:"note,omitempty"`
 }
 
 // CheckActor runs the consistency check for one cache scope. When orgFilter is
@@ -146,6 +168,7 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 		Notes: []string{
 			"Source of truth was fetched as the mirror's GitHub App, which may not see exactly what the token that populated this scope sees. Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
 			"Only OPEN pull requests are compared (the cache only retains open PRs). A PR shown as only_in_cache is cached as open but is not in GitHub's current open set, i.e. it was likely closed/merged and a webhook was missed.",
+			"A repo reported only_on_github with visibility=private may simply be invisible to the token that populated this scope (e.g. a public-only credential) — not necessarily a cache failure. Such repos are tallied separately in repos_only_on_github_private.",
 		},
 	}
 
@@ -187,6 +210,10 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 	}
 
 	for _, owner := range owners {
+		// The scope's own org_repos staleness, whether or not the owner ends up
+		// checked — an error-state or long-unfetched scope explains drift.
+		c.recordScopeFreshness(ctx, report, actorFP, owner)
+
 		inst, ok := byLogin[strings.ToLower(owner)]
 		if !ok {
 			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "no GitHub App installation for this owner (app not installed, or no access)"})
@@ -209,8 +236,17 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 			continue
 		}
 
+		// Repo visibility as the App sees it, via the checker-private query
+		// (NEVER the shared cached-route query). Best-effort: without it the
+		// diff still runs, missing repos just aren't classified private/public.
+		visibility, verr := c.gh.OrgRepoVisibility(fetchCtx, owner)
+		if verr != nil {
+			slog.Warn("consistency: fetch repo visibility failed", "org", owner, "error", verr)
+			visibility = nil
+		}
+
 		report.OrgsChecked = append(report.OrgsChecked, owner)
-		c.diffOwner(report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data)
+		c.diffOwner(report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility)
 	}
 
 	// Finalize summary counts.
@@ -226,6 +262,9 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 		case "only_on_github":
 			if d.Kind == "repo" {
 				report.Summary.ReposOnlyOnGitHub++
+				if d.Visibility == "private" {
+					report.Summary.ReposOnlyOnGitHubPrivate++
+				}
 			} else {
 				report.Summary.PRsOnlyOnGitHub++
 			}
@@ -237,8 +276,30 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 	return report, nil
 }
 
+// recordScopeFreshness copies the scope's org_repos cache metadata for one
+// owner into the report (read-only; missing metadata adds nothing).
+func (c *ConsistencyChecker) recordScopeFreshness(ctx context.Context, report *ConsistencyReport, actorFP, owner string) {
+	if c.fresh == nil {
+		return
+	}
+	meta, err := c.fresh.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: owner, Actor: actorFP})
+	if err != nil || meta == nil {
+		return
+	}
+	sf := ScopeFreshness{State: string(meta.State), Error: meta.ErrorMessage}
+	if meta.LastFetchedAt != nil {
+		sf.LastFetchedAt = meta.LastFetchedAt.UTC().Format(time.RFC3339)
+	}
+	if report.ScopeFreshness == nil {
+		report.ScopeFreshness = make(map[string]ScopeFreshness)
+	}
+	report.ScopeFreshness[owner] = sf
+}
+
 // diffOwner compares the cached repos/PRs/labels for one owner against the data
-// freshly fetched from GitHub, appending discrepancies to the report.
+// freshly fetched from GitHub, appending discrepancies to the report. visibility
+// (repo name -> isPrivate, as the App sees it) classifies missing repos; nil
+// means visibility could not be fetched and no classification is added.
 func (c *ConsistencyChecker) diffOwner(
 	report *ConsistencyReport,
 	owner string,
@@ -246,6 +307,7 @@ func (c *ConsistencyChecker) diffOwner(
 	cachedPRs map[string]map[int64]dbgen.PullRequest,
 	cachedLabels map[string]map[int64]map[string]string,
 	data *ghclient.OrgData,
+	visibility map[string]bool,
 ) {
 	// --- repos ---
 	freshRepos := make(map[string]dbgen.Repo, len(data.Repos))
@@ -265,11 +327,16 @@ func (c *ConsistencyChecker) diffOwner(
 	}
 	for name, fr := range freshRepos {
 		if _, ok := cachedRepos[name]; !ok {
-			report.Discrepancies = append(report.Discrepancies, Discrepancy{
+			d := Discrepancy{
 				Kind: "repo", Repo: owner + "/" + name, Issue: "only_on_github",
 				GitHub: fr.Url,
 				Note:   "exists on GitHub but is not cached for this scope",
-			})
+			}
+			if private, known := visibility[name]; known && private {
+				d.Visibility = "private"
+				d.Note = "private repo: the token that populated this scope may not be able to see it; not necessarily a cache failure"
+			}
+			report.Discrepancies = append(report.Discrepancies, d)
 		}
 	}
 

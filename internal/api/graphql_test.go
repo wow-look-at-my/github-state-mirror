@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -60,6 +62,72 @@ func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 	assert.Contains(t, resp.Errors[0].Message, "502 Bad Gateway")
 	assert.Contains(t, resp.Errors[0].Message, "my-org")
 	assert.Equal(t, "UPSTREAM_FETCH_FAILED", resp.Errors[0].Type)
+}
+
+// TestGraphQL_StaleServedOnErrorCarriesHeaders: when the refresh fails but
+// cached data exists, the handler serves the stale cache with 200 — and must
+// say so via the X-GSM-Stale / X-GSM-Last-Fetched response HEADERS (never the
+// body, which stays byte-identical to GitHub's shape).
+func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	store := ghdata.NewStore(db)
+	fStore := freshness.NewStore(db)
+	mgr := freshness.NewManager(fStore)
+	mgr.RegisterFetcher(freshness.Policy{Kind: syncpkg.KindOrgRepos}, failOrgFetcher{})
+	h := &handlers{mgr: mgr, store: store, reqlog: newRequestLog()}
+
+	ctx := seedCtx()
+	// Repos cached by an earlier successful fetch...
+	require.NoError(t, store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u1"},
+	}))
+	// ...whose freshness row has expired, so the handler re-fetches (and fails).
+	lastFetched := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	expired := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, fStore.Upsert(context.Background(), &freshness.Metadata{
+		ResourceID:    freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: "my-org", Actor: ghclient.Fingerprint(testToken)},
+		State:         freshness.StateFresh,
+		LastFetchedAt: &lastFetched,
+		ExpiresAt:     &expired,
+	}))
+
+	body := `{"variables":{"org":"my-org"},"query":"query { organization(login: \"my-org\") { repositories { nodes { name } } } }"}`
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.graphql(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "stale cache must still serve 200")
+	assert.Equal(t, "true", w.Header().Get("X-GSM-Stale"))
+	assert.Equal(t, lastFetched.Format(time.RFC3339), w.Header().Get("X-GSM-Last-Fetched"))
+
+	// The stale body still carries the cached repos, in the normal shape.
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+	assert.Equal(t, 1, len(nodes))
+}
+
+// TestGraphQL_FreshResponseHasNoStaleHeaders: the staleness headers are
+// error-path-only — a normally served response must not carry them.
+func TestGraphQL_FreshResponseHasNoStaleHeaders(t *testing.T) {
+	router, store := setupTestRouter(t)
+	require.NoError(t, store.SetOrgRepos(seedCtx(), "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u1"},
+	}))
+
+	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get("X-GSM-Stale"))
+	assert.Empty(t, w.Header().Get("X-GSM-Last-Fetched"))
 }
 
 func TestGraphQL_BasicQuery(t *testing.T) {
