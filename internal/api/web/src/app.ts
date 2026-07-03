@@ -188,16 +188,45 @@ async function renderDashboard(me: Me): Promise<void> {
     body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
     main.appendChild(body);
 
-    currentView = "mine";
-    await loadView("mine");
+    // Start on the tab named by the URL hash (#webhooks, #ratelimit, …) so a
+    // refresh or shared link restores it — but only if that tab was actually
+    // rendered for this user. An unknown (or admin-only, for a non-admin) hash
+    // falls back to the default tab and is dropped from the URL.
+    const fromHash = location.hash.slice(1);
+    const initial = hasTab(fromHash) ? fromHash : "mine";
+    if (fromHash && initial !== fromHash) {
+        history.replaceState(null, "", location.pathname + location.search);
+    }
+    markActive(initial);
+    currentView = initial;
+    // Manually editing the hash (or navigating a bookmark) switches tabs too.
+    // switchTab uses replaceState, which never fires hashchange — no loop.
+    onHashChange = (scope) => {
+        if (scope !== currentView && hasTab(scope)) switchTab(scope);
+    };
+    await loadView(initial);
     startAutoRefresh();
 
-    function switchTab(scope: string): void {
+    function hasTab(scope: string): boolean {
+        if (!scope || !tabs) return false;
+        return Array.from(tabs.querySelectorAll("button"))
+            .some((b) => (b as HTMLElement).dataset.scope === scope);
+    }
+
+    function markActive(scope: string): void {
         if (!tabs) return;
         for (const b of Array.from(tabs.querySelectorAll("button"))) {
             b.classList.toggle("active", (b as HTMLElement).dataset.scope === scope);
         }
+    }
+
+    function switchTab(scope: string): void {
+        if (!tabs) return;
+        markActive(scope);
         currentView = scope;
+        // replaceState (not location.hash=) so tab clicks don't pile up history
+        // entries the back button would have to walk through.
+        history.replaceState(null, "", "#" + scope);
         void loadView(scope);
     }
 }
@@ -218,6 +247,15 @@ const REFRESH_MS = 5000;
 let currentView = "mine";
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let modalOpen = false;
+
+// ---- URL-hash tab sync ----
+// The active tab is mirrored into the URL hash so a refresh or shared link
+// restores it. renderDashboard installs the handler scoped to the tabs it
+// actually rendered; logged-out/error views leave it null (hash ignored).
+let onHashChange: ((scope: string) => void) | null = null;
+if (typeof window !== "undefined") {
+    window.addEventListener("hashchange", () => onHashChange?.(location.hash.slice(1)));
+}
 
 function startAutoRefresh(): void {
     if (DEMO || refreshTimer !== undefined) return;
@@ -907,6 +945,7 @@ function discrepancyTable(items: Discrepancy[]): HTMLElement {
 
 // ---- boot ----
 async function boot(): Promise<void> {
+    onHashChange = null; // re-installed by renderDashboard for the tabs it renders
     if (DEMO) renderDemoBanner();
     let me: Me;
     try {
