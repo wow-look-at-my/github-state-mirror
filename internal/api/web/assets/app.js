@@ -500,33 +500,17 @@ function rateLimitCard(inst) {
     const resources = inst.resources ?? {};
     const names = RATE_RESOURCES.filter((n) => resources[n]).concat(Object.keys(resources).filter((n) => !RATE_RESOURCES.includes(n)));
     const grid = el("div", { class: "rate-grid" });
-    for (const name of names)
-        grid.appendChild(rateMeter(name, resources[name]));
+    // Each tile is a <rate-meter> web component (src/rate-meter.ts, loaded by
+    // its own <script> tag in index.html) that owns its markup and styles in
+    // shadow DOM; el() passes these unknown props through as attributes.
+    for (const name of names) {
+        const r = resources[name];
+        grid.appendChild(el("rate-meter", {
+            name, limit: r.limit, remaining: r.remaining, used: r.used, reset: r.reset,
+        }));
+    }
     body.appendChild(grid);
     return el("div", { class: "scope" }, head, body);
-}
-function rateMeter(name, r) {
-    const remaining = Number(r.remaining) || 0;
-    const limit = Number(r.limit) || 0;
-    const used = limit ? limit - remaining : (Number(r.used) || 0);
-    const pct = limit ? Math.max(0, Math.min(100, (remaining / limit) * 100)) : 100;
-    const low = limit > 0 && remaining / limit < 0.15;
-    return el("div", { class: "rate-meter" + (low ? " low" : "") }, el("div", { class: "rate-top" }, el("span", { class: "rate-name", text: name }), el("span", { class: "rate-nums", text: remaining + " / " + limit + " left" })), el("div", { class: "rate-bar" }, el("div", { class: "rate-fill", style: "width:" + pct.toFixed(1) + "%" })), el("div", { class: "rate-foot" }, el("span", { text: used + " used" }), el("span", { class: "rate-reset", text: "resets " + fmtUntil(r.reset) })));
-}
-// fmtUntil renders the time remaining until a Unix-epoch reset, e.g. "in 42m"
-// or "in 1h 3m"; "now" once the window has passed.
-function fmtUntil(epochSeconds) {
-    const secs = Math.round(Number(epochSeconds) - Date.now() / 1000);
-    if (!isFinite(secs) || secs <= 0)
-        return "now";
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    if (h > 0)
-        return "in " + h + "h " + m + "m";
-    if (m > 0)
-        return "in " + m + "m " + s + "s";
-    return "in " + s + "s";
 }
 // ---- admin: browse + consistency check (modal) ----
 function scopeLabel(s) {

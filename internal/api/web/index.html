@@ -31,7 +31,10 @@
          below #main, talking to /api/me and /api/cache. When a demo-data.js has
          set window.__GSM_DEMO__ (only in the standalone styling preview), it
          renders canned data instead of calling the backend. Production never
-         ships demo-data.js. -->
+         ships demo-data.js. assets/rate-meter.js (from src/rate-meter.ts)
+         self-registers the <rate-meter> custom element app.js instantiates;
+         module execution order guarantees it is defined before app.js runs. -->
+    <script type="module" src="assets/rate-meter.js"></script>
     <script type="module" src="assets/app.js"></script>
 </body>
 </html>

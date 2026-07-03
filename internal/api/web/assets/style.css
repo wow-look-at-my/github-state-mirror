@@ -219,25 +219,16 @@ table.kinds tr.kind-error-row td.kind-error {
 }
 .kind-error-msg { color: var(--red); font-family: var(--mono); font-size: 12px; word-break: break-word; }
 
-/* ---- GitHub App rate limit ---- */
+/* ---- GitHub App rate limit ----
+   The tiles are <rate-meter> web components (src/rate-meter.ts) that own their
+   markup and styles in shadow DOM (themed via the :root custom properties,
+   which inherit through it). Only the light-DOM grid lives here; its default
+   align-items: stretch is wanted — tiles fill the row and align their bars at
+   the bottom via margin-top: auto inside the component. */
 .rate-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 14px;
 }
-.rate-meter {
-    background: var(--bg); border: 1px solid var(--border-muted);
-    border-radius: 8px; padding: 12px 14px;
-}
-.rate-meter.low { border-color: rgba(248,81,73,0.5); }
-.rate-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.rate-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
-.rate-nums { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.rate-bar { height: 6px; border-radius: 999px; background: var(--border-muted); overflow: hidden; margin: 8px 0 6px; }
-.rate-fill { height: 100%; background: var(--green); border-radius: 999px; transition: width 0.3s; }
-.rate-meter.low .rate-fill { background: var(--red); }
-.rate-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.rate-reset { color: var(--fg-muted); }
-.rate-meter.low .rate-reset { color: var(--yellow); }
 
 /* ---- Upstream status badge (Requests view) ---- */
 .status-code {

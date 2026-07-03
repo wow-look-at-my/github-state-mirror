@@ -100,7 +100,7 @@ jobs:
             html = html.replace(appTag, `${demoTag}\n    ${appTag}`);
             fs.writeFileSync(`${dist}/index.html`, html);
 
-            for (const f of ["app.js", "style.css", "demo-data.js"]) {
+            for (const f of ["app.js", "rate-meter.js", "style.css", "demo-data.js"]) {
               fs.copyFileSync(`${webDir}/assets/${f}`, `${dist}/assets/${f}`);
             }
 

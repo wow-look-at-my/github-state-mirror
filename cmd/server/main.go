@@ -62,7 +62,7 @@ func main() {
 
 	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
 	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
-	checker := syncpkg.NewConsistencyChecker(gh, store, app)
+	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, app)
 
 	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
 	authSvc := auth.New(auth.Config{

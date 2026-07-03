@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
@@ -220,6 +221,110 @@ func TestListOpenPRsByOwner(t *testing.T) {
 	got, err := s.ListOpenPRsByOwner(ctx, "org1")
 	require.Nil(t, err)
 	assert.Equal(t, 2, len(got))
+}
+
+// TestUpsertPRForActors_MergeableNullDoesNotClobber locks the COALESCE on
+// mergeable: a pull_request webhook that arrives while GitHub is still computing
+// mergeability carries mergeable=null (and GitHub never re-delivers the event
+// when it resolves), so a NULL in the payload must preserve a previously-known
+// value — while a genuinely resolved value must still overwrite.
+func TestUpsertPRForActors_MergeableNullDoesNotClobber(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	actors := []string{"actorA"}
+	readCtx := actor.WithActor(ctx, "actorA")
+
+	base := dbgen.PullRequest{
+		Owner: "org1", Repo: "repo1", Number: 7, Title: "PR 7", Url: "u",
+		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01",
+	}
+
+	// Known value (from a GraphQL refresh or an earlier resolved webhook).
+	pr := base
+	pr.Mergeable = sql.NullString{String: "MERGEABLE", Valid: true}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	// Webhook payload while GitHub is computing mergeability: mergeable is null.
+	pr = base
+	pr.Mergeable = sql.NullString{} // NULL
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err := s.GetPullRequest(readCtx, "org1", "repo1", 7)
+	require.NoError(t, err)
+	assert.True(t, got.Mergeable.Valid, "NULL mergeable in a webhook payload must not clobber the known value")
+	assert.Equal(t, "MERGEABLE", got.Mergeable.String)
+
+	// A genuinely resolved CONFLICTING must still overwrite.
+	pr = base
+	pr.Mergeable = sql.NullString{String: "CONFLICTING", Valid: true}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err = s.GetPullRequest(readCtx, "org1", "repo1", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "CONFLICTING", got.Mergeable.String, "a resolved mergeable value must overwrite")
+}
+
+// TestUpsertPRForActors_DerivesStatusFromExistingChecks locks the on-upsert
+// rollup: a PR opened AFTER its head commit's CI finished (a pr-minder
+// auto-opened PR) arrives via webhook with no CI state, and no later check event
+// will re-fire for that sha — so the upsert itself must derive
+// last_commit_status from the commit checks already recorded for the head sha.
+func TestUpsertPRForActors_DerivesStatusFromExistingChecks(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	actors := []string{"actorA"}
+	readCtx := actor.WithActor(ctx, "actorA")
+
+	// CI finished for commit shaX before any PR existed (the check-event apply path).
+	_, err := s.ApplyCommitStatusForActors(ctx, actors, "org1", "repo1", "shaX", "check_run:build", "SUCCESS", false)
+	require.NoError(t, err)
+	_, err = s.ApplyCommitStatusForActors(ctx, actors, "org1", "repo1", "shaX", "status:lint", "SUCCESS", false)
+	require.NoError(t, err)
+
+	// A PR opened afterwards with that head commit; the payload carries no CI state.
+	pr := dbgen.PullRequest{
+		Owner: "org1", Repo: "repo1", Number: 5, Title: "late PR", Url: "u",
+		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01",
+		HeadRefOid: sql.NullString{String: "shaX", Valid: true},
+	}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err := s.GetPullRequest(readCtx, "org1", "repo1", 5)
+	require.NoError(t, err)
+	assert.True(t, got.LastCommitStatus.Valid, "last_commit_status must be derived from existing checks")
+	assert.Equal(t, "SUCCESS", got.LastCommitStatus.String)
+
+	// A failing check among the recorded states dominates the rollup.
+	_, err = s.ApplyCommitStatusForActors(ctx, actors, "org1", "repo1", "shaY", "check_run:build", "FAILURE", false)
+	require.NoError(t, err)
+	pr.Number = 6
+	pr.HeadRefOid = sql.NullString{String: "shaY", Valid: true}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err = s.GetPullRequest(readCtx, "org1", "repo1", 6)
+	require.NoError(t, err)
+	assert.Equal(t, "FAILURE", got.LastCommitStatus.String)
+}
+
+// TestUpsertPRForActors_NoChecksLeavesStatusNull is the counterpart: with no
+// recorded checks for the head sha there is nothing to derive, and the upsert
+// must not stomp the (COALESCE-preserved) status with an empty rollup.
+func TestUpsertPRForActors_NoChecksLeavesStatusNull(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	actors := []string{"actorA"}
+	readCtx := actor.WithActor(ctx, "actorA")
+
+	pr := dbgen.PullRequest{
+		Owner: "org1", Repo: "repo1", Number: 8, Title: "no CI yet", Url: "u",
+		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01",
+		HeadRefOid: sql.NullString{String: "shaNoChecks", Valid: true},
+	}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err := s.GetPullRequest(readCtx, "org1", "repo1", 8)
+	require.NoError(t, err)
+	assert.False(t, got.LastCommitStatus.Valid, "no checks recorded: status must stay NULL")
 }
 
 func TestUpsertAndGetComparison(t *testing.T) {

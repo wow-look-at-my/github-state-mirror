@@ -160,11 +160,26 @@ const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit: RateLimitResponse = {
     installations: [
         {
+            // A realistic full bucket set — GitHub's /rate_limit returns ~15
+            // resources for an App — including the long names that used to
+            // break the tile layout, and a couple of low (<15%) buckets so the
+            // preview demonstrates the red state.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
                 graphql: { limit: 5000, remaining: 392, used: 4608, reset: resetIn(540) },
                 search: { limit: 30, remaining: 30, used: 0, reset: resetIn(60) },
+                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3600) },
+                audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
+                audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
+                code_scanning_autofix: { limit: 10, remaining: 1, used: 9, reset: resetIn(48) },
+                code_search: { limit: 10, remaining: 8, used: 2, reset: resetIn(37) },
+                copilot_usage_records: { limit: 1750, remaining: 1750, used: 0, reset: resetIn(3600) },
+                dependency_sbom: { limit: 100, remaining: 96, used: 4, reset: resetIn(1210) },
+                dependency_snapshots: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
+                integration_manifest: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3600) },
+                scim: { limit: 15000, remaining: 15000, used: 0, reset: resetIn(3600) },
+                source_import: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
             },
         },
         {
