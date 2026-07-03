@@ -16,6 +16,11 @@ type Manager struct {
 	policies map[string]Policy
 	fetchers map[string]Fetcher
 	locks    sync.Map // map[string]*sync.Mutex — per-resource lock
+
+	// inflight tracks detached fetches so shutdown can drain them before the
+	// DB closes (a detached fetch outliving main's `defer db.Close()` would
+	// write to a closed DB).
+	inflight sync.WaitGroup
 }
 
 func NewManager(store *Store) *Manager {
@@ -23,6 +28,23 @@ func NewManager(store *Store) *Manager {
 		store:    store,
 		policies: make(map[string]Policy),
 		fetchers: make(map[string]Fetcher),
+	}
+}
+
+// Drain blocks until every in-flight fetch (and its metadata writes) has
+// finished, or the timeout elapses. Call it during shutdown BEFORE closing the
+// database. Returns true when fully drained.
+func (m *Manager) Drain(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		m.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -149,6 +171,14 @@ func (m *Manager) RefreshAllOfKind(ctx context.Context, kind string, trigger Tri
 	return nil
 }
 
+// fetchSafetyTimeout bounds a single detached fetch. No live caller carries a
+// deadline into doFetch anymore (webhooks never fetch, HTTP requests and the
+// periodic refresher are deadline-free), so this is purely a leak guard: a
+// wedged upstream cannot pin the per-resource mutex — and block shutdown's
+// Drain — forever. Generous, because an org fetch is a multi-page
+// all-or-nothing walk.
+const fetchSafetyTimeout = 5 * time.Minute
+
 func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSource) (Outcome, error) {
 	fetcher, ok := m.fetchers[id.Kind]
 	if !ok {
@@ -159,21 +189,21 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	// Detach the fetch from the caller's cancellation. The fetch is shared work
 	// — its result is cached for every future caller — so an impatient client
 	// aborting its request mid-flight must not kill a multi-page all-or-nothing
-	// fetch (previously a browser abort could prevent a scope from EVER
+	// fetch (previously a browser abort could prevent a resource from EVER
 	// refreshing), and the result must be stored even when the requester is
-	// gone. Context values (actor, auth token, tracing) are preserved.
+	// gone. Context values (actor, auth token, tracing) are preserved. The
+	// caller's deadline is deliberately NOT re-applied (a short caller deadline
+	// once killed every webhook-path fetch); the safety timeout above bounds
+	// the fetch instead.
 	//
-	// persistCtx: never canceled — metadata writes always land.
-	// fetchCtx: cancel-severed too, but re-applies the caller's explicit
-	// deadline (e.g. the webhook dispatch timeout) so bounded callers stay
-	// bounded.
+	// persistCtx: never canceled — metadata writes always land. Shutdown waits
+	// for in-flight fetches via Drain (the inflight WaitGroup) instead of
+	// canceling them.
+	m.inflight.Add(1)
+	defer m.inflight.Done()
 	persistCtx := context.WithoutCancel(ctx)
-	fetchCtx := persistCtx
-	if deadline, ok := ctx.Deadline(); ok {
-		var cancel context.CancelFunc
-		fetchCtx, cancel = context.WithDeadline(persistCtx, deadline)
-		defer cancel()
-	}
+	fetchCtx, cancelFetch := context.WithTimeout(persistCtx, fetchSafetyTimeout)
+	defer cancelFetch()
 
 	// Per-resource mutex to coalesce concurrent fetches.
 	mu := m.resourceMutex(id)

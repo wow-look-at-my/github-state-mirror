@@ -156,57 +156,6 @@ func TestResolveTokenIdentity_MalformedUserResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing id or login")
 }
 
-func TestGetAuthenticatedUser(t *testing.T) {
-	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(userResp{Login: "octocat", AvatarURL: "http://avatar", HTMLURL: "http://url"})
-	})
-
-	user, err := c.GetAuthenticatedUser(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "octocat", user.Login)
-	assert.Equal(t, "http://avatar", user.AvatarUrl)
-}
-
-func TestGetUserOrgs(t *testing.T) {
-	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]orgResp{
-			{Login: "myorg", AvatarURL: "http://avatar", URL: "http://url"},
-		})
-	})
-
-	orgs, err := c.GetUserOrgs(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 1, len(orgs))
-	assert.Equal(t, "myorg", orgs[0].Login)
-}
-
-func TestCompareBranches(t *testing.T) {
-	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/repos/org/repo/compare/main...feature", r.URL.Path)
-		json.NewEncoder(w).Encode(compareResp{AheadBy: 3, BehindBy: 1})
-	})
-
-	comp, err := c.CompareBranches(context.Background(), "org", "repo", "main", "feature")
-	require.NoError(t, err)
-	assert.Equal(t, int64(3), comp.AheadBy)
-	assert.Equal(t, int64(1), comp.BehindBy)
-}
-
-func TestGetPRFiles(t *testing.T) {
-	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/repos/org/repo/pulls/42/files", r.URL.Path)
-		json.NewEncoder(w).Encode([]prFileResp{
-			{Filename: "main.go", Additions: 10, Deletions: 2},
-		})
-	})
-
-	files, err := c.GetPRFiles(context.Background(), "org", "repo", 42)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(files))
-	assert.Equal(t, "main.go", files[0].Path)
-	assert.Equal(t, int64(10), files[0].Additions)
-}
-
 func TestDoJSON_SetsContentType(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))

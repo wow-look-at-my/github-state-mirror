@@ -104,38 +104,176 @@ func ParseEvent(eventType string, payload []byte) Event {
 	return e
 }
 
+// repositoryObject is the payload's embedded repository object, carrying the
+// fields global truth keeps. Webhook payloads (unlike the identity-locked
+// GraphQL org query) DO carry visibility, so this is the reveal layer's main
+// source of public/private truth.
+type repositoryObject struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	Private  *bool  `json:"private"`
+	// Visibility is "public" / "private" / "internal"; older payloads may omit
+	// it, in which case Private decides.
+	Visibility    string  `json:"visibility"`
+	HTMLURL       string  `json:"html_url"`
+	DefaultBranch string  `json:"default_branch"`
+	PushedAt      any     `json:"pushed_at"` // RFC3339 string, or unix seconds on some events
+	Archived      bool    `json:"archived"`
+	Disabled      bool    `json:"disabled"`
+	Fork          bool    `json:"fork"`
+	Description   *string `json:"description"`
+	Owner         struct {
+		Login     string `json:"login"`
+		AvatarURL string `json:"avatar_url"`
+		HTMLURL   string `json:"html_url"`
+	} `json:"owner"`
+}
+
+// toRepo converts the payload object into a truth row. Fields the payload does
+// not state stay NULL/'' so the store's COALESCE upsert preserves anything
+// already known.
+func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
+	if r == nil || r.Name == "" || r.Owner.Login == "" {
+		return dbgen.Repo{}, false
+	}
+	out := dbgen.Repo{
+		Owner:         r.Owner.Login,
+		Name:          r.Name,
+		NameWithOwner: r.FullName,
+		Url:           r.HTMLURL,
+		IsArchived:    boolToInt(r.Archived),
+		IsDisabled:    boolToInt(r.Disabled),
+		Visibility:    repoVisibility(r.Visibility, r.Private),
+		OwnerLogin:    nullStr(r.Owner.Login),
+		OwnerAvatar:   nullStr(r.Owner.AvatarURL),
+		OwnerUrl:      nullStr(r.Owner.HTMLURL),
+	}
+	if out.NameWithOwner == "" {
+		out.NameWithOwner = r.Owner.Login + "/" + r.Name
+	}
+	if r.DefaultBranch != "" {
+		out.DefaultBranch = nullStr(r.DefaultBranch)
+	}
+	if ts := timestampString(r.PushedAt); ts != "" {
+		out.PushedAt = nullStr(ts)
+	}
+	return out, true
+}
+
+// repoVisibility folds the payload's visibility/private pair into the stored
+// value: the explicit visibility field wins ("internal" is kept as-is and is
+// NOT public for the reveal fast path); absent both, unknown.
+func repoVisibility(visibility string, private *bool) string {
+	if visibility != "" {
+		return visibility
+	}
+	if private == nil {
+		return ""
+	}
+	if *private {
+		return "private"
+	}
+	return "public"
+}
+
+// timestampString renders a payload timestamp that may be an RFC3339 string or
+// a unix-seconds number (push events use the latter for repository.pushed_at).
+func timestampString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return normaliseTime(t)
+	case float64:
+		if t <= 0 {
+			return ""
+		}
+		return time.Unix(int64(t), 0).UTC().Format(time.RFC3339)
+	default:
+		return ""
+	}
+}
+
+// ParseRepositoryPayload extracts the payload's embedded repository object as
+// a truth row, reporting false when the payload has none (or it is degenerate).
+func ParseRepositoryPayload(raw json.RawMessage) (dbgen.Repo, bool) {
+	var body struct {
+		Repository *repositoryObject `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Repository == nil {
+		return dbgen.Repo{}, false
+	}
+	return body.Repository.toRepo()
+}
+
+// ParseRepositoryObject parses a BARE repository object (e.g. the body of
+// GET /repos/{owner}/{repo} -- the reveal probe's answer) into a truth row.
+func ParseRepositoryObject(raw []byte) (dbgen.Repo, bool) {
+	var obj repositoryObject
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return dbgen.Repo{}, false
+	}
+	return obj.toRepo()
+}
+
+// ParseRenameFrom returns changes.repository.name.from for a repository
+// renamed event ("" when absent).
+func ParseRenameFrom(raw json.RawMessage) string {
+	var body struct {
+		Changes *struct {
+			Repository *struct {
+				Name *struct {
+					From string `json:"from"`
+				} `json:"name"`
+			} `json:"repository"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Changes == nil ||
+		body.Changes.Repository == nil || body.Changes.Repository.Name == nil {
+		return ""
+	}
+	return body.Changes.Repository.Name.From
+}
+
 // PRPayload holds the full PR data and labels parsed from a webhook payload.
 type PRPayload struct {
 	PR     dbgen.PullRequest
 	Labels []dbgen.PrLabel
 }
 
-// ParsePRPayload extracts a full PR and its labels from a pull_request webhook's
-// raw JSON. The Actor field is left empty — callers fill it per-actor.
+// ParsePRPayload extracts a full PR and its labels from a pull_request
+// webhook's raw JSON (the embedded pull_request is a full REST-shaped PR
+// object, so webhook-maintained rows stay rest-complete for the cached
+// /pulls routes).
 func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	var body struct {
 		PullRequest *struct {
-			Number    int    `json:"number"`
-			Title     string `json:"title"`
-			HTMLURL   string `json:"html_url"`
-			Draft     bool   `json:"draft"`
-			State     string `json:"state"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-			Additions *int   `json:"additions"`
-			Deletions *int   `json:"deletions"`
-			Mergeable *bool  `json:"mergeable"`
+			Number    int     `json:"number"`
+			NodeID    string  `json:"node_id"`
+			Title     string  `json:"title"`
+			Body      *string `json:"body"`
+			HTMLURL   string  `json:"html_url"`
+			Draft     bool    `json:"draft"`
+			State     string  `json:"state"`
+			CreatedAt string  `json:"created_at"`
+			UpdatedAt string  `json:"updated_at"`
+			Additions *int    `json:"additions"`
+			Deletions *int    `json:"deletions"`
+			Mergeable *bool   `json:"mergeable"`
 			User      *struct {
 				Login     string `json:"login"`
+				Type      string `json:"type"`
 				AvatarURL string `json:"avatar_url"`
 				HTMLURL   string `json:"html_url"`
 			} `json:"user"`
 			Head struct {
-				Ref string `json:"ref"`
-				SHA string `json:"sha"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo *struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
 				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
 				Repo *struct {
 					Name  string `json:"name"`
 					Owner struct {
@@ -143,7 +281,11 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 					} `json:"owner"`
 				} `json:"repo"`
 			} `json:"base"`
-			Labels []struct {
+			AutoMerge *struct {
+				MergeMethod string `json:"merge_method"`
+			} `json:"auto_merge"`
+			MergeCommitSHA *string `json:"merge_commit_sha"`
+			Labels         []struct {
 				Name  string `json:"name"`
 				Color string `json:"color"`
 			} `json:"labels"`
@@ -193,6 +335,23 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		HeadRefName: nullStr(gpr.Head.Ref),
 		BaseRefName: nullStr(gpr.Base.Ref),
 		HeadRefOid:  nullStr(gpr.Head.SHA),
+		// REST-only fields (absent from the GraphQL org-repos selection set)
+		// that the cached /pulls routes rebuild from. Webhook payloads carry
+		// them all, so webhook-maintained rows stay rebuild-complete.
+		NodeID:     nullStr(gpr.NodeID),
+		BaseRefOid: nullStr(gpr.Base.SHA),
+	}
+	if gpr.Body != nil {
+		pr.Body = sql.NullString{String: *gpr.Body, Valid: true}
+	}
+	if gpr.Head.Repo != nil {
+		pr.HeadRepoFullName = nullStr(gpr.Head.Repo.FullName)
+	}
+	if gpr.AutoMerge != nil {
+		pr.AutoMergeMethod = nullStr(gpr.AutoMerge.MergeMethod)
+	}
+	if gpr.MergeCommitSHA != nil {
+		pr.MergeCommitSha = nullStr(*gpr.MergeCommitSHA)
 	}
 
 	if gpr.Additions != nil {
@@ -214,6 +373,7 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		pr.AuthorLogin = nullStr(gpr.User.Login)
 		pr.AuthorAvatar = nullStr(gpr.User.AvatarURL)
 		pr.AuthorUrl = nullStr(gpr.User.HTMLURL)
+		pr.AuthorType = nullStr(gpr.User.Type)
 	}
 
 	reviewCount := len(gpr.RequestedReviewers) + len(gpr.RequestedTeams)
@@ -367,158 +527,6 @@ func normalizeCheckState(status, conclusion string) string {
 		return "FAILURE"
 	}
 	return "PENDING"
-}
-
-// PushPayload is the minimal info applied directly from a push webhook.
-type PushPayload struct {
-	Owner    string
-	Repo     string
-	PushedAt string // RFC3339
-
-	// Fields for absorbing the pushed commits into the git-commits cache.
-	Before  string // sha of the ref before the push (all-zeros for a new ref)
-	After   string // sha of the ref after the push
-	Forced  bool
-	Commits []PushCommit // pushed commits, payload order (oldest first)
-}
-
-// PushCommit is one commit object from a push payload. The payload states the
-// commit's id, tree id, message, timestamp, and author/committer identities --
-// exactly the state GET /repos/{o}/{r}/git/commits/{sha} returns -- but NOT
-// its parents; those are derived (see ChainedCommits).
-type PushCommit struct {
-	ID             string
-	TreeID         string
-	Message        string
-	Timestamp      string // RFC3339 (normalised)
-	AuthorName     string
-	AuthorEmail    string
-	CommitterName  string
-	CommitterEmail string
-}
-
-// ParsePushPayload extracts owner/repo, a best-effort pushed_at timestamp, and
-// the pushed commits (for git-commit cache absorption).
-func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
-	var body struct {
-		Repository *struct {
-			Name  string `json:"name"`
-			Owner struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		} `json:"repository"`
-		HeadCommit *struct {
-			Timestamp string `json:"timestamp"`
-		} `json:"head_commit"`
-		Before  string `json:"before"`
-		After   string `json:"after"`
-		Forced  bool   `json:"forced"`
-		Commits []struct {
-			ID        string `json:"id"`
-			TreeID    string `json:"tree_id"`
-			Message   string `json:"message"`
-			Timestamp string `json:"timestamp"`
-			Author    struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-			} `json:"author"`
-			Committer struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-			} `json:"committer"`
-		} `json:"commits"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return PushPayload{}, fmt.Errorf("parse push payload: %w", err)
-	}
-	if body.Repository == nil {
-		return PushPayload{}, fmt.Errorf("parse push payload: no repository field")
-	}
-	p := PushPayload{
-		Owner:  body.Repository.Owner.Login,
-		Repo:   body.Repository.Name,
-		Before: body.Before,
-		After:  body.After,
-		Forced: body.Forced,
-	}
-	if body.HeadCommit != nil && body.HeadCommit.Timestamp != "" {
-		p.PushedAt = normaliseTime(body.HeadCommit.Timestamp)
-	} else {
-		p.PushedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	for _, c := range body.Commits {
-		p.Commits = append(p.Commits, PushCommit{
-			ID:             c.ID,
-			TreeID:         c.TreeID,
-			Message:        c.Message,
-			Timestamp:      normaliseTime(c.Timestamp),
-			AuthorName:     c.Author.Name,
-			AuthorEmail:    c.Author.Email,
-			CommitterName:  c.Committer.Name,
-			CommitterEmail: c.Committer.Email,
-		})
-	}
-	if p.Owner == "" || p.Repo == "" {
-		return PushPayload{}, fmt.Errorf("parse push payload: missing owner/repo")
-	}
-	return p, nil
-}
-
-// maxChainedPushCommits is the payload size at which parent derivation stops
-// trusting the commits array: GitHub caps the array (larger pushes are
-// truncated), and a truncated array breaks the before -> commits[0] chain.
-const maxChainedPushCommits = 20
-
-// ChainedCommits returns the pushed commits with a trustworthy linear parent
-// chain -- commits[0]'s parent is `before`, each subsequent commit's parent is
-// its predecessor -- or nil when the derivation cannot be trusted: a forced
-// push (before is not the parent), a new ref (before is all zeros), a
-// possibly-truncated array, or an array whose last id is not `after`
-// (non-linear ordering). A pushed MERGE commit is the one case the payload
-// cannot reveal (its extra parents are simply absent from the chain); the real
-// consumer of cached parents -- pr-minder's test-merge inspection -- only
-// reads parents on refs/pull/N/merge commits, which never arrive via push
-// payloads (always fetch-sourced). So the chain is absorbed for the common
-// linear push and dropped whenever any signal says otherwise.
-func (p PushPayload) ChainedCommits() []PushCommit {
-	n := len(p.Commits)
-	if n == 0 || n >= maxChainedPushCommits || p.Forced {
-		return nil
-	}
-	if !isRealSHA(p.Before) || p.Commits[n-1].ID != p.After {
-		return nil
-	}
-	out := make([]PushCommit, n)
-	copy(out, p.Commits)
-	return out
-}
-
-// ParentForChained returns the derived parent sha for the i-th commit of a
-// ChainedCommits slice: `before` for the first, the previous commit otherwise.
-func (p PushPayload) ParentForChained(chain []PushCommit, i int) string {
-	if i == 0 {
-		return p.Before
-	}
-	return chain[i-1].ID
-}
-
-// isRealSHA reports whether s is a non-zero full-length hex object id (the
-// all-zeros sha marks a created ref, which has no before-parent).
-func isRealSHA(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	real := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-		if c != '0' {
-			real = true
-		}
-	}
-	return real
 }
 
 // LabelPayload is a repo label change parsed from a label webhook.

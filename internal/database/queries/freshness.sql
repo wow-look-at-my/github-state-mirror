@@ -47,6 +47,13 @@ WHERE actor = ? AND resource_kind = ? AND resource_key = ?;
 SELECT * FROM cache_metadata
 WHERE actor = ? AND resource_kind = ?;
 
+-- ListByKindKey returns every actor's marker for one resource (e.g. all
+-- principals' org-sync markers for an owner; the consistency report reads the
+-- newest to bound truth staleness).
+-- name: ListByKindKey :many
+SELECT * FROM cache_metadata
+WHERE resource_kind = ? AND resource_key = ?;
+
 -- name: ListStale :many
 SELECT * FROM cache_metadata
 WHERE actor = ? AND (

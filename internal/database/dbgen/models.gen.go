@@ -8,21 +8,20 @@ import (
 	"database/sql"
 )
 
+type AccessGrant struct {
+	Principal string
+	Owner     string
+	Repo      string
+	GrantedAt string
+	ExpiresAt string
+	Source    string
+}
+
 type ActorIdentity struct {
 	Actor     string
 	Login     string
 	FirstSeen string
 	LastSeen  string
-}
-
-type BranchComparison struct {
-	Actor    string
-	Owner    string
-	Repo     string
-	BaseRef  string
-	HeadRef  string
-	AheadBy  int64
-	BehindBy int64
 }
 
 type CacheMetadatum struct {
@@ -52,7 +51,6 @@ type CacheRefreshLog struct {
 }
 
 type CommitCheck struct {
-	Actor   string
 	Owner   string
 	Repo    string
 	Sha     string
@@ -62,7 +60,6 @@ type CommitCheck struct {
 
 type ContentsCache struct {
 	ID         int64
-	Actor      string
 	Owner      string
 	Repo       string
 	Path       string
@@ -80,9 +77,20 @@ type ContentsCache struct {
 	LastUsedAt string
 }
 
+type DenyCache struct {
+	Principal    string
+	ResourceKind string
+	ResourceKey  string
+	Owner        string
+	Repo         string
+	Status       int64
+	Message      string
+	DeniedAt     string
+	ExpiresAt    string
+}
+
 type GitCommitsCache struct {
 	ID             int64
-	Actor          string
 	Owner          string
 	Repo           string
 	Sha            string
@@ -113,25 +121,7 @@ type InstallTokenCache struct {
 	LastUsedAt          string
 }
 
-type Org struct {
-	Actor     string
-	Login     string
-	AvatarUrl sql.NullString
-	Url       sql.NullString
-}
-
-type PrFile struct {
-	Actor     string
-	Owner     string
-	Repo      string
-	PrNumber  int64
-	Path      string
-	Additions int64
-	Deletions int64
-}
-
 type PrLabel struct {
-	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
@@ -140,7 +130,6 @@ type PrLabel struct {
 }
 
 type PullRequest struct {
-	Actor              string
 	Owner              string
 	Repo               string
 	Number             int64
@@ -161,16 +150,33 @@ type PullRequest struct {
 	HeadRefOid         sql.NullString
 	ReviewRequestCount sql.NullInt64
 	LastCommitStatus   sql.NullString
+	NodeID             sql.NullString
+	Body               sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
+	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
+	TouchedAt          string
+}
+
+type PullsListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type Repo struct {
-	Actor               string
 	Owner               string
 	Name                string
 	NameWithOwner       string
 	Url                 string
 	IsDisabled          int64
 	IsArchived          int64
+	Visibility          string
 	PushedAt            sql.NullString
 	DefaultBranch       sql.NullString
 	DefaultBranchStatus sql.NullString
@@ -179,21 +185,25 @@ type Repo struct {
 	OwnerUrl            sql.NullString
 }
 
+type RepoInstallationCache struct {
+	ID                  int64
+	Actor               string
+	Owner               string
+	Repo                string
+	InstallationID      int64
+	AccountLogin        string
+	AccountType         string
+	RepositorySelection string
+	AppID               int64
+	AppSlug             string
+	TargetType          string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
+}
+
 type SchemaVersion struct {
 	Version int64
-}
-
-type User struct {
-	Actor     string
-	Login     string
-	AvatarUrl string
-	Url       string
-}
-
-type UserOrgMembership struct {
-	Actor     string
-	UserLogin string
-	OrgLogin  string
 }
 
 type WebhookDelivery struct {
@@ -205,7 +215,6 @@ type WebhookDelivery struct {
 	ReceivedAt  string
 	Disposition string
 	Detail      string
-	Actors      int64
 }
 
 type WorkflowJob struct {

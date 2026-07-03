@@ -6,62 +6,37 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Admin cache browse + consistency-check reads.
-//
-// These take the actor (cache partition) as an explicit argument rather than
-// reading it from the request context, because the dashboard admin views and the
-// consistency checker inspect a scope chosen by the operator, not the caller's
-// own. They are read-only and gated to admins in the API layer. The data tables
-// stay keyed by the opaque fingerprint — this does not relax isolation, it just
-// lets the operator read what is already cached.
+// Admin cache browse + consistency-check reads over the GLOBAL truth store.
+// Read-only; gated to admins in the API layer (the operator's dashboard is the
+// one surface the reveal layer does not filter).
 
-// ReposByActor returns every cached repo for one actor.
-func (s *Store) ReposByActor(ctx context.Context, actorFP string) ([]dbgen.Repo, error) {
-	return s.q.ListReposByActor(ctx, actorFP)
+// AllRepos returns every repo row in global truth.
+func (s *Store) AllRepos(ctx context.Context) ([]dbgen.Repo, error) {
+	return s.q.ListAllRepos(ctx)
 }
 
-// PullRequestsByActor returns every cached PR (any state) for one actor.
-func (s *Store) PullRequestsByActor(ctx context.Context, actorFP string) ([]dbgen.PullRequest, error) {
-	return s.q.ListPullRequestsByActor(ctx, actorFP)
+// AllPullRequests returns every cached PR (any state).
+func (s *Store) AllPullRequests(ctx context.Context) ([]dbgen.PullRequest, error) {
+	return s.q.ListAllPullRequests(ctx)
 }
 
-// OpenPullRequestsByActor returns only OPEN cached PRs for one actor (what the
-// consistency check compares against GitHub's live open-PR set).
-func (s *Store) OpenPullRequestsByActor(ctx context.Context, actorFP string) ([]dbgen.PullRequest, error) {
-	return s.q.ListOpenPullRequestsByActor(ctx, actorFP)
+// AllOpenPullRequests returns only OPEN cached PRs (what the consistency check
+// compares against GitHub's live open-PR set).
+func (s *Store) AllOpenPullRequests(ctx context.Context) ([]dbgen.PullRequest, error) {
+	return s.q.ListAllOpenPullRequests(ctx)
 }
 
-// PRLabelsByActor returns every cached PR label for one actor.
-func (s *Store) PRLabelsByActor(ctx context.Context, actorFP string) ([]dbgen.PrLabel, error) {
-	return s.q.ListPRLabelsByActor(ctx, actorFP)
+// AllPRLabels returns every cached PR label.
+func (s *Store) AllPRLabels(ctx context.Context) ([]dbgen.PrLabel, error) {
+	return s.q.ListAllPRLabels(ctx)
 }
 
-// UsersByActor returns every cached user for one actor.
-func (s *Store) UsersByActor(ctx context.Context, actorFP string) ([]dbgen.User, error) {
-	return s.q.ListUsersByActor(ctx, actorFP)
+// AllCommitChecks returns every cached per-check state row.
+func (s *Store) AllCommitChecks(ctx context.Context) ([]dbgen.CommitCheck, error) {
+	return s.q.ListAllCommitChecks(ctx)
 }
 
-// OrgsByActor returns every cached org for one actor.
-func (s *Store) OrgsByActor(ctx context.Context, actorFP string) ([]dbgen.Org, error) {
-	return s.q.ListOrgsByActor(ctx, actorFP)
-}
-
-// PRFilesByActor returns every cached PR file row for one actor.
-func (s *Store) PRFilesByActor(ctx context.Context, actorFP string) ([]dbgen.PrFile, error) {
-	return s.q.ListPRFilesByActor(ctx, actorFP)
-}
-
-// BranchComparisonsByActor returns every cached branch comparison for one actor.
-func (s *Store) BranchComparisonsByActor(ctx context.Context, actorFP string) ([]dbgen.BranchComparison, error) {
-	return s.q.ListBranchComparisonsByActor(ctx, actorFP)
-}
-
-// CommitChecksByActor returns every cached per-check state row for one actor.
-func (s *Store) CommitChecksByActor(ctx context.Context, actorFP string) ([]dbgen.CommitCheck, error) {
-	return s.q.ListCommitChecksByActor(ctx, actorFP)
-}
-
-// DistinctOwnersByActor returns the distinct repo owners cached for one actor.
-func (s *Store) DistinctOwnersByActor(ctx context.Context, actorFP string) ([]string, error) {
-	return s.q.ListDistinctOwnersByActor(ctx, actorFP)
+// DistinctRepoOwners returns the distinct owners present in global truth.
+func (s *Store) DistinctRepoOwners(ctx context.Context) ([]string, error) {
+	return s.q.ListDistinctRepoOwners(ctx)
 }

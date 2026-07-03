@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -28,93 +30,6 @@ func setupFetcherTest(t *testing.T, handler http.Handler) (*ghclient.Client, *gh
 	client := ghclient.NewWithBaseURL(srv.URL)
 	store := ghdata.NewStore(db)
 	return client, store
-}
-
-func TestUserFetcher_Fetch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"login":      "octocat",
-			"avatar_url": "https://avatar",
-			"html_url":   "https://github.com/octocat",
-		})
-	})
-
-	client, store := setupFetcherTest(t, mux)
-	f := &UserFetcher{gh: client, store: store}
-
-	result, err := f.Fetch(context.Background(), "self", "")
-	require.NoError(t, err)
-	assert.Equal(t, 1, result.RecordsChanged)
-
-	user, err := store.GetFirstUser(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "octocat", user.Login)
-}
-
-func TestUserOrgsFetcher_Fetch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/user/orgs", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]string{
-			{"login": "org1", "avatar_url": "https://a1", "url": "https://u1"},
-			{"login": "org2", "avatar_url": "https://a2", "url": "https://u2"},
-		})
-	})
-
-	client, store := setupFetcherTest(t, mux)
-	f := &UserOrgsFetcher{gh: client, store: store}
-
-	result, err := f.Fetch(context.Background(), "octocat", "")
-	require.NoError(t, err)
-	assert.Equal(t, 2, result.RecordsChanged)
-
-	orgs, err := store.ListUserOrgs(context.Background(), "octocat")
-	require.NoError(t, err)
-	assert.Equal(t, 2, len(orgs))
-}
-
-func TestPRFilesFetcher_Fetch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/org1/repo1/pulls/42/files", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
-			{"filename": "main.go", "additions": 10, "deletions": 5},
-			{"filename": "test.go", "additions": 20, "deletions": 0},
-		})
-	})
-
-	client, store := setupFetcherTest(t, mux)
-	f := &PRFilesFetcher{gh: client, store: store}
-
-	result, err := f.Fetch(context.Background(), "org1/repo1/42", "")
-	require.NoError(t, err)
-	assert.Equal(t, 2, result.RecordsChanged)
-
-	files, err := store.ListPRFiles(context.Background(), "org1", "repo1", 42)
-	require.NoError(t, err)
-	assert.Equal(t, 2, len(files))
-	assert.Equal(t, "main.go", files[0].Path)
-}
-
-func TestCompareFetcher_Fetch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/org1/repo1/compare/main...feature", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ahead_by":  5,
-			"behind_by": 2,
-		})
-	})
-
-	client, store := setupFetcherTest(t, mux)
-	f := &CompareFetcher{gh: client, store: store}
-
-	result, err := f.Fetch(context.Background(), "org1/repo1/main...feature", "")
-	require.NoError(t, err)
-	assert.Equal(t, 1, result.RecordsChanged)
-
-	comp, err := store.GetComparison(context.Background(), "org1", "repo1", "main", "feature")
-	require.NoError(t, err)
-	assert.Equal(t, int64(5), comp.AheadBy)
-	assert.Equal(t, int64(2), comp.BehindBy)
 }
 
 func TestOrgReposFetcher_Fetch(t *testing.T) {
@@ -195,7 +110,10 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 	client, store := setupFetcherTest(t, mux)
 	f := &OrgReposFetcher{gh: client, store: store}
 
-	result, err := f.Fetch(context.Background(), "org1", "")
+	// The fetch runs as a principal: the snapshot lands in GLOBAL truth and
+	// the principal earns a list_sync grant for every repo GitHub returned.
+	ctx := actor.WithActor(context.Background(), "user:900")
+	result, err := f.Fetch(ctx, "org1", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.RecordsChanged) // 1 repo + 1 PR
 
@@ -208,18 +126,22 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, len(prs))
 	assert.Equal(t, "Test PR", prs[0].Title)
+
+	ok, err := store.HasGrant(context.Background(), "user:900", "org1", "repo1", time.Now())
+	require.NoError(t, err)
+	assert.True(t, ok, "list sync must record a grant for each repo GitHub returned")
 }
 
-func TestUserFetcher_APIError(t *testing.T) {
+func TestOrgReposFetcher_APIError(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"message":"Bad credentials"}`))
 	})
 
 	client, store := setupFetcherTest(t, mux)
-	f := &UserFetcher{gh: client, store: store}
+	f := &OrgReposFetcher{gh: client, store: store}
 
-	_, err := f.Fetch(context.Background(), "self", "")
+	_, err := f.Fetch(actor.WithActor(context.Background(), "user:900"), "org1", "")
 	assert.Error(t, err)
 }

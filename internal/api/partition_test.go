@@ -11,22 +11,22 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Per-user cache partitioning (1 GitHub user == 1 cache scope).
+// Per-user principal resolution (1 GitHub user == 1 reveal-layer principal).
 //
-// These tests cover requireAuth's partition selection end to end against a
+// These tests cover requireAuth's principal selection end to end against a
 // fake GitHub upstream:
-//   - two different tokens of the same user share one "user:<id>" partition
-//   - a machine token (403 on /user) falls back to per-token fingerprint
-//     isolation, with the verdict cached
+//   - two different tokens of the same user share one "user:<id>" principal
+//     (grants earned by either token reveal truth to both)
+//   - a machine token (403 on /user) falls back to a per-token fingerprint
+//     principal, with the verdict cached
 //   - a transient /user failure fails the request (503) and never picks a
-//     partition; recovery needs no restart
-//   - identity rows are recorded under the "user:<id>" actor
+//     principal; recovery needs no restart
+//   - identity rows are recorded under the "user:<id>" principal
 
 func partitionAuthSvc() *auth.Service {
 	return auth.New(auth.Config{SessionKey: []byte("test-session-key")})
@@ -50,9 +50,9 @@ func postOrgRepos(router http.Handler, token string) *httptest.ResponseRecorder 
 }
 
 // TestUserPartition_SameUserTokensShareScope verifies the operator-decided
-// keying: two DIFFERENT tokens resolving to the SAME GitHub user id land in one
-// "user:<id>" partition — data cached under it is readable through either
-// token — while a third token of a different user stays isolated. It also
+// keying: two DIFFERENT tokens resolving to the SAME GitHub user id share one
+// "user:<id>" principal — grants earned under it reveal truth through either
+// token — while a third user's token has no grant and sees nothing. It also
 // verifies /user is asked once per unique token (the identity is cached).
 func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 	var userCalls atomic.Int64
@@ -73,14 +73,13 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 	})
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
-	// Cache a repo in octocat's per-user partition (as a request through any of
-	// octocat's tokens would).
-	userCtx := actor.WithActor(context.Background(), "user:42")
-	require.NoError(t, store.SetOrgRepos(userCtx, "my-org", []dbgen.Repo{
+	// Absorb a repo into global truth via octocat's sync (as a request through
+	// any of octocat's tokens would), granting the "user:42" principal.
+	seedOrgTruth(t, store, "user:42", "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "shared-repo", NameWithOwner: "my-org/shared-repo", Url: "u"},
-	}))
+	}, nil)
 
-	// Written via one token's partition, readable via the other token.
+	// Granted via one token's principal, revealed via the other token.
 	for _, token := range []string{"pat-laptop", "pat-ci"} {
 		w := postOrgRepos(router, token)
 		require.Equal(t, http.StatusOK, w.Code, "token %s", token)
@@ -89,7 +88,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 		assert.Equal(t, "shared-repo", nodes[0].(map[string]interface{})["name"])
 	}
 
-	// A different user's token must NOT see octocat's partition.
+	// A different user's token holds no grant and must see nothing.
 	w := postOrgRepos(router, "someone-elses-token")
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Len(t, orgRepoNodes(t, w.Body.Bytes()), 0, "distinct users stay isolated")
@@ -104,8 +103,8 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 
 // TestMachineToken_FingerprintIsolation verifies that a token GitHub
 // definitively says is not a user (403 on /user without rate-limit headers —
-// e.g. an installation token) keeps the old per-token fingerprint partition,
-// that the verdict is cached, and that no identity row is written (there is no
+// e.g. an installation token) keeps a per-token fingerprint principal, that
+// the verdict is cached, and that no identity row is written (there is no
 // login to attribute).
 func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	var userCalls atomic.Int64
@@ -119,10 +118,9 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
 	const machineToken = "ghs_machine-token"
-	fpCtx := actor.WithActor(context.Background(), ghclient.Fingerprint(machineToken))
-	require.NoError(t, store.SetOrgRepos(fpCtx, "my-org", []dbgen.Repo{
+	seedOrgTruth(t, store, ghclient.Fingerprint(machineToken), "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "bot-repo", NameWithOwner: "my-org/bot-repo", Url: "u"},
-	}))
+	}, nil)
 
 	for i := 0; i < 2; i++ {
 		w := postOrgRepos(router, machineToken)
@@ -159,7 +157,7 @@ func TestTransientUserFailure_503AndNoPartition(t *testing.T) {
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
 	w := postOrgRepos(router, "flaky-token")
-	require.Equal(t, http.StatusServiceUnavailable, w.Code, "transient identity failure must be 503, not a guessed partition")
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, "transient identity failure must be 503, not a guessed principal")
 	assert.Contains(t, w.Body.String(), "retry")
 
 	ids, err := store.ListActorIdentities(context.Background())

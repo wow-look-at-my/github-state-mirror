@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
@@ -378,34 +379,43 @@ type recentRefresh struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type scopeStats struct {
-	Actor    string            `json:"actor"`              // short actor (display)
-	ActorID  string            `json:"actor_id,omitempty"` // full partition key (for admin browse/check)
-	Login    string            `json:"login"`
-	IsSelf   bool              `json:"is_self"`
-	LastSeen string            `json:"last_seen,omitempty"`
-	Counts   ghdata.DataCounts `json:"counts"`
-	Total    int64             `json:"total"`
-	Kinds    []kindFreshness   `json:"kinds"`
-	Recent   []recentRefresh   `json:"recent,omitempty"`
+// principalStats is one principal's reveal-layer standing: who they are, how
+// many repos they hold live grants for, and how fresh their org syncs are.
+type principalStats struct {
+	Principal   string          `json:"principal"`    // short (display)
+	PrincipalID string          `json:"principal_id"` // full key (for admin views)
+	Login       string          `json:"login"`
+	IsSelf      bool            `json:"is_self"`
+	LastSeen    string          `json:"last_seen,omitempty"`
+	LiveGrants  int64           `json:"live_grants"`
+	Kinds       []kindFreshness `json:"kinds"`
+	Recent      []recentRefresh `json:"recent,omitempty"`
 }
 
 type cacheResponse struct {
-	Login      string            `json:"login"`
-	IsAdmin    bool              `json:"is_admin"`
-	Scope      string            `json:"scope"`
-	ScopeCount int               `json:"scope_count"`
-	Totals     ghdata.DataCounts `json:"totals"`
-	Scopes     []scopeStats      `json:"scopes"`
+	Login   string `json:"login"`
+	IsAdmin bool   `json:"is_admin"`
+	Scope   string `json:"scope"`
+	// Totals are the GLOBAL truth store's row counts -- one cache, one truth.
+	Totals ghdata.DataCounts `json:"totals"`
+	// Principals lists reveal-layer principals: the signed-in user's own on
+	// the "mine" view, every known one on the admin "all" view.
+	PrincipalCount int              `json:"principal_count"`
+	Principals     []principalStats `json:"principals"`
+	// Truth is the freshness of shared global truth markers (the 'global'
+	// actor rows, e.g. repo_pulls completeness is tracked elsewhere; this
+	// carries whatever global markers exist).
+	Truth []kindFreshness `json:"truth,omitempty"`
 }
 
 const unknownLogin = "(unknown)"
 
-// scopeInput is one actor to summarize, with its (possibly unknown) identity.
-type scopeInput struct {
-	actor    string
-	login    string
-	lastSeen string
+// principalInput is one principal to summarize, with its (possibly unknown)
+// identity.
+type principalInput struct {
+	principal string
+	login     string
+	lastSeen  string
 }
 
 func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
@@ -426,64 +436,74 @@ func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	totals, err := d.store.GlobalDataCounts(ctx)
+	if err != nil {
+		slog.Warn("global data counts failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	identities, err := d.store.ListActorIdentities(ctx)
 	if err != nil {
-		slog.Warn("list actor identities failed", "error", err)
+		slog.Warn("list principal identities failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	inputs := d.collectInputs(ctx, scope, login, identities)
 
-	resp := cacheResponse{Login: login, IsAdmin: isAdmin, Scope: scope, ScopeCount: len(inputs)}
+	resp := cacheResponse{Login: login, IsAdmin: isAdmin, Scope: scope, Totals: totals, PrincipalCount: len(inputs)}
 	detailed := scope != "all" // recent activity only on the focused (mine) view
 	for _, in := range inputs {
-		s, err := d.buildScope(ctx, in, login, detailed)
+		p, err := d.buildPrincipal(ctx, in, login, detailed)
 		if err != nil {
-			slog.Warn("build scope failed", "error", err)
+			slog.Warn("build principal failed", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		resp.Totals = addCounts(resp.Totals, s.Counts)
-		resp.Scopes = append(resp.Scopes, s)
+		resp.Principals = append(resp.Principals, p)
 	}
-	if resp.Scopes == nil {
-		resp.Scopes = []scopeStats{}
+	if resp.Principals == nil {
+		resp.Principals = []principalStats{}
+	}
+	// Shared global truth markers (fetched-for-everyone resources).
+	if truthFresh, err := d.store.FreshnessByKind(ctx, "global"); err == nil {
+		truthErrs, _ := d.store.ErrorMessagesByKind(ctx, "global")
+		resp.Truth = groupKinds(truthFresh, truthErrs)
 	}
 	writeJSON(w, resp)
 }
 
-// collectInputs returns the actors to summarize for the requested scope, sorted
-// for stable display.
-func (d *dashboard) collectInputs(ctx context.Context, scope, login string, identities []dbgen.ActorIdentity) []scopeInput {
+// collectInputs returns the principals to summarize for the requested scope,
+// sorted for stable display.
+func (d *dashboard) collectInputs(ctx context.Context, scope, login string, identities []dbgen.ActorIdentity) []principalInput {
 	if scope != "all" {
-		var inputs []scopeInput
+		var inputs []principalInput
 		for _, id := range identities {
 			if id.Login == login {
-				inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
+				inputs = append(inputs, principalInput{principal: id.Actor, login: id.Login, lastSeen: id.LastSeen})
 			}
 		}
 		return inputs
 	}
 
-	// Admin "all": every identity, plus any cached actor that lacks an identity
-	// row (e.g. the background token before it is recorded).
+	// Admin "all": every identity, plus any principal with freshness metadata
+	// but no identity row (e.g. the background app-installation sessions).
 	seen := make(map[string]bool, len(identities))
-	inputs := make([]scopeInput, 0, len(identities))
+	inputs := make([]principalInput, 0, len(identities))
 	for _, id := range identities {
-		inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
+		inputs = append(inputs, principalInput{principal: id.Actor, login: id.Login, lastSeen: id.LastSeen})
 		seen[id.Actor] = true
 	}
-	if cached, err := d.store.CachedActors(ctx); err != nil {
-		slog.Warn("list cached actors failed", "error", err)
+	if known, err := d.store.KnownPrincipals(ctx); err != nil {
+		slog.Warn("list known principals failed", "error", err)
 	} else {
-		for _, a := range cached {
+		for _, a := range known {
 			if !seen[a] {
-				inputs = append(inputs, scopeInput{actor: a, login: unknownLogin})
+				inputs = append(inputs, principalInput{principal: a, login: unknownLogin})
 			}
 		}
 	}
-	// Known logins first (case-insensitive), unknowns last, then by actor.
+	// Known logins first (case-insensitive), unknowns last, then by principal.
 	sort.SliceStable(inputs, func(i, j int) bool {
 		ui, uj := inputs[i].login == unknownLogin, inputs[j].login == unknownLogin
 		if ui != uj {
@@ -493,43 +513,42 @@ func (d *dashboard) collectInputs(ctx context.Context, scope, login string, iden
 		if li != lj {
 			return li < lj
 		}
-		return inputs[i].actor < inputs[j].actor
+		return inputs[i].principal < inputs[j].principal
 	})
 	return inputs
 }
 
-func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin string, detailed bool) (scopeStats, error) {
-	counts, err := d.store.DataCounts(ctx, in.actor)
+func (d *dashboard) buildPrincipal(ctx context.Context, in principalInput, selfLogin string, detailed bool) (principalStats, error) {
+	grants, err := d.store.CountLiveGrants(ctx, in.principal, time.Now())
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
-	fresh, err := d.store.FreshnessByKind(ctx, in.actor)
+	fresh, err := d.store.FreshnessByKind(ctx, in.principal)
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
-	errs, err := d.store.ErrorMessagesByKind(ctx, in.actor)
+	errs, err := d.store.ErrorMessagesByKind(ctx, in.principal)
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
 
-	s := scopeStats{
-		Actor:    shortFingerprint(in.actor),
-		ActorID:  in.actor,
-		Login:    in.login,
-		IsSelf:   in.login == selfLogin && in.login != unknownLogin,
-		LastSeen: in.lastSeen,
-		Counts:   counts,
-		Total:    sumCounts(counts),
-		Kinds:    groupKinds(fresh, errs),
+	p := principalStats{
+		Principal:   shortFingerprint(in.principal),
+		PrincipalID: in.principal,
+		Login:       in.login,
+		IsSelf:      in.login == selfLogin && in.login != unknownLogin,
+		LastSeen:    in.lastSeen,
+		LiveGrants:  grants,
+		Kinds:       groupKinds(fresh, errs),
 	}
 	if detailed {
-		logs, err := d.store.RecentRefreshes(ctx, in.actor, 12)
+		logs, err := d.store.RecentRefreshes(ctx, in.principal, 12)
 		if err != nil {
-			return scopeStats{}, err
+			return principalStats{}, err
 		}
-		s.Recent = toRecent(logs)
+		p.Recent = toRecent(logs)
 	}
-	return s, nil
+	return p, nil
 }
 
 // groupKinds folds per-(kind,state) rows into one entry per resource kind, with
@@ -610,19 +629,3 @@ func asTimeString(v interface{}) string {
 // fingerprints shorten to 12 chars, structured actors ("user:<id>",
 // "app:<id>", "app-installation:<id>") are shown whole.
 func shortFingerprint(fp string) string { return actor.Short(fp) }
-
-func sumCounts(c ghdata.DataCounts) int64 {
-	return c.Repos + c.PullRequests + c.Orgs + c.Users + c.CommitChecks + c.PRFiles + c.BranchComparisons
-}
-
-func addCounts(a, b ghdata.DataCounts) ghdata.DataCounts {
-	return ghdata.DataCounts{
-		Repos:             a.Repos + b.Repos,
-		PullRequests:      a.PullRequests + b.PullRequests,
-		Orgs:              a.Orgs + b.Orgs,
-		Users:             a.Users + b.Users,
-		CommitChecks:      a.CommitChecks + b.CommitChecks,
-		PRFiles:           a.PRFiles + b.PRFiles,
-		BranchComparisons: a.BranchComparisons + b.BranchComparisons,
-	}
-}

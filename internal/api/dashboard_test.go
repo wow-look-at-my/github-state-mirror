@@ -13,7 +13,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
@@ -54,15 +53,15 @@ func mintSession(t *testing.T, svc *auth.Service, login string) *http.Cookie {
 	return cookies[0]
 }
 
-// seedScope populates a cache scope (actor fingerprint) with a little data, a
-// freshness row, and an identity mapping to login.
-func seedScope(t *testing.T, store *ghdata.Store, db *sql.DB, fp, login string) {
+// seedPrincipal populates a principal with an identity mapping, a grant into
+// global truth, and a sync-marker freshness row.
+func seedPrincipal(t *testing.T, store *ghdata.Store, db *sql.DB, principal, login string) {
 	t.Helper()
-	ctx := actor.WithActor(context.Background(), fp)
-	require.NoError(t, store.UpsertUser(ctx, dbgen.User{Login: login, AvatarUrl: "a", Url: "u"}))
+	ctx := context.Background()
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "o", Name: "r", NameWithOwner: "o/r", Url: "u"}))
-	require.NoError(t, store.RecordActorIdentity(context.Background(), fp, login))
-	seedFreshness(t, db, fp, "org_repos", "o")
+	require.NoError(t, store.RecordGrant(ctx, principal, "o", "r", ghdata.GrantSourceListSync, time.Now()))
+	require.NoError(t, store.RecordActorIdentity(ctx, principal, login))
+	seedFreshness(t, db, principal, "org_repos", "o")
 }
 
 func seedFreshness(t *testing.T, db *sql.DB, fp, kind, key string) {
@@ -111,7 +110,7 @@ func TestDashboard_MeAuthenticated(t *testing.T) {
 func TestDashboard_CacheMine(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, db := newTestStack(t, svc)
-	seedScope(t, store, db, "fp-octocat", "octocat")
+	seedPrincipal(t, store, db, "user:100", "octocat")
 
 	req := httptest.NewRequest("GET", "/api/cache?scope=mine", nil)
 	req.AddCookie(mintSession(t, svc, "octocat"))
@@ -123,17 +122,17 @@ func TestDashboard_CacheMine(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "octocat", resp.Login)
 	assert.Equal(t, "mine", resp.Scope)
-	assert.Equal(t, 1, resp.ScopeCount)
-	require.Len(t, resp.Scopes, 1)
-	assert.Equal(t, "octocat", resp.Scopes[0].Login)
-	assert.True(t, resp.Scopes[0].IsSelf)
-	assert.Equal(t, int64(1), resp.Scopes[0].Counts.Repos)
-	assert.Equal(t, int64(1), resp.Scopes[0].Counts.Users)
-	assert.Equal(t, int64(1), resp.Totals.Repos)
-	// org_repos freshness row should surface.
-	require.NotEmpty(t, resp.Scopes[0].Kinds)
-	assert.Equal(t, "org_repos", resp.Scopes[0].Kinds[0].Kind)
-	assert.Equal(t, int64(1), resp.Scopes[0].Kinds[0].States["fresh"])
+	assert.Equal(t, 1, resp.PrincipalCount)
+	require.Len(t, resp.Principals, 1)
+	assert.Equal(t, "octocat", resp.Principals[0].Login)
+	assert.True(t, resp.Principals[0].IsSelf)
+	assert.Equal(t, int64(1), resp.Principals[0].LiveGrants)
+	assert.Equal(t, int64(1), resp.Totals.Repos, "totals are the GLOBAL truth counts")
+	assert.Equal(t, int64(1), resp.Totals.Grants)
+	// org_repos sync-marker freshness should surface.
+	require.NotEmpty(t, resp.Principals[0].Kinds)
+	assert.Equal(t, "org_repos", resp.Principals[0].Kinds[0].Kind)
+	assert.Equal(t, int64(1), resp.Principals[0].Kinds[0].States["fresh"])
 }
 
 func TestDashboard_CacheMine_Empty(t *testing.T) {
@@ -148,8 +147,8 @@ func TestDashboard_CacheMine_Empty(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	var resp cacheResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, 0, resp.ScopeCount)
-	assert.Equal(t, []scopeStats{}, resp.Scopes)
+	assert.Equal(t, 0, resp.PrincipalCount)
+	assert.Equal(t, []principalStats{}, resp.Principals)
 }
 
 func TestDashboard_CacheUnauthenticated(t *testing.T) {
@@ -163,7 +162,7 @@ func TestDashboard_CacheUnauthenticated(t *testing.T) {
 func TestDashboard_CacheAll_NonAdminForbidden(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, db := newTestStack(t, svc)
-	seedScope(t, store, db, "fp-octocat", "octocat")
+	seedPrincipal(t, store, db, "user:100", "octocat")
 
 	req := httptest.NewRequest("GET", "/api/cache?scope=all", nil)
 	req.AddCookie(mintSession(t, svc, "octocat")) // not an admin
@@ -175,10 +174,10 @@ func TestDashboard_CacheAll_NonAdminForbidden(t *testing.T) {
 func TestDashboard_CacheAll_Admin(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, db := newTestStack(t, svc)
-	seedScope(t, store, db, "fp-octocat", "octocat")
-	seedScope(t, store, db, "fp-pazer", "PazerOP")
-	// An orphan scope: cache metadata but no identity row.
-	seedFreshness(t, db, "fp-orphan", "pr_files", "o/r/1")
+	seedPrincipal(t, store, db, "user:100", "octocat")
+	seedPrincipal(t, store, db, "user:200", "PazerOP")
+	// An orphan principal: sync markers but no identity row.
+	seedFreshness(t, db, "app-installation:9", "org_repos", "other-org")
 
 	req := httptest.NewRequest("GET", "/api/cache?scope=all", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -189,10 +188,10 @@ func TestDashboard_CacheAll_Admin(t *testing.T) {
 	var resp cacheResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "all", resp.Scope)
-	assert.Equal(t, 3, resp.ScopeCount)
+	assert.Equal(t, 3, resp.PrincipalCount)
 
-	byLogin := map[string]scopeStats{}
-	for _, s := range resp.Scopes {
+	byLogin := map[string]principalStats{}
+	for _, s := range resp.Principals {
 		byLogin[s.Login] = s
 	}
 	require.Contains(t, byLogin, "octocat")
@@ -215,7 +214,6 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 		Repo:        "o/r",
 		Disposition: webhook.DispApplied,
 		Detail:      "upserted PR #5",
-		Actors:      2,
 	}))
 
 	req := httptest.NewRequest("GET", "/api/webhooks", nil)
@@ -229,13 +227,12 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 	require.Len(t, resp.Deliveries, 1)
 	assert.Equal(t, "abc123", resp.Deliveries[0].DeliveryID)
 	assert.Equal(t, webhook.DispApplied, resp.Deliveries[0].Disposition)
-	assert.Equal(t, int64(2), resp.Deliveries[0].Actors)
 }
 
 func TestDashboard_Webhooks_NonAdminForbidden(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, db := newTestStack(t, svc)
-	seedScope(t, store, db, "fp-octocat", "octocat")
+	seedPrincipal(t, store, db, "user:100", "octocat")
 
 	req := httptest.NewRequest("GET", "/api/webhooks", nil)
 	req.AddCookie(mintSession(t, svc, "octocat")) // not an admin
@@ -447,10 +444,7 @@ func TestGroupKinds(t *testing.T) {
 	assert.Empty(t, out[1].Error)
 }
 
-func TestSumAndShortAndTime(t *testing.T) {
-	c := ghdata.DataCounts{Repos: 1, PullRequests: 2, Orgs: 3, Users: 4, CommitChecks: 5, PRFiles: 6, BranchComparisons: 7}
-	assert.Equal(t, int64(28), sumCounts(c))
-
+func TestShortAndTime(t *testing.T) {
 	assert.Equal(t, "0123456789ab", shortFingerprint("0123456789abcdef"))
 	assert.Equal(t, "short", shortFingerprint("short"))
 	// Structured actors are never truncated — cutting "user:12345678901" at 12
@@ -591,7 +585,7 @@ func TestDashboard_Jobs_LimitCapEnforced(t *testing.T) {
 func TestDashboard_Jobs_NonAdminForbidden(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, db := newTestStack(t, svc)
-	seedScope(t, store, db, "fp-octocat", "octocat")
+	seedPrincipal(t, store, db, "user:100", "octocat")
 
 	req := httptest.NewRequest("GET", "/api/jobs", nil)
 	req.AddCookie(mintSession(t, svc, "octocat")) // not an admin

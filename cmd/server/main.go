@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
@@ -30,7 +31,6 @@ func main() {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
 
 	// Create components.
 	fStore := freshness.NewStore(db)
@@ -43,13 +43,14 @@ func main() {
 
 	// The service's only credential: a GitHub App (there is no static service
 	// token). nil when no app is configured. It signs in for the periodic
-	// background refreshes, lets the webhook dispatcher pull an as-yet-uncached
-	// repo on demand, and is the source-of-truth fetcher for the admin
-	// consistency check. Requests never use it — they carry the caller's own token.
+	// background refreshes and is the source-of-truth fetcher for the admin
+	// consistency check. Requests never use it — they carry the caller's own
+	// token — and the webhook dispatcher never fetches at all (payloads apply
+	// straight to global truth).
 	app := buildAppAuthenticator(cfg, gh)
 
-	// Webhook dispatcher.
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store, app)
+	// Webhook dispatcher: applies every stateful event to global truth.
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// Periodic refresher. Without an app configured, sessions is nil and periodic
 	// refreshes are disabled; per-request data still works via each caller's
@@ -101,7 +102,23 @@ func main() {
 	}()
 
 	slog.Info("starting server", "addr", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	err = srv.ListenAndServe()
+
+	// Shutdown ordering: the listener is closed (no new requests), the
+	// periodic refresher's context is canceled, but DETACHED fetches
+	// (freshness.Manager runs each fetch on a cancel-severed context so an
+	// impatient client can't kill shared work) may still be writing. Drain
+	// them BEFORE closing the database, or a late metadata write lands on a
+	// closed handle. Bounded so a wedged upstream cannot hold shutdown hostage
+	// past the fetch safety timeout.
+	if !mgr.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
+	}
+	if cerr := db.Close(); cerr != nil {
+		slog.Warn("close database", "error", cerr)
+	}
+
+	if err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

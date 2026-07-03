@@ -12,12 +12,14 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 8: cache partitions moved from per-token fingerprints to
-// per-user ("user:<id>") actors. Bumping nukes the DB on deploy, flushing all
-// old fingerprint partitions (including dormant ones); the cache rebuilds
-// lazily under the new keying. (7 added the global workflow_jobs table; 6
-// added the response-cache tables.)
-const SchemaVersion = 8
+// SchemaVersion 10: ONE GLOBAL TRUTH STORE (the global-cache re-architecture).
+// The actor dimension is dropped from every GitHub-state table; access is
+// decided at serve time by the reveal-by-permission layer (access_grants +
+// deny_cache + repos.visibility). Bumping nukes the DB on deploy; global truth
+// rebuilds from webhooks and each caller's own fetches. (9 was the per-actor
+// /pulls + /installation cache branch, folded into this model; 8 was per-user
+// partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
+const SchemaVersion = 10
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

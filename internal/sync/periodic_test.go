@@ -20,16 +20,11 @@ func TestPeriodicRefresher_Start(t *testing.T) {
 
 	fStore := freshness.NewStore(db)
 	mgr := freshness.NewManager(fStore)
+	mgr.RegisterFetcher(freshness.Policy{Kind: KindOrgRepos}, &stubFetcher{})
 
-	fetchCount := 0
-	for _, kind := range []string{KindUser, KindUserOrgs, KindOrgRepos} {
-		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
-	}
-
-	// Seed some resources so RefreshAllOfKind has work to do.
+	// Seed a resource so RefreshAllOfKind has work to do.
 	ctx := context.Background()
-	require.NoError(t, mgr.EnsureFresh(ctx, freshness.ResourceID{Kind: KindUser, Key: "self"}))
-	_ = fetchCount // stubFetcher doesn't increment, that's fine
+	require.NoError(t, mgr.EnsureFresh(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: "org1"}))
 
 	// A single session in the default (empty) cache partition, matching the
 	// seed above.

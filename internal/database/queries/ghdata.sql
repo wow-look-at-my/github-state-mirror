@@ -1,214 +1,294 @@
 -- ============================================================================
--- Users
+-- Repos (global truth -- one row per repo)
 -- ============================================================================
 
--- name: UpsertUser :exec
-INSERT INTO users (actor, login, avatar_url, url)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (actor, login) DO UPDATE SET
-    avatar_url = excluded.avatar_url,
-    url = excluded.url;
-
--- name: GetUser :one
-SELECT * FROM users WHERE actor = ? AND login = ?;
-
--- name: GetFirstUser :one
-SELECT * FROM users WHERE actor = ? LIMIT 1;
-
--- ============================================================================
--- Orgs
--- ============================================================================
-
--- name: UpsertOrg :exec
-INSERT INTO orgs (actor, login, avatar_url, url)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (actor, login) DO UPDATE SET
-    avatar_url = excluded.avatar_url,
-    url = excluded.url;
-
--- name: GetOrg :one
-SELECT * FROM orgs WHERE actor = ? AND login = ?;
-
--- name: ListOrgs :many
-SELECT * FROM orgs WHERE actor = ? ORDER BY login;
-
--- ============================================================================
--- User Org Memberships
--- ============================================================================
-
--- name: SetUserOrgMembership :exec
-INSERT INTO user_org_memberships (actor, user_login, org_login)
-VALUES (?, ?, ?)
-ON CONFLICT (actor, user_login, org_login) DO NOTHING;
-
--- name: DeleteUserOrgMemberships :exec
-DELETE FROM user_org_memberships WHERE actor = ? AND user_login = ?;
-
--- name: ListUserOrgMemberships :many
-SELECT org_login FROM user_org_memberships WHERE actor = ? AND user_login = ?;
-
--- ============================================================================
--- Repos
--- ============================================================================
-
+-- UpsertRepo writes a repo row. visibility is only overwritten when the new
+-- value is known (non-empty): the GraphQL org fetch cannot carry visibility,
+-- and clobbering a webhook-learned value with '' would silently close the
+-- public fast path (or worse, reopen it later from a stale write).
 -- name: UpsertRepo :exec
-INSERT INTO repos (actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
+INSERT INTO repos (owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, name) DO UPDATE SET
+ON CONFLICT (owner, name) DO UPDATE SET
     name_with_owner = excluded.name_with_owner,
     url = excluded.url,
     is_disabled = excluded.is_disabled,
     is_archived = excluded.is_archived,
-    pushed_at = excluded.pushed_at,
-    default_branch = excluded.default_branch,
-    default_branch_status = excluded.default_branch_status,
-    owner_login = excluded.owner_login,
-    owner_avatar = excluded.owner_avatar,
-    owner_url = excluded.owner_url;
+    visibility = CASE WHEN excluded.visibility != '' THEN excluded.visibility ELSE repos.visibility END,
+    pushed_at = COALESCE(excluded.pushed_at, repos.pushed_at),
+    default_branch = COALESCE(excluded.default_branch, repos.default_branch),
+    default_branch_status = COALESCE(excluded.default_branch_status, repos.default_branch_status),
+    owner_login = COALESCE(excluded.owner_login, repos.owner_login),
+    owner_avatar = COALESCE(excluded.owner_avatar, repos.owner_avatar),
+    owner_url = COALESCE(excluded.owner_url, repos.owner_url);
 
 -- name: GetRepo :one
-SELECT * FROM repos WHERE actor = ? AND owner = ? AND name = ?;
+SELECT * FROM repos WHERE owner = ? AND name = ?;
+
+-- GetRepoInsensitive looks a repo up by URL-supplied casing. GitHub treats
+-- owner/repo case-insensitively in URLs while truth rows keep GitHub's
+-- canonical casing, so API-route lookups must fold case.
+-- name: GetRepoInsensitive :one
+SELECT * FROM repos WHERE owner = ? COLLATE NOCASE AND name = ? COLLATE NOCASE;
 
 -- name: ListReposByOwner :many
-SELECT * FROM repos WHERE actor = ? AND owner = ? ORDER BY name;
+SELECT * FROM repos WHERE owner = ? ORDER BY name;
 
--- name: DeleteReposByOwner :exec
-DELETE FROM repos WHERE actor = ? AND owner = ?;
+-- ListVisibleReposByOwner returns the owner's repos revealed to one principal:
+-- public repos plus repos the principal holds an unexpired grant for.
+-- name: ListVisibleReposByOwner :many
+SELECT * FROM repos
+WHERE repos.owner = ?
+  AND (
+    repos.visibility = 'public'
+    OR EXISTS (
+      SELECT 1 FROM access_grants g
+      WHERE g.principal = ? AND g.owner = repos.owner AND g.repo = repos.name AND g.expires_at > ?
+    )
+  )
+ORDER BY repos.name;
 
--- name: ListActorsForRepo :many
-SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?;
+-- name: DeleteRepo :exec
+DELETE FROM repos WHERE owner = ? AND name = ?;
+
+-- name: SetRepoVisibility :exec
+UPDATE repos SET visibility = ? WHERE owner = ? AND name = ?;
+
+-- name: SetRepoArchived :exec
+UPDATE repos SET is_archived = ? WHERE owner = ? AND name = ?;
 
 -- ============================================================================
--- Pull Requests
+-- Pull Requests (global truth -- one row per PR)
 -- ============================================================================
 
+-- UpsertPullRequest merges one source's view of a PR into truth, stamping
+-- touched_at. Sources carry different field subsets (GraphQL org fetch, REST
+-- list, REST single, webhook payload). The REST-only columns (node_id ..
+-- merge_commit_sha) COALESCE against the existing row so a GraphQL-shaped
+-- upsert (which cannot know them) never wipes values a REST/webhook write
+-- recorded -- with two exceptions that are real state, not "unknown": body and
+-- auto_merge_method overwrite whenever the source knows the REST fields at all
+-- (node_id present), because a null body and a disarmed auto-merge are
+-- meaningful values a COALESCE would resurrect. That conditional is expressed
+-- as CASE WHEN excluded.node_id IS NULL (the GraphQL-source signature) THEN
+-- keep ELSE take END. mergeable and last_commit_status COALESCE because GitHub
+-- computes them asynchronously (a payload's null must not clobber a known
+-- value); the explicit reset/set queries below express "GitHub is recomputing"
+-- and "a direct read said so". additions/deletions COALESCE because the REST
+-- LIST shape omits them (a NULL there means "not carried", never "zero").
 -- name: UpsertPullRequest :exec
-INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
+INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
     is_draft = excluded.is_draft,
     state = excluded.state,
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
-    additions = excluded.additions,
-    deletions = excluded.deletions,
+    additions = COALESCE(excluded.additions, pull_requests.additions),
+    deletions = COALESCE(excluded.deletions, pull_requests.deletions),
     mergeable = COALESCE(excluded.mergeable, pull_requests.mergeable),
-    author_login = excluded.author_login,
-    author_avatar = excluded.author_avatar,
-    author_url = excluded.author_url,
+    author_login = COALESCE(excluded.author_login, pull_requests.author_login),
+    author_avatar = COALESCE(excluded.author_avatar, pull_requests.author_avatar),
+    author_url = COALESCE(excluded.author_url, pull_requests.author_url),
     head_ref_name = excluded.head_ref_name,
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
-    review_request_count = excluded.review_request_count,
-    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status);
+    review_request_count = COALESCE(excluded.review_request_count, pull_requests.review_request_count),
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status),
+    node_id = COALESCE(excluded.node_id, pull_requests.node_id),
+    body = CASE WHEN excluded.node_id IS NULL THEN pull_requests.body ELSE excluded.body END,
+    author_type = COALESCE(excluded.author_type, pull_requests.author_type),
+    base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
+    head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
+    auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
+    merge_commit_sha = CASE WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha ELSE excluded.merge_commit_sha END,
+    touched_at = excluded.touched_at;
+
+-- SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
+-- fetched answer, INCLUDING null (recomputing). The upsert's COALESCE keeps
+-- old values on null payloads; a direct REST read of the PR is authoritative
+-- about "currently unresolved", so the cached single-PR route uses this after
+-- absorbing to make a null answer miss again until GitHub resolves it.
+-- name: SetPRMergeable :exec
+UPDATE pull_requests SET mergeable = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
+-- every open PR whose base or head is the pushed branch: GitHub recomputes
+-- mergeability after either side moves (and emits NO webhook with the result),
+-- so the last-known value is stale the moment the push lands.
+-- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
+  AND (base_ref_name = ? OR head_ref_name = ?);
 
 -- name: GetPullRequest :one
-SELECT * FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?;
+SELECT * FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?;
+
+-- GetOpenPullRequestNoCase is the cached single-PR route's read: owner/repo
+-- matched case-insensitively (rows carry GitHub's canonical casing; the
+-- request URL may not), open PRs only (the cache never retains closed ones).
+-- name: GetOpenPullRequestNoCase :one
+SELECT * FROM pull_requests
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN';
 
 -- name: ListOpenPullRequestsByRepo :many
 SELECT * FROM pull_requests
-WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number;
 
--- name: ListOpenPullRequestsByOwner :many
+-- ListOpenPullRequestsByRepoNoCase is the cached list route's read. Ordered
+-- newest-created first to match GitHub's default list-pulls sort.
+-- name: ListOpenPullRequestsByRepoNoCase :many
 SELECT * FROM pull_requests
-WHERE actor = ? AND owner = ? AND state = 'OPEN'
-ORDER BY repo, number;
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
+ORDER BY created_at DESC, number DESC;
 
--- name: DeletePullRequestsByRepo :exec
-DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ?;
+-- ListOpenPullRequestNumbersByRepo feeds the fetch-reconcile: the numbers
+-- currently cached open for a repo, with when each row was last touched.
+-- name: ListOpenPullRequestNumbersByRepo :many
+SELECT number, touched_at FROM pull_requests
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
+ORDER BY number;
 
 -- name: DeletePullRequest :exec
-DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?;
+DELETE FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeletePullRequestsByRepo :exec
+DELETE FROM pull_requests WHERE owner = ? AND repo = ?;
 
 -- ============================================================================
--- PR Labels
+-- PR Labels (global truth)
 -- ============================================================================
 
 -- name: InsertPRLabel :exec
-INSERT INTO pr_labels (actor, owner, repo, pr_number, name, color)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, pr_number, name) DO UPDATE SET
+INSERT INTO pr_labels (owner, repo, pr_number, name, color)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, pr_number, name) DO UPDATE SET
     color = excluded.color;
 
 -- name: DeletePRLabels :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?;
+DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?;
 
 -- name: ListPRLabels :many
-SELECT * FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?;
+SELECT * FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?;
+
+-- ListPRLabelsByRepoNoCase feeds the cached /pulls list rebuild: all of a
+-- repo's PR labels in one query (grouped by pr_number in Go), owner/repo
+-- matched case-insensitively like the row reads.
+-- name: ListPRLabelsByRepoNoCase :many
+SELECT * FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE
+ORDER BY pr_number, name;
+
+-- name: ListPRLabelsNoCase :many
+SELECT * FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND pr_number = ?
+ORDER BY name;
 
 -- name: DeletePRLabelsByRepo :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ?;
-
--- ============================================================================
--- PR Files
--- ============================================================================
-
--- name: InsertPRFile :exec
-INSERT INTO pr_files (actor, owner, repo, pr_number, path, additions, deletions)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, pr_number, path) DO UPDATE SET
-    additions = excluded.additions,
-    deletions = excluded.deletions;
-
--- name: DeletePRFiles :exec
-DELETE FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?;
-
--- name: ListPRFiles :many
-SELECT * FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?;
-
--- ============================================================================
--- Branch Comparisons
--- ============================================================================
-
--- name: UpsertBranchComparison :exec
-INSERT INTO branch_comparisons (actor, owner, repo, base_ref, head_ref, ahead_by, behind_by)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, base_ref, head_ref) DO UPDATE SET
-    ahead_by = excluded.ahead_by,
-    behind_by = excluded.behind_by;
-
--- name: GetBranchComparison :one
-SELECT * FROM branch_comparisons
-WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?;
-
--- name: DeleteBranchComparison :exec
-DELETE FROM branch_comparisons
-WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?;
-
--- ============================================================================
--- Commit Check States (CI rollup fed by webhooks)
--- ============================================================================
-
--- name: UpsertCommitCheck :exec
-INSERT INTO commit_checks (actor, owner, repo, sha, context, state)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, sha, context) DO UPDATE SET
-    state = excluded.state;
-
--- name: ListCommitCheckStates :many
-SELECT state FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
-
--- name: DeleteCommitChecksBySha :exec
-DELETE FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?;
-
--- name: SetPRStatusByHeadSha :exec
-UPDATE pull_requests SET last_commit_status = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?;
-
--- name: SetRepoPushedAt :exec
-UPDATE repos SET pushed_at = ?
-WHERE actor = ? AND owner = ? AND name = ?;
-
--- name: SetRepoDefaultBranchStatus :exec
-UPDATE repos SET default_branch_status = ?
-WHERE actor = ? AND owner = ? AND name = ?;
+DELETE FROM pr_labels WHERE owner = ? AND repo = ?;
 
 -- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND name = ?;
+WHERE owner = ? AND repo = ? AND name = ?;
 
 -- name: DeletePRLabelsByName :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND name = ?;
+DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND name = ?;
+
+-- ============================================================================
+-- Commit Check States (CI rollup fed by webhooks; global truth)
+-- ============================================================================
+
+-- name: UpsertCommitCheck :exec
+INSERT INTO commit_checks (owner, repo, sha, context, state)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha, context) DO UPDATE SET
+    state = excluded.state;
+
+-- name: ListCommitCheckStates :many
+SELECT state FROM commit_checks WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteCommitChecksBySha :exec
+DELETE FROM commit_checks WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteCommitChecksByRepo :exec
+DELETE FROM commit_checks WHERE owner = ? AND repo = ?;
+
+-- name: SetPRStatusByHeadSha :exec
+UPDATE pull_requests SET last_commit_status = ?
+WHERE owner = ? AND repo = ? AND head_ref_oid = ?;
+
+-- name: SetRepoPushedAt :exec
+UPDATE repos SET pushed_at = ?
+WHERE owner = ? AND name = ?;
+
+-- name: SetRepoDefaultBranchStatus :exec
+UPDATE repos SET default_branch_status = ?
+WHERE owner = ? AND name = ?;
+
+-- ============================================================================
+-- Access grants + deny verdicts (the reveal layer)
+-- ============================================================================
+
+-- name: UpsertAccessGrant :exec
+INSERT INTO access_grants (principal, owner, repo, granted_at, expires_at, source)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (principal, owner, repo) DO UPDATE SET
+    granted_at = excluded.granted_at,
+    expires_at = excluded.expires_at,
+    source = excluded.source;
+
+-- name: GetAccessGrant :one
+SELECT * FROM access_grants WHERE principal = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteAccessGrant :exec
+DELETE FROM access_grants WHERE principal = ? AND owner = ? AND repo = ?;
+
+-- DeleteListSyncGrants clears one principal's list_sync grants for an owner
+-- ahead of a replace-sync. Probe-sourced grants survive (an accessible repo --
+-- e.g. an archived one -- may legitimately be absent from the org list).
+-- name: DeleteListSyncGrants :exec
+DELETE FROM access_grants WHERE principal = ? AND owner = ? AND source = 'list_sync';
+
+-- name: DeleteGrantsByRepo :exec
+DELETE FROM access_grants WHERE owner = ? AND repo = ?;
+
+-- name: ListGrantsByPrincipal :many
+SELECT * FROM access_grants WHERE principal = ? ORDER BY owner, repo;
+
+-- name: CountGrantsByPrincipal :one
+SELECT COUNT(*) FROM access_grants WHERE principal = ? AND expires_at > ?;
+
+-- name: ListGrantPrincipals :many
+SELECT principal, COUNT(*) AS grants, MAX(granted_at) AS last_granted
+FROM access_grants WHERE expires_at > ?
+GROUP BY principal ORDER BY principal;
+
+-- name: DeleteExpiredGrants :exec
+DELETE FROM access_grants WHERE expires_at <= ?;
+
+-- name: UpsertDenyVerdict :exec
+INSERT INTO deny_cache (principal, resource_kind, resource_key, owner, repo, status, message, denied_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (principal, resource_kind, resource_key) DO UPDATE SET
+    owner = excluded.owner,
+    repo = excluded.repo,
+    status = excluded.status,
+    message = excluded.message,
+    denied_at = excluded.denied_at,
+    expires_at = excluded.expires_at;
+
+-- name: GetDenyVerdict :one
+SELECT * FROM deny_cache WHERE principal = ? AND resource_kind = ? AND resource_key = ?;
+
+-- name: DeleteDenialsByPrincipalRepo :exec
+DELETE FROM deny_cache WHERE principal = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteDenialsByPrincipalOwner :exec
+DELETE FROM deny_cache WHERE principal = ? AND owner = ?;
+
+-- name: DeleteExpiredDenials :exec
+DELETE FROM deny_cache WHERE expires_at <= ?;

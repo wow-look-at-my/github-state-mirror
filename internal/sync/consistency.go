@@ -9,23 +9,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// ConsistencyChecker compares a cache scope against GitHub's live state and
-// reports the drift. It fetches the "source of truth" with the mirror's own
-// GitHub App (the same credential the periodic refresher uses), so it needs no
-// caller token and is a perfect visibility match for the app-installation
-// scopes — the webhook-fed buckets where drift is most likely. The cache is
-// never modified: this only reads from GitHub and from the store, then diffs.
+// ConsistencyChecker compares the GLOBAL truth store against GitHub's live
+// state and reports the drift -- one comparison for the one cache. It fetches
+// the "source of truth" with the mirror's own GitHub App (the same credential
+// the periodic refresher uses). The cache is never modified: this only reads
+// from GitHub and from the store, then diffs.
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
-	fresh *freshness.Store           // read-only: scope staleness metadata for the report
+	fresh *freshness.Store           // read-only: truth staleness metadata for the report
 	app   *ghclient.AppAuthenticator // nil when no GitHub App is configured
 }
 
@@ -82,30 +80,28 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 	return out, nil
 }
 
-// ConsistencyReport is the full drift report for one cache scope, designed to be
-// copy-pasted back for analysis.
+// ConsistencyReport is the full drift report for the global truth store,
+// designed to be copy-pasted back for analysis.
 type ConsistencyReport struct {
-	Scope       string    `json:"scope"`           // short fingerprint (display)
-	ScopeFull   string    `json:"scope_full"`      // full actor partition key
-	Login       string    `json:"login,omitempty"` // GitHub login for the scope, if known
-	FetchedAs   string    `json:"fetched_as"`      // identity used to read GitHub (the truth source)
-	GeneratedAt string    `json:"generated_at"`    // RFC3339
-	OrgsChecked []string  `json:"orgs_checked"`    // owners actually re-fetched and diffed
+	FetchedAs   string    `json:"fetched_as"`   // identity used to read GitHub (the truth source)
+	GeneratedAt string    `json:"generated_at"` // RFC3339
+	OrgsChecked []string  `json:"orgs_checked"` // owners actually re-fetched and diffed
 	OrgsSkipped []OrgSkip `json:"orgs_skipped,omitempty"`
-	// ScopeFreshness is the scope's own org_repos cache metadata per owner, so
-	// drift can be read against how stale the scope actually is (an error-state
-	// scope that hasn't fetched in days explains a lot of "only_on_github").
-	ScopeFreshness map[string]ScopeFreshness `json:"scope_freshness,omitempty"`
+	// TruthFreshness is, per owner, the most recent org list-sync any
+	// principal ran (the fetch that refreshes global truth), so drift can be
+	// read against how stale truth actually is.
+	TruthFreshness map[string]ScopeFreshness `json:"truth_freshness,omitempty"`
 	Summary        CheckSummary              `json:"summary"`
 	Discrepancies  []Discrepancy             `json:"discrepancies"`
 	Notes          []string                  `json:"notes,omitempty"` // caveats to keep in mind when reading the report
 }
 
-// ScopeFreshness is one owner's org_repos cache metadata for the checked scope.
+// ScopeFreshness is one owner's most-recent sync metadata.
 type ScopeFreshness struct {
 	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown
 	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
 	Error         string `json:"error,omitempty"`           // last fetch error, if any
+	Principal     string `json:"principal,omitempty"`       // whose sync marker this is
 }
 
 // OrgSkip records an owner that could not be checked and why (so the absence of
@@ -124,8 +120,8 @@ type CheckSummary struct {
 	ReposOnlyInCache  int `json:"repos_only_in_cache"`
 	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
 	// ReposOnlyOnGitHubPrivate is the subset of ReposOnlyOnGitHub that are
-	// PRIVATE on GitHub — likely invisible to the token that populated the
-	// scope rather than a cache failure.
+	// PRIVATE on GitHub -- under the global model these are repos NO principal
+	// has synced or webhooked yet (truth is lazy), not per-caller blind spots.
 	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
 	PRsOnlyInCache           int `json:"prs_only_in_cache"`
 	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
@@ -144,45 +140,43 @@ type Discrepancy struct {
 	Cached string `json:"cached,omitempty"`
 	GitHub string `json:"github,omitempty"`
 	// Visibility is "private" on an only_on_github repo that is private on
-	// GitHub (as seen by the App): the scope's token may simply be unable to
-	// see it, so its absence is not necessarily a cache failure.
+	// GitHub (as seen by the App): global truth simply has not absorbed it yet
+	// (no webhook, no principal's sync) -- not necessarily a cache failure.
 	Visibility string `json:"visibility,omitempty"`
 	Note       string `json:"note,omitempty"`
 }
 
-// CheckActor runs the consistency check for one cache scope. When orgFilter is
-// non-empty only that owner is checked; otherwise every owner with cached repos
-// for the scope is checked. The cache is read-only throughout.
-func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, orgFilter string) (*ConsistencyReport, error) {
+// Check runs the consistency check for the global truth store. When orgFilter
+// is non-empty only that owner is checked; otherwise every owner with cached
+// repos is checked. The cache is read-only throughout.
+func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
 	if c.app == nil {
 		return nil, fmt.Errorf("consistency check unavailable: no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)")
 	}
 
 	report := &ConsistencyReport{
-		Scope:         shortFP(actorFP),
-		ScopeFull:     actorFP,
-		Login:         login,
 		FetchedAs:     "github-app",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		OrgsChecked:   []string{},
 		Discrepancies: []Discrepancy{},
 		Notes: []string{
-			"Source of truth was fetched as the mirror's GitHub App, which may not see exactly what the token that populated this scope sees. Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
+			"Source of truth was fetched as the mirror's GitHub App. Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
 			"Only OPEN pull requests are compared (the cache only retains open PRs). A PR shown as only_in_cache is cached as open but is not in GitHub's current open set, i.e. it was likely closed/merged and a webhook was missed.",
-			"A repo reported only_on_github with visibility=private may simply be invisible to the token that populated this scope (e.g. a public-only credential) — not necessarily a cache failure. Such repos are tallied separately in repos_only_on_github_private.",
+			"A repo reported only_on_github with visibility=private has simply never been absorbed (no webhook and no principal's sync has touched it) -- truth is lazy, so this is expected until something references the repo. Such repos are tallied separately in repos_only_on_github_private.",
+			"The mergeable field is not compared: the cache deliberately un-resolves it on pushes and the GraphQL/REST readings race GitHub's recomputation.",
 		},
 	}
 
-	// Load the cached state for this scope once.
-	repos, err := c.store.ReposByActor(ctx, actorFP)
+	// Load the global truth once.
+	repos, err := c.store.AllRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load cached repos: %w", err)
 	}
-	openPRs, err := c.store.OpenPullRequestsByActor(ctx, actorFP)
+	openPRs, err := c.store.AllOpenPullRequests(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load cached open PRs: %w", err)
 	}
-	labels, err := c.store.PRLabelsByActor(ctx, actorFP)
+	labels, err := c.store.AllPRLabels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load cached PR labels: %w", err)
 	}
@@ -211,9 +205,9 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 	}
 
 	for _, owner := range owners {
-		// The scope's own org_repos staleness, whether or not the owner ends up
-		// checked — an error-state or long-unfetched scope explains drift.
-		c.recordScopeFreshness(ctx, report, actorFP, owner)
+		// The owner's most-recent sync staleness, whether or not the owner
+		// ends up checked -- long-unsynced truth explains drift.
+		c.recordTruthFreshness(ctx, report, owner)
 
 		inst, ok := byLogin[strings.ToLower(owner)]
 		if !ok {
@@ -277,24 +271,39 @@ func (c *ConsistencyChecker) CheckActor(ctx context.Context, actorFP, login, org
 	return report, nil
 }
 
-// recordScopeFreshness copies the scope's org_repos cache metadata for one
-// owner into the report (read-only; missing metadata adds nothing).
-func (c *ConsistencyChecker) recordScopeFreshness(ctx context.Context, report *ConsistencyReport, actorFP, owner string) {
+// recordTruthFreshness copies the most recently fetched org-sync marker for
+// one owner into the report (read-only; no markers adds nothing). Any
+// principal's sync refreshes global truth, so the NEWEST marker is what
+// bounds truth staleness.
+func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *ConsistencyReport, owner string) {
 	if c.fresh == nil {
 		return
 	}
-	meta, err := c.fresh.Get(ctx, freshness.ResourceID{Kind: KindOrgRepos, Key: owner, Actor: actorFP})
-	if err != nil || meta == nil {
+	metas, err := c.fresh.ListByKindKeyAllActors(ctx, KindOrgRepos, owner)
+	if err != nil || len(metas) == 0 {
 		return
 	}
-	sf := ScopeFreshness{State: string(meta.State), Error: meta.ErrorMessage}
-	if meta.LastFetchedAt != nil {
-		sf.LastFetchedAt = meta.LastFetchedAt.UTC().Format(time.RFC3339)
+	var newest *freshness.Metadata
+	for i := range metas {
+		m := &metas[i]
+		if m.LastFetchedAt == nil {
+			continue
+		}
+		if newest == nil || newest.LastFetchedAt == nil || m.LastFetchedAt.After(*newest.LastFetchedAt) {
+			newest = m
+		}
 	}
-	if report.ScopeFreshness == nil {
-		report.ScopeFreshness = make(map[string]ScopeFreshness)
+	if newest == nil {
+		newest = &metas[0]
 	}
-	report.ScopeFreshness[owner] = sf
+	sf := ScopeFreshness{State: string(newest.State), Error: newest.ErrorMessage, Principal: newest.Actor}
+	if newest.LastFetchedAt != nil {
+		sf.LastFetchedAt = newest.LastFetchedAt.UTC().Format(time.RFC3339)
+	}
+	if report.TruthFreshness == nil {
+		report.TruthFreshness = make(map[string]ScopeFreshness)
+	}
+	report.TruthFreshness[owner] = sf
 }
 
 // diffOwner compares the cached repos/PRs/labels for one owner against the data
@@ -331,11 +340,11 @@ func (c *ConsistencyChecker) diffOwner(
 			d := Discrepancy{
 				Kind: "repo", Repo: owner + "/" + name, Issue: "only_on_github",
 				GitHub: fr.Url,
-				Note:   "exists on GitHub but is not cached for this scope",
+				Note:   "exists on GitHub but has not been absorbed into global truth",
 			}
 			if private, known := visibility[name]; known && private {
 				d.Visibility = "private"
-				d.Note = "private repo: the token that populated this scope may not be able to see it; not necessarily a cache failure"
+				d.Note = "private repo not yet absorbed: no webhook and no principal's sync has referenced it; expected under lazy truth"
 			}
 			report.Discrepancies = append(report.Discrepancies, d)
 		}
@@ -370,7 +379,7 @@ func (c *ConsistencyChecker) diffOwner(
 				report.Discrepancies = append(report.Discrepancies, Discrepancy{
 					Kind: "pr", Repo: repoKey, PR: num, Issue: "only_on_github",
 					GitHub: fpr.Url,
-					Note:   "open on GitHub but not cached for this scope",
+					Note:   "open on GitHub but not in global truth",
 				})
 			}
 		}
@@ -395,7 +404,7 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo) []Discrepancy {
 
 // prFieldDiffs compares the webhook-fed / refreshed PR fields. created_at and
 // updated_at are intentionally not compared (updated_at churns constantly and is
-// not a correctness signal).
+// not a correctness signal); mergeable is skipped (see the report notes).
 func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest) []Discrepancy {
 	var out []Discrepancy
 	add := func(field, cv, gv string) {
@@ -406,7 +415,6 @@ func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest) []Discrepan
 	add("title", c.Title, g.Title)
 	add("is_draft", boolStr(c.IsDraft), boolStr(g.IsDraft))
 	add("last_commit_status", ns(c.LastCommitStatus), ns(g.LastCommitStatus))
-	add("mergeable", ns(c.Mergeable), ns(g.Mergeable))
 	add("head_ref_oid", ns(c.HeadRefOid), ns(g.HeadRefOid))
 	add("head_ref_name", ns(c.HeadRefName), ns(g.HeadRefName))
 	add("base_ref_name", ns(c.BaseRefName), ns(g.BaseRefName))
@@ -514,8 +522,3 @@ func boolStr(v int64) string {
 	}
 	return "false"
 }
-
-// shortFP abbreviates an actor for display: opaque hex token fingerprints
-// shorten to 12 chars, structured actors ("user:<id>", "app-installation:<id>")
-// are shown whole.
-func shortFP(fp string) string { return actor.Short(fp) }

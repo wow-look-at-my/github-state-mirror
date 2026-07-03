@@ -14,15 +14,15 @@ import (
 
 // Admin cache browse + consistency check.
 //
-// These two endpoints are the operator's window into the cache. They are gated
-// to admins (the same logins that get the all-scopes view): the cache stays
-// partitioned per GitHub user (per token fingerprint for non-user tokens), and
-// a normal signed-in user still only ever sees counts for their own scope. An
-// admin, who already sees every scope's counts, can additionally read the
-// actual rows and diff a scope against GitHub. Nothing here writes to the
-// cache. The `actor` query parameter is the full partition key exactly as the
-// dashboard's `actor_id` reports it ("user:<id>", a hex fingerprint, or
-// "app-installation:<id>").
+// These endpoints are the operator's window into the ONE global truth store
+// and the reveal layer. They are gated to admins: the reveal layer filters
+// what data-API callers see, but the operator's dashboard deliberately sees
+// everything (it is the surface for diagnosing the cache itself). Nothing
+// here writes to the cache.
+//
+//	GET /api/cache/data                     -- dump global truth rows
+//	GET /api/cache/data?principal=<id>      -- one principal's grants
+//	GET /api/cache/check[?org=<owner>]      -- diff global truth vs GitHub
 
 // ---- clean JSON views of the cached rows ----
 //
@@ -35,6 +35,7 @@ type browseRepo struct {
 	Name                string `json:"name"`
 	NameWithOwner       string `json:"name_with_owner"`
 	URL                 string `json:"url"`
+	Visibility          string `json:"visibility,omitempty"` // '' = unknown (treated private)
 	IsDisabled          bool   `json:"is_disabled"`
 	IsArchived          bool   `json:"is_archived"`
 	PushedAt            string `json:"pushed_at,omitempty"`
@@ -62,35 +63,8 @@ type browsePR struct {
 	Labels           []string `json:"labels,omitempty"`
 	CreatedAt        string   `json:"created_at,omitempty"`
 	UpdatedAt        string   `json:"updated_at,omitempty"`
-}
-
-type browseOrg struct {
-	Login string `json:"login"`
-	URL   string `json:"url,omitempty"`
-}
-
-type browseUser struct {
-	Login  string `json:"login"`
-	URL    string `json:"url,omitempty"`
-	Avatar string `json:"avatar_url,omitempty"`
-}
-
-type browseComparison struct {
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	BaseRef  string `json:"base_ref"`
-	HeadRef  string `json:"head_ref"`
-	AheadBy  int64  `json:"ahead_by"`
-	BehindBy int64  `json:"behind_by"`
-}
-
-type browsePRFile struct {
-	Owner     string `json:"owner"`
-	Repo      string `json:"repo"`
-	PRNumber  int64  `json:"pr_number"`
-	Path      string `json:"path"`
-	Additions int64  `json:"additions"`
-	Deletions int64  `json:"deletions"`
+	TouchedAt        string   `json:"touched_at,omitempty"`
+	RestComplete     bool     `json:"rest_complete"`
 }
 
 type browseCommitCheck struct {
@@ -101,63 +75,88 @@ type browseCommitCheck struct {
 	State   string `json:"state"`
 }
 
-type browseResponse struct {
-	Actor             string              `json:"actor"`    // short fingerprint (display)
-	ActorID           string              `json:"actor_id"` // full partition key
-	Login             string              `json:"login,omitempty"`
-	Counts            ghdata.DataCounts   `json:"counts"`
-	Repos             []browseRepo        `json:"repos"`
-	PullRequests      []browsePR          `json:"pull_requests"`
-	Orgs              []browseOrg         `json:"orgs"`
-	Users             []browseUser        `json:"users"`
-	BranchComparisons []browseComparison  `json:"branch_comparisons"`
-	PRFiles           []browsePRFile      `json:"pr_files"`
-	CommitChecks      []browseCommitCheck `json:"commit_checks"`
+type browseGrant struct {
+	Owner     string `json:"owner"`
+	Repo      string `json:"repo"`
+	Source    string `json:"source"`
+	GrantedAt string `json:"granted_at"`
+	ExpiresAt string `json:"expires_at"`
 }
 
-// handleCacheData dumps the actual cached rows for one scope (admin only).
+type browseResponse struct {
+	Counts       ghdata.DataCounts   `json:"counts"`
+	Repos        []browseRepo        `json:"repos"`
+	PullRequests []browsePR          `json:"pull_requests"`
+	CommitChecks []browseCommitCheck `json:"commit_checks"`
+}
+
+type grantsResponse struct {
+	Principal   string        `json:"principal"`    // short (display)
+	PrincipalID string        `json:"principal_id"` // full key
+	Login       string        `json:"login,omitempty"`
+	Grants      []browseGrant `json:"grants"`
+}
+
+// handleCacheData dumps the global truth rows (admin only). With ?principal=
+// it instead dumps that principal's grants -- who can see what.
 func (d *dashboard) handleCacheData(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
-	actorFP := r.URL.Query().Get("actor")
-	if actorFP == "" {
-		http.Error(w, "missing 'actor' query parameter", http.StatusBadRequest)
+	if principal := r.URL.Query().Get("principal"); principal != "" {
+		d.serveGrants(w, r, principal)
 		return
 	}
 
-	resp, err := d.collectBrowse(r.Context(), actorFP)
+	resp, err := d.collectBrowse(r.Context())
 	if err != nil {
-		slog.Warn("browse cache failed", "actor", shortFingerprint(actorFP), "error", err)
+		slog.Warn("browse cache failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, resp)
 }
 
-// collectBrowse loads every cached row for one actor and converts it to the
-// clean JSON view.
-func (d *dashboard) collectBrowse(ctx context.Context, actorFP string) (browseResponse, error) {
+// serveGrants dumps one principal's grants (the reveal layer's answer to "what
+// can this principal see?").
+func (d *dashboard) serveGrants(w http.ResponseWriter, r *http.Request, principal string) {
+	rows, err := d.store.GrantsByPrincipal(r.Context(), principal)
+	if err != nil {
+		slog.Warn("browse grants failed", "principal", shortFingerprint(principal), "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	resp := grantsResponse{
+		Principal:   shortFingerprint(principal),
+		PrincipalID: principal,
+		Login:       d.loginForActor(r.Context(), principal),
+		Grants:      make([]browseGrant, 0, len(rows)),
+	}
+	for _, g := range rows {
+		resp.Grants = append(resp.Grants, browseGrant{
+			Owner: g.Owner, Repo: g.Repo, Source: g.Source,
+			GrantedAt: g.GrantedAt, ExpiresAt: g.ExpiresAt,
+		})
+	}
+	writeJSON(w, resp)
+}
+
+// collectBrowse loads the global truth rows and converts them to the clean
+// JSON view.
+func (d *dashboard) collectBrowse(ctx context.Context) (browseResponse, error) {
 	resp := browseResponse{
-		Actor:             shortFingerprint(actorFP),
-		ActorID:           actorFP,
-		Login:             d.loginForActor(ctx, actorFP),
-		Repos:             []browseRepo{},
-		PullRequests:      []browsePR{},
-		Orgs:              []browseOrg{},
-		Users:             []browseUser{},
-		BranchComparisons: []browseComparison{},
-		PRFiles:           []browsePRFile{},
-		CommitChecks:      []browseCommitCheck{},
+		Repos:        []browseRepo{},
+		PullRequests: []browsePR{},
+		CommitChecks: []browseCommitCheck{},
 	}
 
-	counts, err := d.store.DataCounts(ctx, actorFP)
+	counts, err := d.store.GlobalDataCounts(ctx)
 	if err != nil {
 		return resp, err
 	}
 	resp.Counts = counts
 
-	repos, err := d.store.ReposByActor(ctx, actorFP)
+	repos, err := d.store.AllRepos(ctx)
 	if err != nil {
 		return resp, err
 	}
@@ -166,7 +165,7 @@ func (d *dashboard) collectBrowse(ctx context.Context, actorFP string) (browseRe
 	}
 
 	// Labels grouped by owner/repo/number so each PR carries its own.
-	labels, err := d.store.PRLabelsByActor(ctx, actorFP)
+	labels, err := d.store.AllPRLabels(ctx)
 	if err != nil {
 		return resp, err
 	}
@@ -176,7 +175,7 @@ func (d *dashboard) collectBrowse(ctx context.Context, actorFP string) (browseRe
 		labelsByPR[key] = append(labelsByPR[key], l.Name)
 	}
 
-	prs, err := d.store.PullRequestsByActor(ctx, actorFP)
+	prs, err := d.store.AllPullRequests(ctx)
 	if err != nil {
 		return resp, err
 	}
@@ -184,43 +183,7 @@ func (d *dashboard) collectBrowse(ctx context.Context, actorFP string) (browseRe
 		resp.PullRequests = append(resp.PullRequests, toBrowsePR(pr, labelsByPR[prKey(pr.Owner, pr.Repo, pr.Number)]))
 	}
 
-	orgs, err := d.store.OrgsByActor(ctx, actorFP)
-	if err != nil {
-		return resp, err
-	}
-	for _, o := range orgs {
-		resp.Orgs = append(resp.Orgs, browseOrg{Login: o.Login, URL: nullStr(o.Url)})
-	}
-
-	users, err := d.store.UsersByActor(ctx, actorFP)
-	if err != nil {
-		return resp, err
-	}
-	for _, u := range users {
-		resp.Users = append(resp.Users, browseUser{Login: u.Login, URL: u.Url, Avatar: u.AvatarUrl})
-	}
-
-	comparisons, err := d.store.BranchComparisonsByActor(ctx, actorFP)
-	if err != nil {
-		return resp, err
-	}
-	for _, c := range comparisons {
-		resp.BranchComparisons = append(resp.BranchComparisons, browseComparison{
-			Owner: c.Owner, Repo: c.Repo, BaseRef: c.BaseRef, HeadRef: c.HeadRef, AheadBy: c.AheadBy, BehindBy: c.BehindBy,
-		})
-	}
-
-	files, err := d.store.PRFilesByActor(ctx, actorFP)
-	if err != nil {
-		return resp, err
-	}
-	for _, f := range files {
-		resp.PRFiles = append(resp.PRFiles, browsePRFile{
-			Owner: f.Owner, Repo: f.Repo, PRNumber: f.PrNumber, Path: f.Path, Additions: f.Additions, Deletions: f.Deletions,
-		})
-	}
-
-	checks, err := d.store.CommitChecksByActor(ctx, actorFP)
+	checks, err := d.store.AllCommitChecks(ctx)
 	if err != nil {
 		return resp, err
 	}
@@ -233,8 +196,9 @@ func (d *dashboard) collectBrowse(ctx context.Context, actorFP string) (browseRe
 	return resp, nil
 }
 
-// handleCacheCheck runs the consistency check for one scope (admin only): it
-// re-fetches the source of truth from GitHub via the App and returns a JSON diff.
+// handleCacheCheck runs the consistency check (admin only): it re-fetches the
+// source of truth from GitHub via the App and returns a JSON diff of GLOBAL
+// truth vs GitHub. Optional ?org= limits the check to one owner.
 func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -243,16 +207,11 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "consistency check unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
 		return
 	}
-	actorFP := r.URL.Query().Get("actor")
-	if actorFP == "" {
-		http.Error(w, "missing 'actor' query parameter", http.StatusBadRequest)
-		return
-	}
 	org := r.URL.Query().Get("org") // optional: limit the check to one owner
 
-	report, err := d.checker.CheckActor(r.Context(), actorFP, d.loginForActor(r.Context(), actorFP), org)
+	report, err := d.checker.Check(r.Context(), org)
 	if err != nil {
-		slog.Warn("consistency check failed", "actor", shortFingerprint(actorFP), "error", err)
+		slog.Warn("consistency check failed", "error", err)
 		http.Error(w, "consistency check failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -301,14 +260,14 @@ func (d *dashboard) requireAdmin(w http.ResponseWriter, r *http.Request) (login 
 	return login, true
 }
 
-// loginForActor returns the GitHub login recorded for an actor, or "" if none.
-func (d *dashboard) loginForActor(ctx context.Context, actorFP string) string {
+// loginForActor returns the GitHub login recorded for a principal, or "" if none.
+func (d *dashboard) loginForActor(ctx context.Context, principal string) string {
 	identities, err := d.store.ListActorIdentities(ctx)
 	if err != nil {
 		return ""
 	}
 	for _, id := range identities {
-		if id.Actor == actorFP {
+		if id.Actor == principal {
 			return id.Login
 		}
 	}
@@ -343,6 +302,7 @@ func toBrowseRepo(r dbgen.Repo) browseRepo {
 		Name:                r.Name,
 		NameWithOwner:       r.NameWithOwner,
 		URL:                 r.Url,
+		Visibility:          r.Visibility,
 		IsDisabled:          intToBool(r.IsDisabled),
 		IsArchived:          intToBool(r.IsArchived),
 		PushedAt:            nullStr(r.PushedAt),
@@ -372,5 +332,7 @@ func toBrowsePR(pr dbgen.PullRequest, labels []string) browsePR {
 		Labels:           labels,
 		CreatedAt:        pr.CreatedAt,
 		UpdatedAt:        pr.UpdatedAt,
+		TouchedAt:        pr.TouchedAt,
+		RestComplete:     ghdata.PRRestComplete(pr),
 	}
 }

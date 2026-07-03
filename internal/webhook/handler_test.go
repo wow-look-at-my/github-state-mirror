@@ -159,8 +159,8 @@ func TestHandler_WritesOutcome(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{
 		Event:       "pull_request",
-		Disposition: DispSkipped,
-		Detail:      "no cached scope for org/repo",
+		Disposition: DispIgnored,
+		Detail:      "action edited not tracked",
 	}}
 	handler := Handler(secret, dispatcher)
 
@@ -175,10 +175,10 @@ func TestHandler_WritesOutcome(t *testing.T) {
 	// A no-op delivery is a 202 (received, nothing applied), distinct from the
 	// 200 of an applied delivery — visible in GitHub's deliveries list.
 	assert.Equal(t, http.StatusAccepted, w.Code)
-	assert.Equal(t, DispSkipped, w.Header().Get("X-GSM-Disposition"))
+	assert.Equal(t, DispIgnored, w.Header().Get("X-GSM-Disposition"))
 
 	var got DispatchResult
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, DispSkipped, got.Disposition)
-	assert.Equal(t, "no cached scope for org/repo", got.Detail)
+	assert.Equal(t, DispIgnored, got.Disposition)
+	assert.Equal(t, "action edited not tracked", got.Detail)
 }

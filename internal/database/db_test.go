@@ -24,7 +24,7 @@ func TestOpen_CreatesNewDB(t *testing.T) {
 	assert.Equal(t, int64(SchemaVersion), version)
 
 	// Verify tables exist by inserting into them.
-	_, err = db.Exec("INSERT INTO users (login, avatar_url, url) VALUES ('test', 'http://avatar', 'http://url')")
+	_, err = db.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.Nil(t, err)
 
 	_, err = db.Exec("INSERT INTO cache_metadata (resource_kind, resource_key, fetch_state) VALUES ('test', 'key', 'unknown')")
@@ -39,7 +39,7 @@ func TestOpen_ReopensExistingDB(t *testing.T) {
 	db1, err := Open(path)
 	require.Nil(t, err)
 
-	_, err = db1.Exec("INSERT INTO users (login, avatar_url, url) VALUES ('test', 'http://avatar', 'http://url')")
+	_, err = db1.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.Nil(t, err)
 
 	db1.Close()
@@ -49,10 +49,10 @@ func TestOpen_ReopensExistingDB(t *testing.T) {
 
 	defer db2.Close()
 
-	var login string
-	require.NoError(t, db2.QueryRow("SELECT login FROM users LIMIT 1").Scan(&login))
+	var owner string
+	require.NoError(t, db2.QueryRow("SELECT owner FROM repos LIMIT 1").Scan(&owner))
 
-	assert.Equal(t, "test", login)
+	assert.Equal(t, "org", owner)
 
 }
 
@@ -63,7 +63,7 @@ func TestOpen_NukesOnVersionMismatch(t *testing.T) {
 	db1, err := Open(path)
 	require.Nil(t, err)
 
-	_, err = db1.Exec("INSERT INTO users (login, avatar_url, url) VALUES ('test', 'http://avatar', 'http://url')")
+	_, err = db1.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.Nil(t, err)
 
 	// Tamper with schema version.
@@ -79,7 +79,7 @@ func TestOpen_NukesOnVersionMismatch(t *testing.T) {
 
 	// Data should be gone — DB was nuked and recreated.
 	var count int
-	require.NoError(t, db2.QueryRow("SELECT COUNT(*) FROM users").Scan(&count))
+	require.NoError(t, db2.QueryRow("SELECT COUNT(*) FROM repos").Scan(&count))
 
 	assert.Equal(t, 0, count)
 

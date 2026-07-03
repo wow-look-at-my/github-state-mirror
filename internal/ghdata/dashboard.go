@@ -7,96 +7,105 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Dashboard / Actor Identities.
+// Dashboard / principal identities.
 //
-// These operate across actors (or by GitHub login) rather than reading the
-// actor from context, because the dashboard aggregates a user's own scopes and,
-// for an admin, every scope. They never expose one credential's cached rows to
-// another; they only surface counts and freshness metadata.
+// The dashboard reports on the ONE global truth store (row counts, freshness)
+// plus the reveal layer's principals: who has been seen, what they hold grants
+// for, and how fresh their grant syncs are. It never bypasses admin gating in
+// the API layer for the all-principals views.
 
-// DataCounts is the per-table cached-row tally for a single actor (cache scope).
+// DataCounts is the global truth store's per-table row tally.
 type DataCounts struct {
-	Repos             int64 `json:"repos"`
-	PullRequests      int64 `json:"pull_requests"`
-	Orgs              int64 `json:"orgs"`
-	Users             int64 `json:"users"`
-	CommitChecks      int64 `json:"commit_checks"`
-	PRFiles           int64 `json:"pr_files"`
-	BranchComparisons int64 `json:"branch_comparisons"`
+	Repos        int64 `json:"repos"`
+	PullRequests int64 `json:"pull_requests"`
+	CommitChecks int64 `json:"commit_checks"`
+	Contents     int64 `json:"contents"`
+	GitCommits   int64 `json:"git_commits"`
+	Grants       int64 `json:"grants"`
 }
 
-// RecordActorIdentity remembers which GitHub login a token fingerprint (actor)
-// authenticated as, updating last_seen on every call. The raw token is never
-// passed in — only its fingerprint.
-func (s *Store) RecordActorIdentity(ctx context.Context, actorFP, login string) error {
+// RecordActorIdentity remembers which GitHub login a principal authenticated
+// as, updating last_seen on every call. The raw token is never passed in --
+// only the principal key.
+func (s *Store) RecordActorIdentity(ctx context.Context, principal, login string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.q.UpsertActorIdentity(ctx, dbgen.UpsertActorIdentityParams{
-		Actor:     actorFP,
+		Actor:     principal,
 		Login:     login,
 		FirstSeen: now,
 		LastSeen:  now,
 	})
 }
 
-// ListActorIdentities returns every known (actor -> login) mapping.
+// ListActorIdentities returns every known (principal -> login) mapping.
 func (s *Store) ListActorIdentities(ctx context.Context) ([]dbgen.ActorIdentity, error) {
 	return s.q.ListActorIdentities(ctx)
 }
 
-// CachedActors returns every distinct actor that has any cache metadata, so the
-// admin view can attribute scopes that lack an identity row.
-func (s *Store) CachedActors(ctx context.Context) ([]string, error) {
-	return s.q.ListCachedActors(ctx)
+// KnownPrincipals returns every principal that holds freshness metadata, so
+// the admin view can attribute even principals with no identity row (e.g. the
+// background app-installation sessions).
+func (s *Store) KnownPrincipals(ctx context.Context) ([]string, error) {
+	return s.q.ListKnownPrincipals(ctx)
 }
 
-// DataCounts returns the per-table cached-row counts for one actor.
-func (s *Store) DataCounts(ctx context.Context, actorFP string) (DataCounts, error) {
+// GlobalDataCounts returns the truth store's per-table row counts.
+func (s *Store) GlobalDataCounts(ctx context.Context) (DataCounts, error) {
 	var c DataCounts
 	var err error
-	if c.Repos, err = s.q.CountReposByActor(ctx, actorFP); err != nil {
+	if c.Repos, err = s.q.CountRepos(ctx); err != nil {
 		return c, err
 	}
-	if c.PullRequests, err = s.q.CountPullRequestsByActor(ctx, actorFP); err != nil {
+	if c.PullRequests, err = s.q.CountPullRequests(ctx); err != nil {
 		return c, err
 	}
-	if c.Orgs, err = s.q.CountOrgsByActor(ctx, actorFP); err != nil {
+	if c.CommitChecks, err = s.q.CountCommitChecks(ctx); err != nil {
 		return c, err
 	}
-	if c.Users, err = s.q.CountUsersByActor(ctx, actorFP); err != nil {
+	if c.Contents, err = s.q.CountContentsCache(ctx); err != nil {
 		return c, err
 	}
-	if c.CommitChecks, err = s.q.CountCommitChecksByActor(ctx, actorFP); err != nil {
+	if c.GitCommits, err = s.q.CountGitCommitsCache(ctx); err != nil {
 		return c, err
 	}
-	if c.PRFiles, err = s.q.CountPRFilesByActor(ctx, actorFP); err != nil {
-		return c, err
-	}
-	if c.BranchComparisons, err = s.q.CountBranchComparisonsByActor(ctx, actorFP); err != nil {
+	if c.Grants, err = s.q.CountAccessGrants(ctx); err != nil {
 		return c, err
 	}
 	return c, nil
 }
 
-// FreshnessByKind returns cache_metadata for one actor grouped by resource kind
-// and fetch state.
-func (s *Store) FreshnessByKind(ctx context.Context, actorFP string) ([]dbgen.ActorFreshnessByKindRow, error) {
-	return s.q.ActorFreshnessByKind(ctx, actorFP)
+// GrantsByPrincipal returns every grant one principal holds.
+func (s *Store) GrantsByPrincipal(ctx context.Context, principal string) ([]dbgen.AccessGrant, error) {
+	return s.q.ListGrantsByPrincipal(ctx, principal)
+}
+
+// CountLiveGrants returns how many unexpired grants a principal holds.
+func (s *Store) CountLiveGrants(ctx context.Context, principal string, now time.Time) (int64, error) {
+	return s.q.CountGrantsByPrincipal(ctx, dbgen.CountGrantsByPrincipalParams{
+		Principal: principal, ExpiresAt: rfc3339(now),
+	})
+}
+
+// FreshnessByKind returns cache_metadata for one actor (a principal, or
+// 'global' truth markers) grouped by resource kind and fetch state.
+func (s *Store) FreshnessByKind(ctx context.Context, actorKey string) ([]dbgen.ActorFreshnessByKindRow, error) {
+	return s.q.ActorFreshnessByKind(ctx, actorKey)
 }
 
 // ErrorMessagesByKind returns the captured failure reason for every resource
 // currently in the error state for one actor, so the dashboard can show why a
 // kind is erroring (not just that it is).
-func (s *Store) ErrorMessagesByKind(ctx context.Context, actorFP string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
-	return s.q.ActorErrorMessagesByKind(ctx, actorFP)
+func (s *Store) ErrorMessagesByKind(ctx context.Context, actorKey string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
+	return s.q.ActorErrorMessagesByKind(ctx, actorKey)
 }
 
 // RecentRefreshes returns the most recent refresh-log entries for one actor.
-func (s *Store) RecentRefreshes(ctx context.Context, actorFP string, limit int64) ([]dbgen.CacheRefreshLog, error) {
-	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorFP, Limit: limit})
+func (s *Store) RecentRefreshes(ctx context.Context, actorKey string, limit int64) ([]dbgen.CacheRefreshLog, error) {
+	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorKey, Limit: limit})
 }
 
 // WebhookDelivery is one recorded webhook delivery and what the dispatcher did
-// with it. It is global (not actor-scoped) — see the webhook_deliveries table.
+// with it. It is global -- see the webhook_deliveries table.
 type WebhookDelivery struct {
 	DeliveryID  string `json:"delivery_id"`
 	EventType   string `json:"event_type"`
@@ -105,7 +114,6 @@ type WebhookDelivery struct {
 	ReceivedAt  string `json:"received_at"`
 	Disposition string `json:"disposition"`
 	Detail      string `json:"detail"`
-	Actors      int64  `json:"actors"`
 }
 
 // webhookDeliveryKeep caps how many delivery-log rows are retained. The log is
@@ -127,7 +135,6 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 		ReceivedAt:  receivedAt,
 		Disposition: d.Disposition,
 		Detail:      d.Detail,
-		Actors:      d.Actors,
 	}); err != nil {
 		return err
 	}
@@ -150,7 +157,6 @@ func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]Web
 			ReceivedAt:  r.ReceivedAt,
 			Disposition: r.Disposition,
 			Detail:      r.Detail,
-			Actors:      r.Actors,
 		}
 	}
 	return out, nil

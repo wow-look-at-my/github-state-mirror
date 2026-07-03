@@ -6,11 +6,17 @@ import (
 	"time"
 )
 
+// GlobalActor marks a freshness row that tracks a piece of GLOBAL truth (any
+// caller's fetch refreshes it for everyone) rather than one principal's own
+// marker. It must be set explicitly on the ResourceID -- an empty Actor is
+// filled from the request context (the caller's principal).
+const GlobalActor = "global"
+
 // ResourceID uniquely identifies any cacheable resource.
 type ResourceID struct {
-	Kind  string // e.g. "org_repos", "pr_files", "compare"
-	Key   string // e.g. "my-org/my-repo/42"
-	Actor string // per-credential cache partition (fingerprint of the caller's token)
+	Kind  string // e.g. "org_repos", "repo_pulls"
+	Key   string // e.g. "my-org" or "my-org/my-repo"
+	Actor string // a principal's marker, or GlobalActor for shared truth
 }
 
 func (r ResourceID) String() string {
@@ -43,11 +49,13 @@ type Metadata struct {
 	RetryAfter    *time.Time
 }
 
-// TriggerSource describes what caused a refresh.
+// TriggerSource describes what caused a refresh (recorded in the refresh log).
+// TriggerLazy is a caller's read finding the resource stale; TriggerPeriodic is
+// the background refresher. (The old TriggerWebhook is gone: webhooks apply
+// payload state directly and never fetch.)
 type TriggerSource string
 
 const (
-	TriggerWebhook  TriggerSource = "webhook"
 	TriggerPeriodic TriggerSource = "periodic"
 	TriggerLazy     TriggerSource = "lazy"
 	TriggerManual   TriggerSource = "manual"

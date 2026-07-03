@@ -1,5 +1,5 @@
 // Shared DTO types for the dashboard front-end: the shapes returned by the
-// /api/me, /api/cache, /api/webhooks, /api/cache/browse and /api/cache/check
+// /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
 // endpoints, plus the demo-preview config. Single source of truth — both app.ts
 // (the renderer) and demo-data.ts (the preview fixtures) import these, so the
 // two can never drift. Imported with `import type`, so nothing here emits into
@@ -12,14 +12,14 @@ export interface Me {
     is_admin: boolean;
 }
 
+// Counts are the GLOBAL truth store's row counts — one cache, one truth.
 export interface Counts {
     repos: number;
     pull_requests: number;
-    orgs: number;
-    users: number;
     commit_checks: number;
-    pr_files: number;
-    branch_comparisons: number;
+    contents: number;
+    git_commits: number;
+    grants: number;
 }
 
 export interface KindFreshness {
@@ -39,14 +39,15 @@ export interface RecentRefresh {
     error?: string;
 }
 
-export interface ScopeStats {
-    actor: string;
-    actor_id?: string;
+// PrincipalStats is one principal's reveal-layer standing: who they are, how
+// many repos they hold live grants for, and how fresh their org syncs are.
+export interface PrincipalStats {
+    principal: string; // short (display)
+    principal_id: string; // full key (for admin views)
     login: string;
     is_self: boolean;
     last_seen?: string;
-    counts: Counts;
-    total: number;
+    live_grants: number;
     kinds: KindFreshness[] | null;
     recent?: RecentRefresh[];
 }
@@ -55,9 +56,10 @@ export interface CacheResponse {
     login: string;
     is_admin: boolean;
     scope: string;
-    scope_count: number;
     totals: Counts;
-    scopes: ScopeStats[] | null;
+    principal_count: number;
+    principals: PrincipalStats[] | null;
+    truth?: KindFreshness[] | null;
 }
 
 export interface WebhookDelivery {
@@ -68,20 +70,19 @@ export interface WebhookDelivery {
     received_at: string;
     disposition: string;
     detail: string;
-    actors: number;
 }
 
 export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
 }
 
-// ---- request activity (cache hit/miss/passthrough) ----
+// ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
     method: string;
     path: string;
     disposition: string;
-    status?: number; // upstream HTTP status for a passthrough (0/absent otherwise)
+    status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
     at: string;
 }
 
@@ -110,12 +111,13 @@ export interface RateLimitResponse {
     installations: InstallationRateLimit[] | null;
 }
 
-// ---- admin cache browse ----
+// ---- admin cache browse (global truth rows) ----
 export interface BrowseRepo {
     owner: string;
     name: string;
     name_with_owner: string;
     url: string;
+    visibility?: string; // '' / absent = unknown (treated private)
     is_disabled: boolean;
     is_archived: boolean;
     pushed_at?: string;
@@ -143,29 +145,36 @@ export interface BrowsePR {
     labels?: string[];
     created_at?: string;
     updated_at?: string;
+    touched_at?: string;
+    rest_complete?: boolean;
 }
 
-export interface BrowseOrg { login: string; url?: string; }
-export interface BrowseUser { login: string; url?: string; avatar_url?: string; }
-export interface BrowseComparison { owner: string; repo: string; base_ref: string; head_ref: string; ahead_by: number; behind_by: number; }
-export interface BrowsePRFile { owner: string; repo: string; pr_number: number; path: string; additions: number; deletions: number; }
 export interface BrowseCommitCheck { owner: string; repo: string; sha: string; context: string; state: string; }
 
 export interface BrowseResponse {
-    actor: string;
-    actor_id: string;
-    login?: string;
     counts: Counts;
     repos: BrowseRepo[];
     pull_requests: BrowsePR[];
-    orgs: BrowseOrg[];
-    users: BrowseUser[];
-    branch_comparisons: BrowseComparison[];
-    pr_files: BrowsePRFile[];
     commit_checks: BrowseCommitCheck[];
 }
 
-// ---- consistency check ----
+// ---- admin grants view (/api/cache/data?principal=...) ----
+export interface BrowseGrant {
+    owner: string;
+    repo: string;
+    source: string; // list_sync | probe
+    granted_at: string;
+    expires_at: string;
+}
+
+export interface GrantsResponse {
+    principal: string; // short (display)
+    principal_id: string; // full key
+    login?: string;
+    grants: BrowseGrant[] | null;
+}
+
+// ---- consistency check (global truth vs GitHub) ----
 export interface Discrepancy {
     kind: string;
     repo: string;
@@ -174,6 +183,7 @@ export interface Discrepancy {
     field?: string;
     cached?: string;
     github?: string;
+    visibility?: string; // "private" on an only_on_github repo never absorbed
     note?: string;
 }
 
@@ -186,19 +196,26 @@ export interface CheckSummary {
     discrepancies: number;
     repos_only_in_cache: number;
     repos_only_on_github: number;
+    repos_only_on_github_private: number;
     prs_only_in_cache: number;
     prs_only_on_github: number;
     field_mismatches: number;
 }
 
+// TruthFreshness is one owner's most-recent org sync marker (any principal's).
+export interface TruthFreshness {
+    state: string;
+    last_fetched_at?: string;
+    error?: string;
+    principal?: string;
+}
+
 export interface ConsistencyReport {
-    scope: string;
-    scope_full: string;
-    login?: string;
     fetched_as: string;
     generated_at: string;
     orgs_checked: string[];
     orgs_skipped?: OrgSkip[];
+    truth_freshness?: Record<string, TruthFreshness>;
     summary: CheckSummary;
     discrepancies: Discrepancy[];
     notes?: string[];
@@ -211,8 +228,9 @@ export interface DemoStateData {
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
     ratelimit?: RateLimitResponse;
-    browse?: Record<string, BrowseResponse>; // keyed by actor_id
-    check?: Record<string, ConsistencyReport>; // keyed by actor_id
+    browse?: BrowseResponse; // global truth rows (one cache)
+    grants?: Record<string, GrantsResponse>; // keyed by principal_id
+    check?: ConsistencyReport; // global check
 }
 
 export interface DemoConfig {
