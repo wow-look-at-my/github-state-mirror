@@ -115,3 +115,96 @@ func TestParseLabelPayload(t *testing.T) {
 	_, err = ParseLabelPayload(json.RawMessage(`{"action":"created"}`))
 	assert.Error(t, err) // no label/repository
 }
+
+// workflowJobJSON is a realistic workflow_job webhook body (trimmed to the
+// fields the mirror reads plus a few it ignores).
+const workflowJobInProgressJSON = `{
+	"action": "in_progress",
+	"workflow_job": {
+		"id": 987654321,
+		"run_id": 123456789,
+		"run_attempt": 2,
+		"workflow_name": "CI",
+		"head_branch": "main",
+		"run_url": "https://api.github.com/repos/o/r/actions/runs/123456789",
+		"head_sha": "d6fde92930d4715a2b49857d24b940956b26d2d3",
+		"html_url": "https://github.com/o/r/actions/runs/123456789/job/987654321",
+		"status": "in_progress",
+		"conclusion": null,
+		"created_at": "2026-07-03T09:59:00Z",
+		"started_at": "2026-07-03T10:00:00Z",
+		"completed_at": null,
+		"name": "build (ubuntu-latest)",
+		"labels": ["ubuntu-latest"],
+		"runner_name": "GitHub Actions 42"
+	},
+	"repository": {"name": "r", "owner": {"login": "o"}},
+	"installation": {"id": 5}
+}`
+
+const workflowJobCompletedJSON = `{
+	"action": "completed",
+	"workflow_job": {
+		"id": 987654321,
+		"run_id": 123456789,
+		"run_attempt": 2,
+		"workflow_name": "CI",
+		"head_branch": "main",
+		"head_sha": "d6fde92930d4715a2b49857d24b940956b26d2d3",
+		"html_url": "https://github.com/o/r/actions/runs/123456789/job/987654321",
+		"status": "completed",
+		"conclusion": "failure",
+		"started_at": "2026-07-03T10:00:00Z",
+		"completed_at": "2026-07-03T10:05:30Z",
+		"name": "build (ubuntu-latest)",
+		"runner_name": "GitHub Actions 42"
+	},
+	"repository": {"name": "r", "owner": {"login": "o"}}
+}`
+
+func TestParseWorkflowJobPayload_InProgress(t *testing.T) {
+	p, err := ParseWorkflowJobPayload(json.RawMessage(workflowJobInProgressJSON))
+	require.NoError(t, err)
+	assert.Equal(t, "o", p.Owner)
+	assert.Equal(t, "r", p.Repo)
+	assert.Equal(t, int64(987654321), p.JobID)
+	assert.Equal(t, int64(123456789), p.RunID)
+	assert.Equal(t, int64(2), p.RunAttempt)
+	assert.Equal(t, "build (ubuntu-latest)", p.Name)
+	assert.Equal(t, "CI", p.WorkflowName)
+	assert.Equal(t, "in_progress", p.Status)
+	assert.Equal(t, "", p.Conclusion) // null until completed
+	assert.Equal(t, "d6fde92930d4715a2b49857d24b940956b26d2d3", p.HeadSHA)
+	assert.Equal(t, "main", p.HeadBranch)
+	assert.Equal(t, "https://github.com/o/r/actions/runs/123456789/job/987654321", p.HTMLURL)
+	assert.Equal(t, "2026-07-03T10:00:00Z", p.StartedAt)
+	assert.Equal(t, "", p.CompletedAt) // null until completed
+	assert.Equal(t, "GitHub Actions 42", p.RunnerName)
+}
+
+func TestParseWorkflowJobPayload_Completed(t *testing.T) {
+	p, err := ParseWorkflowJobPayload(json.RawMessage(workflowJobCompletedJSON))
+	require.NoError(t, err)
+	assert.Equal(t, "completed", p.Status)
+	assert.Equal(t, "failure", p.Conclusion)
+	assert.Equal(t, "2026-07-03T10:00:00Z", p.StartedAt)
+	assert.Equal(t, "2026-07-03T10:05:30Z", p.CompletedAt)
+}
+
+func TestParseWorkflowJobPayload_Errors(t *testing.T) {
+	// No workflow_job field.
+	_, err := ParseWorkflowJobPayload(json.RawMessage(`{"repository":{"name":"r","owner":{"login":"o"}}}`))
+	assert.Error(t, err)
+
+	// No repository field.
+	_, err = ParseWorkflowJobPayload(json.RawMessage(`{"workflow_job":{"id":1,"status":"completed"}}`))
+	assert.Error(t, err)
+
+	// Missing job id.
+	_, err = ParseWorkflowJobPayload(json.RawMessage(`{"workflow_job":{"status":"completed"},"repository":{"name":"r","owner":{"login":"o"}}}`))
+	assert.Error(t, err)
+
+	// Invalid JSON.
+	_, err = ParseWorkflowJobPayload(json.RawMessage(`{nope`))
+	assert.Error(t, err)
+}
