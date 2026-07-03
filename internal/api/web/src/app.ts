@@ -1030,6 +1030,12 @@ let demoBannerEl: HTMLElement | null = null;
 function renderDemoBanner(): void {
     const cfg = DEMO as DemoConfig;
     cfg.current = cfg.current ?? cfg.initial;
+    // boot() re-runs on every demo state switch; reuse the banner already in
+    // the DOM instead of stacking another one — only its active button changes.
+    if (demoBannerEl && demoBannerEl.isConnected) {
+        updateDemoBanner();
+        return;
+    }
     demoBannerEl = el("div", { class: "demo-banner" },
         el("span", { html: "<strong>Demo preview</strong> — canned data, no backend. View as:" }),
         el("div", { class: "tabs" },

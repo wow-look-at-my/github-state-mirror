@@ -802,6 +802,12 @@ let demoBannerEl = null;
 function renderDemoBanner() {
     const cfg = DEMO;
     cfg.current = cfg.current ?? cfg.initial;
+    // boot() re-runs on every demo state switch; reuse the banner already in
+    // the DOM instead of stacking another one — only its active button changes.
+    if (demoBannerEl && demoBannerEl.isConnected) {
+        updateDemoBanner();
+        return;
+    }
     demoBannerEl = el("div", { class: "demo-banner" }, el("span", { html: "<strong>Demo preview</strong> — canned data, no backend. View as:" }), el("div", { class: "tabs" }, demoBtn("logged-out", "Logged out"), demoBtn("user", "Regular user"), demoBtn("admin", "Admin (PazerOP)")));
     document.body.insertBefore(demoBannerEl, document.body.firstChild);
     updateDemoBanner();
