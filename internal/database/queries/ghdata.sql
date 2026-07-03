@@ -94,7 +94,7 @@ ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
     updated_at = excluded.updated_at,
     additions = excluded.additions,
     deletions = excluded.deletions,
-    mergeable = excluded.mergeable,
+    mergeable = COALESCE(excluded.mergeable, pull_requests.mergeable),
     author_login = excluded.author_login,
     author_avatar = excluded.author_avatar,
     author_url = excluded.author_url,

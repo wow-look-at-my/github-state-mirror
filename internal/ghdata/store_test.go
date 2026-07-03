@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
@@ -220,6 +221,47 @@ func TestListOpenPRsByOwner(t *testing.T) {
 	got, err := s.ListOpenPRsByOwner(ctx, "org1")
 	require.Nil(t, err)
 	assert.Equal(t, 2, len(got))
+}
+
+// TestUpsertPRForActors_MergeableNullDoesNotClobber locks the COALESCE on
+// mergeable: a pull_request webhook that arrives while GitHub is still computing
+// mergeability carries mergeable=null (and GitHub never re-delivers the event
+// when it resolves), so a NULL in the payload must preserve a previously-known
+// value — while a genuinely resolved value must still overwrite.
+func TestUpsertPRForActors_MergeableNullDoesNotClobber(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	actors := []string{"actorA"}
+	readCtx := actor.WithActor(ctx, "actorA")
+
+	base := dbgen.PullRequest{
+		Owner: "org1", Repo: "repo1", Number: 7, Title: "PR 7", Url: "u",
+		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01",
+	}
+
+	// Known value (from a GraphQL refresh or an earlier resolved webhook).
+	pr := base
+	pr.Mergeable = sql.NullString{String: "MERGEABLE", Valid: true}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	// Webhook payload while GitHub is computing mergeability: mergeable is null.
+	pr = base
+	pr.Mergeable = sql.NullString{} // NULL
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err := s.GetPullRequest(readCtx, "org1", "repo1", 7)
+	require.NoError(t, err)
+	assert.True(t, got.Mergeable.Valid, "NULL mergeable in a webhook payload must not clobber the known value")
+	assert.Equal(t, "MERGEABLE", got.Mergeable.String)
+
+	// A genuinely resolved CONFLICTING must still overwrite.
+	pr = base
+	pr.Mergeable = sql.NullString{String: "CONFLICTING", Valid: true}
+	require.NoError(t, s.UpsertPRForActors(ctx, actors, pr, nil))
+
+	got, err = s.GetPullRequest(readCtx, "org1", "repo1", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "CONFLICTING", got.Mergeable.String, "a resolved mergeable value must overwrite")
 }
 
 func TestUpsertAndGetComparison(t *testing.T) {
