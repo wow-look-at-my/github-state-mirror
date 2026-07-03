@@ -151,6 +151,99 @@ CREATE TABLE commit_checks (
 );
 
 -- ============================================================================
+-- Cached-route response state (trimmed rebuilds; see internal/api/respcache.go)
+-- ============================================================================
+--
+-- These tables back the cached REST routes. They store the STATE contained in a
+-- GitHub response (never the raw response bytes); the API layer rebuilds a
+-- trimmed response body from this state, dropping every URL field (url, *_url,
+-- _links). Rows are actor-partitioned like every other data table; invalidation
+-- (webhook-driven) is global across actors, like MarkStaleByKindKey.
+
+-- State for GET /repos/{owner}/{repo}/contents/{path}?ref=... responses.
+-- owner/repo are stored lowercased (GitHub treats them case-insensitively in
+-- URLs, and webhook invalidation must match regardless of the caller's casing);
+-- path and ref are exact. kind is 'file' (name/sha/size/encoding/content set),
+-- 'dir' (entries = JSON array of trimmed {type,size,name,path,sha} objects), or
+-- 'missing' (a cached 404; message = GitHub's error message).
+CREATE TABLE contents_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor        TEXT NOT NULL,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    path         TEXT NOT NULL,              -- exact file path ('' never cached; route requires one)
+    ref          TEXT NOT NULL DEFAULT '',   -- ?ref= query value ('' = default branch)
+    kind         TEXT NOT NULL,              -- file | dir | missing
+    name         TEXT NOT NULL DEFAULT '',
+    sha          TEXT NOT NULL DEFAULT '',
+    size         INTEGER NOT NULL DEFAULT 0,
+    encoding     TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',   -- base64 content exactly as GitHub sent it
+    entries      TEXT NOT NULL DEFAULT '',   -- dir listings: JSON array of trimmed entries
+    message      TEXT NOT NULL DEFAULT '',   -- missing: GitHub's 404 message
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks invalidate sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_contents_cache_key ON contents_cache (actor, owner, repo, path, ref);
+CREATE INDEX idx_contents_cache_repo ON contents_cache (owner, repo);
+CREATE INDEX idx_contents_cache_lru ON contents_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/git/commits/{sha} responses. A git commit
+-- is immutable, so rows have no TTL and no webhook invalidation -- only LRU
+-- pruning bounds them. Rows are written both by the API layer (on a fetch) and
+-- by the webhook dispatcher (absorbed from push payload commits), and both must
+-- rebuild to the same trimmed shape. parents is a comma-joined parent-sha list.
+CREATE TABLE git_commits_cache (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor           TEXT NOT NULL,
+    owner           TEXT NOT NULL,           -- lowercased
+    repo            TEXT NOT NULL,           -- lowercased
+    sha             TEXT NOT NULL,           -- lowercased full hex
+    message         TEXT NOT NULL DEFAULT '',
+    author_name     TEXT NOT NULL DEFAULT '',
+    author_email    TEXT NOT NULL DEFAULT '',
+    author_date     TEXT NOT NULL DEFAULT '',
+    committer_name  TEXT NOT NULL DEFAULT '',
+    committer_email TEXT NOT NULL DEFAULT '',
+    committer_date  TEXT NOT NULL DEFAULT '',
+    tree_sha        TEXT NOT NULL DEFAULT '',
+    parents         TEXT NOT NULL DEFAULT '', -- comma-joined parent shas ('' = none)
+    fetched_at      TEXT NOT NULL,            -- RFC3339
+    last_used_at    TEXT NOT NULL             -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_commits_cache_key ON git_commits_cache (actor, owner, repo, sha);
+CREATE INDEX idx_git_commits_cache_lru ON git_commits_cache (last_used_at);
+
+-- State for POST /app/installations/{id}/access_tokens responses (the
+-- installation-token mint cache). actor is the verified app identity
+-- ("app:<id>"); body_hash is the SHA-256 of the canonicalized request body
+-- (empty body vs permissions/repositories subsets mint DIFFERENT tokens).
+-- token is a live short-lived credential at rest -- same trust domain as the
+-- traffic itself, bounded by expiry (see the security notes in CLAUDE.md).
+-- expires_at is the serve-until time: GitHub's token expiry minus a safety
+-- buffer; past it the row is a miss and a fresh mint replaces it.
+CREATE TABLE install_token_cache (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor                TEXT NOT NULL,             -- "app:<verified app id>"
+    installation_id      TEXT NOT NULL,             -- from the URL path
+    body_hash            TEXT NOT NULL,             -- SHA-256 of canonicalized request body
+    token                TEXT NOT NULL,             -- minted installation token (secret)
+    token_expires_at     TEXT NOT NULL,             -- GitHub's expires_at, verbatim
+    permissions          TEXT NOT NULL DEFAULT '',  -- JSON object, '' when GitHub omitted it
+    repository_selection TEXT NOT NULL DEFAULT '',
+    fetched_at           TEXT NOT NULL,             -- RFC3339
+    expires_at           TEXT NOT NULL,             -- RFC3339 serve-until (token expiry - buffer)
+    last_used_at         TEXT NOT NULL              -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_install_token_cache_key ON install_token_cache (actor, installation_id, body_hash);
+CREATE INDEX idx_install_token_cache_install ON install_token_cache (installation_id);
+CREATE INDEX idx_install_token_cache_lru ON install_token_cache (last_used_at);
+
+-- ============================================================================
 -- Actor Identities (dashboard only)
 -- ============================================================================
 --
