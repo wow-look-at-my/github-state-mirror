@@ -162,8 +162,9 @@ const demoRateLimit: RateLimitResponse = {
         {
             // A realistic full bucket set — GitHub's /rate_limit returns ~15
             // resources for an App — including the long names that used to
-            // break the tile layout, and a couple of low (<15%) buckets so the
-            // preview demonstrates the red state.
+            // break the tile layout, plus buckets in the warn (≥70% used,
+            // yellow) and critical (≥90% used, red) bands so the preview
+            // demonstrates every meter state.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
@@ -173,7 +174,7 @@ const demoRateLimit: RateLimitResponse = {
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
                 audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
                 code_scanning_autofix: { limit: 10, remaining: 1, used: 9, reset: resetIn(48) },
-                code_search: { limit: 10, remaining: 8, used: 2, reset: resetIn(37) },
+                code_search: { limit: 10, remaining: 2, used: 8, reset: resetIn(37) },
                 copilot_usage_records: { limit: 1750, remaining: 1750, used: 0, reset: resetIn(3600) },
                 dependency_sbom: { limit: 100, remaining: 96, used: 4, reset: resetIn(1210) },
                 dependency_snapshots: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
