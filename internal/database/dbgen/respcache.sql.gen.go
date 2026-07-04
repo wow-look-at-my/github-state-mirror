@@ -9,6 +9,23 @@ import (
 	"context"
 )
 
+const deleteCommitsListCacheByRepo = `-- name: DeleteCommitsListCacheByRepo :exec
+DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCommitsListCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteCommitsListCacheByRepo drops a repo's snapshots -- the push/repository
+// webhook flush (a push moves every ref-relative listing). The absorbed
+// git_commits_cache rows are immutable and stay.
+func (q *Queries) DeleteCommitsListCacheByRepo(ctx context.Context, arg DeleteCommitsListCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitsListCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteContentsCacheByRepo = `-- name: DeleteContentsCacheByRepo :exec
 DELETE FROM contents_cache WHERE owner = ? AND repo = ?
 `
@@ -20,6 +37,15 @@ type DeleteContentsCacheByRepoParams struct {
 
 func (q *Queries) DeleteContentsCacheByRepo(ctx context.Context, arg DeleteContentsCacheByRepoParams) error {
 	_, err := q.db.ExecContext(ctx, deleteContentsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteExpiredCommitsListCache = `-- name: DeleteExpiredCommitsListCache :exec
+DELETE FROM commits_list_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCommitsListCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCommitsListCache, expiresAt)
 	return err
 }
 
@@ -92,6 +118,45 @@ DELETE FROM repo_installation_cache WHERE installation_id = ?
 func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
 	return err
+}
+
+const getCommitsListCache = `-- name: GetCommitsListCache :one
+
+SELECT id, owner, repo, ref_param, per_page, page, shas, fetched_at, expires_at, last_used_at FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?
+`
+
+type GetCommitsListCacheParams struct {
+	Owner    string
+	Repo     string
+	RefParam string
+	PerPage  int64
+	Page     int64
+}
+
+// ---- commits_list_cache (per-page snapshots for the commits LIST route) ----
+func (q *Queries) GetCommitsListCache(ctx context.Context, arg GetCommitsListCacheParams) (CommitsListCache, error) {
+	row := q.db.QueryRowContext(ctx, getCommitsListCache,
+		arg.Owner,
+		arg.Repo,
+		arg.RefParam,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i CommitsListCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.RefParam,
+		&i.PerPage,
+		&i.Page,
+		&i.Shas,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
 }
 
 const getContentsCache = `-- name: GetContentsCache :one
@@ -277,6 +342,17 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 	return i, err
 }
 
+const pruneCommitsListCacheLRU = `-- name: PruneCommitsListCacheLRU :exec
+DELETE FROM commits_list_cache WHERE id IN (
+    SELECT id FROM commits_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCommitsListCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCommitsListCacheLRU, offset)
+	return err
+}
+
 const pruneContentsCacheLRU = `-- name: PruneContentsCacheLRU :exec
 DELETE FROM contents_cache WHERE id IN (
     SELECT id FROM contents_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -332,6 +408,32 @@ DELETE FROM repo_installation_cache WHERE id IN (
 
 func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
+	return err
+}
+
+const touchCommitsListCache = `-- name: TouchCommitsListCache :exec
+UPDATE commits_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?
+`
+
+type TouchCommitsListCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	RefParam   string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchCommitsListCache(ctx context.Context, arg TouchCommitsListCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCommitsListCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.RefParam,
+		arg.PerPage,
+		arg.Page,
+	)
 	return err
 }
 
@@ -415,6 +517,43 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+	)
+	return err
+}
+
+const upsertCommitsListCache = `-- name: UpsertCommitsListCache :exec
+INSERT INTO commits_list_cache (owner, repo, ref_param, per_page, page, shas, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref_param, per_page, page) DO UPDATE SET
+    shas = excluded.shas,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCommitsListCacheParams struct {
+	Owner      string
+	Repo       string
+	RefParam   string
+	PerPage    int64
+	Page       int64
+	Shas       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCommitsListCache(ctx context.Context, arg UpsertCommitsListCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCommitsListCache,
+		arg.Owner,
+		arg.Repo,
+		arg.RefParam,
+		arg.PerPage,
+		arg.Page,
+		arg.Shas,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
 	)
 	return err
 }

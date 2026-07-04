@@ -252,10 +252,12 @@ func fullHexSHA(s string) bool {
 // invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
 // stale. push/repository events flush the repo's contents rows -- the
 // conservative whole-repo flush; the payload's modified-paths refinement can
-// come later. repository events (rename/delete/visibility) additionally flush
-// the repo's "open-PR list complete" marker; pull_request events deliberately
-// do NOT -- they maintain the PR rows, which is what the marker asserts.
-// installation events flush the installation's cached token mints AND cached
+// come later -- AND its commits-list snapshots (a push moves every
+// ref-relative listing; the absorbed git-commit rows are immutable and stay).
+// repository events (rename/delete/visibility) additionally flush the repo's
+// "open-PR list complete" marker; pull_request events deliberately do NOT --
+// they maintain the PR rows, which is what the marker asserts. installation
+// events flush the installation's cached token mints AND cached
 // repo-installation answers (a suspended/deleted/re-scoped installation must
 // not keep serving either). Git-commit rows are immutable and are deliberately
 // never invalidated.
@@ -268,6 +270,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		if err := d.store.InvalidateContentsCache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate contents cache failed", "repo", owner+"/"+repo, "error", err)
+		}
+		if err := d.store.InvalidateCommitsListCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate commits list cache failed", "repo", owner+"/"+repo, "error", err)
 		}
 		if event.Type == "repository" {
 			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {

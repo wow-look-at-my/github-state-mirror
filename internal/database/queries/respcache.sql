@@ -80,6 +80,39 @@ DELETE FROM git_commits_cache WHERE id IN (
     SELECT id FROM git_commits_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
+-- ---- commits_list_cache (per-page snapshots for the commits LIST route) ----
+
+-- name: GetCommitsListCache :one
+SELECT * FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertCommitsListCache :exec
+INSERT INTO commits_list_cache (owner, repo, ref_param, per_page, page, shas, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref_param, per_page, page) DO UPDATE SET
+    shas = excluded.shas,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCommitsListCache :exec
+UPDATE commits_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?;
+
+-- DeleteCommitsListCacheByRepo drops a repo's snapshots -- the push/repository
+-- webhook flush (a push moves every ref-relative listing). The absorbed
+-- git_commits_cache rows are immutable and stay.
+-- name: DeleteCommitsListCacheByRepo :exec
+DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCommitsListCache :exec
+DELETE FROM commits_list_cache WHERE expires_at <= ?;
+
+-- name: PruneCommitsListCacheLRU :exec
+DELETE FROM commits_list_cache WHERE id IN (
+    SELECT id FROM commits_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
 -- ---- install_token_cache ----
 
 -- name: GetInstallTokenCache :one

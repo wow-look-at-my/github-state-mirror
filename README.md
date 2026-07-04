@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Six REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Seven REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -79,6 +79,19 @@ pass through verbatim, uncached.
   message, timestamp, author/committer, with parents derived from the
   payload's linear chain) are absorbed on delivery, so the common post-push
   read hits without any GitHub fetch ever having happened.
+- `GET /repos/{owner}/{repo}/commits` — the commits list (pr-minder's
+  fork-point detection pages this per branch). Each listed commit is absorbed
+  into the same `git_commits_cache` rows as above; a per-query snapshot —
+  keyed by the raw `sha` query value (`''` = default branch), `per_page`, and
+  `page` — stores only the response's ordered shas, so the list rebuilds from
+  the immutable commit rows in the exact order GitHub returned. Item shape:
+  `{sha, commit: {author, committer, message, tree: {sha}}, parents: [{sha},
+  ...]}`. Only `sha`/`per_page` (1..100)/`page` (1..10) are modeled; anything
+  else (`path`, `since`, `author`, ...) passes through, and only a `200` is
+  absorbed (404/409/5xx relay unstored). Snapshots are flushed by `push` and
+  `repository` webhooks (a push moves every ref-relative listing; the
+  absorbed commit rows stay) with a 24 h TTL backstop. The single-commit
+  sub-path `/commits/{sha}` is a different shape and stays passthrough.
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving

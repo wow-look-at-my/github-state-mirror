@@ -228,6 +228,12 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
+		// Cached commits LIST (respcache_commits.go): per-page sha snapshots
+		// over the same git_commits_cache rows, flushed by push/repository
+		// webhooks. The single-commit sub-path /commits/{sha} (a different
+		// response shape) is deliberately unregistered and passes through.
+		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
+
 		// Cached PR routes (respcache_pulls.go): the open-PR list is served
 		// from webhook-maintained pull_requests state behind a per-(actor,
 		// repo) "list complete" marker; the single PR is served only when the

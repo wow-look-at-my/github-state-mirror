@@ -136,6 +136,52 @@ func TestDispatch_UnknownEvent(t *testing.T) {
 	dispatcher.Dispatch(ctx, event)
 }
 
+// TestDispatch_PushAndRepositoryFlushCommitsListSnapshots: push and repository
+// events flush a repo's cached commits-list snapshots (a push moves every
+// ref-relative listing) while the absorbed git-commit rows -- immutable global
+// truth -- survive the flush.
+func TestDispatch_PushAndRepositoryFlushCommitsListSnapshots(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	commit := ghdata.CachedGitCommit{
+		Owner: "org1", Repo: "repo1",
+		SHA:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TreeSHA: "1111111111111111111111111111111111111111",
+		Message: "m",
+	}
+	seedSnapshot := func() {
+		t.Helper()
+		require.NoError(t, store.PutCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1,
+			[]ghdata.CachedGitCommit{commit}, now, time.Hour))
+		_, ok, err := store.GetCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1, now)
+		require.NoError(t, err)
+		require.True(t, ok, "seeded snapshot must serve")
+	}
+	snapshotServes := func() bool {
+		t.Helper()
+		_, ok, err := store.GetCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1, now)
+		require.NoError(t, err)
+		return ok
+	}
+
+	seedSnapshot()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push",
+		[]byte(`{"repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, snapshotServes(), "a push must flush the repo's commits-list snapshots")
+
+	seedSnapshot()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("repository",
+		[]byte(`{"action":"privatized","repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, snapshotServes(), "a repository event must flush the repo's commits-list snapshots")
+
+	// The absorbed commit rows are immutable and survive both flushes.
+	_, ok, err := store.GetCachedGitCommit(ctx, "org1", "repo1", commit.SHA, now)
+	require.NoError(t, err)
+	assert.True(t, ok, "git-commit rows must survive the snapshot flush")
+}
+
 // makePRPayload builds a realistic pull_request webhook JSON payload.
 func makePRPayload(t *testing.T, action, state, owner, repo string, number int, title string) json.RawMessage {
 	t.Helper()
