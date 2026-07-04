@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -192,8 +193,37 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
+		// A push to the DEFAULT branch likewise stales default_branch_status:
+		// the stored rollup describes the previous tip, nothing restates it
+		// until the new tip's first check event, and a tip with no CI at all
+		// would keep the old rollup forever (the COALESCE upsert can never
+		// clear it). Un-resolve it -- the NullPRMergeableByBranch analog; the
+		// next default-branch check event repopulates it.
+		if d.isDefaultBranch(ctx, event, payload.Owner, payload.Repo, branch) {
+			if err := d.store.SetRepoDefaultBranchStatus(ctx, payload.Owner, payload.Repo, sql.NullString{}); err != nil {
+				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+			}
+		}
 	}
 	return applied("updated pushed_at")
+}
+
+// isDefaultBranch reports whether branch is the repo's default branch,
+// preferring the payload's own repository.default_branch (push payloads carry
+// it) and falling back to the cached repo row (absorbed moments ago, or by an
+// earlier sync). Unknown reads as false -- never null a status on a guess.
+func (d *WebhookDispatcher) isDefaultBranch(ctx context.Context, event webhook.Event, owner, repo, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if r, ok := webhook.ParseRepositoryPayload(event.Raw); ok && r.DefaultBranch.Valid && r.DefaultBranch.String != "" {
+		return r.DefaultBranch.String == branch
+	}
+	row, err := d.store.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return false
+	}
+	return row.DefaultBranch.Valid && row.DefaultBranch.String == branch
 }
 
 // absorbPushCommits upserts the pushed commits into the global git-commits

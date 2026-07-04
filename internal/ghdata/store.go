@@ -386,65 +386,6 @@ func (s *Store) DeletePRLabelByName(ctx context.Context, owner, repo, name strin
 	return s.q.DeletePRLabelsByName(ctx, dbgen.DeletePRLabelsByNameParams{Owner: owner, Repo: repo, Name: name})
 }
 
-// ---- Commit checks ----
-
-// ApplyCommitStatus records a single check/status state for a commit and
-// recomputes the rollup, writing it onto any PR whose head is that commit and,
-// when onDefaultBranch is set, onto the repo's default_branch_status. Returns
-// the resulting rollup state.
-func (s *Store) ApplyCommitStatus(ctx context.Context, owner, repo, sha, checkContext, state string, onDefaultBranch bool) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-	q := s.q.WithTx(tx)
-
-	if err := q.UpsertCommitCheck(ctx, dbgen.UpsertCommitCheckParams{
-		Owner: owner, Repo: repo, Sha: sha, Context: checkContext, State: state,
-	}); err != nil {
-		return "", err
-	}
-	states, err := q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{
-		Owner: owner, Repo: repo, Sha: sha,
-	})
-	if err != nil {
-		return "", err
-	}
-	rollup := rollupState(states)
-	status := sql.NullString{String: rollup, Valid: rollup != ""}
-	if err := q.SetPRStatusByHeadSha(ctx, dbgen.SetPRStatusByHeadShaParams{
-		LastCommitStatus: status,
-		Owner:            owner,
-		Repo:             repo,
-		HeadRefOid:       sql.NullString{String: sha, Valid: sha != ""},
-	}); err != nil {
-		return "", err
-	}
-	if onDefaultBranch {
-		if err := q.SetRepoDefaultBranchStatus(ctx, dbgen.SetRepoDefaultBranchStatusParams{
-			DefaultBranchStatus: status,
-			Owner:               owner,
-			Name:                repo,
-		}); err != nil {
-			return "", err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	return rollup, nil
-}
-
-// DeleteCommitChecks drops the per-check rows for a commit (e.g. when the PR
-// that pointed at it closes).
-func (s *Store) DeleteCommitChecks(ctx context.Context, owner, repo, sha string) error {
-	if sha == "" {
-		return nil
-	}
-	return s.q.DeleteCommitChecksBySha(ctx, dbgen.DeleteCommitChecksByShaParams{Owner: owner, Repo: repo, Sha: sha})
-}
-
 // SetRepoPushedAt updates a repo's pushed_at.
 func (s *Store) SetRepoPushedAt(ctx context.Context, owner, repo, pushedAt string) error {
 	return s.q.SetRepoPushedAt(ctx, dbgen.SetRepoPushedAtParams{
@@ -597,37 +538,6 @@ func replacePRLabelsTx(ctx context.Context, q *dbgen.Queries, owner, repo string
 		}
 	}
 	return nil
-}
-
-// rollupState aggregates per-check states into a single GitHub-style rollup:
-// any failure dominates, then pending, then success.
-//
-// TODO: a missed check-completion delivery leaves its commit_checks row stuck at
-// PENDING, pinning the rollup at PENDING even after every real check finished.
-// Reconciling stuck-PENDING rows (e.g. re-reading the sha's checks from GitHub)
-// is deliberately deferred -- do not add it here without that design discussion.
-func rollupState(states []string) string {
-	var hasFailure, hasPending, hasSuccess bool
-	for _, st := range states {
-		switch st {
-		case "FAILURE", "ERROR":
-			hasFailure = true
-		case "PENDING", "EXPECTED":
-			hasPending = true
-		case "SUCCESS":
-			hasSuccess = true
-		}
-	}
-	switch {
-	case hasFailure:
-		return "FAILURE"
-	case hasPending:
-		return "PENDING"
-	case hasSuccess:
-		return "SUCCESS"
-	default:
-		return ""
-	}
 }
 
 func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {

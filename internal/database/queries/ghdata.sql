@@ -124,6 +124,16 @@ UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
 WHERE owner = ? AND repo = ? AND state = 'OPEN'
   AND (base_ref_name = ? OR head_ref_name = ?);
 
+-- SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
+-- directly fetched answer, INCLUDING null (not armed) -- the SetPRMergeable
+-- idiom. The upsert only takes auto_merge_method from REST-shaped sources
+-- (node_id present), so a stale armed flag left by a missed
+-- auto_merge_disabled delivery can only be cleared by this explicit set (the
+-- consistency check's apply mode).
+-- name: SetPRAutoMergeMethod :exec
+UPDATE pull_requests SET auto_merge_method = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
 -- name: GetPullRequest :one
 SELECT * FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?;
 

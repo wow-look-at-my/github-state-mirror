@@ -131,6 +131,42 @@ func TestCacheCheck_NonAdminForbidden(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
+// TestCacheCheckApply_NonAdminForbidden: the write surface is admin-gated
+// exactly like the read.
+func TestCacheCheckApply_NonAdminForbidden(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+	req := httptest.NewRequest("POST", "/api/cache/check?apply=true", nil)
+	req.AddCookie(mintSession(t, svc, "octocat"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// TestCacheCheckApply_RequiresPost: apply on a GET is refused, so a
+// prefetched or bookmarked URL can never mutate the cache.
+func TestCacheCheckApply_RequiresPost(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+	req := httptest.NewRequest("GET", "/api/cache/check?apply=1", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+// TestCacheCheckApply_UnavailableWithoutApp: like the read, apply needs the
+// GitHub App.
+func TestCacheCheckApply_UnavailableWithoutApp(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+	req := httptest.NewRequest("POST", "/api/cache/check?apply=true", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
 // TestRateLimit_NoAppStillServesObserved: without a GitHub App the endpoint no
 // longer 503s — it answers 200 with an empty live half, an explanatory note,
 // and whatever the passive meter observed (nothing yet, here).

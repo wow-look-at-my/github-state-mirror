@@ -18,12 +18,14 @@ import (
 // These endpoints are the operator's window into the ONE global truth store
 // and the reveal layer. They are gated to admins: the reveal layer filters
 // what data-API callers see, but the operator's dashboard deliberately sees
-// everything (it is the surface for diagnosing the cache itself). Nothing
-// here writes to the cache.
+// everything (it is the surface for diagnosing the cache itself). The GETs
+// never write to the cache; the one write surface is the explicit
+// POST ?apply=true reconcile.
 //
-//	GET /api/cache/data                     -- dump global truth rows
-//	GET /api/cache/data?principal=<id>      -- one principal's grants
-//	GET /api/cache/check[?org=<owner>]      -- diff global truth vs GitHub
+//	GET  /api/cache/data                          -- dump global truth rows
+//	GET  /api/cache/data?principal=<id>           -- one principal's grants
+//	GET  /api/cache/check[?org=<owner>]           -- diff global truth vs GitHub (read-only)
+//	POST /api/cache/check?apply=true[&org=<o>]    -- diff, then CORRECT the drift (reconcile)
 
 // ---- clean JSON views of the cached rows ----
 //
@@ -200,19 +202,36 @@ func (d *dashboard) collectBrowse(ctx context.Context) (browseResponse, error) {
 // handleCacheCheck runs the consistency check (admin only): it re-fetches the
 // source of truth from GitHub via the App and returns a JSON diff of GLOBAL
 // truth vs GitHub. Optional ?org= limits the check to one owner.
+//
+// With ?apply=true (alias ?apply=1) on a POST, it additionally RECONCILES:
+// the drift found is corrected from the same fetched snapshot (absorb missing
+// repos/PRs, delete stale open PRs, set visibility / default_branch_status /
+// auto_merge_method / the commit-check rollup from GitHub's answers) and the
+// response carries an "applied" tally. A GET is always strictly read-only --
+// apply on a GET is rejected so a prefetched/bookmarked URL can never write.
 func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
+		return
+	}
+	q := r.URL.Query()
+	org := q.Get("org") // optional: limit the check to one owner
+	apply := q.Get("apply") == "true" || q.Get("apply") == "1"
+	if apply && r.Method != http.MethodPost {
+		http.Error(w, "apply mode mutates the cache and requires POST /api/cache/check?apply=true", http.StatusMethodNotAllowed)
 		return
 	}
 	if d.checker == nil || !d.checker.Available() {
 		http.Error(w, "consistency check unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
 		return
 	}
-	org := r.URL.Query().Get("org") // optional: limit the check to one owner
 
-	report, err := d.checker.Check(r.Context(), org)
+	run := d.checker.Check
+	if apply {
+		run = d.checker.CheckAndApply
+	}
+	report, err := run(r.Context(), org)
 	if err != nil {
-		slog.Warn("consistency check failed", "error", err)
+		slog.Warn("consistency check failed", "apply", apply, "error", err)
 		http.Error(w, "consistency check failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}

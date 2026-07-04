@@ -2,15 +2,12 @@ package sync
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -19,12 +16,19 @@ import (
 // ConsistencyChecker compares the GLOBAL truth store against GitHub's live
 // state and reports the drift -- one comparison for the one cache. It fetches
 // the "source of truth" with the mirror's own GitHub App (the same credential
-// the periodic refresher uses). The cache is never modified: this only reads
-// from GitHub and from the store, then diffs.
+// the periodic refresher uses), via the owner-agnostic repositoryOwner query,
+// so User-account installations are checked like Organizations.
+//
+// Check is strictly read-only. CheckAndApply additionally CORRECTS the drift
+// it found: it absorbs the fetched snapshot into truth (SyncOrgTruth under the
+// installation's principal), sets visibility/default_branch_status/
+// auto_merge_method from GitHub's answers (including nulls the COALESCE
+// upserts can never write), and reconciles contradicted commit_checks rows so
+// the correction survives the next webhook (see applyOwner).
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
-	fresh *freshness.Store           // read-only: truth staleness metadata for the report
+	fresh *freshness.Store           // truth staleness metadata; apply mode also stamps the app-installation marker
 	app   *ghclient.AppAuthenticator // nil when no GitHub App is configured
 }
 
@@ -98,8 +102,10 @@ type ConsistencyReport struct {
 	// read against how stale truth actually is.
 	TruthFreshness map[string]ScopeFreshness `json:"truth_freshness,omitempty"`
 	Summary        CheckSummary              `json:"summary"`
-	Discrepancies  []Discrepancy             `json:"discrepancies"`
-	Notes          []string                  `json:"notes,omitempty"` // caveats to keep in mind when reading the report
+	// Applied tallies apply-mode corrections; nil on a read-only check.
+	Applied       *AppliedSummary `json:"applied,omitempty"`
+	Discrepancies []Discrepancy   `json:"discrepancies"`
+	Notes         []string        `json:"notes,omitempty"` // caveats to keep in mind when reading the report
 }
 
 // ScopeFreshness is one owner's most-recent sync metadata.
@@ -126,36 +132,84 @@ type CheckSummary struct {
 	ReposOnlyInCache  int `json:"repos_only_in_cache"`
 	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
 	// ReposOnlyOnGitHubPrivate is the subset of ReposOnlyOnGitHub that are
-	// PRIVATE on GitHub -- under the global model these are repos NO principal
-	// has synced or webhooked yet (truth is lazy), not per-caller blind spots.
+	// private/internal on GitHub -- under the global model these are repos NO
+	// principal has synced or webhooked yet (truth is lazy), not per-caller
+	// blind spots.
 	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
+	// ReposOnlyInCacheArchived is the subset of ReposOnlyInCache that are
+	// archived (on GitHub or in the cached row): archived repos are excluded
+	// from the org data fetch by design, so these are expected, not drift.
+	ReposOnlyInCacheArchived int `json:"repos_only_in_cache_archived"`
 	PRsOnlyInCache           int `json:"prs_only_in_cache"`
 	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
 	FieldMismatches          int `json:"field_mismatches"`
+	// VisibilityLeaks counts repos cached PUBLIC that GitHub says are
+	// private/internal -- the dangerous direction: the reveal fast path is
+	// serving them to any authenticated caller.
+	VisibilityLeaks int `json:"visibility_leaks"`
+}
+
+// AppliedSummary tallies what apply mode (POST /api/cache/check?apply=true)
+// actually corrected, per action.
+type AppliedSummary struct {
+	ReposAbsorbed          int `json:"repos_absorbed"`
+	PRsAbsorbed            int `json:"prs_absorbed"`
+	PRsDeleted             int `json:"prs_deleted"`
+	VisibilitySet          int `json:"visibility_set"`
+	StatusesCorrected      int `json:"statuses_corrected"`
+	CheckRowsDeleted       int `json:"check_rows_deleted"`
+	DefaultBranchStatusSet int `json:"default_branch_status_set"`
+	AutoMergeSet           int `json:"auto_merge_set"`
 }
 
 // Discrepancy is one difference between the cache and GitHub. cached/github are
 // rendered as strings so the report stays flat and pasteable; an empty value
 // with issue=only_* means the resource is absent on that side.
 type Discrepancy struct {
-	Kind   string `json:"kind"`            // "repo" | "pr"
-	Repo   string `json:"repo"`            // "owner/name"
-	PR     int64  `json:"pr,omitempty"`    // PR number when kind=="pr"
-	Issue  string `json:"issue"`           // "only_in_cache" | "only_on_github" | "field_mismatch"
-	Field  string `json:"field,omitempty"` // which field differs (issue==field_mismatch)
+	Kind  string `json:"kind"`         // "repo" | "pr"
+	Repo  string `json:"repo"`         // "owner/name"
+	PR    int64  `json:"pr,omitempty"` // PR number when kind=="pr"
+	Issue string `json:"issue"`        // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown
+	Field string `json:"field,omitempty"`
+	// Which field differs (issue==field_mismatch / visibility_*)
 	Cached string `json:"cached,omitempty"`
 	GitHub string `json:"github,omitempty"`
-	// Visibility is "private" on an only_on_github repo that is private on
-	// GitHub (as seen by the App): global truth simply has not absorbed it yet
-	// (no webhook, no principal's sync) -- not necessarily a cache failure.
+	// Visibility is the live visibility ("private"/"internal") on an
+	// only_on_github repo: global truth simply has not absorbed it yet (no
+	// webhook, no principal's sync) -- not necessarily a cache failure.
 	Visibility string `json:"visibility,omitempty"`
-	Note       string `json:"note,omitempty"`
+	// Archived marks an only_in_cache repo whose absence from the org data is
+	// explained by archival (expected, not drift).
+	Archived bool `json:"archived,omitempty"`
+	// Title/UpdatedAt/TouchedAt carry the cached row's detail on
+	// pr only_in_cache entries, so the operator can triage without a browse.
+	Title     string `json:"title,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	TouchedAt string `json:"touched_at,omitempty"`
+	// ServedNow marks a PR-existence discrepancy whose repo has a LIVE
+	// pulls-list marker: the cached (wrong) list is being served right now.
+	// Without a marker the next list read misses, re-fetches, and self-heals.
+	ServedNow bool   `json:"served_now,omitempty"`
+	Note      string `json:"note,omitempty"`
+	// Fix is a short remediation hint for this discrepancy class.
+	Fix string `json:"fix,omitempty"`
 }
 
-// Check runs the consistency check for the global truth store. When orgFilter
-// is non-empty only that owner is checked; otherwise every owner with cached
-// repos is checked. The cache is read-only throughout.
+// Check runs the read-only consistency check for the global truth store. When
+// orgFilter is non-empty only that owner is checked; otherwise every owner
+// with cached repos is checked. The cache is never modified.
 func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
+	return c.run(ctx, orgFilter, false)
+}
+
+// CheckAndApply runs the consistency check and then CORRECTS the drift from
+// the same fetched snapshot (see applyOwner). The report's discrepancies show
+// the PRE-apply state; Applied tallies the corrections written.
+func (c *ConsistencyChecker) CheckAndApply(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
+	return c.run(ctx, orgFilter, true)
+}
+
+func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bool) (*ConsistencyReport, error) {
 	if c.app == nil {
 		return nil, fmt.Errorf("consistency check unavailable: no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)")
 	}
@@ -166,11 +220,17 @@ func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*Cons
 		OrgsChecked:   []string{},
 		Discrepancies: []Discrepancy{},
 		Notes: []string{
-			"Source of truth was fetched as the mirror's GitHub App. Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
+			"Source of truth was fetched as the mirror's GitHub App (repositoryOwner query, so User-account installations are checked too). Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
 			"Only OPEN pull requests are compared (the cache only retains open PRs). A PR shown as only_in_cache is cached as open but is not in GitHub's current open set, i.e. it was likely closed/merged and a webhook was missed.",
-			"A repo reported only_on_github with visibility=private has simply never been absorbed (no webhook and no principal's sync has touched it) -- truth is lazy, so this is expected until something references the repo. Such repos are tallied separately in repos_only_on_github_private.",
+			"A repo reported only_on_github with a private/internal visibility has simply never been absorbed (no webhook and no principal's sync has touched it) -- truth is lazy, so this is expected until something references the repo. Such repos are tallied separately in repos_only_on_github_private.",
 			"The mergeable field is not compared: the cache deliberately un-resolves it on pushes and the GraphQL/REST readings race GitHub's recomputation.",
+			"pushed_at is compared with a " + pushedAtTolerance.String() + " tolerance: only a cached value lagging GitHub by more than that is drift (it implies missed push webhooks, and therefore possibly stale contents_cache rows).",
 		},
+	}
+	if apply {
+		report.Applied = &AppliedSummary{}
+		report.Notes = append(report.Notes,
+			"Apply mode: corrections were written AFTER the diff was taken -- discrepancies show the PRE-apply state, and 'applied' tallies the corrections.")
 	}
 
 	// Load the global truth once.
@@ -212,16 +272,13 @@ func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*Cons
 
 	for _, owner := range owners {
 		// The owner's most-recent sync staleness, whether or not the owner
-		// ends up checked -- long-unsynced truth explains drift.
+		// ends up checked -- long-unsynced truth explains drift. (In apply
+		// mode this reads the PRE-apply marker; the apply stamps a fresh one.)
 		c.recordTruthFreshness(ctx, report, owner)
 
 		inst, ok := byLogin[strings.ToLower(owner)]
 		if !ok {
 			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "no GitHub App installation for this owner (app not installed, or no access)"})
-			continue
-		}
-		if !strings.EqualFold(inst.Account.Type, "Organization") {
-			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "owner is a " + inst.Account.Type + " account; org-repo fetch is not supported for it"})
 			continue
 		}
 
@@ -231,23 +288,40 @@ func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*Cons
 			continue
 		}
 		fetchCtx := ghclient.WithToken(ctx, token)
-		data, err := c.gh.GetOrgData(fetchCtx, owner)
+		fetchStart := time.Now()
+		data, err := c.gh.GetOwnerData(fetchCtx, owner)
 		if err != nil {
 			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "fetch from GitHub failed: " + err.Error()})
 			continue
 		}
 
-		// Repo visibility as the App sees it, via the checker-private query
-		// (NEVER the shared cached-route query). Best-effort: without it the
-		// diff still runs, missing repos just aren't classified private/public.
-		visibility, verr := c.gh.OrgRepoVisibility(fetchCtx, owner)
+		// Repo visibility + archive state as the App sees it, via the
+		// checker-private query (NEVER the shared cached-route query).
+		// Best-effort: without it the diff still runs, but visibility diffs
+		// and missing-repo private/archived classification are unavailable --
+		// which the report says out loud instead of silently reading as clean.
+		visibility, verr := c.gh.OwnerRepoVisibilities(fetchCtx, owner)
 		if verr != nil {
-			slog.Warn("consistency: fetch repo visibility failed", "org", owner, "error", verr)
+			slog.Warn("consistency: fetch repo visibility failed", "owner", owner, "error", verr)
+			report.Notes = append(report.Notes, fmt.Sprintf(
+				"owner %s: repo-visibility fetch failed (%v) -- visibility diffs and private/archived classification are unavailable for this owner in this report", owner, verr))
 			visibility = nil
 		}
 
 		report.OrgsChecked = append(report.OrgsChecked, owner)
-		c.diffOwner(report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility)
+		c.diffOwner(ctx, report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility)
+
+		if apply {
+			if err := c.applyOwner(ctx, report.Applied, owner, inst, reposByOwner[owner], prsByOwnerRepo, data, visibility, fetchStart); err != nil {
+				slog.Warn("consistency: apply failed", "owner", owner, "error", err)
+				report.Notes = append(report.Notes, fmt.Sprintf("owner %s: apply failed partway: %v", owner, err))
+			}
+		}
+	}
+
+	// Attach the per-class remediation hints.
+	for i := range report.Discrepancies {
+		report.Discrepancies[i].Fix = fixHint(report.Discrepancies[i])
 	}
 
 	// Finalize summary counts.
@@ -257,19 +331,25 @@ func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*Cons
 		case "only_in_cache":
 			if d.Kind == "repo" {
 				report.Summary.ReposOnlyInCache++
+				if d.Archived {
+					report.Summary.ReposOnlyInCacheArchived++
+				}
 			} else {
 				report.Summary.PRsOnlyInCache++
 			}
 		case "only_on_github":
 			if d.Kind == "repo" {
 				report.Summary.ReposOnlyOnGitHub++
-				if d.Visibility == "private" {
+				if d.Visibility == ghdata.VisibilityPrivate || d.Visibility == "internal" {
 					report.Summary.ReposOnlyOnGitHubPrivate++
 				}
 			} else {
 				report.Summary.PRsOnlyOnGitHub++
 			}
 		case "field_mismatch":
+			report.Summary.FieldMismatches++
+		case "visibility_leak":
+			report.Summary.VisibilityLeaks++
 			report.Summary.FieldMismatches++
 		}
 	}
@@ -310,221 +390,4 @@ func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *C
 		report.TruthFreshness = make(map[string]ScopeFreshness)
 	}
 	report.TruthFreshness[owner] = sf
-}
-
-// diffOwner compares the cached repos/PRs/labels for one owner against the data
-// freshly fetched from GitHub, appending discrepancies to the report. visibility
-// (repo name -> isPrivate, as the App sees it) classifies missing repos; nil
-// means visibility could not be fetched and no classification is added.
-func (c *ConsistencyChecker) diffOwner(
-	report *ConsistencyReport,
-	owner string,
-	cachedRepos map[string]dbgen.Repo,
-	cachedPRs map[string]map[int64]dbgen.PullRequest,
-	cachedLabels map[string]map[int64]map[string]string,
-	data *ghclient.OrgData,
-	visibility map[string]bool,
-) {
-	// --- repos ---
-	freshRepos := make(map[string]dbgen.Repo, len(data.Repos))
-	for _, r := range data.Repos {
-		freshRepos[r.Name] = r
-	}
-	for name, cr := range cachedRepos {
-		fr, ok := freshRepos[name]
-		if !ok {
-			report.Discrepancies = append(report.Discrepancies, Discrepancy{
-				Kind: "repo", Repo: owner + "/" + name, Issue: "only_in_cache",
-				Note: "cached but not among GitHub's non-archived repos (archived, deleted, renamed, or no longer visible)",
-			})
-			continue
-		}
-		report.Discrepancies = append(report.Discrepancies, repoFieldDiffs(owner, name, cr, fr)...)
-	}
-	for name, fr := range freshRepos {
-		if _, ok := cachedRepos[name]; !ok {
-			d := Discrepancy{
-				Kind: "repo", Repo: owner + "/" + name, Issue: "only_on_github",
-				GitHub: fr.Url,
-				Note:   "exists on GitHub but has not been absorbed into global truth",
-			}
-			if private, known := visibility[name]; known && private {
-				d.Visibility = "private"
-				d.Note = "private repo not yet absorbed: no webhook and no principal's sync has referenced it; expected under lazy truth"
-			}
-			report.Discrepancies = append(report.Discrepancies, d)
-		}
-	}
-
-	// --- pull requests (open only) ---
-	for _, fr := range data.Repos {
-		repoName := fr.Name
-		repoKey := owner + "/" + repoName
-		freshPRs := make(map[int64]dbgen.PullRequest)
-		for _, pr := range data.PRsByRepo[fr.NameWithOwner] {
-			freshPRs[pr.Number] = pr
-		}
-		cached := cachedPRs[repoKey]
-
-		for num, cpr := range cached {
-			fpr, ok := freshPRs[num]
-			if !ok {
-				report.Discrepancies = append(report.Discrepancies, Discrepancy{
-					Kind: "pr", Repo: repoKey, PR: num, Issue: "only_in_cache",
-					Cached: cpr.Url,
-					Note:   "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)",
-				})
-				continue
-			}
-			report.Discrepancies = append(report.Discrepancies, prFieldDiffs(repoKey, num, cpr, fpr)...)
-			report.Discrepancies = append(report.Discrepancies, labelDiffs(repoKey, num,
-				cachedLabels[repoKey][num], freshLabelSet(data.LabelsByPR[fr.NameWithOwner][num]))...)
-		}
-		for num, fpr := range freshPRs {
-			if _, ok := cached[num]; !ok {
-				report.Discrepancies = append(report.Discrepancies, Discrepancy{
-					Kind: "pr", Repo: repoKey, PR: num, Issue: "only_on_github",
-					GitHub: fpr.Url,
-					Note:   "open on GitHub but not in global truth",
-				})
-			}
-		}
-	}
-}
-
-// repoFieldDiffs compares the webhook-fed / refreshed repo fields.
-func repoFieldDiffs(owner, name string, c, g dbgen.Repo) []Discrepancy {
-	repoKey := owner + "/" + name
-	var out []Discrepancy
-	add := func(field, cv, gv string) {
-		if cv != gv {
-			out = append(out, Discrepancy{Kind: "repo", Repo: repoKey, Issue: "field_mismatch", Field: field, Cached: cv, GitHub: gv})
-		}
-	}
-	add("default_branch_status", ns(c.DefaultBranchStatus), ns(g.DefaultBranchStatus))
-	add("default_branch", ns(c.DefaultBranch), ns(g.DefaultBranch))
-	add("is_disabled", boolStr(c.IsDisabled), boolStr(g.IsDisabled))
-	add("url", c.Url, g.Url)
-	return out
-}
-
-// prFieldDiffs compares the webhook-fed / refreshed PR fields. created_at and
-// updated_at are intentionally not compared (updated_at churns constantly and is
-// not a correctness signal); mergeable is skipped (see the report notes).
-func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest) []Discrepancy {
-	var out []Discrepancy
-	add := func(field, cv, gv string) {
-		if cv != gv {
-			out = append(out, Discrepancy{Kind: "pr", Repo: repoKey, PR: num, Issue: "field_mismatch", Field: field, Cached: cv, GitHub: gv})
-		}
-	}
-	add("title", c.Title, g.Title)
-	add("is_draft", boolStr(c.IsDraft), boolStr(g.IsDraft))
-	add("last_commit_status", ns(c.LastCommitStatus), ns(g.LastCommitStatus))
-	add("head_ref_oid", ns(c.HeadRefOid), ns(g.HeadRefOid))
-	add("head_ref_name", ns(c.HeadRefName), ns(g.HeadRefName))
-	add("base_ref_name", ns(c.BaseRefName), ns(g.BaseRefName))
-	add("review_request_count", ni(c.ReviewRequestCount), ni(g.ReviewRequestCount))
-	return out
-}
-
-// labelDiffs compares the cached vs fresh label sets for a PR (name -> color).
-func labelDiffs(repoKey string, num int64, cached, fresh map[string]string) []Discrepancy {
-	var out []Discrepancy
-	for name, cColor := range cached {
-		fColor, ok := fresh[name]
-		if !ok {
-			out = append(out, Discrepancy{Kind: "pr", Repo: repoKey, PR: num, Issue: "field_mismatch", Field: "label:" + name, Cached: cColor, GitHub: "(absent)"})
-			continue
-		}
-		if cColor != fColor {
-			out = append(out, Discrepancy{Kind: "pr", Repo: repoKey, PR: num, Issue: "field_mismatch", Field: "label:" + name + " (color)", Cached: cColor, GitHub: fColor})
-		}
-	}
-	for name, fColor := range fresh {
-		if _, ok := cached[name]; !ok {
-			out = append(out, Discrepancy{Kind: "pr", Repo: repoKey, PR: num, Issue: "field_mismatch", Field: "label:" + name, Cached: "(absent)", GitHub: fColor})
-		}
-	}
-	return out
-}
-
-// ---- grouping helpers ----
-
-func groupReposByOwner(repos []dbgen.Repo) map[string]map[string]dbgen.Repo {
-	out := make(map[string]map[string]dbgen.Repo)
-	for _, r := range repos {
-		if out[r.Owner] == nil {
-			out[r.Owner] = make(map[string]dbgen.Repo)
-		}
-		out[r.Owner][r.Name] = r
-	}
-	return out
-}
-
-func groupPRsByOwnerRepo(prs []dbgen.PullRequest) map[string]map[int64]dbgen.PullRequest {
-	out := make(map[string]map[int64]dbgen.PullRequest)
-	for _, pr := range prs {
-		key := pr.Owner + "/" + pr.Repo
-		if out[key] == nil {
-			out[key] = make(map[int64]dbgen.PullRequest)
-		}
-		out[key][pr.Number] = pr
-	}
-	return out
-}
-
-func groupLabelsByRepoPR(labels []dbgen.PrLabel) map[string]map[int64]map[string]string {
-	out := make(map[string]map[int64]map[string]string)
-	for _, l := range labels {
-		key := l.Owner + "/" + l.Repo
-		if out[key] == nil {
-			out[key] = make(map[int64]map[string]string)
-		}
-		if out[key][l.PrNumber] == nil {
-			out[key][l.PrNumber] = make(map[string]string)
-		}
-		out[key][l.PrNumber][l.Name] = l.Color
-	}
-	return out
-}
-
-func freshLabelSet(labels []dbgen.PrLabel) map[string]string {
-	out := make(map[string]string, len(labels))
-	for _, l := range labels {
-		out[l.Name] = l.Color
-	}
-	return out
-}
-
-func sortedOwners(byOwner map[string]map[string]dbgen.Repo) []string {
-	out := make([]string, 0, len(byOwner))
-	for o := range byOwner {
-		out = append(out, o)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// ---- value rendering helpers ----
-
-func ns(v sql.NullString) string {
-	if !v.Valid {
-		return ""
-	}
-	return v.String
-}
-
-func ni(v sql.NullInt64) string {
-	if !v.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%d", v.Int64)
-}
-
-func boolStr(v int64) string {
-	if v != 0 {
-		return "true"
-	}
-	return "false"
 }
