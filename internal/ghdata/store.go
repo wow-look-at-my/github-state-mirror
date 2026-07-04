@@ -3,6 +3,8 @@ package ghdata
 import (
 	"context"
 	"database/sql"
+	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -16,6 +18,9 @@ import (
 type Store struct {
 	db *sql.DB
 	q  *dbgen.Queries
+	// lastPrune throttles the opportunistic access-control prune (Unix
+	// seconds of the last run; see maybePruneAccessControl).
+	lastPrune atomic.Int64
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -244,7 +249,11 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.maybePruneAccessControl(ctx, now)
+	return nil
 }
 
 // OrgSyncData is one org-repos fetch's snapshot, ready to merge into truth.
@@ -468,7 +477,11 @@ func (s *Store) RecordGrant(ctx context.Context, principal, owner, repo, source 
 	}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.maybePruneAccessControl(ctx, now)
+	return nil
 }
 
 // HasGrant reports whether the principal holds an unexpired grant for the repo.
@@ -530,12 +543,34 @@ func (s *Store) GetDenyVerdict(ctx context.Context, principal, kind, key string,
 }
 
 // PruneAccessControl deletes expired grants and deny verdicts. Called
-// opportunistically from write paths; cheap either way.
+// opportunistically from the write paths (SyncOrgTruth, RecordGrant) via
+// maybePruneAccessControl; cheap either way.
 func (s *Store) PruneAccessControl(ctx context.Context, now time.Time) error {
 	if err := s.q.DeleteExpiredGrants(ctx, rfc3339(now)); err != nil {
 		return err
 	}
 	return s.q.DeleteExpiredDenials(ctx, rfc3339(now))
+}
+
+// pruneInterval throttles the opportunistic prune: the grant-writing paths
+// run on every sync/probe, and sweeping expired rows more than every few
+// minutes buys nothing (reads filter on expiry anyway).
+const pruneInterval = 10 * time.Minute
+
+// maybePruneAccessControl runs PruneAccessControl at most once per
+// pruneInterval, best-effort: a failure is logged and never propagated (the
+// write that triggered it has already succeeded).
+func (s *Store) maybePruneAccessControl(ctx context.Context, now time.Time) {
+	last := s.lastPrune.Load()
+	if now.Unix()-last < int64(pruneInterval/time.Second) {
+		return
+	}
+	if !s.lastPrune.CompareAndSwap(last, now.Unix()) {
+		return // another writer just claimed this run
+	}
+	if err := s.PruneAccessControl(ctx, now); err != nil {
+		slog.Warn("prune access control failed", "error", err)
+	}
 }
 
 // ---- shared helpers ----

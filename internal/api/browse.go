@@ -121,7 +121,7 @@ func (d *dashboard) handleCacheData(w http.ResponseWriter, r *http.Request) {
 // serveGrants dumps one principal's grants (the reveal layer's answer to "what
 // can this principal see?").
 func (d *dashboard) serveGrants(w http.ResponseWriter, r *http.Request, principal string) {
-	rows, err := d.store.GrantsByPrincipal(r.Context(), principal)
+	rows, err := d.store.GrantsByPrincipal(r.Context(), principal, time.Now())
 	if err != nil {
 		slog.Warn("browse grants failed", "principal", shortFingerprint(principal), "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
