@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
@@ -125,6 +126,125 @@ func TestCacheCheck_NonAdminForbidden(t *testing.T) {
 	router, _, _ := newTestStack(t, svc)
 	req := httptest.NewRequest("GET", "/api/cache/check", nil)
 	req.AddCookie(mintSession(t, svc, "octocat"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// TestRateLimit_NoAppStillServesObserved: without a GitHub App the endpoint no
+// longer 503s — it answers 200 with an empty live half, an explanatory note,
+// and whatever the passive meter observed (nothing yet, here).
+func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc) // test stack wires a checker with a nil app
+
+	req := httptest.NewRequest("GET", "/api/ratelimit", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body rateLimitResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Empty(t, body.Live)
+	assert.NotNil(t, body.Observed)
+	assert.Empty(t, body.Observed)
+	assert.Contains(t, body.Note, "no GitHub App configured")
+}
+
+// TestRateLimit_ObservesPassthroughHeaders drives a passthrough request whose
+// upstream response carries X-RateLimit-* headers and asserts the reading
+// surfaces on /api/ratelimit — the end-to-end passive-observation path.
+func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
+	svc := configuredAuth(t)
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "4321")
+		w.Header().Set("X-RateLimit-Used", "679")
+		w.Header().Set("X-RateLimit-Reset", "1767225600")
+		w.Header().Set("X-RateLimit-Resource", "core")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
+
+	// An unknown route falls through to the passthrough proxy (no requireAuth,
+	// so the identity is the token-fingerprint label).
+	req := httptest.NewRequest("GET", "/meta", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest("GET", "/api/ratelimit", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body rateLimitResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Observed, 1)
+	o := body.Observed[0]
+	assert.Equal(t, "token:"+ghclient.Fingerprint(testToken)[:12], o.Identity)
+	assert.Equal(t, "core", o.Resource)
+	assert.Equal(t, 5000, o.Limit)
+	assert.Equal(t, 4321, o.Remaining)
+	assert.Equal(t, 679, o.Used)
+	assert.Equal(t, int64(1767225600), o.Reset)
+	assert.NotEmpty(t, o.ObservedAt)
+	_, err := time.Parse(time.RFC3339, o.ObservedAt)
+	assert.NoError(t, err, "observed_at must be RFC3339")
+}
+
+// TestRateLimit_ObservedGroupsByPrincipal: a cached-route miss fetch runs
+// inside requireAuth, so its observation is recorded under the resolved
+// principal (user:<id>) rather than a token fingerprint.
+func TestRateLimit_ObservedGroupsByPrincipal(t *testing.T) {
+	svc := configuredAuth(t)
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+			return
+		}
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "4000")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
+
+	// A cached route: the reveal probe + miss fetch both hit the fake GitHub
+	// with the requireAuth principal in context.
+	req := httptest.NewRequest("GET", "/repos/org1/repo1/contents/README.md", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	req = httptest.NewRequest("GET", "/api/ratelimit", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body rateLimitResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.NotEmpty(t, body.Observed)
+	assert.Equal(t, testUserActor, body.Observed[0].Identity)
+}
+
+func TestRateLimit_Unauthenticated(t *testing.T) {
+	router, _, _ := newTestStack(t, configuredAuth(t))
+	req := httptest.NewRequest("GET", "/api/ratelimit", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestRateLimit_NonAdminForbidden(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+	req := httptest.NewRequest("GET", "/api/ratelimit", nil)
+	req.AddCookie(mintSession(t, svc, "octocat")) // not in AdminLogins
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)

@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -89,10 +90,15 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
+	// Passive rate-limit meter, wired like cmd/server: the ghclient hook plus
+	// the router's proxy/fetch/probe paths all feed it.
+	meter := ratemeter.New()
+	gh.SetRateObserver(meter.Observe)
+
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter)
 	return router, store, db, ghSrv.URL
 }
 

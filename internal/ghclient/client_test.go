@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
 
 func TestWithToken_RoundTrip(t *testing.T) {
@@ -195,4 +196,78 @@ func TestVerifyAppIdentity_RejectsInvalid(t *testing.T) {
 	_, err := c.VerifyAppIdentity(context.Background(), "forged")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
+}
+
+// rateHeaders makes the test server attach X-RateLimit-* headers.
+func rateHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-RateLimit-Limit", "5000")
+	w.Header().Set("X-RateLimit-Remaining", "4999")
+}
+
+// observed installs a recording rate observer on c and returns the slice of
+// identities it was called with.
+func observed(c *Client) *[]string {
+	var ids []string
+	c.SetRateObserver(func(identity string, resp *http.Response) {
+		ids = append(ids, identity)
+	})
+	return &ids
+}
+
+// TestRateObserver_DoJSONIdentity: doJSON reports every response to the
+// observer — labeled by the ctx principal when set, else by the credential's
+// shape (JWT -> "app-jwt", other tokens -> a short fingerprint, no token ->
+// "anonymous"). The raw token value never reaches the observer.
+func TestRateObserver_DoJSONIdentity(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		rateHeaders(w)
+		w.Write([]byte("{}"))
+	})
+	ids := observed(c)
+
+	// ctx principal wins.
+	ctx := actor.WithActor(WithToken(context.Background(), "some-token"), "user:42")
+	require.NoError(t, c.doJSON(ctx, "GET", "/test", nil, nil))
+
+	// No principal: a raw token becomes a fingerprint label.
+	require.NoError(t, c.doJSON(WithToken(context.Background(), "some-token"), "GET", "/test", nil, nil))
+
+	// No principal: a JWT-shaped credential is the app's own.
+	require.NoError(t, c.doJSON(WithToken(context.Background(), "eyJx.eyJy.sig"), "GET", "/test", nil, nil))
+
+	// No credential at all.
+	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
+
+	fp := "token:" + Fingerprint("some-token")[:12]
+	assert.Equal(t, []string{"user:42", fp, "app-jwt", "anonymous"}, *ids)
+	for _, id := range *ids {
+		assert.NotContains(t, id, "some-token", "the raw token must never be passed on")
+	}
+}
+
+// TestRateObserver_ResolveAndVerifyReport: ResolveTokenIdentity and
+// VerifyAppIdentity report their responses too (their upstream calls consume
+// rate limit like any other).
+func TestRateObserver_ResolveAndVerifyReport(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		rateHeaders(w)
+		json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "id": 42, "slug": "app-slug"})
+	})
+	ids := observed(c)
+
+	_, err := c.ResolveTokenIdentity(WithToken(context.Background(), "user-token"))
+	require.NoError(t, err)
+	_, err = c.VerifyAppIdentity(context.Background(), "h.c.s")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"token:" + Fingerprint("user-token")[:12], "app-jwt"}, *ids)
+}
+
+// TestRateObserver_Unset: a client without an observer must not panic.
+func TestRateObserver_Unset(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		rateHeaders(w)
+		w.Write([]byte("{}"))
+	})
+	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
 }

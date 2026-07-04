@@ -16,6 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
@@ -37,6 +38,14 @@ func main() {
 	mgr := freshness.NewManager(fStore)
 	store := ghdata.NewStore(db)
 	gh := ghclient.New()
+
+	// Passive rate-limit observation: every upstream GitHub response's
+	// X-RateLimit-* headers land in this in-memory meter (the dashboard's
+	// admin "Rate limit" tab). In-memory like the request log — a live view,
+	// not an audit log; it resets on restart. The ghclient hook covers the
+	// client's own calls; the api layer feeds the proxy/fetch/probe paths.
+	meter := ratemeter.New()
+	gh.SetRateObserver(meter.Observe)
 
 	// Register all fetchers.
 	syncpkg.RegisterAll(mgr, gh, store)
@@ -77,7 +86,7 @@ func main() {
 	}
 
 	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
