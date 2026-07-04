@@ -78,6 +78,18 @@ function fmtTime(s?: string): string {
     const d = new Date(s);
     if (isNaN(d.getTime())) return s;
     const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < -5) {
+        // A FUTURE timestamp (e.g. a grant's Expires column) renders as
+        // "in Nm/Nh/Nd" with the same buckets as the past branch. Without
+        // this, every future time fell into `diff < 60` and read "just now".
+        // Tiny negative skew (within 5s) still reads "just now" below.
+        const ahead = -diff;
+        if (ahead < 60) return "in " + Math.floor(ahead) + "s";
+        if (ahead < 3600) return "in " + Math.floor(ahead / 60) + "m";
+        if (ahead < 86400) return "in " + Math.floor(ahead / 3600) + "h";
+        if (ahead < 86400 * 30) return "in " + Math.floor(ahead / 86400) + "d";
+        return d.toISOString().slice(0, 10);
+    }
     if (diff < 60) return "just now";
     if (diff < 3600) return Math.floor(diff / 60) + "m ago";
     if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
