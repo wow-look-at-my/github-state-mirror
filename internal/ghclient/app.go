@@ -50,18 +50,29 @@ func NewAppAuthenticator(appID string, privateKeyPEM []byte, client *Client) (*A
 	return &AppAuthenticator{appID: appID, key: key, client: client}, nil
 }
 
-// Installations lists every installation of the app.
+// installationsPerPage is GitHub's maximum page size for GET /app/installations.
+const installationsPerPage = 100
+
+// Installations lists every installation of the app, paging until a short page
+// (a single 100-cap page silently truncated fleets past 100 installations).
 func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
 		return nil, err
 	}
 	ctx = WithToken(ctx, jwt)
-	var out []Installation
-	if err := a.client.doJSON(ctx, "GET", "/app/installations?per_page=100", nil, &out); err != nil {
-		return nil, err
+	var all []Installation
+	for page := 1; ; page++ {
+		var out []Installation
+		path := fmt.Sprintf("/app/installations?per_page=%d&page=%d", installationsPerPage, page)
+		if err := a.client.doJSON(ctx, "GET", path, nil, &out); err != nil {
+			return nil, err
+		}
+		all = append(all, out...)
+		if len(out) < installationsPerPage {
+			return all, nil
+		}
 	}
-	return out, nil
 }
 
 // InstallationToken mints a short-lived (~1h) access token for one installation.
