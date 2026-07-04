@@ -54,12 +54,19 @@ func TestAppSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sessions, 1)
 
+	// The session names the installation account -- the owner the periodic
+	// refresher will fetch -- instead of discarding it.
+	assert.Equal(t, "acme", sessions[0].Owner)
+	assert.Equal(t, "Organization", sessions[0].AccountType)
+	assert.Equal(t, int64(123), sessions[0].InstallationID)
+
 	// The session is partitioned under the stable installation actor.
-	assert.Equal(t, "app-installation:123", actor.FromContext(sessions[0]))
+	assert.Equal(t, "app-installation:123", actor.FromContext(sessions[0].Ctx))
+	assert.True(t, IsAppInstallationActor(actor.FromContext(sessions[0].Ctx)))
 
 	// ...and carries the minted installation token, so API calls made with the
 	// session context authenticate as that installation.
-	ident, err := gh.ResolveTokenIdentity(sessions[0])
+	ident, err := gh.ResolveTokenIdentity(sessions[0].Ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", ident.Login)
 	assert.Equal(t, "Bearer ghs_inst123", userAuth)
