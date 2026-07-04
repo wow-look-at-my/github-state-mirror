@@ -107,8 +107,28 @@ export interface InstallationRateLimit {
     error?: string;
 }
 
+// One passively observed X-RateLimit-* reading: the latest headers seen on an
+// upstream response for one (identity, resource) pair. In-memory server-side;
+// resets on restart.
+export interface ObservedRateLimit {
+    identity: string;
+    resource: string;
+    limit: number;
+    remaining: number;
+    used: number;
+    reset: number; // Unix epoch seconds
+    observed_at: string; // RFC3339
+}
+
 export interface RateLimitResponse {
-    installations: InstallationRateLimit[] | null;
+    // live: the GitHub App's per-installation GET /rate_limit poll. Empty when
+    // no App is configured or the poll failed (see note).
+    live: InstallationRateLimit[] | null;
+    // observed: passively recorded X-RateLimit-* readings, sorted by identity
+    // then resource.
+    observed: ObservedRateLimit[] | null;
+    // note explains an empty/failed live poll.
+    note?: string;
 }
 
 // ---- admin cache browse (global truth rows) ----

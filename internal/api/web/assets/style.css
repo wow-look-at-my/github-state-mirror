@@ -230,6 +230,15 @@ table.kinds tr.kind-error-row td.kind-error {
     gap: 14px;
 }
 
+/* Observed-rate tiles: a <rate-meter> plus its "observed ..." caption. The
+   wrapper is the grid item, so the meter stretches to keep bars row-aligned. */
+.rate-observed { display: flex; flex-direction: column; gap: 4px; }
+.rate-observed rate-meter { flex: 1; }
+.rate-observed-at {
+    font-size: 11px; color: var(--fg-muted); text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
 /* ---- Upstream status badge (Requests view) ---- */
 .status-code {
     display: inline-block; font-size: 11px; font-weight: 600;

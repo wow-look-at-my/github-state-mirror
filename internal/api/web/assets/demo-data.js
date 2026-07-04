@@ -107,10 +107,11 @@ const demoRequests = {
         { actor: "app:3433933", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
     ],
 };
-// --- GitHub App rate limit (admin "Rate limit" tab) ---
+// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
+// --- passively observed X-RateLimit-* readings per (identity, resource) ---
 const resetIn = (secs) => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit = {
-    installations: [
+    live: [
         {
             // A realistic full bucket set — GitHub's /rate_limit returns ~15
             // resources for an App — including the long names that used to
@@ -142,6 +143,15 @@ const demoRateLimit = {
                 graphql: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3300) },
             },
         },
+    ],
+    observed: [
+        // Sorted by identity then resource, matching the backend's snapshot.
+        { identity: "app-installation:481", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
+        { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
+        { identity: "app:3433933", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
+        { identity: "app:3433933", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
+        { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
+        { identity: "user:583231", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
     ],
 };
 const allPrincipals = [prMinderPrincipal, octocatPrincipal, pazerPrincipal, refresherPrincipal, unknownPrincipal].map((s) => ({ ...s, is_self: s.login === "PazerOP" }));

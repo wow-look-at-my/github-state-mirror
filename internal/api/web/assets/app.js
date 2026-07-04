@@ -510,7 +510,10 @@ function statusBadge(status) {
     const cls = status >= 500 ? "err" : status >= 400 ? "warn" : status >= 300 ? "redir" : "ok";
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
-// ---- GitHub App rate limit (admin only) ----
+// ---- GitHub rate limit (admin only) ----
+// Two halves: "live" — the mirror's own GitHub App polled per installation —
+// and "observed" — X-RateLimit-* headers passively recorded off every
+// upstream response, covering the callers' credentials too, at zero API cost.
 const RATE_RESOURCES = ["core", "graphql", "search"];
 async function loadRateLimits(silent = false) {
     const body = byId("scope-body");
@@ -527,25 +530,50 @@ async function loadRateLimits(silent = false) {
         if (silent)
             return;
         body.innerHTML = "";
-        const msg = e.message;
-        const hint = e.status === 503
-            ? "No GitHub App is configured on this server, so there is no App credential to report a rate limit for."
-            : msg;
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + hint }));
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + e.message }));
         return;
     }
     if (currentView !== "ratelimit")
         return;
     body.innerHTML = "";
-    const installs = data.installations ?? [];
-    sub.textContent = "GitHub App rate limit — the credential the background fetches and the consistency check use" +
-        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "");
-    if (installs.length === 0) {
-        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No GitHub App installations found." }), el("p", { class: "sub", text: "If the App is configured, it has no installations; otherwise set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY." })));
-        return;
+    const installs = data.live ?? [];
+    const observed = data.observed ?? [];
+    sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
+        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
+        ", plus readings observed passively from response headers";
+    // A missing App / failed poll arrives as a note, not an error: the
+    // observed half below still renders.
+    if (data.note) {
+        body.appendChild(el("div", { class: "notes" }, el("div", { class: "note-line", text: data.note })));
     }
-    for (const inst of installs)
-        body.appendChild(rateLimitCard(inst));
+    if (installs.length) {
+        body.appendChild(el("div", { class: "section-label", text: "Live — GitHub App installations (polled)" }));
+        for (const inst of installs)
+            body.appendChild(rateLimitCard(inst));
+    }
+    else if (!data.note) {
+        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No GitHub App installations found." }), el("p", { class: "sub", text: "The App is configured but has no installations." })));
+    }
+    body.appendChild(el("div", { class: "section-label", text: "Observed from response headers" }));
+    if (observed.length) {
+        body.appendChild(observedRateGrid(observed));
+    }
+    else {
+        body.appendChild(el("div", { class: "empty" }, el("p", { text: "No rate-limit headers observed yet." }), el("p", { class: "sub", text: "Every upstream GitHub response's X-RateLimit-* headers are recorded here per identity as the mirror serves traffic. In-memory; resets on restart." })));
+    }
+}
+// observedRateGrid renders one tile per (identity, resource). The backend
+// sorts by identity then resource, so one identity's buckets sit together;
+// each tile is a <rate-meter> plus an "observed …" caption.
+function observedRateGrid(observed) {
+    const grid = el("div", { class: "rate-grid" });
+    for (const o of observed) {
+        grid.appendChild(el("div", { class: "rate-observed" }, el("rate-meter", {
+            name: o.identity + " — " + o.resource,
+            limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
+        }), el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
+    }
+    return grid;
 }
 function rateLimitCard(inst) {
     const head = el("div", { class: "scope-head" }, el("div", { class: "scope-id" }, el("img", { class: "avatar", src: avatarFor(inst.installation), alt: "" }), el("span", { class: "login", text: inst.installation }), inst.account_type ? el("span", { class: "badge", text: inst.account_type }) : null));
