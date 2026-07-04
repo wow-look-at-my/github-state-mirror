@@ -256,8 +256,12 @@ DELETE FROM access_grants WHERE principal = ? AND owner = ? AND source = 'list_s
 -- name: DeleteGrantsByRepo :exec
 DELETE FROM access_grants WHERE owner = ? AND repo = ?;
 
+-- ListGrantsByPrincipal returns only unexpired grants (the caller passes now):
+-- the grants views report LIVE access, matching CountGrantsByPrincipal and
+-- ListGrantPrincipals. Expired rows awaiting the opportunistic prune are not
+-- someone's access.
 -- name: ListGrantsByPrincipal :many
-SELECT * FROM access_grants WHERE principal = ? ORDER BY owner, repo;
+SELECT * FROM access_grants WHERE principal = ? AND expires_at > ? ORDER BY owner, repo;
 
 -- name: CountGrantsByPrincipal :one
 SELECT COUNT(*) FROM access_grants WHERE principal = ? AND expires_at > ?;

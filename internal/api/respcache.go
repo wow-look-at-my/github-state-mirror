@@ -653,6 +653,9 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	if err != nil {
 		return nil, nil, false, err
 	}
+	// Passively record the X-RateLimit-* headers on every cached-route miss
+	// fetch, labeled with the same identity the request log records.
+	h.meter.Observe(callerLabel(r), resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
 		resp.Body.Close()

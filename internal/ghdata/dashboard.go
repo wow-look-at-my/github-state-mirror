@@ -74,9 +74,13 @@ func (s *Store) GlobalDataCounts(ctx context.Context) (DataCounts, error) {
 	return c, nil
 }
 
-// GrantsByPrincipal returns every grant one principal holds.
-func (s *Store) GrantsByPrincipal(ctx context.Context, principal string) ([]dbgen.AccessGrant, error) {
-	return s.q.ListGrantsByPrincipal(ctx, principal)
+// GrantsByPrincipal returns every UNEXPIRED grant one principal holds —
+// live access only, matching CountLiveGrants (an expired row awaiting the
+// opportunistic prune is not access).
+func (s *Store) GrantsByPrincipal(ctx context.Context, principal string, now time.Time) ([]dbgen.AccessGrant, error) {
+	return s.q.ListGrantsByPrincipal(ctx, dbgen.ListGrantsByPrincipalParams{
+		Principal: principal, ExpiresAt: rfc3339(now),
+	})
 }
 
 // CountLiveGrants returns how many unexpired grants a principal holds.

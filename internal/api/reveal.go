@@ -127,6 +127,8 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		return revealError, ghdata.DenyVerdict{}, false
 	}
 	defer resp.Body.Close()
+	// Passively record the X-RateLimit-* headers the probe response carries.
+	h.meter.Observe(callerLabel(r), resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes))
 	if err != nil {
 		return revealError, ghdata.DenyVerdict{}, false

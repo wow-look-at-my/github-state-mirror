@@ -19,6 +19,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
@@ -55,9 +56,12 @@ type dashboard struct {
 	assets  []contentAsset
 	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
+	// meter is the passively observed rate-limit store (X-RateLimit-* headers
+	// recorded off upstream responses) surfaced on the "Rate limit" tab.
+	meter *ratemeter.Store
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -90,6 +94,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		},
 		reqlog:  reqlog,
 		checker: checker,
+		meter:   meter,
 	}
 }
 

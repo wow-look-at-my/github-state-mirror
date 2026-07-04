@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -120,7 +121,7 @@ func (d *dashboard) handleCacheData(w http.ResponseWriter, r *http.Request) {
 // serveGrants dumps one principal's grants (the reveal layer's answer to "what
 // can this principal see?").
 func (d *dashboard) serveGrants(w http.ResponseWriter, r *http.Request, principal string) {
-	rows, err := d.store.GrantsByPrincipal(r.Context(), principal)
+	rows, err := d.store.GrantsByPrincipal(r.Context(), principal, time.Now())
 	if err != nil {
 		slog.Warn("browse grants failed", "principal", shortFingerprint(principal), "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -218,31 +219,67 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, report)
 }
 
-type rateLimitResponse struct {
-	Installations []syncpkg.InstallationRateLimit `json:"installations"`
+// observedRateLimit is one passively observed X-RateLimit-* reading (the
+// ratemeter store), flattened for JSON.
+type observedRateLimit struct {
+	Identity   string `json:"identity"`
+	Resource   string `json:"resource"`
+	Limit      int    `json:"limit"`
+	Remaining  int    `json:"remaining"`
+	Used       int    `json:"used"`
+	Reset      int64  `json:"reset"` // Unix epoch seconds
+	ObservedAt string `json:"observed_at"`
 }
 
-// handleRateLimit reports the GitHub App's rate-limit status per installation
-// (admin only). The App is the credential the background fetches and the
-// consistency check use, so this is what to watch when fetches start failing.
+type rateLimitResponse struct {
+	// Live is the actively polled per-installation status of the mirror's own
+	// GitHub App (GET /rate_limit per installation). Empty when no App is
+	// configured or the poll failed — see Note.
+	Live []syncpkg.InstallationRateLimit `json:"live"`
+	// Observed is the latest X-RateLimit-* reading passively recorded off
+	// upstream responses, per (identity, resource). In-memory; resets on
+	// restart.
+	Observed []observedRateLimit `json:"observed"`
+	// Note explains an empty/failed live poll; observed data is returned
+	// regardless.
+	Note string `json:"note,omitempty"`
+}
+
+// handleRateLimit reports GitHub rate-limit standing (admin only), two ways:
+// a live GET /rate_limit poll per App installation (the credential the
+// background fetches and the consistency check use), and the passively
+// observed X-RateLimit-* headers recorded off every upstream response (which
+// cover the callers' own credentials too). Without a GitHub App the live half
+// is empty with an explanatory note — no longer a bare 503 — so the observed
+// half still renders.
 func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
+	resp := rateLimitResponse{
+		Live:     []syncpkg.InstallationRateLimit{},
+		Observed: []observedRateLimit{},
+	}
+	for _, o := range d.meter.Snapshot() {
+		resp.Observed = append(resp.Observed, observedRateLimit{
+			Identity:   o.Identity,
+			Resource:   o.Resource,
+			Limit:      o.Limit,
+			Remaining:  o.Remaining,
+			Used:       o.Used,
+			Reset:      o.Reset,
+			ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339),
+		})
+	}
 	if d.checker == nil || !d.checker.Available() {
-		http.Error(w, "rate limit unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
-		return
-	}
-	limits, err := d.checker.RateLimits(r.Context())
-	if err != nil {
+		resp.Note = "no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY): live per-installation polling is unavailable; showing passively observed rate limits only"
+	} else if limits, err := d.checker.RateLimits(r.Context()); err != nil {
 		slog.Warn("rate limit fetch failed", "error", err)
-		http.Error(w, "rate limit fetch failed: "+err.Error(), http.StatusBadGateway)
-		return
+		resp.Note = "live rate-limit poll failed: " + err.Error()
+	} else if limits != nil {
+		resp.Live = limits
 	}
-	if limits == nil {
-		limits = []syncpkg.InstallationRateLimit{}
-	}
-	writeJSON(w, rateLimitResponse{Installations: limits})
+	writeJSON(w, resp)
 }
 
 // requireAdmin enforces a signed-in admin session. It writes the appropriate

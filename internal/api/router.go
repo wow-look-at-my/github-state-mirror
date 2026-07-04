@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -157,6 +158,7 @@ func NewRouter(
 	authSvc *auth.Service,
 	baseURL string,
 	checker *syncpkg.ConsistencyChecker,
+	meter *ratemeter.Store,
 ) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -174,13 +176,13 @@ func NewRouter(
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
 	// proxied request is recorded as a passthrough.
-	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL()), reqlog)
+	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
-	newDashboard(authSvc, store, baseURL, reqlog, checker).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group.

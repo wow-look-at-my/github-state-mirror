@@ -8,6 +8,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 )
 
 type handlers struct {
@@ -28,6 +29,10 @@ type handlers struct {
 	// from the passthrough proxy: a cached route must buffer and absorb the
 	// response, not stream it.
 	upstream *http.Client
+	// meter passively records X-RateLimit-* headers off every upstream response
+	// (miss fetches, reveal probes) for the dashboard's "Rate limit" tab.
+	// Nil-safe: a nil meter records nothing.
+	meter *ratemeter.Store
 }
 
 // NOTE: the mirror once served /user, /user/orgs, /compare, and /pulls/{n}/files

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
@@ -68,7 +69,12 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 			out = append(out, entry)
 			continue
 		}
-		rl, err := c.gh.GetRateLimit(ghclient.WithToken(ctx, token))
+		// Label the poll with the installation's stable principal (the same
+		// key the background refresher runs under), so the passive rate meter
+		// records it there instead of under an hourly-rotating token
+		// fingerprint.
+		tctx := actor.WithActor(ghclient.WithToken(ctx, token), AppInstallationActor(inst.ID))
+		rl, err := c.gh.GetRateLimit(tctx)
 		if err != nil {
 			entry.Error = "fetch /rate_limit failed: " + err.Error()
 			out = append(out, entry)

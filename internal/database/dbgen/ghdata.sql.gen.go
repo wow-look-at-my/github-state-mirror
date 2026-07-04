@@ -544,11 +544,20 @@ func (q *Queries) ListGrantPrincipals(ctx context.Context, expiresAt string) ([]
 }
 
 const listGrantsByPrincipal = `-- name: ListGrantsByPrincipal :many
-SELECT principal, owner, repo, granted_at, expires_at, source FROM access_grants WHERE principal = ? ORDER BY owner, repo
+SELECT principal, owner, repo, granted_at, expires_at, source FROM access_grants WHERE principal = ? AND expires_at > ? ORDER BY owner, repo
 `
 
-func (q *Queries) ListGrantsByPrincipal(ctx context.Context, principal string) ([]AccessGrant, error) {
-	rows, err := q.db.QueryContext(ctx, listGrantsByPrincipal, principal)
+type ListGrantsByPrincipalParams struct {
+	Principal string
+	ExpiresAt string
+}
+
+// ListGrantsByPrincipal returns only unexpired grants (the caller passes now):
+// the grants views report LIVE access, matching CountGrantsByPrincipal and
+// ListGrantPrincipals. Expired rows awaiting the opportunistic prune are not
+// someone's access.
+func (q *Queries) ListGrantsByPrincipal(ctx context.Context, arg ListGrantsByPrincipalParams) ([]AccessGrant, error) {
+	rows, err := q.db.QueryContext(ctx, listGrantsByPrincipal, arg.Principal, arg.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}

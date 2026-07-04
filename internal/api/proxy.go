@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 )
 
 // newGitHubProxy returns an http.Handler that transparently reverse-proxies a
@@ -22,7 +24,7 @@ import (
 // GitHub's API and so the contract matches the cached data endpoints, which also
 // require a token. This path deliberately never touches the freshness store, so
 // forwarded responses are never cached.
-func newGitHubProxy(baseURL string) http.Handler {
+func newGitHubProxy(baseURL string, meter *ratemeter.Store) http.Handler {
 	target, err := url.Parse(baseURL)
 	if err != nil {
 		// baseURL is operator-controlled configuration, not caller input, so an
@@ -39,7 +41,17 @@ func newGitHubProxy(baseURL string) http.Handler {
 			// not need the client's address and we avoid leaking it.
 			pr.SetURL(target)
 		},
-		ModifyResponse: stripUpstreamCORS,
+		ModifyResponse: func(resp *http.Response) error {
+			// Passively record the X-RateLimit-* headers GitHub attached; the
+			// passthrough proxy is the highest-volume upstream path, so it is
+			// the rate meter's main feed. resp.Request is the outbound clone,
+			// which carries the inbound request's context and headers, so
+			// callerLabel resolves the same identity the request log records.
+			if resp.Request != nil {
+				meter.Observe(callerLabel(resp.Request), resp)
+			}
+			return stripUpstreamCORS(resp)
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Warn("github proxy error", "method", r.Method, "path", r.URL.Path, "error", err)
 			http.Error(w, "bad gateway", http.StatusBadGateway)

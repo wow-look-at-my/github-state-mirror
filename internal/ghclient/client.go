@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
 
 const defaultBaseURL = "https://api.github.com"
@@ -49,6 +52,43 @@ type Client struct {
 	baseURL          string
 	identityCache    sync.Map // token -> TokenIdentity (incl. the definitive not-a-user verdict)
 	appIdentityCache sync.Map // app JWT -> AppIdentity
+	rateObserver     RateObserver
+}
+
+// RateObserver receives every GitHub API response this client sees, so the
+// server can passively record the X-RateLimit-* headers GitHub attaches (see
+// internal/ratemeter). identity is the principal from the request context
+// when one is set, else a label derived from the credential's shape — never
+// the raw token value.
+type RateObserver func(identity string, resp *http.Response)
+
+// SetRateObserver installs the rate observer. Call it once during startup
+// wiring, before the client serves requests: the field is read without
+// synchronization on the hot path.
+func (c *Client) SetRateObserver(obs RateObserver) { c.rateObserver = obs }
+
+// observeRate reports a response to the rate observer (if any). The identity
+// is the principal in ctx when set (requireAuth / the background app
+// sessions); otherwise it is derived from the credential that made the call:
+// a JWT (dot-separated structure — GitHub tokens never contain dots) is the
+// app's own credential ("app-jwt"), anything else becomes a short,
+// non-reversible token fingerprint.
+func (c *Client) observeRate(ctx context.Context, credential string, resp *http.Response) {
+	if c.rateObserver == nil || resp == nil {
+		return
+	}
+	identity := actor.FromContext(ctx)
+	if identity == "" {
+		switch {
+		case credential == "":
+			identity = "anonymous"
+		case strings.Count(credential, ".") == 2:
+			identity = "app-jwt"
+		default:
+			identity = "token:" + Fingerprint(credential)[:12]
+		}
+	}
+	c.rateObserver(identity, resp)
 }
 
 // New creates a Client targeting the public GitHub API. The client carries no
@@ -136,6 +176,7 @@ func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error
 		return TokenIdentity{}, fmt.Errorf("resolve token identity: %w", err)
 	}
 	defer resp.Body.Close()
+	c.observeRate(ctx, token, resp)
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
@@ -225,6 +266,7 @@ func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity
 		return AppIdentity{}, err
 	}
 	defer resp.Body.Close()
+	c.observeRate(ctx, jwt, resp)
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)
 		return AppIdentity{}, fmt.Errorf("verify app identity: %d %s", resp.StatusCode, string(data))
@@ -252,7 +294,8 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 	// Authenticate with the token carried in the context (caller's bearer token
 	// or a GitHub App installation token). Requests without one are sent
 	// unauthenticated and will be rejected by GitHub.
-	if token := tokenFromContext(ctx); token != "" {
+	token := tokenFromContext(ctx)
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {
@@ -264,6 +307,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 		return err
 	}
 	defer resp.Body.Close()
+	c.observeRate(ctx, token, resp)
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)

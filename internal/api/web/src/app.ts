@@ -16,7 +16,7 @@ import type {
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, TruthFreshness, RequestEvent, RequestsResponse,
-    RateLimitResponse, InstallationRateLimit,
+    RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
 } from "./types";
 
@@ -78,6 +78,18 @@ function fmtTime(s?: string): string {
     const d = new Date(s);
     if (isNaN(d.getTime())) return s;
     const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < -5) {
+        // A FUTURE timestamp (e.g. a grant's Expires column) renders as
+        // "in Nm/Nh/Nd" with the same buckets as the past branch. Without
+        // this, every future time fell into `diff < 60` and read "just now".
+        // Tiny negative skew (within 5s) still reads "just now" below.
+        const ahead = -diff;
+        if (ahead < 60) return "in " + Math.floor(ahead) + "s";
+        if (ahead < 3600) return "in " + Math.floor(ahead / 60) + "m";
+        if (ahead < 86400) return "in " + Math.floor(ahead / 3600) + "h";
+        if (ahead < 86400 * 30) return "in " + Math.floor(ahead / 86400) + "d";
+        return d.toISOString().slice(0, 10);
+    }
     if (diff < 60) return "just now";
     if (diff < 3600) return Math.floor(diff / 60) + "m ago";
     if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
@@ -647,7 +659,10 @@ function statusBadge(status?: number): Node {
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
 
-// ---- GitHub App rate limit (admin only) ----
+// ---- GitHub rate limit (admin only) ----
+// Two halves: "live" — the mirror's own GitHub App polled per installation —
+// and "observed" — X-RateLimit-* headers passively recorded off every
+// upstream response, covering the callers' credentials too, at zero API cost.
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
 async function loadRateLimits(silent = false): Promise<void> {
@@ -663,27 +678,59 @@ async function loadRateLimits(silent = false): Promise<void> {
     } catch (e) {
         if (silent) return;
         body.innerHTML = "";
-        const msg = (e as Error).message;
-        const hint = (e as { status?: number }).status === 503
-            ? "No GitHub App is configured on this server, so there is no App credential to report a rate limit for."
-            : msg;
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + hint }));
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + (e as Error).message }));
         return;
     }
     if (currentView !== "ratelimit") return;
     body.innerHTML = "";
-    const installs = data.installations ?? [];
-    sub.textContent = "GitHub App rate limit — the credential the background fetches and the consistency check use" +
-        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "");
+    const installs = data.live ?? [];
+    const observed = data.observed ?? [];
+    sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
+        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
+        ", plus readings observed passively from response headers";
 
-    if (installs.length === 0) {
+    // A missing App / failed poll arrives as a note, not an error: the
+    // observed half below still renders.
+    if (data.note) {
+        body.appendChild(el("div", { class: "notes" }, el("div", { class: "note-line", text: data.note })));
+    }
+
+    if (installs.length) {
+        body.appendChild(el("div", { class: "section-label", text: "Live — GitHub App installations (polled)" }));
+        for (const inst of installs) body.appendChild(rateLimitCard(inst));
+    } else if (!data.note) {
         body.appendChild(el("div", { class: "empty" },
             el("p", { text: "No GitHub App installations found." }),
-            el("p", { class: "sub", text: "If the App is configured, it has no installations; otherwise set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY." }),
+            el("p", { class: "sub", text: "The App is configured but has no installations." }),
         ));
-        return;
     }
-    for (const inst of installs) body.appendChild(rateLimitCard(inst));
+
+    body.appendChild(el("div", { class: "section-label", text: "Observed from response headers" }));
+    if (observed.length) {
+        body.appendChild(observedRateGrid(observed));
+    } else {
+        body.appendChild(el("div", { class: "empty" },
+            el("p", { text: "No rate-limit headers observed yet." }),
+            el("p", { class: "sub", text: "Every upstream GitHub response's X-RateLimit-* headers are recorded here per identity as the mirror serves traffic. In-memory; resets on restart." }),
+        ));
+    }
+}
+
+// observedRateGrid renders one tile per (identity, resource). The backend
+// sorts by identity then resource, so one identity's buckets sit together;
+// each tile is a <rate-meter> plus an "observed …" caption.
+function observedRateGrid(observed: ObservedRateLimit[]): HTMLElement {
+    const grid = el("div", { class: "rate-grid" });
+    for (const o of observed) {
+        grid.appendChild(el("div", { class: "rate-observed" },
+            el("rate-meter", {
+                name: o.identity + " — " + o.resource,
+                limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
+            }),
+            el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) }),
+        ));
+    }
+    return grid;
 }
 
 function rateLimitCard(inst: InstallationRateLimit): HTMLElement {

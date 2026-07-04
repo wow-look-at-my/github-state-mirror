@@ -198,6 +198,110 @@ func TestDenyVerdicts(t *testing.T) {
 	assert.False(t, ok, "a fresh grant supersedes stale denials")
 }
 
+// TestPruneAccessControl: expired grant and deny rows are deleted, live ones
+// survive.
+func TestPruneAccessControl(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedGrant := func(repo string, expires time.Time) {
+		require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+			Principal: "user:1", Owner: "org1", Repo: repo,
+			GrantedAt: rfc3339(now.Add(-48 * time.Hour)), ExpiresAt: rfc3339(expires),
+			Source: GrantSourceProbe,
+		}))
+	}
+	seedGrant("expired", now.Add(-time.Minute))
+	seedGrant("live", now.Add(time.Hour))
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "k-expired", "org1", "r", 404, "nf", now.Add(-DenyTTL-time.Minute)))
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "k-live", "org1", "r", 404, "nf", now))
+
+	require.NoError(t, s.PruneAccessControl(ctx, now))
+
+	counts, err := s.GlobalDataCounts(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), counts.Grants, "the expired grant row is gone")
+	// GetDenyVerdict filters expiry in Go, so read the raw rows to prove the
+	// expired one was actually deleted.
+	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-expired"})
+	assert.Equal(t, sql.ErrNoRows, err, "the expired deny row is gone")
+	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-live"})
+	assert.NoError(t, err, "the live deny row survives")
+}
+
+// TestWritePathsPruneOpportunistically: RecordGrant and SyncOrgTruth sweep
+// expired access-control rows as a best-effort side effect, throttled to at
+// most once per pruneInterval — so expired rows never accumulate unboundedly
+// yet the hot write path doesn't sweep on every call.
+func TestWritePathsPruneOpportunistically(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedExpired := func(principal, repo string) {
+		require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+			Principal: principal, Owner: "org1", Repo: repo,
+			GrantedAt: rfc3339(now.Add(-2 * GrantTTL)), ExpiresAt: rfc3339(now.Add(-GrantTTL)),
+			Source: GrantSourceProbe,
+		}))
+	}
+	rowExists := func(principal, repo string) bool {
+		_, err := s.q.GetAccessGrant(ctx, dbgen.GetAccessGrantParams{Principal: principal, Owner: "org1", Repo: repo})
+		if err == sql.ErrNoRows {
+			return false
+		}
+		require.NoError(t, err)
+		return true
+	}
+
+	// The first write-path call prunes (nothing has throttled yet).
+	seedExpired("user:2", "stale1")
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "fresh1", GrantSourceProbe, now))
+	assert.False(t, rowExists("user:2", "stale1"), "RecordGrant sweeps the expired row")
+	assert.True(t, rowExists("user:1", "fresh1"))
+
+	// Inside the throttle window a later write does NOT sweep again.
+	seedExpired("user:2", "stale2")
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "fresh2", GrantSourceProbe, now.Add(time.Minute)))
+	assert.True(t, rowExists("user:2", "stale2"), "inside the throttle window the expired row stays")
+
+	// Past the throttle window, SyncOrgTruth's write path sweeps it.
+	later := now.Add(pruneInterval + time.Minute)
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1",
+		orgData([]dbgen.Repo{{Owner: "org1", Name: "r1", NameWithOwner: "org1/r1", Url: "u"}}, nil),
+		"user:1", later, later))
+	assert.False(t, rowExists("user:2", "stale2"), "past the throttle window SyncOrgTruth sweeps the expired row")
+	assert.True(t, rowExists("user:1", "fresh1"), "live rows survive the sweep")
+}
+
+// TestGrantsByPrincipal_OnlyUnexpired: the grants view lists LIVE access only,
+// agreeing with CountLiveGrants (an expired row awaiting the opportunistic
+// prune is not access).
+func TestGrantsByPrincipal_OnlyUnexpired(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "live", GrantSourceProbe, now))
+	// Seeded raw (not via RecordGrant) so the write-path prune can't race the
+	// expired row out before the assertion.
+	require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+		Principal: "user:1", Owner: "org1", Repo: "expired",
+		GrantedAt: rfc3339(now.Add(-2 * GrantTTL)), ExpiresAt: rfc3339(now.Add(-time.Minute)),
+		Source: GrantSourceProbe,
+	}))
+
+	rows, err := s.GrantsByPrincipal(ctx, "user:1", now)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "live", rows[0].Repo)
+
+	n, err := s.CountLiveGrants(ctx, "user:1", now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "list and count agree on live grants")
+}
+
 // TestDeleteRepoCascade removes the repo and everything hanging off it.
 func TestDeleteRepoCascade(t *testing.T) {
 	s := testStore(t)
