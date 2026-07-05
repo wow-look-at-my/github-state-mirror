@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Seven REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Eight REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -92,6 +92,23 @@ pass through verbatim, uncached.
   `repository` webhooks (a push moves every ref-relative listing; the
   absorbed commit rows stay) with a 24 h TTL backstop. The single-commit
   sub-path `/commits/{sha}` is a different shape and stays passthrough.
+- `GET /repos/{owner}/{repo}/compare/{basehead}` — the three-dot
+  `base...head` comparison (pr-minder's empty-PR / open-PR gates run one per
+  branch, every fleet sweep). Rebuilt as `{status, ahead_by, behind_by,
+  total_commits, merge_base_commit: {sha}, commits: [<the commits-list item
+  shape>], files: [{filename, status, additions, deletions, changes,
+  previous_filename?}]}` — the **files array's presence and length are
+  preserved exactly** (consumers read `changed_files = files.length`; an
+  absent array means "unknown, fail open", an empty one means a 0-diff
+  branch), while URL fields and the unread per-file `patch` are dropped. The
+  whole trimmed document is cached per exact basehead (branch names keep
+  their slashes); the compare's commits are also absorbed into
+  `git_commits_cache`. Only the bare query shape with the default JSON
+  `Accept` is modeled — any query param, the `.diff`/`.patch` media types, a
+  cross-fork `owner:branch` basehead, or a basehead without `...` passes
+  through — and only a `200` is absorbed (404/5xx relay unstored). Flushed by
+  `push` and `repository` webhooks (either side of any comparison may have
+  moved) with a 24 h TTL backstop.
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving

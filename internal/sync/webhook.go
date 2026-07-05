@@ -283,14 +283,16 @@ func fullHexSHA(s string) bool {
 // stale. push/repository events flush the repo's contents rows -- the
 // conservative whole-repo flush; the payload's modified-paths refinement can
 // come later -- AND its commits-list snapshots (a push moves every
-// ref-relative listing; the absorbed git-commit rows are immutable and stay).
-// repository events (rename/delete/visibility) additionally flush the repo's
-// "open-PR list complete" marker; pull_request events deliberately do NOT --
-// they maintain the PR rows, which is what the marker asserts. installation
-// events flush the installation's cached token mints AND cached
-// repo-installation answers (a suspended/deleted/re-scoped installation must
-// not keep serving either). Git-commit rows are immutable and are deliberately
-// never invalidated.
+// ref-relative listing; the absorbed git-commit rows are immutable and stay)
+// AND its compare docs (a push to either side of any basehead changes the
+// comparison; whole-repo is the correct coarse grain since a payload can't
+// resolve which baseheads a moved ref appears in). repository events
+// (rename/delete/visibility) additionally flush the repo's "open-PR list
+// complete" marker; pull_request events deliberately do NOT -- they maintain
+// the PR rows, which is what the marker asserts. installation events flush
+// the installation's cached token mints AND cached repo-installation answers
+// (a suspended/deleted/re-scoped installation must not keep serving either).
+// Git-commit rows are immutable and are deliberately never invalidated.
 func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
 	switch event.Type {
 	case "push", "repository":
@@ -303,6 +305,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		if err := d.store.InvalidateCommitsListCache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate commits list cache failed", "repo", owner+"/"+repo, "error", err)
+		}
+		if err := d.store.InvalidateCompareCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate compare cache failed", "repo", owner+"/"+repo, "error", err)
 		}
 		if event.Type == "repository" {
 			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {
