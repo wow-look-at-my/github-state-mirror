@@ -546,7 +546,11 @@ async function loadRateLimits(silent = false) {
         return;
     body.innerHTML = "";
     const installs = data.live ?? [];
-    const observed = data.observed ?? [];
+    // Zero-usage observations (used <= 0 — nothing consumed in the current
+    // window, e.g. an identity that only ever got 304s) are noise; hide them
+    // client-side. If everything filters out, the section's normal empty
+    // state below renders instead of an empty grid.
+    const observed = (data.observed ?? []).filter((o) => o.used > 0);
     sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
         (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
         ", plus readings observed passively from response headers";

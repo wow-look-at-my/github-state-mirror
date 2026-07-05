@@ -147,6 +147,9 @@ const demoRateLimit = {
     observed: [
         // Sorted by identity then resource, matching the backend's snapshot.
         { identity: "app-installation:481", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
+        // Zero-usage reading (nothing consumed this window, e.g. only 304s) —
+        // hidden by the client-side used > 0 filter, so the preview exercises it.
+        { identity: "app-installation:481", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
         { identity: "app:3433933", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
         { identity: "app:3433933", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
