@@ -53,10 +53,16 @@ const ownerPRFields = `
 // It additionally selects the connection's totalCount (another owner-only
 // extra the locked query must never grow) so per-page progress reporting can
 // say "N of M repos" from the first page.
+// ownerAffiliations: OWNER is load-bearing: the connection's default is
+// [OWNER, COLLABORATOR], which for a User login also lists repos they merely
+// collaborate on -- under their real owners -- and those nodes got keyed by
+// the queried login (the collaborator-repo bleed; Organizations were immune).
+// The conversion loop additionally drops any foreign-owner node that still
+// slips through (see dropForeignRepoNode).
 const ownerDataQuery = `
 query($owner: String!, $repoCursor: String) {
   repositoryOwner(login: $owner) {
-    repositories(first: 5, after: $repoCursor, isArchived: false, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 5, after: $repoCursor, isArchived: false, ownerAffiliations: OWNER, orderBy: {field: PUSHED_AT, direction: DESC}) {
       totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -177,6 +183,9 @@ func (c *Client) GetOwnerDataWithProgress(ctx context.Context, ownerLogin string
 
 		repos := resp.Data.RepositoryOwner.Repositories
 		for _, gr := range repos.Nodes {
+			if dropForeignRepoNode(ownerLogin, gr.NameWithOwner, gr.Owner.Login) {
+				continue
+			}
 			repo := convertRepo(ownerLogin, gr)
 			result.Repos = append(result.Repos, repo)
 
