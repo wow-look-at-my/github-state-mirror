@@ -15,7 +15,7 @@ import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
-    Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness,
+    Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
     RequestEvent, RequestsResponse,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
@@ -971,18 +971,202 @@ function statusCell(status?: string): HTMLElement {
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
 
+// ---- streaming consistency check / reconcile ----
+//
+// The endpoint's ?stream=1 mode answers NDJSON: one JSON progress line per
+// checker phase (a fleet run takes minutes — per owner: a paginated repo
+// fetch, a visibility fetch, the diff, and in apply mode the corrections),
+// with the full report as the final {"phase":"report"} line. EventSource
+// can't POST (the Reconcile is a POST), so the body stream is read manually.
+
+// splitNdjson consumes the COMPLETE lines in buf, returning them plus the
+// unconsumed remainder (a partial trailing line). Pure — the stream reader
+// feeds it chunk by chunk.
+function splitNdjson(buf: string): { lines: string[]; rest: string } {
+    const parts = buf.split("\n");
+    const rest = parts.pop() ?? "";
+    return { lines: parts.filter((l) => l.trim() !== ""), rest };
+}
+
+// CheckProgressState is what the modal renders while a run streams.
+interface CheckProgressState {
+    ownersTotal: number; // 0 until the start event
+    ownerIndex: number; // 1-based current owner; 0 before the first
+    within: number; // 0..1 progress inside the current owner
+    status: string; // the live status line
+}
+
+// reduceCheckProgress folds one progress event into the render state. Pure,
+// and tolerant of arbitrary event subsets (the demo replay is abbreviated).
+function reduceCheckProgress(p: CheckProgressState, ev: CheckProgressEvent): CheckProgressState {
+    const next = { ...p };
+    const who = ev.owner ?? "";
+    switch (ev.phase) {
+        case "start":
+            next.ownersTotal = ev.owners ?? 0;
+            next.status = next.ownersTotal > 0
+                ? "starting: " + next.ownersTotal + " owner" + (next.ownersTotal === 1 ? "" : "s") + " to check…"
+                : "starting…";
+            break;
+        case "owner":
+            next.ownerIndex = ev.index ?? p.ownerIndex + 1;
+            if (ev.total) next.ownersTotal = ev.total;
+            next.within = 0.05;
+            next.status = who + ": fetching repos…";
+            break;
+        case "fetch": {
+            const n = ev.repos_fetched ?? 0;
+            const total = ev.repos_total ?? 0;
+            // The paginated repo fetch dominates an owner's wall time; scale it
+            // across most of the owner's slice when the total is known.
+            next.within = total > 0 ? 0.05 + 0.75 * Math.min(n / total, 1) : 0.4;
+            next.status = who + ": fetched " + n + (total > 0 ? "/" + total : "") + " repos…";
+            break;
+        }
+        case "visibility":
+            next.within = 0.85;
+            next.status = who + ": fetching repo visibility…";
+            break;
+        case "diffed": {
+            const d = ev.discrepancies ?? 0;
+            next.within = 0.95;
+            next.status = who + ": diffed — " + d + (d === 1 ? " discrepancy" : " discrepancies") + " so far";
+            break;
+        }
+        case "applied":
+            next.within = 1;
+            next.status = who + ": corrections applied";
+            break;
+        case "skip":
+            next.within = 1;
+            next.status = who + ": skipped — " + (ev.reason ?? "");
+            break;
+        case "done":
+            next.ownerIndex = next.ownersTotal;
+            next.within = 1;
+            next.status = "finalizing report…";
+            break;
+    }
+    return next;
+}
+
+// checkProgressFraction maps the state to the bar's 0..1 fill: owners
+// completed plus the within-owner sub-progress. Pure.
+function checkProgressFraction(p: CheckProgressState): number {
+    if (p.ownersTotal <= 0) return 0;
+    const f = (Math.max(p.ownerIndex, 1) - 1 + p.within) / p.ownersTotal;
+    return Math.max(0, Math.min(1, f));
+}
+
+// runCheckStream drives the streaming run, invoking onEvent per progress line
+// and resolving with the final report (rejecting on HTTP or run errors).
+async function runCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) => void): Promise<ConsistencyReport> {
+    if (DEMO) return demoCheckStream(apply, onEvent);
+    const res = await fetch("/api/cache/check?stream=1" + (apply ? "&apply=true" : ""), {
+        method: apply ? "POST" : "GET",
+        headers: { Accept: "application/x-ndjson" },
+        credentials: "same-origin",
+    });
+    if (!res.ok) {
+        const err: ApiError = new Error("HTTP " + res.status);
+        err.status = res.status;
+        throw err;
+    }
+
+    let report: ConsistencyReport | null = null;
+    let runError = "";
+    const handle = (line: string): void => {
+        let ev: CheckProgressEvent;
+        try {
+            ev = JSON.parse(line) as CheckProgressEvent;
+        } catch {
+            return; // tolerate a garbled line; the terminal line decides the outcome
+        }
+        if (ev.phase === "report" && ev.report) report = ev.report;
+        else if (ev.phase === "error") runError = ev.error || "check failed";
+        else onEvent(ev);
+    };
+
+    if (!res.body) {
+        // No ReadableStream support: the whole run arrives as one buffered body.
+        for (const line of splitNdjson((await res.text()) + "\n").lines) handle(line);
+    } else {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (value) buf += decoder.decode(value, { stream: true });
+            if (done) buf += decoder.decode() + "\n"; // flush + terminate the last line
+            const split = splitNdjson(buf);
+            buf = split.rest;
+            for (const line of split.lines) handle(line);
+            if (done) break;
+        }
+    }
+
+    if (runError) throw new Error(runError);
+    if (!report) throw new Error("progress stream ended without a report");
+    return report;
+}
+
+// demoCheckStream replays the canned progress sequence on a timer (the demo
+// mock can't stream), then resolves the canned report — so the preview
+// exercises the live progress UI end to end.
+function demoCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) => void): Promise<ConsistencyReport> {
+    const cfg = DEMO as DemoConfig;
+    const state = cfg.current ?? cfg.initial;
+    const d = cfg.data[state] ?? ({} as DemoStateData);
+    const report = apply ? d.checkApplied : d.check;
+    if (!report) return demoReject(503);
+    const seq = d.checkProgress ?? [];
+    return new Promise((resolve) => {
+        let i = 0;
+        const step = (): void => {
+            if (i < seq.length) {
+                onEvent(seq[i++]);
+                setTimeout(step, 250);
+            } else {
+                resolve(report);
+            }
+        };
+        step();
+    });
+}
+
 async function openCheck(apply: boolean): Promise<void> {
     const { body } = openModal(apply
         ? "Reconcile — correct global truth from GitHub"
         : "Consistency check — global truth vs GitHub");
-    body.appendChild(el("div", { class: "loading", text: apply
-        ? "Fetching source of truth from GitHub, diffing, and correcting the drift… this can take a few seconds."
-        : "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
+
+    // Live progress while the run streams: a bar (owners completed / total,
+    // refined by within-owner repo pages) + one status line. A full fleet run
+    // takes minutes, not seconds.
+    let state: CheckProgressState = {
+        ownersTotal: 0, ownerIndex: 0, within: 0,
+        status: apply
+            ? "Fetching source of truth from GitHub, diffing, and correcting the drift…"
+            : "Fetching source of truth from GitHub and diffing…",
+    };
+    const fill = el("div", { class: "check-progress-fill" });
+    const statusLine = el("div", { class: "check-progress-status", text: state.status });
+    const counter = el("div", { class: "check-progress-count" });
+    body.appendChild(el("div", { class: "check-progress" },
+        el("div", { class: "check-progress-track" }, fill),
+        el("div", { class: "check-progress-meta" }, statusLine, counter),
+    ));
+    const onEvent = (ev: CheckProgressEvent): void => {
+        state = reduceCheckProgress(state, ev);
+        fill.style.width = (checkProgressFraction(state) * 100).toFixed(1) + "%";
+        statusLine.textContent = state.status;
+        counter.textContent = state.ownersTotal > 0
+            ? Math.min(Math.max(state.ownerIndex, 1), state.ownersTotal) + "/" + state.ownersTotal + " owners"
+            : "";
+    };
+
     let report: ConsistencyReport;
     try {
-        report = apply
-            ? await api<ConsistencyReport>("/api/cache/check?apply=true", "POST")
-            : await api<ConsistencyReport>("/api/cache/check");
+        report = await runCheckStream(apply, onEvent);
     } catch (e) {
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: (apply ? "Reconcile" : "Consistency check") + " failed: " + (e as Error).message }));

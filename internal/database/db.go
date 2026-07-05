@@ -12,19 +12,28 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 13: adds commit_ci_cache -- trimmed combined-commit-status
-// and check-runs snapshots backing the cached GET
-// /repos/{owner}/{repo}/commits/{ref}/status and .../commits/{ref}/check-runs
-// routes. Bumping nukes the DB on deploy; global truth rebuilds from webhooks
-// and each caller's own fetches.
-// (12 added compare_cache for the cached compare route; 11 added
-// commits_list_cache for the cached commits LIST route; 10 was ONE GLOBAL
-// TRUTH STORE, the global-cache re-architecture: the actor dimension dropped
-// from every GitHub-state table, access decided at serve time by the
-// reveal-by-permission layer; 9 was the per-actor /pulls + /installation
-// cache branch, folded into that model; 8 was per-user partitions; 7 added
-// workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 13
+// SchemaVersion 14: no schema change -- bumped to nuke truth rows poisoned by
+// the collaborator-repo bleed: a User owner's repositoryOwner listing
+// defaulted to ownerAffiliations [OWNER, COLLABORATOR], so repos the login
+// merely collaborates on were absorbed keyed by the WRONG owner (junk
+// "<user>/<name>" rows whose name_with_owner/url point at the real owner,
+// plus their double-counted PRs). Sync never deletes repo rows and the PR
+// reconcile only visits fetched repos, so a corrected re-run can never clean
+// them up -- the deploy-time nuke IS the cleanup; the fixed fetch
+// (ownerAffiliations: OWNER + the dropForeignRepoNode guard in ghclient)
+// keeps them out afterwards. Bumping nukes the DB on deploy; global truth
+// rebuilds from webhooks and each caller's own fetches.
+// (13 added commit_ci_cache -- trimmed combined-commit-status and check-runs
+// snapshots backing the cached GET /repos/{owner}/{repo}/commits/{ref}/status
+// and .../commits/{ref}/check-runs routes; 12 added compare_cache for the
+// cached compare route; 11 added commits_list_cache for the cached commits
+// LIST route; 10 was ONE GLOBAL TRUTH STORE, the global-cache
+// re-architecture: the actor dimension dropped from every GitHub-state table,
+// access decided at serve time by the reveal-by-permission layer; 9 was the
+// per-actor /pulls + /installation cache branch, folded into that model; 8
+// was per-user partitions; 7 added workflow_jobs; 6 added the response-cache
+// tables.)
+const SchemaVersion = 14
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

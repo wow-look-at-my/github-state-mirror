@@ -50,10 +50,20 @@ const ownerPRFields = `
 // 502-avoidance reason) plus isArchived per repo and the ownerPRFields extras.
 // orgDataQuery itself stays byte-untouched: it is the identity-locked cached
 // route's contract.
+// It additionally selects the connection's totalCount (another owner-only
+// extra the locked query must never grow) so per-page progress reporting can
+// say "N of M repos" from the first page.
+// ownerAffiliations: OWNER is load-bearing: the connection's default is
+// [OWNER, COLLABORATOR], which for a User login also lists repos they merely
+// collaborate on -- under their real owners -- and those nodes got keyed by
+// the queried login (the collaborator-repo bleed; Organizations were immune).
+// The conversion loop additionally drops any foreign-owner node that still
+// slips through (see dropForeignRepoNode).
 const ownerDataQuery = `
 query($owner: String!, $repoCursor: String) {
   repositoryOwner(login: $owner) {
-    repositories(first: 5, after: $repoCursor, isArchived: false, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 5, after: $repoCursor, isArchived: false, ownerAffiliations: OWNER, orderBy: {field: PUSHED_AT, direction: DESC}) {
+      totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
         name
@@ -103,8 +113,9 @@ type gqlOwnerResponse struct {
 	Data struct {
 		RepositoryOwner *struct {
 			Repositories struct {
-				PageInfo gqlPageInfo `json:"pageInfo"`
-				Nodes    []gqlRepo   `json:"nodes"`
+				TotalCount int         `json:"totalCount"`
+				PageInfo   gqlPageInfo `json:"pageInfo"`
+				Nodes      []gqlRepo   `json:"nodes"`
 			} `json:"repositories"`
 		} `json:"repositoryOwner"`
 	} `json:"data"`
@@ -113,12 +124,26 @@ type gqlOwnerResponse struct {
 	} `json:"errors"`
 }
 
+// OwnerPageFunc observes GetOwnerDataWithProgress pagination: it is invoked
+// after each fetched repos page with the cumulative number of repos fetched so
+// far and the connection's totalCount (0 when the server did not report one).
+// Called synchronously on the fetching goroutine; keep it cheap.
+type OwnerPageFunc func(reposFetched, reposTotal int)
+
 // GetOwnerData fetches all non-archived repos and open PRs for any repository
 // owner -- Organization or User -- via the owner-agnostic GraphQL query. Same
 // pagination and conversion as GetOrgData; used by the App-driven paths (the
 // periodic fleet refresher and the consistency checker), never by the
 // identity-locked lazy /graphql route.
 func (c *Client) GetOwnerData(ctx context.Context, ownerLogin string) (*OrgData, error) {
+	return c.GetOwnerDataWithProgress(ctx, ownerLogin, nil)
+}
+
+// GetOwnerDataWithProgress is GetOwnerData with an optional per-page progress
+// hook (nil = no reporting, identical to GetOwnerData). The consistency
+// checker uses it to stream "N of M repos fetched" while a large owner pages
+// through at 5 repos per page.
+func (c *Client) GetOwnerDataWithProgress(ctx context.Context, ownerLogin string, onPage OwnerPageFunc) (*OrgData, error) {
 	result := &OrgData{
 		PRsByRepo:  make(map[string][]dbgen.PullRequest),
 		LabelsByPR: make(map[string]map[int64][]dbgen.PrLabel),
@@ -158,6 +183,9 @@ func (c *Client) GetOwnerData(ctx context.Context, ownerLogin string) (*OrgData,
 
 		repos := resp.Data.RepositoryOwner.Repositories
 		for _, gr := range repos.Nodes {
+			if dropForeignRepoNode(ownerLogin, gr.NameWithOwner, gr.Owner.Login) {
+				continue
+			}
 			repo := convertRepo(ownerLogin, gr)
 			result.Repos = append(result.Repos, repo)
 
@@ -172,6 +200,10 @@ func (c *Client) GetOwnerData(ctx context.Context, ownerLogin string) (*OrgData,
 					return nil, err
 				}
 			}
+		}
+
+		if onPage != nil {
+			onPage(len(result.Repos), repos.TotalCount)
 		}
 
 		if !repos.PageInfo.HasNextPage {

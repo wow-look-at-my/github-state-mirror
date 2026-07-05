@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -245,6 +246,9 @@ func (c *Client) GetOrgData(ctx context.Context, orgLogin string) (*OrgData, err
 
 		repos := resp.Data.Organization.Repositories
 		for _, gr := range repos.Nodes {
+			if dropForeignRepoNode(orgLogin, gr.NameWithOwner, gr.Owner.Login) {
+				continue
+			}
 			repo := convertRepo(orgLogin, gr)
 			result.Repos = append(result.Repos, repo)
 
@@ -330,6 +334,43 @@ func addPR(result *OrgData, orgLogin, repoName, repoKey string, gpr gqlPR) {
 			},
 		)
 	}
+}
+
+// realNodeOwner extracts a fetched repo node's REAL owner login: the
+// nameWithOwner prefix when present, else the node's own owner.login. Every
+// repo-listing selection (org, owner, visibility twin) carries at least one of
+// the two, so a real GitHub response always yields a non-empty answer; ""
+// (possible only for minimal test fixtures) disables the foreign-node guard
+// for that node.
+func realNodeOwner(nameWithOwner, ownerLogin string) string {
+	if prefix, _, ok := strings.Cut(nameWithOwner, "/"); ok && prefix != "" {
+		return prefix
+	}
+	return ownerLogin
+}
+
+// dropForeignRepoNode reports whether a repo node fetched from an owner
+// listing REALLY belongs to a different owner than the queried login
+// (case-insensitive), logging each drop so a transfer or collaborator repo
+// appearing mid-listing is visible. GitHub's repositoryOwner
+// repositories(...) connection defaults ownerAffiliations to
+// [OWNER, COLLABORATOR], so a User's listing includes repos the login merely
+// collaborates on -- under their real owners -- and convertRepo/convertPR key
+// nodes by the QUERY login, which poisoned truth with junk
+// "<queried>/<name>" rows (the collaborator-repo bleed). The owner-agnostic
+// queries now pin ownerAffiliations: OWNER; this is the belt-and-braces
+// response-side guard, and it also covers the identity-locked org query with
+// zero query-text change. Foreign nodes are DROPPED -- with their PRs --
+// never re-keyed: re-keying by nameWithOwner would let one owner's sync
+// absorb truth rows, and mint access grants, across other owners.
+func dropForeignRepoNode(queriedOwner, nameWithOwner, ownerLogin string) bool {
+	real := realNodeOwner(nameWithOwner, ownerLogin)
+	if real == "" || strings.EqualFold(real, queriedOwner) {
+		return false
+	}
+	slog.Warn("dropping foreign-owner repo node from owner listing",
+		"name_with_owner", nameWithOwner, "queried_owner", queriedOwner)
+	return true
 }
 
 func convertRepo(owner string, gr gqlRepo) dbgen.Repo {

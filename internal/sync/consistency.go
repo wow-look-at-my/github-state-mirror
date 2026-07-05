@@ -199,17 +199,17 @@ type Discrepancy struct {
 // orgFilter is non-empty only that owner is checked; otherwise every owner
 // with cached repos is checked. The cache is never modified.
 func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
-	return c.run(ctx, orgFilter, false)
+	return c.run(ctx, orgFilter, false, nil)
 }
 
 // CheckAndApply runs the consistency check and then CORRECTS the drift from
 // the same fetched snapshot (see applyOwner). The report's discrepancies show
 // the PRE-apply state; Applied tallies the corrections written.
 func (c *ConsistencyChecker) CheckAndApply(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
-	return c.run(ctx, orgFilter, true)
+	return c.run(ctx, orgFilter, true, nil)
 }
 
-func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bool) (*ConsistencyReport, error) {
+func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bool, progress ProgressFunc) (*ConsistencyReport, error) {
 	if c.app == nil {
 		return nil, fmt.Errorf("consistency check unavailable: no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)")
 	}
@@ -259,6 +259,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 	if orgFilter != "" {
 		owners = []string{orgFilter}
 	}
+	progress.emit(ProgressEvent{Phase: "start", Owners: len(owners)})
 
 	// Resolve App installations once so we know which owners are reachable.
 	installs, err := c.app.Installations(ctx)
@@ -270,28 +271,43 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		byLogin[strings.ToLower(in.Account.Login)] = in
 	}
 
-	for _, owner := range owners {
+	for i, owner := range owners {
+		progress.emit(ProgressEvent{Phase: "owner", Owner: owner, Index: i + 1, Total: len(owners)})
+
 		// The owner's most-recent sync staleness, whether or not the owner
 		// ends up checked -- long-unsynced truth explains drift. (In apply
 		// mode this reads the PRE-apply marker; the apply stamps a fresh one.)
 		c.recordTruthFreshness(ctx, report, owner)
 
+		skip := func(reason string) {
+			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: reason})
+			progress.emit(ProgressEvent{Phase: "skip", Owner: owner, Reason: reason})
+		}
+
 		inst, ok := byLogin[strings.ToLower(owner)]
 		if !ok {
-			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "no GitHub App installation for this owner (app not installed, or no access)"})
+			skip("no GitHub App installation for this owner (app not installed, or no access)")
 			continue
 		}
 
 		token, err := c.app.InstallationToken(ctx, inst.ID)
 		if err != nil {
-			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "could not mint installation token: " + err.Error()})
+			skip("could not mint installation token: " + err.Error())
 			continue
 		}
 		fetchCtx := ghclient.WithToken(ctx, token)
 		fetchStart := time.Now()
-		data, err := c.gh.GetOwnerData(fetchCtx, owner)
+		// Per fetched page (5 repos each), report how far along the owner's
+		// repo fetch is -- the dominant cost of a large owner's check.
+		var onPage ghclient.OwnerPageFunc
+		if progress != nil {
+			onPage = func(fetched, total int) {
+				progress.emit(ProgressEvent{Phase: "fetch", Owner: owner, ReposFetched: fetched, ReposTotal: total})
+			}
+		}
+		data, err := c.gh.GetOwnerDataWithProgress(fetchCtx, owner, onPage)
 		if err != nil {
-			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: "fetch from GitHub failed: " + err.Error()})
+			skip("fetch from GitHub failed: " + err.Error())
 			continue
 		}
 
@@ -300,6 +316,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		// Best-effort: without it the diff still runs, but visibility diffs
 		// and missing-repo private/archived classification are unavailable --
 		// which the report says out loud instead of silently reading as clean.
+		progress.emit(ProgressEvent{Phase: "visibility", Owner: owner})
 		visibility, verr := c.gh.OwnerRepoVisibilities(fetchCtx, owner)
 		if verr != nil {
 			slog.Warn("consistency: fetch repo visibility failed", "owner", owner, "error", verr)
@@ -310,12 +327,17 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 
 		report.OrgsChecked = append(report.OrgsChecked, owner)
 		c.diffOwner(ctx, report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility)
+		progress.emit(ProgressEvent{Phase: "diffed", Owner: owner, Discrepancies: len(report.Discrepancies)})
 
 		if apply {
 			if err := c.applyOwner(ctx, report.Applied, owner, inst, reposByOwner[owner], prsByOwnerRepo, data, visibility, fetchStart); err != nil {
 				slog.Warn("consistency: apply failed", "owner", owner, "error", err)
 				report.Notes = append(report.Notes, fmt.Sprintf("owner %s: apply failed partway: %v", owner, err))
 			}
+			// Snapshot the tally: the report's pointer keeps mutating as later
+			// owners apply, so the event must carry its own copy.
+			applied := *report.Applied
+			progress.emit(ProgressEvent{Phase: "applied", Owner: owner, Applied: &applied})
 		}
 	}
 
@@ -354,6 +376,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		}
 	}
 	report.Summary.Discrepancies = len(report.Discrepancies)
+	progress.emit(ProgressEvent{Phase: "done"})
 	return report, nil
 }
 
