@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -235,6 +237,63 @@ func TestCacheCheckStream_RunError(t *testing.T) {
 	assert.Equal(t, "error", last["phase"])
 	errMsg, _ := last["error"].(string)
 	assert.Contains(t, errMsg, "consistency check failed")
+}
+
+// TestCacheCheckStream_FlushesIncrementally: the whole point of the stream is
+// that lines reach the client WHILE the run works. Over a real HTTP server
+// (real flusher, full middleware stack), the start/owner lines must be
+// readable while the fake GitHub is still holding the owner's repo fetch --
+// a handler that buffered the run would deliver nothing until the end.
+func TestCacheCheckStream_FlushesIncrementally(t *testing.T) {
+	svc := configuredAuth(t)
+	fake := checkerFakeGitHub(t)
+	release := make(chan struct{})
+	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			<-release // hold the fetch until the client saw the early lines
+		}
+		fake.ServeHTTP(w, r)
+	})
+	router, store := newCheckerStack(t, svc, gated)
+	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u",
+	}))
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/cache/check?stream=1", nil)
+	require.NoError(t, err)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	res, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = res.Body.Close() }()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	sc := bufio.NewScanner(res.Body)
+	readLine := func() map[string]any {
+		require.True(t, sc.Scan(), "expected another NDJSON line before the run finished: %v", sc.Err())
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(sc.Bytes(), &m))
+		return m
+	}
+	// Arrive while /graphql is still blocked = flushed per line.
+	assert.Equal(t, "start", readLine()["phase"])
+	assert.Equal(t, "owner", readLine()["phase"])
+	close(release)
+
+	var last map[string]any
+	for sc.Scan() {
+		if len(sc.Bytes()) == 0 {
+			continue
+		}
+		last = map[string]any{}
+		require.NoError(t, json.Unmarshal(sc.Bytes(), &last))
+	}
+	require.NoError(t, sc.Err())
+	require.NotNil(t, last)
+	assert.Equal(t, "report", last["phase"])
 }
 
 // TestCacheCheckStream_GatesStillApply: stream=1 changes the response format

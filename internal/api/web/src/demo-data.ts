@@ -5,7 +5,7 @@
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
-    ConsistencyReport, RequestsResponse, RateLimitResponse, DemoConfig,
+    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, DemoConfig,
 } from "./types";
 
 function ago(seconds: number): string {
@@ -242,6 +242,23 @@ const demoCheckApplied: ConsistencyReport = {
     ],
 };
 
+// A short canned progress sequence (the real endpoint streams these as NDJSON
+// lines) so the preview's check/Reconcile modal exercises the live progress
+// bar before the canned report renders. Replayed on a timer by the app's demo
+// stream shim.
+const demoCheckProgress: CheckProgressEvent[] = [
+    { phase: "start", owners: 2 },
+    { phase: "owner", owner: "wow-look-at-my", index: 1, total: 2 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 5, repos_total: 55 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 25, repos_total: 55 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 55, repos_total: 55 },
+    { phase: "visibility", owner: "wow-look-at-my" },
+    { phase: "diffed", owner: "wow-look-at-my", discrepancies: 6 },
+    { phase: "owner", owner: "octo-org", index: 2, total: 2 },
+    { phase: "skip", owner: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" },
+    { phase: "done" },
+];
+
 const adminGrants: Record<string, GrantsResponse> = {};
 for (const s of allPrincipals) {
     if (!s.principal_id) continue;
@@ -278,6 +295,7 @@ const config: DemoConfig = {
             grants: adminGrants,
             check: demoCheck,
             checkApplied: demoCheckApplied,
+            checkProgress: demoCheckProgress,
         },
     },
 };

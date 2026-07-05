@@ -263,6 +263,27 @@ export interface ConsistencyReport {
     notes?: string[];
 }
 
+// One NDJSON line from the streaming consistency check / reconcile
+// (GET/POST /api/cache/check?stream=1): checker progress events while the run
+// works, then exactly one terminal line — phase "report" carrying the full
+// ConsistencyReport, or phase "error" when the run failed mid-stream.
+export interface CheckProgressEvent {
+    // start | owner | fetch | visibility | diffed | applied | skip | done
+    // | report | error (the last two only as the terminal line)
+    phase: string;
+    owner?: string;
+    index?: number; // this owner's 1-based position (phase=owner)
+    total?: number; // total owners (phase=owner)
+    owners?: number; // total owners the run will visit (phase=start)
+    repos_fetched?: number; // cumulative repos fetched so far (phase=fetch)
+    repos_total?: number; // the owner's repo total when known (phase=fetch)
+    discrepancies?: number; // running total across owners (phase=diffed)
+    applied?: AppliedSummary; // corrections tally so far (phase=applied)
+    reason?: string; // why the owner was skipped (phase=skip)
+    report?: ConsistencyReport; // the final report (phase=report)
+    error?: string; // the run's failure (phase=error)
+}
+
 export interface DemoStateData {
     me: Me;
     mine?: CacheResponse;
@@ -274,6 +295,9 @@ export interface DemoStateData {
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
     check?: ConsistencyReport; // global check (read-only)
     checkApplied?: ConsistencyReport; // the Reconcile (apply=true) answer
+    // Canned progress events replayed before check/checkApplied resolves (the
+    // demo mock can't stream, so the preview plays these on a timer).
+    checkProgress?: CheckProgressEvent[];
 }
 
 export interface DemoConfig {
