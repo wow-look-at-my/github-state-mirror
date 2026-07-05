@@ -71,8 +71,9 @@ func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.
 			"data": map[string]any{
 				"repositoryOwner": map[string]any{
 					"repositories": map[string]any{
-						"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
-						"nodes":    nodes,
+						"totalCount": len(nodes),
+						"pageInfo":   map[string]any{"hasNextPage": false, "endCursor": ""},
+						"nodes":      nodes,
 					},
 				},
 			},

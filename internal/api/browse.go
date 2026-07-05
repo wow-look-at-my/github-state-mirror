@@ -209,6 +209,9 @@ func (d *dashboard) collectBrowse(ctx context.Context) (browseResponse, error) {
 // auto_merge_method / the commit-check rollup from GitHub's answers) and the
 // response carries an "applied" tally. A GET is always strictly read-only --
 // apply on a GET is rejected so a prefetched/bookmarked URL can never write.
+//
+// With ?stream=1 (on either mode) the response is live NDJSON progress
+// instead of one buffered report -- see checkstream.go.
 func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -223,6 +226,9 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if d.checker == nil || !d.checker.Available() {
 		http.Error(w, "consistency check unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
 		return
+	}
+	if q.Get("stream") == "1" && d.streamCacheCheck(w, r, org, apply) {
+		return // streamed (a non-Flusher writer falls through to the buffered path)
 	}
 
 	run := d.checker.Check
