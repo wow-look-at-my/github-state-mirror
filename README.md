@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Eight REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Ten REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -109,6 +109,27 @@ pass through verbatim, uncached.
   through — and only a `200` is absorbed (404/5xx relay unstored). Flushed by
   `push` and `repository` webhooks (either side of any comparison may have
   moved) with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}/commits/{ref}/status` and
+  `GET /repos/{owner}/{repo}/commits/{ref}/check-runs` — the combined commit
+  status and the check-runs listing for a ref (what fleet-wide CI watchers
+  poll per repo/branch/sha). The `{ref}` is cached **verbatim** — a branch
+  name (slashes and all), a sha, or a tag, never resolved — so each spelling
+  is its own snapshot. Rebuilt as `{state, sha, total_count, statuses:
+  [{context, state, description, created_at, updated_at}]}` and
+  `{total_count, check_runs: [{id, head_sha, name, status, conclusion,
+  started_at, completed_at, app: {id}}]}` — nullable fields (a status's
+  description; an in-progress run's conclusion/completed_at) are preserved
+  as null, while URL fields (including per-status `target_url` and per-run
+  `html_url`/`details_url` — no known consumer reads them through the
+  mirror), the repository object, and the unbounded check-run `output` are
+  dropped. Only the bare query shape with the default JSON `Accept` is
+  modeled (any query param passes through), and only a `200` is absorbed
+  (404/5xx relay unstored). Flushed by `status`/`check_run`/`check_suite`
+  events (CI state moved somewhere in the repo) plus `push` and `repository`
+  webhooks, with a 24 h TTL backstop — so snapshots survive exactly while a
+  repo's CI is quiet, which is when watchers re-poll. Other `/commits/*`
+  sub-paths (the single-commit read, `/statuses`, `/check-suites`, ...) stay
+  passthrough.
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving
