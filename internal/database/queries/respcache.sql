@@ -113,6 +113,39 @@ DELETE FROM commits_list_cache WHERE id IN (
     SELECT id FROM commits_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
+-- ---- compare_cache (GET /repos/{owner}/{repo}/compare/{basehead}) ----
+
+-- name: GetCompareCache :one
+SELECT * FROM compare_cache
+WHERE owner = ? AND repo = ? AND basehead = ?;
+
+-- name: UpsertCompareCache :exec
+INSERT INTO compare_cache (owner, repo, basehead, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, basehead) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCompareCache :exec
+UPDATE compare_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND basehead = ?;
+
+-- DeleteCompareCacheByRepo drops a repo's compare docs -- the push/repository
+-- webhook flush (a push to either side of any basehead can change the
+-- comparison, so the whole repo flushes).
+-- name: DeleteCompareCacheByRepo :exec
+DELETE FROM compare_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCompareCache :exec
+DELETE FROM compare_cache WHERE expires_at <= ?;
+
+-- name: PruneCompareCacheLRU :exec
+DELETE FROM compare_cache WHERE id IN (
+    SELECT id FROM compare_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
 -- ---- install_token_cache ----
 
 -- name: GetInstallTokenCache :one

@@ -209,6 +209,52 @@ func renderCommitListItem(c ghdata.CachedGitCommit) commitListItemJSON {
 	}
 }
 
+// upstreamCommitItem is the GitHub-shaped commit item as it appears in the
+// commits LIST -- and, identically shaped, in a compare response's `commits`
+// array (respcache_compare.go) -- with only the fields the model holds.
+type upstreamCommitItem struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+			Date  string `json:"date"`
+		} `json:"author"`
+		Committer struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+			Date  string `json:"date"`
+		} `json:"committer"`
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	} `json:"commit"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// toCachedGitCommit validates and converts one listed item into a git-commit
+// row (shas lowercased). false = a shape the model cannot hold; callers pass
+// the whole response through rather than store a hole.
+func (item upstreamCommitItem) toCachedGitCommit(owner, repo string) (ghdata.CachedGitCommit, bool) {
+	sha := strings.ToLower(item.SHA)
+	if !isFullHexSHA(sha) || item.Commit.Tree.SHA == "" {
+		return ghdata.CachedGitCommit{}, false
+	}
+	parents := make([]string, 0, len(item.Parents))
+	for _, p := range item.Parents {
+		parents = append(parents, strings.ToLower(p.SHA))
+	}
+	return ghdata.CachedGitCommit{
+		Owner: owner, Repo: repo, SHA: sha, Message: item.Commit.Message,
+		AuthorName: item.Commit.Author.Name, AuthorEmail: item.Commit.Author.Email, AuthorDate: item.Commit.Author.Date,
+		CommitterName: item.Commit.Committer.Name, CommitterEmail: item.Commit.Committer.Email, CommitterDate: item.Commit.Committer.Date,
+		TreeSHA: item.Commit.Tree.SHA, Parents: parents,
+	}, true
+}
+
 // absorbCommitsList parses a /commits 200 array into git-commit rows in
 // response order (an empty array -- a page past the end of history -- is a
 // valid, cacheable answer). Reports false -- serve verbatim, store nothing --
@@ -221,47 +267,17 @@ func absorbCommitsList(owner, repo string, status int, body []byte) ([]ghdata.Ca
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, false
 	}
-	var raw []struct {
-		SHA    string `json:"sha"`
-		Commit struct {
-			Message string `json:"message"`
-			Author  struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-				Date  string `json:"date"`
-			} `json:"author"`
-			Committer struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-				Date  string `json:"date"`
-			} `json:"committer"`
-			Tree struct {
-				SHA string `json:"sha"`
-			} `json:"tree"`
-		} `json:"commit"`
-		Parents []struct {
-			SHA string `json:"sha"`
-		} `json:"parents"`
-	}
+	var raw []upstreamCommitItem
 	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return nil, false
 	}
 	commits := make([]ghdata.CachedGitCommit, 0, len(raw))
 	for _, item := range raw {
-		sha := strings.ToLower(item.SHA)
-		if !isFullHexSHA(sha) || item.Commit.Tree.SHA == "" {
+		c, ok := item.toCachedGitCommit(owner, repo)
+		if !ok {
 			return nil, false
 		}
-		parents := make([]string, 0, len(item.Parents))
-		for _, p := range item.Parents {
-			parents = append(parents, strings.ToLower(p.SHA))
-		}
-		commits = append(commits, ghdata.CachedGitCommit{
-			Owner: owner, Repo: repo, SHA: sha, Message: item.Commit.Message,
-			AuthorName: item.Commit.Author.Name, AuthorEmail: item.Commit.Author.Email, AuthorDate: item.Commit.Author.Date,
-			CommitterName: item.Commit.Committer.Name, CommitterEmail: item.Commit.Committer.Email, CommitterDate: item.Commit.Committer.Date,
-			TreeSHA: item.Commit.Tree.SHA, Parents: parents,
-		})
+		commits = append(commits, c)
 	}
 	return commits, true
 }

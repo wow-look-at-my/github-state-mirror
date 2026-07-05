@@ -26,6 +26,23 @@ func (q *Queries) DeleteCommitsListCacheByRepo(ctx context.Context, arg DeleteCo
 	return err
 }
 
+const deleteCompareCacheByRepo = `-- name: DeleteCompareCacheByRepo :exec
+DELETE FROM compare_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCompareCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteCompareCacheByRepo drops a repo's compare docs -- the push/repository
+// webhook flush (a push to either side of any basehead can change the
+// comparison, so the whole repo flushes).
+func (q *Queries) DeleteCompareCacheByRepo(ctx context.Context, arg DeleteCompareCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCompareCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteContentsCacheByRepo = `-- name: DeleteContentsCacheByRepo :exec
 DELETE FROM contents_cache WHERE owner = ? AND repo = ?
 `
@@ -46,6 +63,15 @@ DELETE FROM commits_list_cache WHERE expires_at <= ?
 
 func (q *Queries) DeleteExpiredCommitsListCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredCommitsListCache, expiresAt)
+	return err
+}
+
+const deleteExpiredCompareCache = `-- name: DeleteExpiredCompareCache :exec
+DELETE FROM compare_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCompareCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCompareCache, expiresAt)
 	return err
 }
 
@@ -152,6 +178,35 @@ func (q *Queries) GetCommitsListCache(ctx context.Context, arg GetCommitsListCac
 		&i.PerPage,
 		&i.Page,
 		&i.Shas,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getCompareCache = `-- name: GetCompareCache :one
+
+SELECT id, owner, repo, basehead, doc, fetched_at, expires_at, last_used_at FROM compare_cache
+WHERE owner = ? AND repo = ? AND basehead = ?
+`
+
+type GetCompareCacheParams struct {
+	Owner    string
+	Repo     string
+	Basehead string
+}
+
+// ---- compare_cache (GET /repos/{owner}/{repo}/compare/{basehead}) ----
+func (q *Queries) GetCompareCache(ctx context.Context, arg GetCompareCacheParams) (CompareCache, error) {
+	row := q.db.QueryRowContext(ctx, getCompareCache, arg.Owner, arg.Repo, arg.Basehead)
+	var i CompareCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Basehead,
+		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
@@ -353,6 +408,17 @@ func (q *Queries) PruneCommitsListCacheLRU(ctx context.Context, offset int64) er
 	return err
 }
 
+const pruneCompareCacheLRU = `-- name: PruneCompareCacheLRU :exec
+DELETE FROM compare_cache WHERE id IN (
+    SELECT id FROM compare_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCompareCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCompareCacheLRU, offset)
+	return err
+}
+
 const pruneContentsCacheLRU = `-- name: PruneContentsCacheLRU :exec
 DELETE FROM contents_cache WHERE id IN (
     SELECT id FROM contents_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -433,6 +499,28 @@ func (q *Queries) TouchCommitsListCache(ctx context.Context, arg TouchCommitsLis
 		arg.RefParam,
 		arg.PerPage,
 		arg.Page,
+	)
+	return err
+}
+
+const touchCompareCache = `-- name: TouchCompareCache :exec
+UPDATE compare_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND basehead = ?
+`
+
+type TouchCompareCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Basehead   string
+}
+
+func (q *Queries) TouchCompareCache(ctx context.Context, arg TouchCompareCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCompareCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Basehead,
 	)
 	return err
 }
@@ -551,6 +639,39 @@ func (q *Queries) UpsertCommitsListCache(ctx context.Context, arg UpsertCommitsL
 		arg.PerPage,
 		arg.Page,
 		arg.Shas,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertCompareCache = `-- name: UpsertCompareCache :exec
+INSERT INTO compare_cache (owner, repo, basehead, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, basehead) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCompareCacheParams struct {
+	Owner      string
+	Repo       string
+	Basehead   string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCompareCache(ctx context.Context, arg UpsertCompareCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCompareCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Basehead,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,

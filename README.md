@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Seven REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Eight REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -92,6 +92,23 @@ pass through verbatim, uncached.
   `repository` webhooks (a push moves every ref-relative listing; the
   absorbed commit rows stay) with a 24 h TTL backstop. The single-commit
   sub-path `/commits/{sha}` is a different shape and stays passthrough.
+- `GET /repos/{owner}/{repo}/compare/{basehead}` — the three-dot
+  `base...head` comparison (pr-minder's empty-PR / open-PR gates run one per
+  branch, every fleet sweep). Rebuilt as `{status, ahead_by, behind_by,
+  total_commits, merge_base_commit: {sha}, commits: [<the commits-list item
+  shape>], files: [{filename, status, additions, deletions, changes,
+  previous_filename?}]}` — the **files array's presence and length are
+  preserved exactly** (consumers read `changed_files = files.length`; an
+  absent array means "unknown, fail open", an empty one means a 0-diff
+  branch), while URL fields and the unread per-file `patch` are dropped. The
+  whole trimmed document is cached per exact basehead (branch names keep
+  their slashes); the compare's commits are also absorbed into
+  `git_commits_cache`. Only the bare query shape with the default JSON
+  `Accept` is modeled — any query param, the `.diff`/`.patch` media types, a
+  cross-fork `owner:branch` basehead, or a basehead without `...` passes
+  through — and only a `200` is absorbed (404/5xx relay unstored). Flushed by
+  `push` and `repository` webhooks (either side of any comparison may have
+  moved) with a 24 h TTL backstop.
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving
@@ -165,7 +182,7 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache: the global truth totals (repos, pull requests, commit checks, contents, git commits, grants — one cache, one truth), your principal's reveal-layer standing (how many repos you hold live grants for), org-sync freshness, and recent refresh activity.
 
 - **Truth is shared; grants are yours.** The totals are the one global store's counts — the same numbers for every viewer. What is per-you is the reveal layer: your principal's live grant count and sync freshness. The dashboard never exposes cached rows to non-admins.
-- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get a **Principals** view: every known principal with its login, live grant count, and last-seen time, plus a per-principal **Grants** action showing exactly which repos the reveal layer will serve it (and whether each grant came from a `list_sync` or a `probe`). They also get two global activity logs: a **Requests** tab — live data-API traffic and how each request was served (`hit` from cache / `miss` then fetched / `passthrough` read forwarded uncached / `write` mutation proxied) — and a **Webhooks** tab — recent webhook deliveries and each one's disposition (`applied` / `invalidated` / `ignored` / `error`; there is no "skipped" under the global model), confirming that incoming events update truth. A **Rate limit** tab shows GitHub rate-limit standing two ways: **live** — a `GET /rate_limit` poll per installation of the mirror's own GitHub App (the credential behind background refreshes and the consistency check) — and **observed** — the `X-RateLimit-*` headers GitHub attaches to every response, passively recorded off each upstream path (passthrough proxy, cache-miss fetches, reveal probes, the client's own calls) and grouped per identity (principal or credential-derived label; never a raw token) and resource bucket. The observed half costs zero API calls and covers the callers' own credentials, not just the App; it is in-memory like the request log and resets on restart. Without a GitHub App the tab still works, showing observed data plus a note that live polling is unavailable.
+- **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get a **Principals** view: every known principal with its login, live grant count, and last-seen time, plus a per-principal **Grants** action showing exactly which repos the reveal layer will serve it (and whether each grant came from a `list_sync` or a `probe`). They also get two global activity logs: a **Requests** tab — live data-API traffic and how each request was served (`hit` from cache / `miss` then fetched / `passthrough` read forwarded uncached / `write` mutation proxied) — and a **Webhooks** tab — recent webhook deliveries and each one's disposition (`applied` / `invalidated` / `ignored` / `error`; there is no "skipped" under the global model), confirming that incoming events update truth. A **Rate limit** tab shows GitHub rate-limit standing two ways: **live** — a `GET /rate_limit` poll per installation of the mirror's own GitHub App (the credential behind background refreshes and the consistency check) — and **observed** — the `X-RateLimit-*` headers GitHub attaches to every response, passively recorded off each upstream path (passthrough proxy, cache-miss fetches, reveal probes, the client's own calls) and grouped per identity (principal or credential-derived label; never a raw token) and resource bucket. The observed half costs zero API calls and covers the callers' own credentials, not just the App; zero-usage readings (nothing consumed in the current window, e.g. only 304s) are hidden as noise; it is in-memory like the request log and resets on restart. Without a GitHub App the tab still works, showing observed data plus a note that live polling is unavailable.
 - **Admins can browse and audit global truth.** The Principals tab carries two truth-wide actions:
   - **Browse truth** opens the actual cached rows — repositories (with stored visibility), open pull requests with their labels and CI status, and commit checks — plus a copyable raw-JSON dump.
   - **Run consistency check** re-fetches the source of truth from GitHub (as the mirror's own GitHub App, via the owner-agnostic `repositoryOwner` query — User-account installations are checked like Organizations) and emits a JSON diff of any drift between GLOBAL truth and GitHub — repos/PRs only in the cache or only on GitHub, and field mismatches such as a stale `last_commit_status`, `default_branch_status`, `visibility`, `is_archived`, `pushed_at` (5-minute tolerance; lag implies missed push webhooks), `auto_merge_method`, draft flag, or labels (`mergeable` is deliberately not compared: the cache un-resolves it on pushes). A repo cached **public** that GitHub says is private/internal gets its own `visibility_leak` issue (the reveal fast path is serving it); a cached-only repo that is **archived** is classified as expected (own tally) rather than drift; cached-open PRs under a missing repo are swept as their own entries; PR-existence entries carry `served_now` (a live pulls-list marker means the wrong list is being served right now) and every discrepancy carries a short `fix` hint. A missing repo that is **private** on GitHub is marked and tallied separately (`repos_only_on_github_private`) — under lazy truth it simply has not been absorbed yet, which is expected, not a failure. The report includes `truth_freshness`: per owner, the most recent org list-sync any principal ran. It needs a configured GitHub App; without one the action reports "unavailable". Owners the app is not installed on are listed as skipped rather than reported as missing.

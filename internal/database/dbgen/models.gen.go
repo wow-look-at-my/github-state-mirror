@@ -71,6 +71,17 @@ type CommitsListCache struct {
 	LastUsedAt string
 }
 
+type CompareCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Basehead   string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type ContentsCache struct {
 	ID         int64
 	Owner      string

@@ -12,16 +12,18 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 11: adds commits_list_cache -- per-page snapshots backing the
-// cached GET /repos/{owner}/{repo}/commits list route (the listed commits
-// themselves are absorbed into git_commits_cache). Bumping nukes the DB on
-// deploy; global truth rebuilds from webhooks and each caller's own fetches.
-// (10 was ONE GLOBAL TRUTH STORE, the global-cache re-architecture: the actor
-// dimension dropped from every GitHub-state table, access decided at serve
-// time by the reveal-by-permission layer; 9 was the per-actor /pulls +
-// /installation cache branch, folded into that model; 8 was per-user
-// partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 11
+// SchemaVersion 12: adds compare_cache -- trimmed compare documents backing
+// the cached GET /repos/{owner}/{repo}/compare/{basehead} route (the
+// compare's commits are also absorbed into git_commits_cache). Bumping nukes
+// the DB on deploy; global truth rebuilds from webhooks and each caller's own
+// fetches.
+// (11 added commits_list_cache for the cached commits LIST route; 10 was ONE
+// GLOBAL TRUTH STORE, the global-cache re-architecture: the actor dimension
+// dropped from every GitHub-state table, access decided at serve time by the
+// reveal-by-permission layer; 9 was the per-actor /pulls + /installation
+// cache branch, folded into that model; 8 was per-user partitions; 7 added
+// workflow_jobs; 6 added the response-cache tables.)
+const SchemaVersion = 12
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

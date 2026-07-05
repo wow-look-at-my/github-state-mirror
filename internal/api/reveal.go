@@ -50,6 +50,7 @@ const (
 	denyKindRepoPulls   = "repo_pulls"
 	denyKindPull        = "pull"
 	denyKindRepoCommits = "repo_commits"
+	denyKindCompare     = "compare"
 )
 
 // revealOutcome is the reveal decision for one request.

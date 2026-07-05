@@ -234,6 +234,15 @@ func NewRouter(
 		// response shape) is deliberately unregistered and passes through.
 		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
 
+		// Cached compare (respcache_compare.go): the three-dot base...head
+		// comparison pr-minder's auto_open_pr / close-empty gates run per
+		// branch. Greedy wildcard because branch names carry slashes; the
+		// files array's presence + per-file counts are preserved exactly
+		// (the empty-PR gate), and query params / diff-patch Accepts /
+		// cross-fork owner:branch baseheads pass through. Flushed by
+		// push/repository webhooks.
+		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
+
 		// Cached PR routes (respcache_pulls.go): the open-PR list is served
 		// from webhook-maintained pull_requests state behind a per-(actor,
 		// repo) "list complete" marker; the single PR is served only when the

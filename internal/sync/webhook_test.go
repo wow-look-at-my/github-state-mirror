@@ -182,6 +182,55 @@ func TestDispatch_PushAndRepositoryFlushCommitsListSnapshots(t *testing.T) {
 	assert.True(t, ok, "git-commit rows must survive the snapshot flush")
 }
 
+// TestDispatch_PushAndRepositoryFlushCompareCache: push and repository events
+// flush a repo's cached compare docs (a push to either side of any basehead
+// changes the comparison) while the absorbed git-commit rows -- immutable
+// global truth -- survive the flush.
+func TestDispatch_PushAndRepositoryFlushCompareCache(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	commit := ghdata.CachedGitCommit{
+		Owner: "org1", Repo: "repo1",
+		SHA:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TreeSHA: "1111111111111111111111111111111111111111",
+		Message: "m",
+	}
+	const basehead = "main...claude/dev"
+	seedCompare := func() {
+		t.Helper()
+		require.NoError(t, store.PutCachedCompare(ctx, ghdata.CachedCompare{
+			Owner: "org1", Repo: "repo1", Basehead: basehead,
+			Doc: `{"status":"ahead","ahead_by":1,"behind_by":0,"total_commits":1,"commits":[],"files":[]}`,
+		}, []ghdata.CachedGitCommit{commit}, now, time.Hour))
+		_, ok, err := store.GetCachedCompare(ctx, "org1", "repo1", basehead, now)
+		require.NoError(t, err)
+		require.True(t, ok, "seeded compare doc must serve")
+	}
+	compareServes := func() bool {
+		t.Helper()
+		_, ok, err := store.GetCachedCompare(ctx, "org1", "repo1", basehead, now)
+		require.NoError(t, err)
+		return ok
+	}
+
+	seedCompare()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push",
+		[]byte(`{"repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, compareServes(), "a push must flush the repo's compare docs")
+
+	seedCompare()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("repository",
+		[]byte(`{"action":"privatized","repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, compareServes(), "a repository event must flush the repo's compare docs")
+
+	// The absorbed commit rows are immutable and survive both flushes.
+	_, ok, err := store.GetCachedGitCommit(ctx, "org1", "repo1", commit.SHA, now)
+	require.NoError(t, err)
+	assert.True(t, ok, "git-commit rows must survive the compare flush")
+}
+
 // makePRPayload builds a realistic pull_request webhook JSON payload.
 func makePRPayload(t *testing.T, action, state, owner, repo string, number int, title string) json.RawMessage {
 	t.Helper()

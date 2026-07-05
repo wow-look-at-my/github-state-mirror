@@ -185,7 +185,7 @@ CREATE INDEX idx_access_grants_repo ON access_grants (owner, repo);
 -- grant for the repo clears the principal's verdicts for it.
 CREATE TABLE deny_cache (
     principal     TEXT NOT NULL,
-    resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull | repo_commits
+    resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull | repo_commits | compare
     resource_key  TEXT NOT NULL,  -- route-specific resource key
     owner         TEXT NOT NULL,  -- lowercased
     repo          TEXT NOT NULL,  -- lowercased
@@ -293,6 +293,40 @@ CREATE TABLE commits_list_cache (
 
 CREATE UNIQUE INDEX idx_commits_list_cache_key ON commits_list_cache (owner, repo, ref_param, per_page, page);
 CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/compare/{basehead} responses (the
+-- three-dot base...head comparison pr-minder's auto_open_pr / close-empty
+-- gates run per branch, every fleet sweep). One row per exact modeled request:
+-- (owner, repo, basehead), where basehead is the raw base...head path tail
+-- (branch names keep their slashes; the cross-fork owner:branch form is never
+-- cached). doc holds the ALREADY-TRIMMED compare document as JSON -- {status,
+-- ahead_by, behind_by, total_commits, merge_base_commit:{sha}, commits:[...],
+-- files:[...]} with every URL field dropped and per-file patch NEVER stored
+-- (no consumer reads it from compare; omitting it is also what keeps rows
+-- modest -- the absorb cap bounds a row at a few hundred KB for a huge
+-- comparison, most are a few KB). The presence/absence of the files array is
+-- preserved exactly: pr-minder reads changed_files = files.length and treats
+-- an ABSENT array as unknown (fail open), so the rebuild must never invent or
+-- drop it. A comparison depends on both refs' tips, so push/repository
+-- webhooks flush ALL of a repo's rows (either side of any basehead may have
+-- moved); expires_at is the 24h TTL backstop for missed deliveries. The
+-- compare's commits are also upserted into git_commits_cache on absorb
+-- (synergy with the single-commit and commits-list routes); the doc is
+-- self-contained, so a hit never depends on those rows. owner/repo lowercased
+-- like the other cached-route tables.
+CREATE TABLE compare_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    basehead     TEXT NOT NULL,              -- raw base...head path tail, exact
+    doc          TEXT NOT NULL,              -- trimmed compare document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_compare_cache_key ON compare_cache (owner, repo, basehead);
+CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 
 -- State for POST /app/installations/{id}/access_tokens responses (the
 -- installation-token mint cache). This table stays keyed by the verified app
