@@ -199,12 +199,19 @@ export interface Discrepancy {
     kind: string;
     repo: string;
     pr?: number;
+    // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown
     issue: string;
     field?: string;
     cached?: string;
     github?: string;
-    visibility?: string; // "private" on an only_on_github repo never absorbed
+    visibility?: string; // "private"/"internal" on an only_on_github repo never absorbed
+    archived?: boolean; // only_in_cache repo whose absence is explained by archival
+    title?: string; // cached PR detail on pr only_in_cache entries
+    updated_at?: string;
+    touched_at?: string;
+    served_now?: boolean; // a live pulls-list marker is serving the wrong list right now
     note?: string;
+    fix?: string; // short per-class remediation hint
 }
 
 export interface OrgSkip { org: string; reason: string; }
@@ -217,9 +224,23 @@ export interface CheckSummary {
     repos_only_in_cache: number;
     repos_only_on_github: number;
     repos_only_on_github_private: number;
+    repos_only_in_cache_archived: number;
     prs_only_in_cache: number;
     prs_only_on_github: number;
     field_mismatches: number;
+    visibility_leaks: number;
+}
+
+// AppliedSummary tallies apply-mode (Reconcile) corrections per action.
+export interface AppliedSummary {
+    repos_absorbed: number;
+    prs_absorbed: number;
+    prs_deleted: number;
+    visibility_set: number;
+    statuses_corrected: number;
+    check_rows_deleted: number;
+    default_branch_status_set: number;
+    auto_merge_set: number;
 }
 
 // TruthFreshness is one owner's most-recent org sync marker (any principal's).
@@ -237,6 +258,7 @@ export interface ConsistencyReport {
     orgs_skipped?: OrgSkip[];
     truth_freshness?: Record<string, TruthFreshness>;
     summary: CheckSummary;
+    applied?: AppliedSummary; // present only on an apply (Reconcile) run
     discrepancies: Discrepancy[];
     notes?: string[];
 }
@@ -250,7 +272,8 @@ export interface DemoStateData {
     ratelimit?: RateLimitResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
-    check?: ConsistencyReport; // global check
+    check?: ConsistencyReport; // global check (read-only)
+    checkApplied?: ConsistencyReport; // the Reconcile (apply=true) answer
 }
 
 export interface DemoConfig {

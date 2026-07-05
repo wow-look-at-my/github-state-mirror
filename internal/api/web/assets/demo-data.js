@@ -190,18 +190,32 @@ const demoCheck = {
         "wow-look-at-my": { state: "fresh", last_fetched_at: ago(810), principal: "app:3433933" },
         "octo-org": { state: "error", last_fetched_at: ago(5400), principal: "user:583231", error: "github api POST /graphql: 502 Bad Gateway" },
     },
-    summary: { orgs_checked: 1, repos_cached: 55, open_prs_cached: 119, discrepancies: 5, repos_only_in_cache: 1, repos_only_on_github: 1, repos_only_on_github_private: 1, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2 },
+    summary: { orgs_checked: 1, repos_cached: 55, open_prs_cached: 119, discrepancies: 6, repos_only_in_cache: 2, repos_only_on_github: 1, repos_only_on_github_private: 1, repos_only_in_cache_archived: 1, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2, visibility_leaks: 1 },
     discrepancies: [
-        { kind: "pr", repo: "wow-look-at-my/actions", pr: 92, issue: "field_mismatch", field: "last_commit_status", cached: "PENDING", github: "SUCCESS", note: "webhook-aggregated rollup diverged from GitHub" },
-        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 318, issue: "field_mismatch", field: "label:enhancement", cached: "(absent)", github: "a2eeef" },
-        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 301, issue: "only_in_cache", note: "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)" },
-        { kind: "repo", repo: "wow-look-at-my/old-name", issue: "only_in_cache", note: "cached but not among GitHub's non-archived repos (archived, deleted, renamed, or no longer visible)" },
-        { kind: "repo", repo: "wow-look-at-my/secret-lab", issue: "only_on_github", visibility: "private", note: "private repo not yet absorbed: no webhook and no principal's sync has referenced it; expected under lazy truth" },
+        { kind: "pr", repo: "wow-look-at-my/actions", pr: 92, issue: "field_mismatch", field: "last_commit_status", cached: "PENDING", github: "SUCCESS", note: "webhook-aggregated rollup diverged from GitHub", fix: "apply mode deletes the contradicted commit_checks rows and sets GitHub's rollup, so the next webhook cannot re-poison it" },
+        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 318, issue: "field_mismatch", field: "label:enhancement", cached: "(absent)", github: "a2eeef", fix: "apply mode overwrites it via the truth sync" },
+        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 301, issue: "only_in_cache", title: "Retry OCI blob mounts", updated_at: ago(200000), touched_at: ago(190000), served_now: true, note: "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)", fix: "apply mode deletes the stale open row; a mirrored read of the PR also self-heals it" },
+        { kind: "repo", repo: "wow-look-at-my/old-name", issue: "only_in_cache", archived: true, note: "archived on GitHub; archived repos are excluded from the org data fetch -- expected, not drift", fix: "none needed: archived repos stay cached by design" },
+        { kind: "repo", repo: "wow-look-at-my/lab", issue: "visibility_leak", field: "visibility", cached: "public", github: "private", note: "SECURITY: cached public but private on GitHub -- the reveal fast path is serving this repo's cached state to any authenticated caller", fix: "apply mode sets visibility from GitHub's answer" },
+        { kind: "repo", repo: "wow-look-at-my/secret-lab", issue: "only_on_github", visibility: "private", note: "private repo not yet absorbed: no webhook and no principal's sync has referenced it; expected under lazy truth", fix: "apply mode absorbs it (POST /api/cache/check?apply=true)" },
     ],
     notes: [
-        "Source of truth was fetched as the mirror's GitHub App. Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
+        "Source of truth was fetched as the mirror's GitHub App (repositoryOwner query, so User-account installations are checked too). Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
         "Only OPEN pull requests are compared (the cache only retains open PRs).",
         "The mergeable field is not compared: the cache deliberately un-resolves it on pushes and the GraphQL/REST readings race GitHub's recomputation.",
+    ],
+};
+// The Reconcile (apply=true) answer: same report shape plus the corrections
+// tally, so the preview exercises the applied grid.
+const demoCheckApplied = {
+    ...demoCheck,
+    applied: {
+        repos_absorbed: 1, prs_absorbed: 2, prs_deleted: 1, visibility_set: 3,
+        statuses_corrected: 1, check_rows_deleted: 4, default_branch_status_set: 2, auto_merge_set: 1,
+    },
+    notes: [
+        ...(demoCheck.notes ?? []),
+        "Apply mode: corrections were written AFTER the diff was taken -- discrepancies show the PRE-apply state, and 'applied' tallies the corrections.",
     ],
 };
 const adminGrants = {};
@@ -239,6 +253,7 @@ const config = {
             browse: demoBrowse,
             grants: adminGrants,
             check: demoCheck,
+            checkApplied: demoCheckApplied,
         },
     },
 };

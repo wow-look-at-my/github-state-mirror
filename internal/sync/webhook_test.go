@@ -136,6 +136,52 @@ func TestDispatch_UnknownEvent(t *testing.T) {
 	dispatcher.Dispatch(ctx, event)
 }
 
+// TestDispatch_PushAndRepositoryFlushCommitsListSnapshots: push and repository
+// events flush a repo's cached commits-list snapshots (a push moves every
+// ref-relative listing) while the absorbed git-commit rows -- immutable global
+// truth -- survive the flush.
+func TestDispatch_PushAndRepositoryFlushCommitsListSnapshots(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	commit := ghdata.CachedGitCommit{
+		Owner: "org1", Repo: "repo1",
+		SHA:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TreeSHA: "1111111111111111111111111111111111111111",
+		Message: "m",
+	}
+	seedSnapshot := func() {
+		t.Helper()
+		require.NoError(t, store.PutCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1,
+			[]ghdata.CachedGitCommit{commit}, now, time.Hour))
+		_, ok, err := store.GetCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1, now)
+		require.NoError(t, err)
+		require.True(t, ok, "seeded snapshot must serve")
+	}
+	snapshotServes := func() bool {
+		t.Helper()
+		_, ok, err := store.GetCachedCommitsList(ctx, "org1", "repo1", "main", 100, 1, now)
+		require.NoError(t, err)
+		return ok
+	}
+
+	seedSnapshot()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push",
+		[]byte(`{"repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, snapshotServes(), "a push must flush the repo's commits-list snapshots")
+
+	seedSnapshot()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("repository",
+		[]byte(`{"action":"privatized","repository":{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"}}}`)))
+	assert.False(t, snapshotServes(), "a repository event must flush the repo's commits-list snapshots")
+
+	// The absorbed commit rows are immutable and survive both flushes.
+	_, ok, err := store.GetCachedGitCommit(ctx, "org1", "repo1", commit.SHA, now)
+	require.NoError(t, err)
+	assert.True(t, ok, "git-commit rows must survive the snapshot flush")
+}
+
 // makePRPayload builds a realistic pull_request webhook JSON payload.
 func makePRPayload(t *testing.T, action, state, owner, repo string, number int, title string) json.RawMessage {
 	t.Helper()
@@ -399,6 +445,58 @@ func TestDispatch_Push_UpdatesPushedAt(t *testing.T) {
 	assert.Equal(t, "2026-05-01T12:00:00Z", repo.PushedAt.String)
 
 	assert.Equal(t, freshness.StateFresh, metaState(t, fStore, KindOrgRepos, "my-org"))
+}
+
+// TestDispatch_Push_DefaultBranchNullsStatus: a push to the DEFAULT branch
+// un-resolves the repo's default_branch_status -- the stored rollup describes
+// the previous tip, and a tip with no CI would otherwise keep it forever (the
+// COALESCE upsert can never clear it). A non-default-branch push leaves it.
+func TestDispatch_Push_DefaultBranchNullsStatus(t *testing.T) {
+	dispatcher, mgr, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	seedRepo := func() {
+		require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
+			Owner: "my-org", Name: "my-repo", NameWithOwner: "my-org/my-repo", Url: "u",
+			DefaultBranch:       sql.NullString{String: "main", Valid: true},
+			DefaultBranchStatus: sql.NullString{String: "SUCCESS", Valid: true},
+		}))
+	}
+	seedRepo()
+	seed(t, mgr, KindOrgRepos, "my-org")
+
+	// The push payload's own repository object names the default branch.
+	mkPayload := func(ref string) json.RawMessage {
+		data, err := json.Marshal(map[string]any{
+			"ref": ref,
+			"repository": map[string]any{
+				"name": "my-repo", "default_branch": "main",
+				"owner": map[string]any{"login": "my-org"},
+			},
+			"head_commit": map[string]any{"timestamp": "2026-05-01T12:00:00Z"},
+		})
+		require.NoError(t, err)
+		return data
+	}
+
+	// A feature-branch push leaves the default-branch rollup alone.
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", mkPayload("refs/heads/feature")))
+	repo, err := store.GetRepo(ctx, "my-org", "my-repo")
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCESS", repo.DefaultBranchStatus.String, "non-default push must not clear the rollup")
+
+	// A default-branch push un-resolves it.
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", mkPayload("refs/heads/main")))
+	repo, err = store.GetRepo(ctx, "my-org", "my-repo")
+	require.NoError(t, err)
+	assert.False(t, repo.DefaultBranchStatus.Valid, "default-branch push must un-resolve the stale rollup")
+
+	// Payload without default_branch: falls back to the cached row's value.
+	seedRepo()
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", makePushPayload(t, "my-org", "my-repo", "refs/heads/main", "2026-05-01T12:00:00Z")))
+	repo, err = store.GetRepo(ctx, "my-org", "my-repo")
+	require.NoError(t, err)
+	assert.False(t, repo.DefaultBranchStatus.Valid, "cached default_branch backs the payload-less case")
 }
 
 // TestDispatch_Push_UnresolvesMergeableByBranch: a push to a branch un-resolves

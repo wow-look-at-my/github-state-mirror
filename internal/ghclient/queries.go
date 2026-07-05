@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
@@ -113,12 +114,16 @@ type gqlPageInfo struct {
 }
 
 type gqlRepo struct {
-	Name          string  `json:"name"`
-	NameWithOwner string  `json:"nameWithOwner"`
-	URL           string  `json:"url"`
-	IsDisabled    bool    `json:"isDisabled"`
-	PushedAt      *string `json:"pushedAt"`
-	Owner         struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
+	URL           string `json:"url"`
+	IsDisabled    bool   `json:"isDisabled"`
+	// IsArchived is selected only by the owner-agnostic query (ownerDataQuery);
+	// the identity-locked orgDataQuery never returns it, leaving it false --
+	// which matches its repositories(isArchived: false) filter anyway.
+	IsArchived bool    `json:"isArchived"`
+	PushedAt   *string `json:"pushedAt"`
+	Owner      struct {
 		Login     string `json:"login"`
 		AvatarURL string `json:"avatarUrl"`
 		URL       string `json:"url"`
@@ -164,6 +169,14 @@ type gqlPR struct {
 	ReviewRequests struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"reviewRequests"`
+	// AutoMergeRequest is selected only by the owner-agnostic query
+	// (ownerPRFields); the identity-locked prFields never returns it, leaving
+	// it nil. mergeMethod is a GraphQL enum (MERGE/SQUASH/REBASE) -- convertPR
+	// lowercases it to match the REST auto_merge.merge_method values the cache
+	// stores and rebuilds.
+	AutoMergeRequest *struct {
+		MergeMethod string `json:"mergeMethod"`
+	} `json:"autoMergeRequest"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -326,6 +339,7 @@ func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 		NameWithOwner: gr.NameWithOwner,
 		Url:           gr.URL,
 		IsDisabled:    boolToInt(gr.IsDisabled),
+		IsArchived:    boolToInt(gr.IsArchived),
 		OwnerLogin:    sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
 		OwnerAvatar:   sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
 		OwnerUrl:      sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
@@ -368,6 +382,15 @@ func convertPR(owner, repoName string, gpr gqlPR) dbgen.PullRequest {
 		pr.AuthorLogin = sql.NullString{String: gpr.Author.Login, Valid: true}
 		pr.AuthorAvatar = sql.NullString{String: gpr.Author.AvatarURL, Valid: true}
 		pr.AuthorUrl = sql.NullString{String: gpr.Author.URL, Valid: true}
+	}
+	if gpr.AutoMergeRequest != nil && gpr.AutoMergeRequest.MergeMethod != "" {
+		// Lowercased so the value matches the REST auto_merge.merge_method the
+		// webhook payloads store ("squash", not the GraphQL enum "SQUASH").
+		// NOTE: SyncOrgTruth's upsert deliberately does NOT apply this column
+		// from GraphQL-shaped rows (node_id is NULL); it is carried for the
+		// consistency checker's diff, and apply mode writes it via the explicit
+		// SetPRAutoMergeMethod.
+		pr.AutoMergeMethod = sql.NullString{String: strings.ToLower(gpr.AutoMergeRequest.MergeMethod), Valid: true}
 	}
 	if len(gpr.Commits.Nodes) > 0 {
 		commit := gpr.Commits.Nodes[0]

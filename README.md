@@ -17,7 +17,7 @@ Data stays fresh via three mechanisms:
    Only a structural payload that can't be parsed falls back to marking the affected resource stale for lazy refresh.
 
    **Webhooks always apply.** There is ONE global truth store, so a delivery never asks "who has this cached?" — an event for a repo nobody has ever fetched upserts the repo row straight from the payload's own `repository` object and applies. There is no "skipped" outcome and no on-demand fetch on the webhook path.
-2. **Periodic refresh** — When a GitHub App is configured (see Configuration), every 6 hours the service signs in as the app — per installation, never using a static service token — and re-runs the org list-syncs already recorded, refreshing global truth as a backstop. (It does not pre-enumerate anything; truth is populated lazily by fetches and webhooks.)
+2. **Periodic fleet refresh** — When a GitHub App is configured (see Configuration), every 6 hours the service signs in as the app — per installation, never using a static service token — and syncs **each installation's account**: every repo + open PR of that owner, Organizations and Users alike (an owner-agnostic `repositoryOwner` GraphQL query). Each sync lands in global truth and earns the installation's stable `app-installation:<id>` principal its grants; a brand-new installation is synced on the first cycle (the refresher names the owner itself — it does not wait for a pre-existing freshness marker).
 3. **Lazy fetch** — On first access (or cache miss), data is fetched on demand — with the caller's own token — before responding
 
 Because high-frequency events are applied in place, an active org's cache no longer gets invalidated (and fully re-fetched) on every CI run or push — which is the point: serve from local state, only call GitHub on a genuine miss.
@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Six REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Seven REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -79,6 +79,19 @@ pass through verbatim, uncached.
   message, timestamp, author/committer, with parents derived from the
   payload's linear chain) are absorbed on delivery, so the common post-push
   read hits without any GitHub fetch ever having happened.
+- `GET /repos/{owner}/{repo}/commits` — the commits list (pr-minder's
+  fork-point detection pages this per branch). Each listed commit is absorbed
+  into the same `git_commits_cache` rows as above; a per-query snapshot —
+  keyed by the raw `sha` query value (`''` = default branch), `per_page`, and
+  `page` — stores only the response's ordered shas, so the list rebuilds from
+  the immutable commit rows in the exact order GitHub returned. Item shape:
+  `{sha, commit: {author, committer, message, tree: {sha}}, parents: [{sha},
+  ...]}`. Only `sha`/`per_page` (1..100)/`page` (1..10) are modeled; anything
+  else (`path`, `since`, `author`, ...) passes through, and only a `200` is
+  absorbed (404/409/5xx relay unstored). Snapshots are flushed by `push` and
+  `repository` webhooks (a push moves every ref-relative listing; the
+  absorbed commit rows stay) with a 24 h TTL backstop. The single-commit
+  sub-path `/commits/{sha}` is a different shape and stays passthrough.
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving
@@ -155,7 +168,8 @@ Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign
 - **Admins see everything.** Logins listed in `ADMIN_LOGINS` (default `PazerOP`) get a **Principals** view: every known principal with its login, live grant count, and last-seen time, plus a per-principal **Grants** action showing exactly which repos the reveal layer will serve it (and whether each grant came from a `list_sync` or a `probe`). They also get two global activity logs: a **Requests** tab — live data-API traffic and how each request was served (`hit` from cache / `miss` then fetched / `passthrough` read forwarded uncached / `write` mutation proxied) — and a **Webhooks** tab — recent webhook deliveries and each one's disposition (`applied` / `invalidated` / `ignored` / `error`; there is no "skipped" under the global model), confirming that incoming events update truth. A **Rate limit** tab shows GitHub rate-limit standing two ways: **live** — a `GET /rate_limit` poll per installation of the mirror's own GitHub App (the credential behind background refreshes and the consistency check) — and **observed** — the `X-RateLimit-*` headers GitHub attaches to every response, passively recorded off each upstream path (passthrough proxy, cache-miss fetches, reveal probes, the client's own calls) and grouped per identity (principal or credential-derived label; never a raw token) and resource bucket. The observed half costs zero API calls and covers the callers' own credentials, not just the App; it is in-memory like the request log and resets on restart. Without a GitHub App the tab still works, showing observed data plus a note that live polling is unavailable.
 - **Admins can browse and audit global truth.** The Principals tab carries two truth-wide actions:
   - **Browse truth** opens the actual cached rows — repositories (with stored visibility), open pull requests with their labels and CI status, and commit checks — plus a copyable raw-JSON dump.
-  - **Run consistency check** re-fetches the source of truth from GitHub (as the mirror's own GitHub App) and emits a JSON diff of any drift between GLOBAL truth and GitHub — repos/PRs only in the cache or only on GitHub, and field mismatches such as a stale `last_commit_status`, `default_branch_status`, draft flag, or labels (`mergeable` is deliberately not compared: the cache un-resolves it on pushes). A missing repo that is **private** on GitHub is marked `visibility: "private"` and tallied separately (`repos_only_on_github_private`) — under lazy truth it simply has not been absorbed yet (no webhook, no principal's sync), which is expected, not a failure. The report includes `truth_freshness`: per owner, the most recent org list-sync any principal ran (state, last fetched, error, which principal), since any principal's sync refreshes the shared truth. It needs a configured GitHub App; without one the action reports "unavailable". Owners the app is not installed on are listed as skipped rather than reported as missing.
+  - **Run consistency check** re-fetches the source of truth from GitHub (as the mirror's own GitHub App, via the owner-agnostic `repositoryOwner` query — User-account installations are checked like Organizations) and emits a JSON diff of any drift between GLOBAL truth and GitHub — repos/PRs only in the cache or only on GitHub, and field mismatches such as a stale `last_commit_status`, `default_branch_status`, `visibility`, `is_archived`, `pushed_at` (5-minute tolerance; lag implies missed push webhooks), `auto_merge_method`, draft flag, or labels (`mergeable` is deliberately not compared: the cache un-resolves it on pushes). A repo cached **public** that GitHub says is private/internal gets its own `visibility_leak` issue (the reveal fast path is serving it); a cached-only repo that is **archived** is classified as expected (own tally) rather than drift; cached-open PRs under a missing repo are swept as their own entries; PR-existence entries carry `served_now` (a live pulls-list marker means the wrong list is being served right now) and every discrepancy carries a short `fix` hint. A missing repo that is **private** on GitHub is marked and tallied separately (`repos_only_on_github_private`) — under lazy truth it simply has not been absorbed yet, which is expected, not a failure. The report includes `truth_freshness`: per owner, the most recent org list-sync any principal ran. It needs a configured GitHub App; without one the action reports "unavailable". Owners the app is not installed on are listed as skipped rather than reported as missing.
+  - **Reconcile** runs the same check and then **corrects** the drift from the same fetched snapshot (`POST /api/cache/check?apply=true`, behind a confirmation): missing repos/open PRs are absorbed into truth (grants recorded under the installation principal), stale cached-open PRs are deleted, `visibility` / `default_branch_status` / `auto_merge_method` are set from GitHub's answers **including nulls** the COALESCE upserts can never write, and a poisoned CI rollup (a ghost PENDING `commit_checks` row whose completion delivery was missed) is fixed by deleting the contradicted rows and setting GitHub's verdict — a correction that survives the next PR webhook. The response is the normal report plus an `applied` tally per action. A plain GET stays strictly read-only.
 - **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's bearer-token + reveal model. The principal→login mapping (`actor_identities`) exists purely so the UI can attribute principals.
 
 Dashboard routes (session-cookie auth, not bearer tokens):
@@ -170,7 +184,8 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `GET /api/jobs?limit=<n>` — recent GitHub Actions jobs recorded from `workflow_job` webhooks: running jobs first (newest started first), then completed (newest completed first); `limit` defaults to 100, capped at 500 (admin only)
 - `GET /api/ratelimit` — `{live, observed, note?}`: the GitHub App's per-installation `GET /rate_limit` poll (`live`) plus the passively observed `X-RateLimit-*` readings per (identity, resource) (`observed`; in-memory, resets on restart). With no App configured (or a failed poll) `live` is empty and `note` explains why — the observed half is returned regardless (admin only)
 - `GET /api/cache/data` — the global truth rows as flattened JSON; with `?principal=<key>` instead returns that principal's live (unexpired) access grants (admin only; `<key>` is the full principal key, e.g. `user:6569500` or `app:3433933`)
-- `GET /api/cache/check[?org=<owner>]` — consistency-check diff of global truth against GitHub's live state (admin only; requires a configured GitHub App)
+- `GET /api/cache/check[?org=<owner>]` — consistency-check diff of global truth against GitHub's live state (admin only; requires a configured GitHub App; strictly read-only)
+- `POST /api/cache/check?apply=true[&org=<owner>]` — the same check, then RECONCILE: correct the drift from the fetched snapshot and report an `applied` tally (admin only; `?apply` on a GET is rejected with 405)
 
 Sign-in requires a GitHub OAuth App; set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (see below). With those unset the page still renders but the sign-in button is disabled.
 

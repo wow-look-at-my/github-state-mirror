@@ -90,6 +90,24 @@ func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time
 	return true, nil
 }
 
+// HasLivePullsListMarker reports whether the repo's "open-PR list complete"
+// marker is currently valid, WITHOUT touching its LRU timestamp -- a pure
+// read for the consistency check (which must not mutate the cache), unlike
+// PullsListFresh whose hit refreshes last_used_at.
+func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, now time.Time) (bool, error) {
+	row, err := s.q.GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	exp, perr := time.Parse(time.RFC3339, row.ExpiresAt)
+	return perr == nil && exp.After(now), nil
+}
+
 // RestPullsList returns the repo's open-PR rows (newest-created first,
 // GitHub's default list order) plus all their labels grouped by PR number.
 // owner/repo are matched case-insensitively: rows carry GitHub's canonical

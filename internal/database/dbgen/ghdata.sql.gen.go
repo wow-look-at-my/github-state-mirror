@@ -1004,6 +1004,34 @@ func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeab
 	return err
 }
 
+const setPRAutoMergeMethod = `-- name: SetPRAutoMergeMethod :exec
+UPDATE pull_requests SET auto_merge_method = ?
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type SetPRAutoMergeMethodParams struct {
+	AutoMergeMethod sql.NullString
+	Owner           string
+	Repo            string
+	Number          int64
+}
+
+// SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
+// directly fetched answer, INCLUDING null (not armed) -- the SetPRMergeable
+// idiom. The upsert only takes auto_merge_method from REST-shaped sources
+// (node_id present), so a stale armed flag left by a missed
+// auto_merge_disabled delivery can only be cleared by this explicit set (the
+// consistency check's apply mode).
+func (q *Queries) SetPRAutoMergeMethod(ctx context.Context, arg SetPRAutoMergeMethodParams) error {
+	_, err := q.db.ExecContext(ctx, setPRAutoMergeMethod,
+		arg.AutoMergeMethod,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	return err
+}
+
 const setPRLabelColorByName = `-- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
 WHERE owner = ? AND repo = ? AND name = ?

@@ -12,14 +12,16 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 10: ONE GLOBAL TRUTH STORE (the global-cache re-architecture).
-// The actor dimension is dropped from every GitHub-state table; access is
-// decided at serve time by the reveal-by-permission layer (access_grants +
-// deny_cache + repos.visibility). Bumping nukes the DB on deploy; global truth
-// rebuilds from webhooks and each caller's own fetches. (9 was the per-actor
-// /pulls + /installation cache branch, folded into this model; 8 was per-user
+// SchemaVersion 11: adds commits_list_cache -- per-page snapshots backing the
+// cached GET /repos/{owner}/{repo}/commits list route (the listed commits
+// themselves are absorbed into git_commits_cache). Bumping nukes the DB on
+// deploy; global truth rebuilds from webhooks and each caller's own fetches.
+// (10 was ONE GLOBAL TRUTH STORE, the global-cache re-architecture: the actor
+// dimension dropped from every GitHub-state table, access decided at serve
+// time by the reveal-by-permission layer; 9 was the per-actor /pulls +
+// /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

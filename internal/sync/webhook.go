@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -192,8 +193,37 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
+		// A push to the DEFAULT branch likewise stales default_branch_status:
+		// the stored rollup describes the previous tip, nothing restates it
+		// until the new tip's first check event, and a tip with no CI at all
+		// would keep the old rollup forever (the COALESCE upsert can never
+		// clear it). Un-resolve it -- the NullPRMergeableByBranch analog; the
+		// next default-branch check event repopulates it.
+		if d.isDefaultBranch(ctx, event, payload.Owner, payload.Repo, branch) {
+			if err := d.store.SetRepoDefaultBranchStatus(ctx, payload.Owner, payload.Repo, sql.NullString{}); err != nil {
+				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+			}
+		}
 	}
 	return applied("updated pushed_at")
+}
+
+// isDefaultBranch reports whether branch is the repo's default branch,
+// preferring the payload's own repository.default_branch (push payloads carry
+// it) and falling back to the cached repo row (absorbed moments ago, or by an
+// earlier sync). Unknown reads as false -- never null a status on a guess.
+func (d *WebhookDispatcher) isDefaultBranch(ctx context.Context, event webhook.Event, owner, repo, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if r, ok := webhook.ParseRepositoryPayload(event.Raw); ok && r.DefaultBranch.Valid && r.DefaultBranch.String != "" {
+		return r.DefaultBranch.String == branch
+	}
+	row, err := d.store.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return false
+	}
+	return row.DefaultBranch.Valid && row.DefaultBranch.String == branch
 }
 
 // absorbPushCommits upserts the pushed commits into the global git-commits
@@ -252,10 +282,12 @@ func fullHexSHA(s string) bool {
 // invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
 // stale. push/repository events flush the repo's contents rows -- the
 // conservative whole-repo flush; the payload's modified-paths refinement can
-// come later. repository events (rename/delete/visibility) additionally flush
-// the repo's "open-PR list complete" marker; pull_request events deliberately
-// do NOT -- they maintain the PR rows, which is what the marker asserts.
-// installation events flush the installation's cached token mints AND cached
+// come later -- AND its commits-list snapshots (a push moves every
+// ref-relative listing; the absorbed git-commit rows are immutable and stay).
+// repository events (rename/delete/visibility) additionally flush the repo's
+// "open-PR list complete" marker; pull_request events deliberately do NOT --
+// they maintain the PR rows, which is what the marker asserts. installation
+// events flush the installation's cached token mints AND cached
 // repo-installation answers (a suspended/deleted/re-scoped installation must
 // not keep serving either). Git-commit rows are immutable and are deliberately
 // never invalidated.
@@ -268,6 +300,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		if err := d.store.InvalidateContentsCache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate contents cache failed", "repo", owner+"/"+repo, "error", err)
+		}
+		if err := d.store.InvalidateCommitsListCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate commits list cache failed", "repo", owner+"/"+repo, "error", err)
 		}
 		if event.Type == "repository" {
 			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {

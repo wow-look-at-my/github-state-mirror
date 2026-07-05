@@ -139,10 +139,12 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/requests", d.handleRequests)
 
 	// Admin-only: browse the actual cached rows for one scope, run a consistency
-	// check that re-fetches the source of truth from GitHub, and read the GitHub
+	// check that re-fetches the source of truth from GitHub (GET = read-only;
+	// POST ?apply=true additionally reconciles the drift), and read the GitHub
 	// App's rate-limit status.
 	r.Get("/api/cache/data", d.handleCacheData)
 	r.Get("/api/cache/check", d.handleCacheCheck)
+	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
 }
 

@@ -98,10 +98,10 @@ function fmtTime(s) {
 function countOf(c, k) {
     return Number(c[k]) || 0;
 }
-async function api(path) {
+async function api(path, method = "GET") {
     if (DEMO)
-        return demoApi(path);
-    const res = await fetch(path, { headers: { Accept: "application/json" }, credentials: "same-origin" });
+        return demoApi(path, method);
+    const res = await fetch(path, { method, headers: { Accept: "application/json" }, credentials: "same-origin" });
     if (!res.ok) {
         const err = new Error("HTTP " + res.status);
         err.status = res.status;
@@ -282,9 +282,18 @@ async function loadScope(scope, silent = false) {
         body.appendChild(principalCard(s, true));
 }
 // truthActions renders the admin actions on GLOBAL truth: browse the cached
-// rows, or run a consistency check against GitHub. Both open a modal.
+// rows, run a read-only consistency check against GitHub, or RECONCILE --
+// the apply-mode check that also corrects the drift it finds. All open the
+// same modal.
 function truthActions() {
-    return el("div", { class: "scope-actions", style: "margin: 0 0 12px" }, el("button", { class: "btn btn-sm", onclick: () => void openBrowse() }, "Browse truth"), el("button", { class: "btn btn-sm", onclick: () => void openCheck() }, "Run consistency check"));
+    const reconcile = () => {
+        if (!confirm("Reconcile rewrites global truth from GitHub: absorb missing repos/PRs, " +
+            "delete stale open PRs, and correct visibility / CI rollups / auto-merge " +
+            "state. Run it now?"))
+            return;
+        void openCheck(true);
+    };
+    return el("div", { class: "scope-actions", style: "margin: 0 0 12px" }, el("button", { class: "btn btn-sm", onclick: () => void openBrowse() }, "Browse truth"), el("button", { class: "btn btn-sm", onclick: () => void openCheck(false) }, "Run consistency check"), el("button", { class: "btn btn-sm", onclick: reconcile }, "Reconcile"));
 }
 function totalsGrid(totals, principalCount) {
     const grid = el("div", { class: "stat-grid" });
@@ -732,16 +741,22 @@ function statusCell(status) {
         return el("td", { text: "—" });
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
-async function openCheck() {
-    const { body } = openModal("Consistency check — global truth vs GitHub");
-    body.appendChild(el("div", { class: "loading", text: "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
+async function openCheck(apply) {
+    const { body } = openModal(apply
+        ? "Reconcile — correct global truth from GitHub"
+        : "Consistency check — global truth vs GitHub");
+    body.appendChild(el("div", { class: "loading", text: apply
+            ? "Fetching source of truth from GitHub, diffing, and correcting the drift… this can take a few seconds."
+            : "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
     let report;
     try {
-        report = await api("/api/cache/check");
+        report = apply
+            ? await api("/api/cache/check?apply=true", "POST")
+            : await api("/api/cache/check");
     }
     catch (e) {
         body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Consistency check failed: " + e.message }));
+        body.appendChild(el("div", { class: "error-banner", text: (apply ? "Reconcile" : "Consistency check") + " failed: " + e.message }));
         return;
     }
     body.innerHTML = "";
@@ -757,17 +772,25 @@ function renderCheck(r) {
     const grid = el("div", { class: "stat-grid" });
     grid.appendChild(statCard(sm.discrepancies, "Discrepancies"));
     grid.appendChild(statCard(sm.repos_only_in_cache, "Repos only cached"));
+    grid.appendChild(statCard(sm.repos_only_in_cache_archived ?? 0, "…of those, archived (expected)"));
     grid.appendChild(statCard(sm.repos_only_on_github, "Repos only on GH"));
     grid.appendChild(statCard(sm.repos_only_on_github_private, "…of those, private (lazy truth)"));
     grid.appendChild(statCard(sm.prs_only_in_cache, "PRs only cached"));
     grid.appendChild(statCard(sm.prs_only_on_github, "PRs only on GH"));
     grid.appendChild(statCard(sm.field_mismatches, "Field mismatches"));
+    grid.appendChild(statCard(sm.visibility_leaks ?? 0, "Visibility leaks"));
     wrap.appendChild(grid);
     const tf = r.truth_freshness ?? {};
     const owners = Object.keys(tf).sort();
     if (owners.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Truth freshness (most recent org sync per owner)" }));
         wrap.appendChild(truthFreshnessTable(owners.map((o) => [o, tf[o]])));
+    }
+    // The Reconcile tally: what apply mode actually corrected (discrepancies
+    // below show the PRE-apply state).
+    if (r.applied) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Applied corrections" }));
+        wrap.appendChild(appliedGrid(r.applied));
     }
     if (r.discrepancies.length === 0) {
         wrap.appendChild(el("div", { class: "ok-banner", text: "No drift detected. The cache matches GitHub for every org checked." }));
@@ -792,10 +815,34 @@ function renderCheck(r) {
     }
     return wrap;
 }
+// appliedGrid renders the Reconcile tally as stat tiles.
+function appliedGrid(a) {
+    const grid = el("div", { class: "stat-grid" });
+    const tiles = [
+        [a.repos_absorbed, "Repos absorbed"],
+        [a.prs_absorbed, "PRs absorbed"],
+        [a.prs_deleted, "Stale PRs deleted"],
+        [a.visibility_set, "Visibility set"],
+        [a.statuses_corrected, "Statuses corrected"],
+        [a.check_rows_deleted, "Check rows deleted"],
+        [a.default_branch_status_set, "Branch statuses set"],
+        [a.auto_merge_set, "Auto-merge set"],
+    ];
+    for (const [n, label] of tiles)
+        grid.appendChild(statCard(n, label));
+    return grid;
+}
 function discrepancyTable(items) {
     const rows = items.map((d) => {
         const where = d.kind === "pr" ? d.repo + " #" + (d.pr ?? "") : d.repo;
-        return el("tr", null, el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })), el("td", { class: "wh-repo", text: where }), el("td", { class: "kind", text: d.field || "—" }), el("td", { class: "diff-cached", text: d.cached || "" }), el("td", { class: "diff-github", text: d.github || "" }), el("td", { class: "wh-detail" }, d.visibility ? el("span", { class: "badge", text: d.visibility }) : null, d.note ? " " + d.note : ""));
+        const noteBits = [];
+        if (d.title)
+            noteBits.push("“" + d.title + "”");
+        if (d.note)
+            noteBits.push(d.note);
+        if (d.fix)
+            noteBits.push("fix: " + d.fix);
+        return el("tr", null, el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })), el("td", { class: "wh-repo", text: where }), el("td", { class: "kind", text: d.field || "—" }), el("td", { class: "diff-cached", text: d.cached || "" }), el("td", { class: "diff-github", text: d.github || "" }), el("td", { class: "wh-detail" }, d.visibility ? el("span", { class: "badge", text: d.visibility }) : null, d.archived ? el("span", { class: "badge", text: "archived" }) : null, d.served_now ? el("span", { class: "badge", text: "served now" }) : null, noteBits.length ? " " + noteBits.join(" — ") : ""));
     });
     return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
 }
@@ -836,7 +883,7 @@ function demoReject(status) {
     err.status = status;
     return Promise.reject(err);
 }
-function demoApi(path) {
+function demoApi(path, method = "GET") {
     const cfg = DEMO;
     const state = cfg.current ?? cfg.initial;
     const d = cfg.data[state] ?? {};
@@ -852,6 +899,10 @@ function demoApi(path) {
         return d.browse ? Promise.resolve(d.browse) : demoReject(404);
     }
     if (path.startsWith("/api/cache/check")) {
+        const applied = demoQuery(path, "apply");
+        if ((applied === "true" || applied === "1") && method === "POST") {
+            return d.checkApplied ? Promise.resolve(d.checkApplied) : demoReject(503);
+        }
         return d.check ? Promise.resolve(d.check) : demoReject(503);
     }
     if (path.startsWith("/api/cache")) {

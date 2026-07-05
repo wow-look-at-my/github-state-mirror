@@ -185,7 +185,7 @@ CREATE INDEX idx_access_grants_repo ON access_grants (owner, repo);
 -- grant for the repo clears the principal's verdicts for it.
 CREATE TABLE deny_cache (
     principal     TEXT NOT NULL,
-    resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull
+    resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull | repo_commits
     resource_key  TEXT NOT NULL,  -- route-specific resource key
     owner         TEXT NOT NULL,  -- lowercased
     repo          TEXT NOT NULL,  -- lowercased
@@ -264,6 +264,35 @@ CREATE TABLE git_commits_cache (
 
 CREATE UNIQUE INDEX idx_git_commits_cache_key ON git_commits_cache (owner, repo, sha);
 CREATE INDEX idx_git_commits_cache_lru ON git_commits_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/commits (the commits LIST
+-- route). The listed commits themselves are absorbed into the git_commits_cache
+-- rows above (the same global truth the single git-commit route and push
+-- payloads maintain); a snapshot row stores only the ORDERING/COMPLETENESS
+-- proof for one exact modeled query shape: the response's commit shas, in
+-- order, keyed by (owner, repo, ref_param, per_page, page) where ref_param is
+-- the raw ?sha= query value ('' = default branch). A hit requires an unexpired
+-- snapshot AND every listed sha still resolving in git_commits_cache (an
+-- LRU-pruned commit degrades the snapshot to a miss). Listings are
+-- ref-tip-relative and move on every push, so push/repository webhooks flush a
+-- repo's snapshots (the absorbed commit rows are immutable and stay);
+-- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
+-- lowercased like the other cached-route tables.
+CREATE TABLE commits_list_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    ref_param    TEXT NOT NULL DEFAULT '',   -- raw ?sha= query value ('' = default branch)
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    shas         TEXT NOT NULL,              -- JSON array of commit shas in response order
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_commits_list_cache_key ON commits_list_cache (owner, repo, ref_param, per_page, page);
+CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
 
 -- State for POST /app/installations/{id}/access_tokens responses (the
 -- installation-token mint cache). This table stays keyed by the verified app

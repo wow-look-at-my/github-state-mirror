@@ -3,9 +3,12 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,6 +133,50 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 	ok, err := store.HasGrant(context.Background(), "user:900", "org1", "repo1", time.Now())
 	require.NoError(t, err)
 	assert.True(t, ok, "list sync must record a grant for each repo GitHub returned")
+}
+
+// TestOrgReposFetcher_QuerySelectionByPrincipal: an app-installation
+// principal's fetch issues the owner-agnostic repositoryOwner query (the
+// installation account may be a User); every other principal keeps the
+// identity-locked organization query.
+func TestOrgReposFetcher_QuerySelectionByPrincipal(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		require.NoError(t, json.Unmarshal(body, &req))
+		mu.Lock()
+		queries = append(queries, req.Query)
+		mu.Unlock()
+
+		emptyRepos := map[string]any{
+			"repositories": map[string]any{
+				"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+				"nodes":    []map[string]any{},
+			},
+		}
+		if strings.Contains(req.Query, "repositoryOwner") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repositoryOwner": emptyRepos}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"organization": emptyRepos}})
+	})
+
+	client, store := setupFetcherTest(t, mux)
+	f := &OrgReposFetcher{gh: client, store: store}
+
+	_, err := f.Fetch(actor.WithActor(context.Background(), AppInstallationActor(5)), "someuser", "")
+	require.NoError(t, err)
+	_, err = f.Fetch(actor.WithActor(context.Background(), "user:900"), "org1", "")
+	require.NoError(t, err)
+
+	require.Len(t, queries, 2)
+	assert.Contains(t, queries[0], "repositoryOwner(login: $owner)", "app-installation sessions use the owner-agnostic query")
+	assert.Contains(t, queries[1], "organization(login: $org)", "every other principal keeps the locked org query")
 }
 
 func TestOrgReposFetcher_APIError(t *testing.T) {
