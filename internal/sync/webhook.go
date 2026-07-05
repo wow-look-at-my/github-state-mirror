@@ -286,13 +286,18 @@ func fullHexSHA(s string) bool {
 // ref-relative listing; the absorbed git-commit rows are immutable and stay)
 // AND its compare docs (a push to either side of any basehead changes the
 // comparison; whole-repo is the correct coarse grain since a payload can't
-// resolve which baseheads a moved ref appears in). repository events
-// (rename/delete/visibility) additionally flush the repo's "open-PR list
-// complete" marker; pull_request events deliberately do NOT -- they maintain
-// the PR rows, which is what the marker asserts. installation events flush
-// the installation's cached token mints AND cached repo-installation answers
-// (a suspended/deleted/re-scoped installation must not keep serving either).
-// Git-commit rows are immutable and are deliberately never invalidated.
+// resolve which baseheads a moved ref appears in) AND its commit-CI snapshots
+// (a push moves branch-form refs' tips). status/check_run/check_suite events
+// flush the commit-CI snapshots too -- CI state changed somewhere in the
+// repo, and per-sha precision is not worth the bookkeeping for v1 (a
+// branch-form key can't be matched to a payload sha anyway). repository
+// events (rename/delete/visibility) additionally flush the repo's "open-PR
+// list complete" marker; pull_request events deliberately do NOT -- they
+// maintain the PR rows, which is what the marker asserts. installation
+// events flush the installation's cached token mints AND cached
+// repo-installation answers (a suspended/deleted/re-scoped installation must
+// not keep serving either). Git-commit rows are immutable and are
+// deliberately never invalidated.
 func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
 	switch event.Type {
 	case "push", "repository":
@@ -309,10 +314,21 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if err := d.store.InvalidateCompareCache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate compare cache failed", "repo", owner+"/"+repo, "error", err)
 		}
+		if err := d.store.InvalidateCommitCICache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate commit CI cache failed", "repo", owner+"/"+repo, "error", err)
+		}
 		if event.Type == "repository" {
 			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {
 				slog.Warn("webhook: invalidate pulls list markers failed", "repo", owner+"/"+repo, "error", err)
 			}
+		}
+	case "status", "check_run", "check_suite":
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return
+		}
+		if err := d.store.InvalidateCommitCICache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate commit CI cache failed", "repo", owner+"/"+repo, "error", err)
 		}
 	case "installation", "installation_repositories":
 		if event.InstallationID == 0 {

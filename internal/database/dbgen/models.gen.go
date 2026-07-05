@@ -58,6 +58,18 @@ type CommitCheck struct {
 	State   string
 }
 
+type CommitCiCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Ref        string
+	Kind       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CommitsListCache struct {
 	ID         int64
 	Owner      string

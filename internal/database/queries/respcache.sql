@@ -146,6 +146,42 @@ DELETE FROM compare_cache WHERE id IN (
     SELECT id FROM compare_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
+-- ---- commit_ci_cache (GET /repos/{owner}/{repo}/commits/{ref}/status and
+-- ---- GET /repos/{owner}/{repo}/commits/{ref}/check-runs) ----
+
+-- name: GetCommitCICache :one
+SELECT * FROM commit_ci_cache
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+
+-- name: UpsertCommitCICache :exec
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref, kind) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCommitCICache :exec
+UPDATE commit_ci_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+
+-- DeleteCommitCICacheByRepo drops a repo's combined-status and check-runs
+-- snapshots together -- the status/check_run/check_suite/push/repository
+-- webhook flush (CI state changed somewhere in the repo, or a branch-form
+-- ref's tip moved; both kinds share the trigger set, so one whole-repo
+-- delete covers them).
+-- name: DeleteCommitCICacheByRepo :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCommitCICache :exec
+DELETE FROM commit_ci_cache WHERE expires_at <= ?;
+
+-- name: PruneCommitCICacheLRU :exec
+DELETE FROM commit_ci_cache WHERE id IN (
+    SELECT id FROM commit_ci_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
 -- ---- install_token_cache ----
 
 -- name: GetInstallTokenCache :one

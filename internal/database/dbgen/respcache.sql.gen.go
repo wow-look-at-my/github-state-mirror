@@ -9,6 +9,25 @@ import (
 	"context"
 )
 
+const deleteCommitCICacheByRepo = `-- name: DeleteCommitCICacheByRepo :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCommitCICacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteCommitCICacheByRepo drops a repo's combined-status and check-runs
+// snapshots together -- the status/check_run/check_suite/push/repository
+// webhook flush (CI state changed somewhere in the repo, or a branch-form
+// ref's tip moved; both kinds share the trigger set, so one whole-repo
+// delete covers them).
+func (q *Queries) DeleteCommitCICacheByRepo(ctx context.Context, arg DeleteCommitCICacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitCICacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteCommitsListCacheByRepo = `-- name: DeleteCommitsListCacheByRepo :exec
 DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?
 `
@@ -54,6 +73,15 @@ type DeleteContentsCacheByRepoParams struct {
 
 func (q *Queries) DeleteContentsCacheByRepo(ctx context.Context, arg DeleteContentsCacheByRepoParams) error {
 	_, err := q.db.ExecContext(ctx, deleteContentsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteExpiredCommitCICache = `-- name: DeleteExpiredCommitCICache :exec
+DELETE FROM commit_ci_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCommitCICache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCommitCICache, expiresAt)
 	return err
 }
 
@@ -144,6 +172,43 @@ DELETE FROM repo_installation_cache WHERE installation_id = ?
 func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
 	return err
+}
+
+const getCommitCICache = `-- name: GetCommitCICache :one
+
+SELECT id, owner, repo, ref, kind, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?
+`
+
+type GetCommitCICacheParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Kind  string
+}
+
+// ---- commit_ci_cache (GET /repos/{owner}/{repo}/commits/{ref}/status and
+// ---- GET /repos/{owner}/{repo}/commits/{ref}/check-runs) ----
+func (q *Queries) GetCommitCICache(ctx context.Context, arg GetCommitCICacheParams) (CommitCiCache, error) {
+	row := q.db.QueryRowContext(ctx, getCommitCICache,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+	)
+	var i CommitCiCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Ref,
+		&i.Kind,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
 }
 
 const getCommitsListCache = `-- name: GetCommitsListCache :one
@@ -397,6 +462,17 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 	return i, err
 }
 
+const pruneCommitCICacheLRU = `-- name: PruneCommitCICacheLRU :exec
+DELETE FROM commit_ci_cache WHERE id IN (
+    SELECT id FROM commit_ci_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCommitCICacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCommitCICacheLRU, offset)
+	return err
+}
+
 const pruneCommitsListCacheLRU = `-- name: PruneCommitsListCacheLRU :exec
 DELETE FROM commits_list_cache WHERE id IN (
     SELECT id FROM commits_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -474,6 +550,30 @@ DELETE FROM repo_installation_cache WHERE id IN (
 
 func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
+	return err
+}
+
+const touchCommitCICache = `-- name: TouchCommitCICache :exec
+UPDATE commit_ci_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?
+`
+
+type TouchCommitCICacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Ref        string
+	Kind       string
+}
+
+func (q *Queries) TouchCommitCICache(ctx context.Context, arg TouchCommitCICacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCommitCICache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+	)
 	return err
 }
 
@@ -605,6 +705,41 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+	)
+	return err
+}
+
+const upsertCommitCICache = `-- name: UpsertCommitCICache :exec
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref, kind) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCommitCICacheParams struct {
+	Owner      string
+	Repo       string
+	Ref        string
+	Kind       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCommitCICache(ctx context.Context, arg UpsertCommitCICacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCommitCICache,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
 	)
 	return err
 }

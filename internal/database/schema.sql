@@ -328,6 +328,44 @@ CREATE TABLE compare_cache (
 CREATE UNIQUE INDEX idx_compare_cache_key ON compare_cache (owner, repo, basehead);
 CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 
+-- State for GET /repos/{owner}/{repo}/commits/{ref}/status (the combined
+-- commit status; kind='status') and GET .../commits/{ref}/check-runs (the
+-- check runs for a ref; kind='check_runs') -- one snapshot table for both,
+-- since the routes share the key shape, TTL, and flush triggers exactly. ref
+-- is stored VERBATIM as requested (a branch name -- slashes and all -- a sha,
+-- or a tag; NEVER resolved), so each spelling is its own row: a branch-form
+-- row describes "that branch's tip at fetch time" and is flushed when the tip
+-- can move. doc holds the ALREADY-TRIMMED document as JSON: for status
+-- {state, sha, total_count, statuses:[{context, state, description,
+-- created_at, updated_at}]}, for check_runs {total_count, check_runs:[{id,
+-- head_sha, name, status, conclusion, started_at, completed_at, app:{id}}]}
+-- -- every URL field dropped (incl. target_url/html_url/details_url; no
+-- mirror-pointed consumer reads them) and the unbounded check-run `output`
+-- never stored. These rows deliberately do NOT read or write the commit_checks
+-- truth table: its normalized per-context rows are lossy against these
+-- responses (no timestamps, no descriptions, no run ids), so the snapshot is
+-- kept whole; unifying the two is possible future work. status/check_run/
+-- check_suite webhooks flush ALL of a repo's rows (CI state changed somewhere
+-- in the repo; per-sha precision is not worth the bookkeeping for v1), push
+-- flushes too (branch-form refs' tips moved; a brand-new sha has no rows yet
+-- anyway), repository flushes like everywhere else; expires_at is the 24h TTL
+-- backstop for missed deliveries. owner/repo lowercased like the other
+-- cached-route tables.
+CREATE TABLE commit_ci_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    ref          TEXT NOT NULL,              -- verbatim ref path segment(s), never resolved
+    kind         TEXT NOT NULL,              -- 'status' or 'check_runs'
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_commit_ci_cache_key ON commit_ci_cache (owner, repo, ref, kind);
+CREATE INDEX idx_commit_ci_cache_lru ON commit_ci_cache (last_used_at);
+
 -- State for POST /app/installations/{id}/access_tokens responses (the
 -- installation-token mint cache). This table stays keyed by the verified app
 -- identity ("app:<id>") -- it caches a CREDENTIAL minted for that app, not

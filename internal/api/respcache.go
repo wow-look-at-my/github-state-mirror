@@ -38,6 +38,8 @@ import (
 //   - GET /repos/{owner}/{repo}/installation        (respcache_pulls.go)
 //   - GET /repos/{owner}/{repo}/commits             (respcache_commits.go)
 //   - GET /repos/{owner}/{repo}/compare/{basehead}  (respcache_compare.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/status      (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (respcache_commitci.go)
 //
 // The single-PR route was once deliberately passthrough because its body
 // carries the lazily-computed `mergeable` field that pr-minder polls for; it
