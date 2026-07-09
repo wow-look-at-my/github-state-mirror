@@ -467,16 +467,24 @@ async function loadRequests(silent = false) {
     body.innerHTML = "";
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
-    sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
-        " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
-        ", write " + (by.write || 0) +
-        (by.error ? ", error " + by.error : "");
+    const total = data.total || 0;
+    sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
+        ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
+        ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
+        ", write " + (by.write || 0) + pctLabel(by.write, total) +
+        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "");
     body.appendChild(requestLegend());
     if (recent.length === 0) {
         body.appendChild(el("div", { class: "empty" }, el("p", { text: "No data-API requests recorded yet." }), el("p", { class: "sub", text: "Requests appear here live as clients call the mirror — cache hits, misses, and passthroughs to GitHub." })));
         return;
     }
     body.appendChild(requestTable(recent));
+}
+// A count's share of the total, rendered as a " (88.8%)" suffix — empty when
+// there is no total to take a share of.
+function pctLabel(count, total) {
+    return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
 }
 const REQUEST_DISPOSITIONS = [
     ["hit", "served from cache, no GitHub call"],
