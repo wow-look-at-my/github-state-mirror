@@ -93,9 +93,25 @@ const demoWebhooks = {
     ],
 };
 // --- request activity log (admin "Requests" tab) ---
+// The route-shape groups sum exactly to by_disposition (hit 1503, miss 71,
+// passthrough 226, write 38, error 4 -> total 1842), sorted by total desc like
+// the backend, so the preview's share percentages are coherent.
 const demoRequests = {
     total: 1842,
     by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
+    groups: [
+        { key: "POST /graphql", method: "POST", route: "/graphql", total: 1146, hit: 1103, miss: 41, passthrough: 0, write: 0, error: 2, sample: "/graphql", last_seen: ago(2) },
+        { key: "GET /repos/{owner}/{repo}/pulls/{number}", method: "GET", route: "/repos/{owner}/{repo}/pulls/{number}", total: 248, hit: 236, miss: 12, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318", last_seen: ago(3) },
+        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
+        { key: "GET /repos/{owner}/{repo}/commits", method: "GET", route: "/repos/{owner}/{repo}/commits", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, sample: "/repos/wow-look-at-my/actions/commits", last_seen: ago(31) },
+        { key: "GET /search/issues", method: "GET", route: "/search/issues", total: 58, hit: 0, miss: 0, passthrough: 58, write: 0, error: 0, sample: "/search/issues", last_seen: ago(6) },
+        { key: "GET /repos/{owner}/{repo}/commits/{ref}/status", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/status", total: 49, hit: 44, miss: 5, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/master/status", last_seen: ago(12) },
+        { key: "GET /rate_limit", method: "GET", route: "/rate_limit", total: 41, hit: 0, miss: 0, passthrough: 41, write: 0, error: 0, sample: "/rate_limit", last_seen: ago(14) },
+        { key: "GET /repos/{owner}/{repo}/git/refs/heads/…", method: "GET", route: "/repos/{owner}/{repo}/git/refs/heads/…", total: 25, hit: 0, miss: 0, passthrough: 25, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/git/refs/heads/oci-cache", last_seen: ago(65) },
+        { key: "GET /repos/{owner}/{repo}/commits/{ref}/check-runs", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/check-runs", total: 22, hit: 18, miss: 4, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b/check-runs", last_seen: ago(13) },
+        { key: "PATCH /repos/{owner}/{repo}/pulls/{number}", method: "PATCH", route: "/repos/{owner}/{repo}/pulls/{number}", total: 21, hit: 0, miss: 0, passthrough: 0, write: 21, error: 0, sample: "/repos/wow-look-at-my/actions/pulls/92", last_seen: ago(20) },
+        { key: "PUT /repos/{owner}/{repo}/pulls/{number}/update-branch", method: "PUT", route: "/repos/{owner}/{repo}/pulls/{number}/update-branch", total: 17, hit: 0, miss: 0, passthrough: 0, write: 17, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", last_seen: ago(24) },
+    ],
     recent: [
         { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
         { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },

@@ -101,6 +101,27 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispHit], int64(1), "second org query should be a cache hit")
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/rate_limit should be a passthrough")
 	assert.GreaterOrEqual(t, len(snap.Recent), 3)
+
+	// The same traffic is aggregated into route-shape groups, sorted by total
+	// desc and capped: both /graphql calls share one group (1 miss + 1 hit),
+	// and /rate_limit groups on its own.
+	require.NotEmpty(t, snap.Groups)
+	assert.LessOrEqual(t, len(snap.Groups), requestGroupsSnapshotCap)
+	byKey := map[string]requestGroupSnapshot{}
+	for i, g := range snap.Groups {
+		byKey[g.Key] = g
+		if i > 0 {
+			assert.LessOrEqual(t, g.Total, snap.Groups[i-1].Total, "groups sorted by total desc")
+		}
+	}
+	gq, ok := byKey["POST /graphql"]
+	require.True(t, ok, "the graphql group exists")
+	assert.GreaterOrEqual(t, gq.Hit, int64(1))
+	assert.GreaterOrEqual(t, gq.Miss, int64(1))
+	assert.Equal(t, "/graphql", gq.Sample)
+	rl, ok := byKey["GET /rate_limit"]
+	require.True(t, ok, "the rate_limit group exists")
+	assert.GreaterOrEqual(t, rl.Passthrough, int64(1))
 }
 
 // TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records

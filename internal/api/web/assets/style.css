@@ -344,6 +344,18 @@ table.webhooks .wh-detail { color: var(--fg-muted); max-width: 320px; overflow: 
 table.webhooks .wh-delivery { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 table.webhooks .wh-when { color: var(--fg-muted); white-space: nowrap; }
 
+/* ---- Request groups (Requests tab: Top requests / Top uncached) ---- */
+details.req-groups { margin-bottom: 18px; }
+details.req-groups > summary {
+    cursor: pointer; user-select: none; padding: 4px 0;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--fg-muted);
+}
+details.req-groups .grp-caption { color: var(--fg-muted); font-size: 12px; margin: 4px 0 8px; }
+details.req-groups table.webhooks { margin-top: 6px; }
+table.webhooks th.num { text-align: right; }
+table.webhooks td.grp-breakdown .disp { margin-right: 6px; }
+
 /* ---- Demo banner (styling preview only) ---- */
 .demo-banner {
     background: linear-gradient(90deg, #1f6feb22, #a371f722);

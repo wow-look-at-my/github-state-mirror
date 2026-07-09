@@ -67,21 +67,24 @@ type requestEvent struct {
 }
 
 // requestLog is an in-memory, bounded record of recent data-API requests plus
-// per-disposition counters, so the dashboard can show traffic hitting the cache
-// (hit/miss) vs. forwarded uncached (passthrough). It is deliberately NOT
-// persisted: request traffic is high-volume and this is a live operational view,
-// not an audit log (unlike webhook_deliveries). It resets on restart.
+// per-disposition counters and per-route-shape GROUP counters (requestgroups.go),
+// so the dashboard can show traffic hitting the cache (hit/miss) vs. forwarded
+// uncached (passthrough) — both as a flat recent list and aggregated by route
+// shape. It is deliberately NOT persisted: request traffic is high-volume and
+// this is a live operational view, not an audit log (unlike webhook_deliveries).
+// It resets on restart.
 type requestLog struct {
 	mu     sync.Mutex
 	total  int64
 	byDisp map[string]int64
-	recent []requestEvent // newest last; capped at requestLogRecentCap
+	groups map[string]*routeGroup // key: method + " " + normalizeRoute(path); bounded (requestgroups.go)
+	recent []requestEvent         // newest last; capped at requestLogRecentCap
 }
 
 const requestLogRecentCap = 500
 
 func newRequestLog() *requestLog {
-	return &requestLog{byDisp: make(map[string]int64)}
+	return &requestLog{byDisp: make(map[string]int64), groups: make(map[string]*routeGroup)}
 }
 
 func (l *requestLog) record(actorKey, method, path, disposition string) {
@@ -89,28 +92,33 @@ func (l *requestLog) record(actorKey, method, path, disposition string) {
 }
 
 func (l *requestLog) recordStatus(actorKey, method, path, disposition string, status int) {
+	now := time.Now().UTC()
+	route := normalizeRoute(path) // pure; kept outside the critical section
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.total++
 	l.byDisp[disposition]++
+	l.bumpGroupLocked(method, route, path, disposition, now)
 	l.recent = append(l.recent, requestEvent{
 		Actor:       actorKey,
 		Method:      method,
 		Path:        path,
 		Disposition: disposition,
 		Status:      status,
-		At:          time.Now().UTC().Format(time.RFC3339),
+		At:          now.Format(time.RFC3339),
 	})
 	if len(l.recent) > requestLogRecentCap {
 		l.recent = l.recent[len(l.recent)-requestLogRecentCap:]
 	}
 }
 
-// requestLogSnapshot is the dashboard payload: totals + recent requests (newest first).
+// requestLogSnapshot is the dashboard payload: totals + route-shape groups
+// (total desc, capped) + recent requests (newest first).
 type requestLogSnapshot struct {
-	Total         int64            `json:"total"`
-	ByDisposition map[string]int64 `json:"by_disposition"`
-	Recent        []requestEvent   `json:"recent"`
+	Total         int64                  `json:"total"`
+	ByDisposition map[string]int64       `json:"by_disposition"`
+	Groups        []requestGroupSnapshot `json:"groups"`
+	Recent        []requestEvent         `json:"recent"`
 }
 
 func (l *requestLog) snapshot(limit int) requestLogSnapshot {
@@ -128,7 +136,12 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 	for i := len(l.recent) - 1; i >= 0 && len(recent) < n; i-- {
 		recent = append(recent, l.recent[i])
 	}
-	return requestLogSnapshot{Total: l.total, ByDisposition: byDisp, Recent: recent}
+	return requestLogSnapshot{
+		Total:         l.total,
+		ByDisposition: byDisp,
+		Groups:        l.groupSnapshotsLocked(requestGroupsSnapshotCap),
+		Recent:        recent,
+	}
 }
 
 // recordPassthrough wraps the GitHub reverse proxy so every request it serves is

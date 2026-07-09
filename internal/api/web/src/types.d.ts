@@ -86,9 +86,27 @@ export interface RequestEvent {
     at: string;
 }
 
+// One route-shape group: cumulative (since restart) per-disposition counts for
+// every request whose method+normalized route matched, e.g.
+// "GET /repos/{owner}/{repo}/compare/{basehead}".
+export interface RequestGroup {
+    key: string; // method + " " + route
+    method: string;
+    route: string;
+    total: number;
+    hit: number;
+    miss: number;
+    passthrough: number;
+    write: number;
+    error: number;
+    sample: string; // one recent raw path, for identifying the shape
+    last_seen: string; // RFC3339
+}
+
 export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
+    groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
 }
 
