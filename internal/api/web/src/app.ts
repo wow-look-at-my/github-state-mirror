@@ -16,7 +16,7 @@ import type {
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
-    RequestEvent, RequestsResponse,
+    RequestEvent, RequestGroup, RequestsResponse,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
 } from "./types";
@@ -598,6 +598,13 @@ async function loadRequests(silent = false): Promise<void> {
         (by.error ? ", error " + by.error + pctLabel(by.error, total) : "");
 
     body.appendChild(requestLegend());
+    // Grouped views first (aggregate hot spots), then the flat history below.
+    const groups = data.groups ?? [];
+    if (groups.length > 0) {
+        body.appendChild(topGroupsSection(groups, total));
+        const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
+        if (uncached) body.appendChild(uncached);
+    }
     if (recent.length === 0) {
         body.appendChild(el("div", { class: "empty" },
             el("p", { text: "No data-API requests recorded yet." }),
@@ -612,6 +619,108 @@ async function loadRequests(silent = false): Promise<void> {
 // there is no total to take a share of.
 function pctLabel(count: number | undefined, total: number): string {
     return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
+}
+
+// ---- request groups (aggregate hot spots) ----
+// Two tables over the server's per-route-shape counters (cumulative since
+// restart, like the totals — NOT windowed by the recent ring): the hottest
+// routes overall, and the hottest UNCACHED routes — reads forwarded to
+// GitHub, i.e. caching candidates.
+
+const TOP_GROUPS = 15;
+
+// sharePct renders a count's share of a total as "12.3%" — empty when there
+// is no total to take a share of.
+function sharePct(count: number, total: number): string {
+    return total > 0 ? ((count / total) * 100).toFixed(1) + "%" : "";
+}
+
+// groupCount reads one disposition's count off a group.
+function groupCount(g: RequestGroup, disp: string): number {
+    switch (disp) {
+        case "hit": return g.hit || 0;
+        case "miss": return g.miss || 0;
+        case "passthrough": return g.passthrough || 0;
+        case "write": return g.write || 0;
+        case "error": return g.error || 0;
+        default: return 0;
+    }
+}
+
+// groupBreakdown renders a group's non-zero dispositions as count chips
+// (e.g. "hit 1503  miss 41"), optionally skipping the one already shown in
+// its own column.
+function groupBreakdown(g: RequestGroup, skip?: string): HTMLElement {
+    const cell = el("td", { class: "grp-breakdown" });
+    for (const [disp] of REQUEST_DISPOSITIONS) {
+        if (disp === skip) continue;
+        const n = groupCount(g, disp);
+        if (n === 0) continue;
+        cell.appendChild(el("span", { class: "disp " + reqDispClass(disp), text: disp + " " + n }));
+    }
+    if (!cell.hasChildNodes()) cell.textContent = "—";
+    return cell;
+}
+
+// groupRouteCell shows the group's method + route shape; the tooltip carries
+// one recent concrete path so the shape is identifiable.
+function groupRouteCell(g: RequestGroup): HTMLElement {
+    return el("td", { class: "wh-event grp-route", title: g.sample, text: g.method + " " + g.route });
+}
+
+function groupSection(title: string, caption: string | null, table: HTMLElement): HTMLElement {
+    return el("details", { class: "req-groups", open: true },
+        el("summary", { text: title }),
+        caption ? el("p", { class: "grp-caption", text: caption }) : null,
+        table,
+    );
+}
+
+// topGroupsSection: the most frequent request groups by total volume.
+function topGroupsSection(groups: RequestGroup[], total: number): HTMLElement {
+    const top = [...groups].sort((a, b) => b.total - a.total).slice(0, TOP_GROUPS);
+    const rows = top.map((g) => el("tr", null,
+        groupRouteCell(g),
+        el("td", { class: "num", text: String(g.total) }),
+        el("td", { class: "num", text: sharePct(g.total, total) }),
+        groupBreakdown(g),
+    ));
+    return groupSection("Top requests", null, el("table", { class: "webhooks" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Route" }),
+            el("th", { class: "num", text: "Total" }),
+            el("th", { class: "num", text: "Share" }),
+            el("th", { text: "Breakdown" }),
+        )),
+        el("tbody", null, rows),
+    ));
+}
+
+// uncachedGroupsSection: the groups with passthrough traffic — reads the
+// cache did not handle, ranked by passthrough count. Write-only groups never
+// appear (a mutation is proxied by design, not a caching gap; the
+// passthrough > 0 filter excludes them). Null when nothing qualifies.
+function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number): HTMLElement | null {
+    const uncached = groups.filter((g) => (g.passthrough || 0) > 0)
+        .sort((a, b) => b.passthrough - a.passthrough).slice(0, TOP_GROUPS);
+    if (uncached.length === 0) return null;
+    const rows = uncached.map((g) => el("tr", null,
+        groupRouteCell(g),
+        el("td", { class: "num", text: g.passthrough + pctLabel(g.passthrough, passthroughTotal) }),
+        el("td", { class: "num", text: String(g.total) }),
+        groupBreakdown(g, "passthrough"),
+    ));
+    return groupSection("Top uncached requests",
+        "These reads forward to GitHub uncached — the top caching candidates.",
+        el("table", { class: "webhooks" },
+            el("thead", null, el("tr", null,
+                el("th", { text: "Route" }),
+                el("th", { class: "num", text: "Passthrough" }),
+                el("th", { class: "num", text: "Total" }),
+                el("th", { text: "Other" }),
+            )),
+            el("tbody", null, rows),
+        ));
 }
 
 const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
