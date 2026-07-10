@@ -224,9 +224,12 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 - Responses are passed through verbatim, including status, body, and headers such as `Link` (pagination) and `X-RateLimit-*`. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved so browsers can read those rate-limit/link headers.
 - This path is uncached: it never reads or writes the freshness store.
 
-### OAuth token-exchange relay
+### OAuth relay (github.com login endpoints)
 
-- `POST /login/oauth/access_token` — relays a GitHub OAuth "exchange code for token" request to `github.com` and returns the response with the mirror's CORS headers. A purely client-side app (e.g. the repo-nightmare PR viewer) cannot call GitHub's token endpoint directly because it sends no CORS headers; the mirror stands in as the CORS-correct relay. It carries **no** bearer token (the OAuth `client_secret` in the body is the credential), so it is unauthenticated, and it targets `github.com` — not the `api.github.com` passthrough.
+GitHub's login endpoints live on `github.com` — not `api.github.com` — and send no CORS headers, so a purely client-side app (e.g. the repo-nightmare PR viewer) cannot call them directly: the browser blocks the JS from reading the response and the login silently fails. The mirror stands in as the CORS-correct relay, forwarding the body verbatim and returning GitHub's response with the mirror's CORS headers. These routes carry **no** bearer token (the body is the credential — an OAuth `client_secret`, or just a public `client_id` for the device flow), so they are unauthenticated and target fixed `github.com` URLs — not the `api.github.com` passthrough.
+
+- `POST /login/oauth/access_token` — the OAuth "exchange code for token" request. This is also the device flow's **polling leg**: a `{client_id, device_code, grant_type: "urn:ietf:params:oauth:grant-type:device_code"}` poll passes through unchanged (the body is opaque bytes to the relay).
+- `POST /login/device/code` — starts a device authorization sign-in (RFC 8628, the same flow `gh auth login` uses): relays the `{client_id, scope}` request and returns GitHub's `device_code`/`user_code`/`verification_uri` JSON, after which the client polls the `access_token` route above.
 
 ### Webhook
 
