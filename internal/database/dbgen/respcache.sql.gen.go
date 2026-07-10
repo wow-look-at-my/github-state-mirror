@@ -9,6 +9,58 @@ import (
 	"context"
 )
 
+const deleteBranchesListCacheByRepo = `-- name: DeleteBranchesListCacheByRepo :exec
+DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteBranchesListCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteBranchesListCacheByRepo drops a repo's branches snapshots -- the
+// push/repository webhook flush (branch create, delete, and tip-move all
+// arrive as pushes).
+func (q *Queries) DeleteBranchesListCacheByRepo(ctx context.Context, arg DeleteBranchesListCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBranchesListCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteClosedPullCacheByPR = `-- name: DeleteClosedPullCacheByPR :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type DeleteClosedPullCacheByPRParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+// DeleteClosedPullCacheByPR drops one PR's closed doc -- the pull_request
+// event flush (reopened/edited/relabeled), and the reopened-race safety
+// after an open absorb.
+func (q *Queries) DeleteClosedPullCacheByPR(ctx context.Context, arg DeleteClosedPullCacheByPRParams) error {
+	_, err := q.db.ExecContext(ctx, deleteClosedPullCacheByPR, arg.Owner, arg.Repo, arg.Number)
+	return err
+}
+
+const deleteClosedPullCacheByRepo = `-- name: DeleteClosedPullCacheByRepo :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteClosedPullCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteClosedPullCacheByRepo drops a repo's closed-PR docs -- the repository
+// webhook flush. A push is deliberately NOT a flush: it cannot mutate a
+// closed PR.
+func (q *Queries) DeleteClosedPullCacheByRepo(ctx context.Context, arg DeleteClosedPullCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteClosedPullCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteCommitCICacheByRepo = `-- name: DeleteCommitCICacheByRepo :exec
 DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?
 `
@@ -76,6 +128,24 @@ func (q *Queries) DeleteContentsCacheByRepo(ctx context.Context, arg DeleteConte
 	return err
 }
 
+const deleteExpiredBranchesListCache = `-- name: DeleteExpiredBranchesListCache :exec
+DELETE FROM branches_list_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredBranchesListCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredBranchesListCache, expiresAt)
+	return err
+}
+
+const deleteExpiredClosedPullCache = `-- name: DeleteExpiredClosedPullCache :exec
+DELETE FROM closed_pull_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredClosedPullCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredClosedPullCache, expiresAt)
+	return err
+}
+
 const deleteExpiredCommitCICache = `-- name: DeleteExpiredCommitCICache :exec
 DELETE FROM commit_ci_cache WHERE expires_at <= ?
 `
@@ -121,6 +191,15 @@ func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredPullFilesCache = `-- name: DeleteExpiredPullFilesCache :exec
+DELETE FROM pull_files_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredPullFilesCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredPullFilesCache, expiresAt)
+	return err
+}
+
 const deleteExpiredPullsListMarkers = `-- name: DeleteExpiredPullsListMarkers :exec
 DELETE FROM pulls_list_cache WHERE expires_at <= ?
 `
@@ -148,6 +227,41 @@ func (q *Queries) DeleteInstallTokenCacheByInstallation(ctx context.Context, ins
 	return err
 }
 
+const deletePullFilesCacheByPR = `-- name: DeletePullFilesCacheByPR :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type DeletePullFilesCacheByPRParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+// DeletePullFilesCacheByPR drops one PR's snapshots -- the pull_request event
+// flush (head pushed/synchronize -- including fork heads whose pushes we
+// never see -- base retargets, reopens).
+func (q *Queries) DeletePullFilesCacheByPR(ctx context.Context, arg DeletePullFilesCacheByPRParams) error {
+	_, err := q.db.ExecContext(ctx, deletePullFilesCacheByPR, arg.Owner, arg.Repo, arg.Number)
+	return err
+}
+
+const deletePullFilesCacheByRepo = `-- name: DeletePullFilesCacheByRepo :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ?
+`
+
+type DeletePullFilesCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeletePullFilesCacheByRepo drops a repo's PR-files snapshots -- the
+// push/repository webhook flush (a push may have moved any same-repo PR's
+// head; the belt for missed pull_request deliveries).
+func (q *Queries) DeletePullFilesCacheByRepo(ctx context.Context, arg DeletePullFilesCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deletePullFilesCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deletePullsListMarkersByRepo = `-- name: DeletePullsListMarkersByRepo :exec
 DELETE FROM pulls_list_cache WHERE owner = ? AND repo = ?
 `
@@ -172,6 +286,71 @@ DELETE FROM repo_installation_cache WHERE installation_id = ?
 func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
 	return err
+}
+
+const getBranchesListCache = `-- name: GetBranchesListCache :one
+
+SELECT id, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at FROM branches_list_cache
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?
+`
+
+type GetBranchesListCacheParams struct {
+	Owner   string
+	Repo    string
+	PerPage int64
+	Page    int64
+}
+
+// ---- branches_list_cache (GET /repos/{owner}/{repo}/branches) ----
+func (q *Queries) GetBranchesListCache(ctx context.Context, arg GetBranchesListCacheParams) (BranchesListCache, error) {
+	row := q.db.QueryRowContext(ctx, getBranchesListCache,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i BranchesListCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getClosedPullCache = `-- name: GetClosedPullCache :one
+
+SELECT id, owner, repo, number, doc, fetched_at, expires_at, last_used_at FROM closed_pull_cache
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type GetClosedPullCacheParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+// ---- closed_pull_cache (closed answers for GET /repos/{owner}/{repo}/pulls/{number}) ----
+func (q *Queries) GetClosedPullCache(ctx context.Context, arg GetClosedPullCacheParams) (ClosedPullCache, error) {
+	row := q.db.QueryRowContext(ctx, getClosedPullCache, arg.Owner, arg.Repo, arg.Number)
+	var i ClosedPullCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
 }
 
 const getCommitCICache = `-- name: GetCommitCICache :one
@@ -401,6 +580,45 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 	return i, err
 }
 
+const getPullFilesCache = `-- name: GetPullFilesCache :one
+
+SELECT id, owner, repo, number, per_page, page, doc, fetched_at, expires_at, last_used_at FROM pull_files_cache
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?
+`
+
+type GetPullFilesCacheParams struct {
+	Owner   string
+	Repo    string
+	Number  int64
+	PerPage int64
+	Page    int64
+}
+
+// ---- pull_files_cache (GET /repos/{owner}/{repo}/pulls/{number}/files) ----
+func (q *Queries) GetPullFilesCache(ctx context.Context, arg GetPullFilesCacheParams) (PullFilesCache, error) {
+	row := q.db.QueryRowContext(ctx, getPullFilesCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i PullFilesCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getPullsListMarker = `-- name: GetPullsListMarker :one
 
 SELECT id, owner, repo, fetched_at, expires_at, last_used_at FROM pulls_list_cache
@@ -460,6 +678,28 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 		&i.LastUsedAt,
 	)
 	return i, err
+}
+
+const pruneBranchesListCacheLRU = `-- name: PruneBranchesListCacheLRU :exec
+DELETE FROM branches_list_cache WHERE id IN (
+    SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneBranchesListCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneBranchesListCacheLRU, offset)
+	return err
+}
+
+const pruneClosedPullCacheLRU = `-- name: PruneClosedPullCacheLRU :exec
+DELETE FROM closed_pull_cache WHERE id IN (
+    SELECT id FROM closed_pull_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneClosedPullCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneClosedPullCacheLRU, offset)
+	return err
 }
 
 const pruneCommitCICacheLRU = `-- name: PruneCommitCICacheLRU :exec
@@ -531,6 +771,17 @@ func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) e
 	return err
 }
 
+const prunePullFilesCacheLRU = `-- name: PrunePullFilesCacheLRU :exec
+DELETE FROM pull_files_cache WHERE id IN (
+    SELECT id FROM pull_files_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PrunePullFilesCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, prunePullFilesCacheLRU, offset)
+	return err
+}
+
 const prunePullsListMarkersLRU = `-- name: PrunePullsListMarkersLRU :exec
 DELETE FROM pulls_list_cache WHERE id IN (
     SELECT id FROM pulls_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -550,6 +801,52 @@ DELETE FROM repo_installation_cache WHERE id IN (
 
 func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
+	return err
+}
+
+const touchBranchesListCache = `-- name: TouchBranchesListCache :exec
+UPDATE branches_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?
+`
+
+type TouchBranchesListCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchBranchesListCache(ctx context.Context, arg TouchBranchesListCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchBranchesListCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchClosedPullCache = `-- name: TouchClosedPullCache :exec
+UPDATE closed_pull_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type TouchClosedPullCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Number     int64
+}
+
+func (q *Queries) TouchClosedPullCache(ctx context.Context, arg TouchClosedPullCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchClosedPullCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
 	return err
 }
 
@@ -671,6 +968,32 @@ func (q *Queries) TouchGitCommitCache(ctx context.Context, arg TouchGitCommitCac
 	return err
 }
 
+const touchPullFilesCache = `-- name: TouchPullFilesCache :exec
+UPDATE pull_files_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?
+`
+
+type TouchPullFilesCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Number     int64
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchPullFilesCache(ctx context.Context, arg TouchPullFilesCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchPullFilesCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
 const touchPullsListMarker = `-- name: TouchPullsListMarker :exec
 UPDATE pulls_list_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ?
@@ -705,6 +1028,74 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+	)
+	return err
+}
+
+const upsertBranchesListCache = `-- name: UpsertBranchesListCache :exec
+INSERT INTO branches_list_cache (owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertBranchesListCacheParams struct {
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertBranchesListCache(ctx context.Context, arg UpsertBranchesListCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertBranchesListCache,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertClosedPullCache = `-- name: UpsertClosedPullCache :exec
+INSERT INTO closed_pull_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertClosedPullCacheParams struct {
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertClosedPullCache(ctx context.Context, arg UpsertClosedPullCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertClosedPullCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
 	)
 	return err
 }
@@ -959,6 +1350,43 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.TokenExpiresAt,
 		arg.Permissions,
 		arg.RepositorySelection,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertPullFilesCache = `-- name: UpsertPullFilesCache :exec
+INSERT INTO pull_files_cache (owner, repo, number, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertPullFilesCacheParams struct {
+	Owner      string
+	Repo       string
+	Number     int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertPullFilesCache(ctx context.Context, arg UpsertPullFilesCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPullFilesCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,

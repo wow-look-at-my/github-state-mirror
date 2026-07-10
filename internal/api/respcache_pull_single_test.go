@@ -201,10 +201,12 @@ func TestCachedPull_NonNumericAndQueryPassthrough(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
-// TestCachedPull_ClosedNotStored: a fetched closed PR is replayed verbatim
-// (GitHub's own body, URL fields and all), never stored -- and it evicts any
-// stale open row so the list stops carrying it.
-func TestCachedPull_ClosedNotStored(t *testing.T) {
+// TestCachedPull_ClosedAbsorbedAsDoc: a fetched closed PR evicts any stale
+// open row (the truth table retains open PRs only) and is absorbed as a
+// rendered whole-doc snapshot -- served trimmed on the miss, then replayed
+// byte-identically from closed_pull_cache with zero upstream calls (every
+// drain re-reads settled PRs; each read used to be a fresh passthrough).
+func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
 
@@ -230,13 +232,23 @@ func TestCachedPull_ClosedNotStored(t *testing.T) {
 
 	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Empty(t, w.Header().Get(cacheHeader), "a closed PR is replayed verbatim, unstored")
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "the closing read absorbs the rendered doc")
+	assertNoURLKeys(t, w.Body.Bytes())
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "closed", body["state"])
-	assert.Contains(t, body, "url", "verbatim replay keeps GitHub's own fields")
+	assert.Equal(t, true, body["merged"], "merged is GitHub's own answer, not the open rebuild's by-definition false")
+	assert.Nil(t, body["mergeable"])
 
 	_, _, ok, err = store.RestSinglePull(seedCtx(), "org1", "repo1", 7)
 	require.NoError(t, err)
-	assert.False(t, ok, "absorbing a closed PR must delete the cached row")
+	assert.False(t, ok, "absorbing a closed PR must delete the cached open row")
+
+	// The next read serves the identical doc from state, zero upstream.
+	fetched := atomic.LoadInt32(&u.singleHits)
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w.Body.String(), w2.Body.String(), "hit and miss must be byte-identical")
+	assert.Equal(t, fetched, atomic.LoadInt32(&u.singleHits))
 }

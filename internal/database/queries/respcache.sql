@@ -278,3 +278,114 @@ DELETE FROM repo_installation_cache WHERE expires_at <= ?;
 DELETE FROM repo_installation_cache WHERE id IN (
     SELECT id FROM repo_installation_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- pull_files_cache (GET /repos/{owner}/{repo}/pulls/{number}/files) ----
+
+-- name: GetPullFilesCache :one
+SELECT * FROM pull_files_cache
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertPullFilesCache :exec
+INSERT INTO pull_files_cache (owner, repo, number, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullFilesCache :exec
+UPDATE pull_files_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?;
+
+-- DeletePullFilesCacheByRepo drops a repo's PR-files snapshots -- the
+-- push/repository webhook flush (a push may have moved any same-repo PR's
+-- head; the belt for missed pull_request deliveries).
+-- name: DeletePullFilesCacheByRepo :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ?;
+
+-- DeletePullFilesCacheByPR drops one PR's snapshots -- the pull_request event
+-- flush (head pushed/synchronize -- including fork heads whose pushes we
+-- never see -- base retargets, reopens).
+-- name: DeletePullFilesCacheByPR :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredPullFilesCache :exec
+DELETE FROM pull_files_cache WHERE expires_at <= ?;
+
+-- name: PrunePullFilesCacheLRU :exec
+DELETE FROM pull_files_cache WHERE id IN (
+    SELECT id FROM pull_files_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- closed_pull_cache (closed answers for GET /repos/{owner}/{repo}/pulls/{number}) ----
+
+-- name: GetClosedPullCache :one
+SELECT * FROM closed_pull_cache
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: UpsertClosedPullCache :exec
+INSERT INTO closed_pull_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchClosedPullCache :exec
+UPDATE closed_pull_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- DeleteClosedPullCacheByRepo drops a repo's closed-PR docs -- the repository
+-- webhook flush. A push is deliberately NOT a flush: it cannot mutate a
+-- closed PR.
+-- name: DeleteClosedPullCacheByRepo :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteClosedPullCacheByPR drops one PR's closed doc -- the pull_request
+-- event flush (reopened/edited/relabeled), and the reopened-race safety
+-- after an open absorb.
+-- name: DeleteClosedPullCacheByPR :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredClosedPullCache :exec
+DELETE FROM closed_pull_cache WHERE expires_at <= ?;
+
+-- name: PruneClosedPullCacheLRU :exec
+DELETE FROM closed_pull_cache WHERE id IN (
+    SELECT id FROM closed_pull_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- branches_list_cache (GET /repos/{owner}/{repo}/branches) ----
+
+-- name: GetBranchesListCache :one
+SELECT * FROM branches_list_cache
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertBranchesListCache :exec
+INSERT INTO branches_list_cache (owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchBranchesListCache :exec
+UPDATE branches_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- DeleteBranchesListCacheByRepo drops a repo's branches snapshots -- the
+-- push/repository webhook flush (branch create, delete, and tip-move all
+-- arrive as pushes).
+-- name: DeleteBranchesListCacheByRepo :exec
+DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredBranchesListCache :exec
+DELETE FROM branches_list_cache WHERE expires_at <= ?;
+
+-- name: PruneBranchesListCacheLRU :exec
+DELETE FROM branches_list_cache WHERE id IN (
+    SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
