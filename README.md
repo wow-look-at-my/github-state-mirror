@@ -198,6 +198,64 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 
   Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`; `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these; expect high volume in a CI-heavy org — each delivery costs one cheap synchronous SQLite upsert.
 
+### Subscriber notifications (`/_mirror/subscriptions`)
+
+Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**: their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its synchronous dispatcher has applied the delivery to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
+
+The top-level **`/_mirror/*` prefix is the reserved mirror-native namespace**: GitHub's API has no underscore-prefixed top-level paths, and registered routes always win over the passthrough proxy, so nothing under `/_mirror/*` can ever collide with proxied GitHub traffic.
+
+**Registering** (same bearer-token auth as every data route; subscriptions are owned by the principal your token resolves to, so an app using `X-Mirror-Identity` keeps its subscriptions across token rotations):
+
+```sh
+# Create (201). repos/events are optional filters; empty = everything you may see.
+curl -X POST https://mirror.example.com/_mirror/subscriptions \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -d '{"url":"https://consumer.example.com/mirror-hook","secret":"<16..256 chars>","repos":["my-org","my-org/one-repo"],"events":["push","pull_request"]}'
+
+curl -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions          # list your own
+curl -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_...  # one (404 for a foreign id)
+curl -X PATCH -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_... \
+  -d '{"active":true}'                                                                                  # partial update / re-enable
+curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_...  # 204
+```
+
+Subscription JSON: `{id, url, repos, events, active, consecutive_failures, disabled_reason, created_at, updated_at, last_success_at, last_failure_at, last_error}`. The `secret` is **never** returned by any response. `url` must be absolute https with no userinfo (plain http is allowed only for loopback hosts, so local receivers work) and must not be a private/link-local IP literal; `repos` entries are `owner` or `owner/repo` (matched case-insensitively); `events` are GitHub event names (`push`, `pull_request`, ...). Each principal may hold at most 20 subscriptions (409 beyond).
+
+**Deliveries** are `POST`s with `Content-Type: application/json`, `X-Mirror-Event` (event name), `X-Mirror-Delivery` (the notification id), and `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>` — **GitHub's exact signature scheme**, so the webhook verification code you already have works unchanged. Example payload (fields absent from the event are omitted):
+
+```json
+{
+  "mirror_delivery": "ntf_9f0c...",
+  "subscription_id": "sub_5a1b...",
+  "github_delivery": "b6bf1c50-...",
+  "event": "pull_request",
+  "action": "opened",
+  "owner": "my-org",
+  "repo": "my-repo",
+  "repo_full_name": "my-org/my-repo",
+  "pr_number": 123,
+  "sha": "0a1b2c...",
+  "disposition": "applied",
+  "ingested_at": "2026-07-10T12:00:00.123456789Z",
+  "sent_at": "2026-07-10T12:00:00.234567890Z"
+}
+```
+
+PR events carry `pr_number` + the head `sha`; pushes carry `ref` + the after `sha`; status/check/workflow-job events carry the commit `sha`. **Correlation note:** `github_delivery` is the `X-GitHub-Delivery` GUID **the mirror received** — it is NOT the GUID GitHub sent *you* for the same event (GitHub mints one per receiver). Correlate on `owner`/`repo` plus the identifier fields instead.
+
+Delivery semantics:
+
+- Only dispositions **`applied`** and **`invalidated`** notify (`ignored`/`error` don't), and only deliveries that resolve to a single `owner/repo` — repo-less events (`installation`, `installation_repositories`) never notify.
+- Any **2xx** from your endpoint counts as delivered. A failed delivery is retried up to 3 attempts (short backoff, ~8s per attempt); a terminal failure increments `consecutive_failures` and stamps `last_failure_at`/`last_error`.
+- At **10 consecutive terminal failures** the subscription is **auto-disabled** (`active=false`, `disabled_reason` set). Re-enable it after fixing your endpoint with `PATCH {"active": true}`, which also resets the failure counter.
+- Notifications are fanned out **after** the webhook response to GitHub — subscriber endpoints can never slow the mirror's ingestion.
+
+**Authorization (reveal-gated, fail closed):** a subscription is notified about a repo only if its principal could read that repo through the reveal layer's non-probing fast paths at delivery time — the repo is **public** in global truth, or the principal holds a **live grant**. There is no per-notification probe (no caller token exists at delivery time); unknown visibility reads as private, so a private repo's activity never reaches a principal that has not proven access. Earn the grant the normal way (an org list-sync or any revealed read with your token) before expecting private-repo notifications.
+
+**Persistence:** subscriptions are service **config**, not cache. They live in their own SQLite file (`SUBSCRIPTIONS_DB_PATH`, default derived from `DB_PATH`: `github-mirror.db` → `github-mirror-subscriptions.db`) which **survives the cache DB's SchemaVersion nukes** and every deploy.
+
+**Operator view:** admin-only `GET /api/notifications` (dashboard session auth) returns in-memory delivery counters (`delivered` / `failed` / `gated` / `auto_disabled`), the recent delivery attempts (bounded ring; resets on restart), and every subscription with its principal (secrets redacted). JSON only — there is no dashboard tab.
+
 ## Web Dashboard
 
 Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign in with GitHub** to see the state of the cache: the global truth totals (repos, pull requests, commit checks, contents, git commits, grants — one cache, one truth), your principal's reveal-layer standing (how many repos you hold live grants for), org-sync freshness, and recent refresh activity.
@@ -221,6 +279,7 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
 - `GET /api/jobs?limit=<n>` — recent GitHub Actions jobs recorded from `workflow_job` webhooks: running jobs first (newest started first), then completed (newest completed first); `limit` defaults to 100, capped at 500 (admin only)
 - `GET /api/ratelimit` — `{live, observed, note?}`: the GitHub App's per-installation `GET /rate_limit` poll (`live`) plus the passively observed `X-RateLimit-*` readings per (identity, resource) (`observed`; in-memory, resets on restart). With no App configured (or a failed poll) `live` is empty and `note` explains why — the observed half is returned regardless (admin only)
+- `GET /api/notifications` — subscriber-notification observability: cumulative delivery counters (`delivered`/`failed`/`gated`/`auto_disabled`), recent delivery attempts (in-memory ring, resets on restart), and every subscription with its principal — secrets redacted (admin only)
 - `GET /api/cache/data` — the global truth rows as flattened JSON; with `?principal=<key>` instead returns that principal's live (unexpired) access grants (admin only; `<key>` is the full principal key, e.g. `user:6569500` or `app:3433933`)
 - `GET /api/cache/check[?org=<owner>]` — consistency-check diff of global truth against GitHub's live state (admin only; requires a configured GitHub App; strictly read-only)
 - `POST /api/cache/check?apply=true[&org=<owner>]` — the same check, then RECONCILE: correct the drift from the fetched snapshot and report an `applied` tally (admin only; `?apply` on a GET is rejected with 405)
@@ -240,6 +299,7 @@ The service has **no static service token**. API requests authenticate with the 
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
+| `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's SchemaVersion nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because the cache reveals data per the caller's proven GitHub access, not origin. |
 | `GITHUB_OAUTH_CLIENT_ID` | For dashboard login | — | GitHub OAuth App client ID. Register the app's callback URL as `<BASE_URL>/auth/callback`. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | For dashboard login | — | GitHub OAuth App client secret. |
