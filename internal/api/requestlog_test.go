@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,6 +124,52 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	rl, ok := byKey["GET /rate_limit"]
 	require.True(t, ok, "the rate_limit group exists")
 	assert.GreaterOrEqual(t, rl.Passthrough, int64(1))
+
+	// The stack's real SQLite file is statted end to end: NewRouter threads the
+	// DB path through to the dashboard, which reports its on-disk size.
+	assert.Positive(t, snap.DBSizeBytes, "the payload reports the SQLite DB's on-disk size")
+}
+
+// TestDashboard_Requests_DBSize verifies /api/requests reports the SQLite
+// database's on-disk footprint: the DB file plus its -wal sidecar when
+// present, with each field omitted — never an error — when its file is
+// missing.
+func TestDashboard_Requests_DBSize(t *testing.T) {
+	svc := configuredAuth(t)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "known.db")
+	require.NoError(t, os.WriteFile(dbPath, make([]byte, 4096), 0o600))
+	require.NoError(t, os.WriteFile(dbPath+"-wal", make([]byte, 1536), 0o600))
+
+	// handleRequests reads only auth, reqlog, and dbPath, so the dashboard can
+	// be constructed directly with a controlled path.
+	get := func(path string) map[string]any {
+		d := &dashboard{auth: svc, reqlog: newRequestLog(), dbPath: path}
+		req := httptest.NewRequest("GET", "/api/requests", nil)
+		req.AddCookie(mintSession(t, svc, "PazerOP"))
+		w := httptest.NewRecorder()
+		d.handleRequests(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &m))
+		return m
+	}
+
+	// DB file + -wal sidecar: both sizes reported exactly.
+	m := get(dbPath)
+	assert.Equal(t, float64(4096), m["db_size_bytes"])
+	assert.Equal(t, float64(1536), m["db_wal_size_bytes"])
+
+	// No -wal sidecar: the WAL field is omitted, the DB size stays.
+	require.NoError(t, os.Remove(dbPath+"-wal"))
+	m = get(dbPath)
+	assert.Equal(t, float64(4096), m["db_size_bytes"])
+	assert.NotContains(t, m, "db_wal_size_bytes", "an absent -wal omits the field")
+
+	// Missing DB file: both fields omitted; the request still succeeds.
+	m = get(filepath.Join(dir, "missing.db"))
+	assert.NotContains(t, m, "db_size_bytes", "a missing DB omits the field")
+	assert.NotContains(t, m, "db_wal_size_bytes")
 }
 
 // TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records

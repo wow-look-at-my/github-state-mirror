@@ -159,6 +159,7 @@ func NewRouter(
 	baseURL string,
 	checker *syncpkg.ConsistencyChecker,
 	meter *ratemeter.Store,
+	dbPath string,
 ) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -182,7 +183,8 @@ func NewRouter(
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter).routes(r)
+	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, dbPath).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group.

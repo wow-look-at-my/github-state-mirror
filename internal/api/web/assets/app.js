@@ -468,12 +468,14 @@ async function loadRequests(silent = false) {
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
     const total = data.total || 0;
+    const dbSize = dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes);
     sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
         " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
         ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
         ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
         ", write " + (by.write || 0) + pctLabel(by.write, total) +
-        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "");
+        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "") +
+        (dbSize ? " — " + dbSize : "");
     body.appendChild(requestLegend());
     // Grouped views first (aggregate hot spots), then the flat history below.
     const groups = data.groups ?? [];
@@ -493,6 +495,28 @@ async function loadRequests(silent = false) {
 // there is no total to take a share of.
 function pctLabel(count, total) {
     return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
+}
+// formatBytes renders a byte count human-readably: KB/MB/GB/TB (1000-based)
+// with one decimal, plain "N B" below 1 KB.
+function formatBytes(n) {
+    if (n < 1000)
+        return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = -1;
+    do {
+        v /= 1000;
+        i++;
+    } while (v >= 1000 && i < units.length - 1);
+    return v.toFixed(1) + " " + units[i];
+}
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g.
+// "DB 1.4 GB (+125.8 MB WAL)". The WAL suffix drops when absent/zero; the
+// whole label is empty when the backend omitted the size (file missing).
+function dbSizeLabel(db, wal) {
+    if (!db)
+        return "";
+    return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
 }
 // ---- request groups (aggregate hot spots) ----
 // Two tables over the server's per-route-shape counters (cumulative since

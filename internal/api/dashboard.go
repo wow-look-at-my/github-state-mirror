@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,9 +60,12 @@ type dashboard struct {
 	// meter is the passively observed rate-limit store (X-RateLimit-* headers
 	// recorded off upstream responses) surfaced on the "Rate limit" tab.
 	meter *ratemeter.Store
+	// dbPath is the SQLite database file path (DB_PATH), statted per request
+	// by handleRequests to report the cache's on-disk footprint.
+	dbPath string
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, dbPath string) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -95,6 +99,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		reqlog:  reqlog,
 		checker: checker,
 		meter:   meter,
+		dbPath:  dbPath,
 	}
 }
 
@@ -353,6 +358,8 @@ func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
 // handleRequests returns recent data-API requests and their cache disposition
 // (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
 // so — consistent with the admin-only "all scopes" view — it is admin-only.
+// The payload also carries the SQLite database's on-disk size (statted fresh
+// per request) so the tab's summary shows the cache's real footprint.
 func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	login, ok := d.auth.Session(r)
 	if !ok {
@@ -363,7 +370,27 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden: admin only", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, d.reqlog.snapshot(200))
+	snap := d.reqlog.snapshot(200)
+	snap.DBSizeBytes, snap.DBWALSizeBytes = dbFileSizes(d.dbPath)
+	writeJSON(w, snap)
+}
+
+// dbFileSizes reports the on-disk sizes of the SQLite database file and its
+// -wal sidecar (bytes written ahead of a checkpoint — part of the real
+// footprint). One os.Stat each — cheap enough per request, no caching. A
+// missing file or stat error yields 0 (the field is omitted from the JSON),
+// never a failure: the request log must render regardless.
+func dbFileSizes(path string) (db, wal int64) {
+	if path == "" {
+		return 0, 0
+	}
+	if fi, err := os.Stat(path); err == nil {
+		db = fi.Size()
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil {
+		wal = fi.Size()
+	}
+	return db, wal
 }
 
 type kindFreshness struct {

@@ -83,7 +83,8 @@ func checkerFakeGitHub(t *testing.T) http.Handler {
 func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http.Handler, *ghdata.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := database.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
 
@@ -105,7 +106,7 @@ func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http
 	require.NoError(t, err)
 
 	checker := syncpkg.NewConsistencyChecker(client, store, fStore, app)
-	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter), store
+	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter, dbPath), store
 }
 
 // decodeStreamLines splits an NDJSON body and unmarshals every line.
