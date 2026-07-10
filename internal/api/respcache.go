@@ -40,6 +40,9 @@ import (
 //   - GET /repos/{owner}/{repo}/compare/{basehead}  (respcache_compare.go)
 //   - GET /repos/{owner}/{repo}/commits/{ref}/status      (respcache_commitci.go)
 //   - GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}                     (respcache_repo.go)
+//   - GET /repos/{owner}/{repo}/branches            (respcache_branches.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}/files (respcache_pullfiles.go)
 //
 // The single-PR route was once deliberately passthrough because its body
 // carries the lazily-computed `mergeable` field that pr-minder polls for; it

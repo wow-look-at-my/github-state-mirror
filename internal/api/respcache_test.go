@@ -36,14 +36,22 @@ const goodAppJWT = "good-app-jwt"
 // cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
 // tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
-	contentsHits int32
-	commitHits   int32
-	mintHits     int32
-	probeHits    int32
+	contentsHits  int32
+	commitHits    int32
+	mintHits      int32
+	probeHits     int32
+	pullFilesHits int32
+	branchesHits  int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
+	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
+	pullFiles func(w http.ResponseWriter, r *http.Request)
+	// branches answers GET /repos/{o}/{r}/branches; settable per test.
+	branches func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
+	// The bare-repo route's miss fetches land here too, so probeHits counts
+	// BOTH reveal probes AND cachedRepo fetches.
 	probe func(w http.ResponseWriter, r *http.Request)
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
@@ -72,6 +80,10 @@ func newRespCacheUpstream() *respCacheUpstream {
 			"_links": {"self": "https://api.github.com/x"}
 		}`, fmt.Sprintf("%040d", n))
 	}
+	// The URL-stuffed default bodies live next to their route tests:
+	// respcache_pullfiles_test.go / respcache_branches_test.go.
+	u.pullFiles = defaultPullFilesUpstream
+	u.branches = defaultBranchesUpstream
 	return u
 }
 
@@ -96,9 +108,17 @@ func (u *respCacheUpstream) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
 		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
-			// The reveal probe: is this repo visible to the caller's token?
+			// The reveal probe (and the cachedRepo route's miss fetch): is
+			// this repo visible to the caller's token? Anchored, so the
+			// deeper-path cases below can never be shadowed by it.
 			atomic.AddInt32(&u.probeHits, 1)
 			u.probe(w, r)
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
+			atomic.AddInt32(&u.pullFilesHits, 1)
+			u.pullFiles(w, r)
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			atomic.AddInt32(&u.branchesHits, 1)
+			u.branches(w, r)
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)

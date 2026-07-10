@@ -267,17 +267,39 @@ func NewRouter(
 		// push/repository webhooks.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
 
-		// Cached PR routes (respcache_pulls.go): the open-PR list is served
-		// from webhook-maintained pull_requests state behind a per-(actor,
-		// repo) "list complete" marker; the single PR is served only when the
-		// row is rest-complete AND its `mergeable` is KNOWN — a null/unknown
-		// mergeable always misses so pr-minder's resolve-poll still reaches
-		// GitHub (diff/raw Accepts and unknown query shapes pass through).
-		// Sub-resources (/pulls/{n}/files, /reviews, /merge, ...) don't match
-		// these patterns and keep passing through; writes (POST/PATCH/PUT)
-		// fall to MethodNotAllowed → the proxy.
+		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
+		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
+		// how tier 1 serves truth (repository webhooks, fleet sync, and the
+		// consistency check keep the row converged; the reveal probe
+		// re-absorbs it per principal within the grant TTL). Served only when
+		// the row answers completely (known visibility -- unknown fails
+		// closed -- default branch, full name); anything else fetches and
+		// absorbs. Query params and non-default Accepts pass through, and
+		// HEAD requests fall to MethodNotAllowed → the proxy.
+		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
+
+		// Cached branches list (respcache_branches.go): per-page whole-doc
+		// snapshots. Branch create/delete/tip-move all arrive as pushes, so
+		// push/repository webhooks flush repo-wide. The single-branch read
+		// /branches/{branch} is a different shape and stays passthrough.
+		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+
+		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
+		// open-PR list is served from webhook-maintained pull_requests state
+		// behind a per-repo "list complete" marker; the single PR is served
+		// from an open row only when it is rest-complete AND its `mergeable`
+		// is KNOWN — a null/unknown mergeable always misses so pr-minder's
+		// resolve-poll still reaches GitHub — or, for a CLOSED PR, from its
+		// rendered doc snapshot (diff/raw Accepts and unknown query shapes
+		// pass through). The exact /pulls/{number}/files tail is cached as
+		// per-page whole-doc snapshots, flushed per PR by pull_request events
+		// and repo-wide by push/repository; every OTHER sub-resource
+		// (/reviews, /merge, /commits, ...) matches none of these patterns
+		// and keeps passing through, and writes (POST/PATCH/PUT) fall to
+		// MethodNotAllowed → the proxy.
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded

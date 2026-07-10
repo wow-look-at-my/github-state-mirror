@@ -54,7 +54,7 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Ten REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Thirteen REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
@@ -153,9 +153,50 @@ pass through verbatim, uncached.
   resolve, so a null/unknown mergeable always misses (the fetch absorbs
   GitHub's computed answer), and a push to a PR's base or head branch
   un-resolves the stored value — the cache can never wedge that poll on a
-  stale answer. Closed PRs are never stored (absorbing one deletes the cached
-  row); `Accept: application/vnd.github.diff` (the pr-minder diff read)
+  stale answer. A fetched CLOSED answer still deletes any cached open row
+  (the open-PR table retains open PRs only) but is absorbed as a rendered
+  whole-document snapshot and served from cache thereafter — closed PRs are
+  what every pr-minder drain re-reads, and each such read used to be a fresh
+  passthrough. The closed document is the open rebuild's exact shape plus
+  GitHub's real `merged` and `mergeable` (present, typically null); it is
+  flushed per PR by every `pull_request`/`pull_request_review` event (so a
+  reopen cannot serve it stale), repo-wide by `repository` events, bounded by
+  a 24 h TTL — and deliberately not flushed by pushes (a push cannot mutate a
+  closed PR). `Accept: application/vnd.github.diff` (the pr-minder diff read)
   passes through.
+- `GET /repos/{owner}/{repo}/pulls/{number}/files` — the PR files listing
+  (pr-minder's fallback when GitHub 406s a too-large unified diff). Whole-doc
+  snapshots per exact page (`owner, repo, number, per_page, page`); the
+  trimmed per-file item is `{filename, status, additions, deletions, changes,
+  previous_filename?, patch?}` with the **presence of `previous_filename` and
+  `patch` preserved exactly** (consumers test `typeof f.patch === 'string'`;
+  GitHub legitimately omits `patch` on binary/oversized files), the per-file
+  blob `sha` and every URL field dropped. `patch` is unbounded, so a rendered
+  document over 1 MiB passes through unstored. Only `per_page` (1..100) and
+  `page` (1..10) are modeled; a non-numeric `{number}` or any other param
+  passes through, and only a `200` is absorbed (an empty page past the end is
+  a valid cacheable answer). Flushed per PR by every
+  `pull_request`/`pull_request_review` event, repo-wide by `push` and
+  `repository`, with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}/branches` — the branches listing (pr-minder's
+  fork-point detection lists every branch tip per repo, fleet-wide). Whole-doc
+  snapshots per exact page; trimmed item `{name, commit: {sha}, protected}`
+  with `commit.url`, the protection object, and `protection_url` dropped.
+  Same paging shape guard as the files route; the single-branch
+  `/branches/{branch}` read stays passthrough. Branch create, delete, and
+  tip-move all arrive as pushes, so `push` and `repository` webhooks flush
+  repo-wide, with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}` — the bare repository read (default-branch
+  lookups and status-only "can I see this repo?" probes). No snapshot table
+  and no TTL: the response is rebuilt straight from the `repos` truth row the
+  webhooks, fleet sync, and consistency check already maintain — truth
+  freshness is the freshness model, exactly as the GraphQL route serves truth.
+  Served only when the row can answer completely (known visibility — unknown
+  fails closed — a known default branch, and the canonical full name);
+  otherwise the fetch's absorbed `200` heals the row. Trimmed rebuild:
+  `{name, full_name, owner: {login}, private, visibility, default_branch,
+  archived, disabled}`. Query params and `HEAD` requests pass through; a
+  non-200 relays unstored.
 - `GET /repos/{owner}/{repo}/installation` — the App-level "which installation
   covers this repo" lookup. App-JWT verified like the token mint, cached per
   app as `{id, account{login,type}, repository_selection, app_id, app_slug,
