@@ -19,6 +19,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -59,9 +60,12 @@ type dashboard struct {
 	// meter is the passively observed rate-limit store (X-RateLimit-* headers
 	// recorded off upstream responses) surfaced on the "Rate limit" tab.
 	meter *ratemeter.Store
+	// notifier backs the admin-only GET /api/notifications JSON view
+	// (subscriber-notification activity + all subscriptions). Nil-safe.
+	notifier *notify.Notifier
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -92,9 +96,10 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
-		reqlog:  reqlog,
-		checker: checker,
-		meter:   meter,
+		reqlog:   reqlog,
+		checker:  checker,
+		meter:    meter,
+		notifier: notifier,
 	}
 }
 
@@ -146,6 +151,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/cache/check", d.handleCacheCheck)
 	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
+	r.Get("/api/notifications", d.handleNotifications)
 }
 
 // serveAssets serves the content-addressed asset URLs (immutable cache) and
