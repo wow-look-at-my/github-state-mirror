@@ -2,7 +2,10 @@
 -- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
 --
 -- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
--- pull_requests, pr_labels, commit_checks, contents_cache, git_commits_cache)
+-- pull_requests, pr_labels, commit_checks, and the per-route response-cache
+-- tables: contents_cache, git_commits_cache, commits_list_cache,
+-- compare_cache, commit_ci_cache, pulls_list_cache, pull_files_cache,
+-- closed_pull_cache, branches_list_cache)
 -- hold ONE row per resource -- no actor/scope dimension. Webhooks and fetches
 -- by any principal all write the same truth. What a caller may READ is decided
 -- at serve time by the reveal-by-permission layer: a repo's cached state is
@@ -186,6 +189,7 @@ CREATE INDEX idx_access_grants_repo ON access_grants (owner, repo);
 CREATE TABLE deny_cache (
     principal     TEXT NOT NULL,
     resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull | repo_commits | compare
+                                  -- | commit_status | check_runs | pull_files | branches | repo
     resource_key  TEXT NOT NULL,  -- route-specific resource key
     owner         TEXT NOT NULL,  -- lowercased
     repo          TEXT NOT NULL,  -- lowercased
@@ -365,6 +369,83 @@ CREATE TABLE commit_ci_cache (
 
 CREATE UNIQUE INDEX idx_commit_ci_cache_key ON commit_ci_cache (owner, repo, ref, kind);
 CREATE INDEX idx_commit_ci_cache_lru ON commit_ci_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/pulls/{number}/files (the
+-- PR files listing). doc holds the ALREADY-TRIMMED JSON array -- per-file
+-- {filename, status, additions, deletions, changes, previous_filename?,
+-- patch?} with the presence/absence of previous_filename and patch preserved
+-- exactly (consumers test for a string patch; binary/oversized files
+-- legitimately lack one) and every URL field dropped. patch is unbounded, so
+-- a rendered doc larger than 1 MiB is never stored (the request passes
+-- through unstored). A PR's files move whenever its head or base moves, so
+-- pull_request events flush that one PR's pages (head pushes -- including
+-- fork heads whose pushes we never see -- base retargets, reopens) and
+-- push/repository events flush the whole repo (the belt for missed
+-- pull_request deliveries); expires_at is the 24h TTL backstop. owner/repo
+-- lowercased like the other cached-route tables.
+CREATE TABLE pull_files_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    number       INTEGER NOT NULL,
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed files array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_pull_files_cache_key ON pull_files_cache (owner, repo, number, per_page, page);
+CREATE INDEX idx_pull_files_cache_lru ON pull_files_cache (last_used_at);
+
+-- Rendered-doc snapshots for the single-PR route's CLOSED/merged answers
+-- (GET /repos/{owner}/{repo}/pulls/{number} where GitHub reports the PR
+-- closed). The open-only invariant of the pull_requests truth table is
+-- untouched: a fetched closed PR still deletes any cached open row, and
+-- closed PRs live ONLY here, as trimmed documents rendered once at absorb
+-- time from GitHub's own response (never re-derived). A closed PR only
+-- changes via pull_request events (reopened/edited/relabeled), which flush
+-- that one PR's doc; repository events flush the whole repo; a push is
+-- deliberately NOT a flush -- it cannot mutate a closed PR. expires_at is the
+-- 24h TTL backstop for missed deliveries, the same accepted staleness class
+-- as PRRowFresh. owner/repo lowercased like the other cached-route tables.
+CREATE TABLE closed_pull_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    number       INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed single-PR document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_closed_pull_cache_key ON closed_pull_cache (owner, repo, number);
+CREATE INDEX idx_closed_pull_cache_lru ON closed_pull_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/branches (the branches
+-- listing). doc holds the ALREADY-TRIMMED JSON array -- per-branch {name,
+-- commit:{sha}, protected} with commit.url and the protection object/URL
+-- dropped. A listing moves whenever any branch is created, deleted, or its
+-- tip advances -- all of which arrive as push events (a delete carries
+-- deleted=true) -- so push/repository webhooks flush a repo's snapshots;
+-- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
+-- lowercased like the other cached-route tables.
+CREATE TABLE branches_list_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed branches array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_branches_list_cache_key ON branches_list_cache (owner, repo, per_page, page);
+CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
 
 -- State for POST /app/installations/{id}/access_tokens responses (the
 -- installation-token mint cache). This table stays keyed by the verified app

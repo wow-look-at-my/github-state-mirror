@@ -287,17 +287,24 @@ func fullHexSHA(s string) bool {
 // AND its compare docs (a push to either side of any basehead changes the
 // comparison; whole-repo is the correct coarse grain since a payload can't
 // resolve which baseheads a moved ref appears in) AND its commit-CI snapshots
-// (a push moves branch-form refs' tips). status/check_run/check_suite events
-// flush the commit-CI snapshots too -- CI state changed somewhere in the
-// repo, and per-sha precision is not worth the bookkeeping for v1 (a
-// branch-form key can't be matched to a payload sha anyway). repository
-// events (rename/delete/visibility) additionally flush the repo's "open-PR
-// list complete" marker; pull_request events deliberately do NOT -- they
-// maintain the PR rows, which is what the marker asserts. installation
-// events flush the installation's cached token mints AND cached
-// repo-installation answers (a suspended/deleted/re-scoped installation must
-// not keep serving either). Git-commit rows are immutable and are
-// deliberately never invalidated.
+// (a push moves branch-form refs' tips) AND its PR-files pages (a push may
+// have moved any same-repo PR's head -- the belt for missed pull_request
+// deliveries) AND its branches snapshots (branch create, delete, and
+// tip-move all arrive as pushes). pull_request/pull_request_review events
+// flush that one PR's files pages (head pushed/synchronize -- including fork
+// heads whose pushes we never see -- base retargets, reopens) and its
+// closed-PR doc; closed docs are deliberately NOT push-flushed -- a push
+// cannot mutate a closed PR, so only pull_request (per PR) and repository
+// (whole repo) events reach them. status/check_run/check_suite events flush
+// the commit-CI snapshots too -- CI state changed somewhere in the repo, and
+// per-sha precision is not worth the bookkeeping for v1 (a branch-form key
+// can't be matched to a payload sha anyway). repository events
+// (rename/delete/visibility) additionally flush the repo's "open-PR list
+// complete" marker; pull_request events deliberately do NOT -- they maintain
+// the PR rows, which is what the marker asserts. installation events flush
+// the installation's cached token mints AND cached repo-installation answers
+// (a suspended/deleted/re-scoped installation must not keep serving either).
+// Git-commit rows are immutable and are deliberately never invalidated.
 func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
 	switch event.Type {
 	case "push", "repository":
@@ -317,10 +324,30 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if err := d.store.InvalidateCommitCICache(ctx, owner, repo); err != nil {
 			slog.Warn("webhook: invalidate commit CI cache failed", "repo", owner+"/"+repo, "error", err)
 		}
+		if err := d.store.InvalidatePullFilesCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate pull files cache failed", "repo", owner+"/"+repo, "error", err)
+		}
+		if err := d.store.InvalidateBranchesListCache(ctx, owner, repo); err != nil {
+			slog.Warn("webhook: invalidate branches list cache failed", "repo", owner+"/"+repo, "error", err)
+		}
 		if event.Type == "repository" {
 			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {
 				slog.Warn("webhook: invalidate pulls list markers failed", "repo", owner+"/"+repo, "error", err)
 			}
+			if err := d.store.InvalidateClosedPullCache(ctx, owner, repo); err != nil {
+				slog.Warn("webhook: invalidate closed pull cache failed", "repo", owner+"/"+repo, "error", err)
+			}
+		}
+	case "pull_request", "pull_request_review":
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" || event.PRNumber <= 0 {
+			return
+		}
+		if err := d.store.InvalidatePullFilesForPR(ctx, owner, repo, event.PRNumber); err != nil {
+			slog.Warn("webhook: invalidate pull files cache failed", "pr", prRef(owner, repo, event.PRNumber), "error", err)
+		}
+		if err := d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber); err != nil {
+			slog.Warn("webhook: invalidate closed pull cache failed", "pr", prRef(owner, repo, event.PRNumber), "error", err)
 		}
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()

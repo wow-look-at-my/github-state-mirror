@@ -53,6 +53,9 @@ const (
 	denyKindCompare      = "compare"
 	denyKindCommitStatus = "commit_status"
 	denyKindCheckRuns    = "check_runs"
+	denyKindPullFiles    = "pull_files" // GET /repos/{owner}/{repo}/pulls/{number}/files
+	denyKindBranches     = "branches"   // GET /repos/{owner}/{repo}/branches
+	denyKindRepo         = "repo"       // GET /repos/{owner}/{repo}
 )
 
 // revealOutcome is the reveal decision for one request.

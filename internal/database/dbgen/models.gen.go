@@ -24,6 +24,18 @@ type ActorIdentity struct {
 	LastSeen  string
 }
 
+type BranchesListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CacheMetadatum struct {
 	Actor         string
 	ResourceKind  string
@@ -48,6 +60,17 @@ type CacheRefreshLog struct {
 	Success        sql.NullInt64
 	RecordsChanged sql.NullInt64
 	ErrorMessage   sql.NullString
+}
+
+type ClosedPullCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type CommitCheck struct {
@@ -163,6 +186,19 @@ type PrLabel struct {
 	PrNumber int64
 	Name     string
 	Color    string
+}
+
+type PullFilesCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type PullRequest struct {

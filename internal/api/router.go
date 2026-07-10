@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -159,6 +160,7 @@ func NewRouter(
 	baseURL string,
 	checker *syncpkg.ConsistencyChecker,
 	meter *ratemeter.Store,
+	notifier *notify.Notifier,
 	dbPath string,
 ) http.Handler {
 	r := chi.NewRouter()
@@ -184,11 +186,13 @@ func NewRouter(
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
 	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, dbPath).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
-	// not a user token, so it sits outside the requireAuth group.
-	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher))
+	// not a user token, so it sits outside the requireAuth group. After each
+	// synchronous dispatch the subscriber notifier fans the outcome out to
+	// registered endpoints (non-blocking; nil keeps the feature inert).
+	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, notifier))
 
 	// GitHub OAuth token-exchange relay for browser clients. A purely
 	// client-side app cannot POST to github.com/login/oauth/access_token
@@ -219,6 +223,14 @@ func NewRouter(
 	// everything else falls through to the verbatim passthrough, uncached.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(gh, newIdentityRecorder(store)))
+
+		// Subscriber-notification CRUD (subscriptions.go), under the RESERVED
+		// mirror-native /_mirror/* namespace (GitHub has no underscore-prefixed
+		// top-level paths, and registered routes beat the NotFound passthrough,
+		// so this can never collide with proxied GitHub traffic). Principal-
+		// scoped via requireAuth like every data route; not a repo read, so no
+		// reveal gate and no request-log entry.
+		(&subscriptionsAPI{notifier: notifier}).routes(r)
 
 		// GraphQL endpoint (only the org-repos query shape is cached; everything
 		// else h.graphql forwards to the passthrough).
@@ -257,17 +269,39 @@ func NewRouter(
 		// push/repository webhooks.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
 
-		// Cached PR routes (respcache_pulls.go): the open-PR list is served
-		// from webhook-maintained pull_requests state behind a per-(actor,
-		// repo) "list complete" marker; the single PR is served only when the
-		// row is rest-complete AND its `mergeable` is KNOWN — a null/unknown
-		// mergeable always misses so pr-minder's resolve-poll still reaches
-		// GitHub (diff/raw Accepts and unknown query shapes pass through).
-		// Sub-resources (/pulls/{n}/files, /reviews, /merge, ...) don't match
-		// these patterns and keep passing through; writes (POST/PATCH/PUT)
-		// fall to MethodNotAllowed → the proxy.
+		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
+		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
+		// how tier 1 serves truth (repository webhooks, fleet sync, and the
+		// consistency check keep the row converged; the reveal probe
+		// re-absorbs it per principal within the grant TTL). Served only when
+		// the row answers completely (known visibility -- unknown fails
+		// closed -- default branch, full name); anything else fetches and
+		// absorbs. Query params and non-default Accepts pass through, and
+		// HEAD requests fall to MethodNotAllowed → the proxy.
+		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
+
+		// Cached branches list (respcache_branches.go): per-page whole-doc
+		// snapshots. Branch create/delete/tip-move all arrive as pushes, so
+		// push/repository webhooks flush repo-wide. The single-branch read
+		// /branches/{branch} is a different shape and stays passthrough.
+		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+
+		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
+		// open-PR list is served from webhook-maintained pull_requests state
+		// behind a per-repo "list complete" marker; the single PR is served
+		// from an open row only when it is rest-complete AND its `mergeable`
+		// is KNOWN — a null/unknown mergeable always misses so pr-minder's
+		// resolve-poll still reaches GitHub — or, for a CLOSED PR, from its
+		// rendered doc snapshot (diff/raw Accepts and unknown query shapes
+		// pass through). The exact /pulls/{number}/files tail is cached as
+		// per-page whole-doc snapshots, flushed per PR by pull_request events
+		// and repo-wide by push/repository; every OTHER sub-resource
+		// (/reviews, /merge, /commits, ...) matches none of these patterns
+		// and keeps passing through, and writes (POST/PATCH/PUT) fall to
+		// MethodNotAllowed → the proxy.
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded
