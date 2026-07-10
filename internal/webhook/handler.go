@@ -26,8 +26,19 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, event Event) DispatchResult
 }
 
-// Handler returns an http.Handler that receives GitHub webhook POSTs.
-func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
+// IngestNotifier is told about a delivery AFTER the synchronous dispatch has
+// applied it, so subscriber notifications (internal/notify) can fan out
+// post-ingest. Implementations MUST return immediately (enqueue/spawn): the
+// GitHub webhook response never waits on subscriber POSTs. The notifier is
+// optional — omitted or nil keeps the feature inert.
+type IngestNotifier interface {
+	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
+}
+
+// Handler returns an http.Handler that receives GitHub webhook POSTs. Any
+// non-nil notifiers are invoked (non-blocking) after each dispatch with the
+// dispatch outcome; the variadic keeps notifier-less call sites unchanged.
+func Handler(secret string, dispatcher Dispatcher, notifiers ...IngestNotifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -71,6 +82,16 @@ func Handler(secret string, dispatcher Dispatcher) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), dispatchTimeout)
 		defer cancel()
 		result := dispatcher.Dispatch(ctx, event)
+
+		// Ingest is done — hand the outcome to any subscriber notifier. The
+		// call is non-blocking by contract, so the response to GitHub is
+		// never held up by subscriber endpoints.
+		ingestedAt := time.Now()
+		for _, n := range notifiers {
+			if n != nil {
+				n.NotifyIngest(event, result, ingestedAt)
+			}
+		}
 
 		writeResult(w, result)
 	}
