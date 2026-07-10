@@ -112,6 +112,9 @@ const demoWebhooks: WebhooksResponse = {
 const demoRequests: RequestsResponse = {
     total: 1842,
     by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
+    // Renders as "DB 1.4 GB (+125.8 MB WAL)" on the tab's summary line.
+    db_size_bytes: 1437204480,
+    db_wal_size_bytes: 125829120,
     groups: [
         { key: "POST /graphql", method: "POST", route: "/graphql", total: 1146, hit: 1103, miss: 41, passthrough: 0, write: 0, error: 2, sample: "/graphql", last_seen: ago(2) },
         { key: "GET /repos/{owner}/{repo}/pulls/{number}", method: "GET", route: "/repos/{owner}/{repo}/pulls/{number}", total: 248, hit: 236, miss: 12, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318", last_seen: ago(3) },

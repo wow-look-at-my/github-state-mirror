@@ -105,8 +105,9 @@ func main() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
-	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier)
+	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
+	// all data access goes through the already-open db handle.
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

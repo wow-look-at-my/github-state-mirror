@@ -89,7 +89,8 @@ type testStack struct {
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := database.Open(dbPath)
 	require.Nil(t, err)
 
 	t.Cleanup(func() { db.Close() })
@@ -127,7 +128,7 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath)
 	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier}
 }
 
