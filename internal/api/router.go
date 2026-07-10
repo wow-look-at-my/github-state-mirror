@@ -194,13 +194,16 @@ func NewRouter(
 	// registered endpoints (non-blocking; nil keeps the feature inert).
 	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, notifier))
 
-	// GitHub OAuth token-exchange relay for browser clients. A purely
-	// client-side app cannot POST to github.com/login/oauth/access_token
-	// directly (that endpoint sends no CORS headers); the mirror relays it with
-	// correct CORS. It carries no bearer token (the OAuth client secret in the
-	// body is the credential), so it sits outside requireAuth, and it targets
-	// github.com — not the api.github.com passthrough.
+	// GitHub OAuth relays for browser clients. A purely client-side app cannot
+	// POST to github.com's login endpoints directly (they send no CORS
+	// headers); the mirror relays them with correct CORS. They carry no bearer
+	// token (the body is the credential — an OAuth client secret, or just a
+	// public client_id for the device flow), so they sit outside requireAuth,
+	// and they target github.com — not the api.github.com passthrough.
+	// access_token is the code-for-token exchange AND the device flow's
+	// polling leg; device/code starts an RFC 8628 device sign-in.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
+	r.Post("/login/device/code", h.oauthDeviceCode)
 
 	// Installation-token mint cache and the repo-installation lookup.
 	// Registered OUTSIDE requireAuth: the bearer token on both is a GitHub App
