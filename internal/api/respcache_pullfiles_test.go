@@ -109,6 +109,36 @@ func TestCachedPullFiles_PullRequestEventFlushesOnePR(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.pullFilesHits))
 }
 
+// TestCachedPullFiles_MixedCaseSharesRowAndFlushes: GitHub treats owner/repo
+// case-insensitively in URLs while webhook payloads carry the repo's own
+// casing, so a differently-cased read must land on the SAME stored row and a
+// differently-cased payload must still flush it -- the keys are lowercased
+// inside ghdata, never by the callers. (The same NormalizeRepoKey pattern
+// backs the closed-pull and branches tables.)
+func TestCachedPullFiles_MixedCaseSharesRowAndFlushes(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files", nil))
+	require.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.pullFilesHits))
+
+	w2 := do(t, router, authedReq("GET", "/repos/OrG1/RePo1/pulls/7/files", nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "URL casings must fold onto one cache row")
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.pullFilesHits), "the recased read must not refetch")
+
+	// A pull_request delivery whose repository object carries different
+	// casing (payload casing is GitHub's, not ours) must flush that row.
+	postWebhook(t, router, "pull_request", `{"action":"synchronize","number":7,`+
+		`"pull_request":{"number":7},`+
+		`"repository":{"name":"RePo1","owner":{"login":"OrG1"}}}`)
+
+	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files", nil))
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a recased payload must flush the lowercased row")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.pullFilesHits))
+}
+
 // TestCachedPullFiles_PushEventFlushesRepoWide: a push flushes every PR's
 // cached pages for the repo -- the belt for pull_request deliveries we
 // missed (a same-repo head push moves some PR's files).
