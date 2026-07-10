@@ -105,7 +105,8 @@ func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http
 	require.NoError(t, err)
 
 	checker := syncpkg.NewConsistencyChecker(client, store, fStore, app)
-	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter), store
+	// A nil notifier keeps subscriber notifications inert for these tests.
+	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter, nil), store
 }
 
 // decodeStreamLines splits an NDJSON body and unmarshals every line.
