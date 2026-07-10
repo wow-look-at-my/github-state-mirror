@@ -2,7 +2,10 @@
 -- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
 --
 -- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
--- pull_requests, pr_labels, commit_checks, contents_cache, git_commits_cache)
+-- pull_requests, pr_labels, commit_checks, and the per-route response-cache
+-- tables: contents_cache, git_commits_cache, commits_list_cache,
+-- compare_cache, commit_ci_cache, pulls_list_cache, pull_files_cache,
+-- closed_pull_cache, branches_list_cache)
 -- hold ONE row per resource -- no actor/scope dimension. Webhooks and fetches
 -- by any principal all write the same truth. What a caller may READ is decided
 -- at serve time by the reveal-by-permission layer: a repo's cached state is
