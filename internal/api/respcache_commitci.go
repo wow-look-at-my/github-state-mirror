@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,49 +19,95 @@ import (
 //
 //	GET /repos/{owner}/{repo}/commits/{ref}/status      (combined commit status)
 //	GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (check runs for a ref)
+//	GET /repos/{owner}/{repo}/commits/{ref}/statuses    (raw statuses LIST)
+//	GET /repos/{owner}/{repo}/statuses/{ref}            (its legacy alias)
 //
-// Fleet-wide CI watchers poll both endpoints per repo/branch/sha -- hundreds
+// Fleet-wide CI watchers poll these endpoints per repo/branch/sha -- hundreds
 // of passthroughs per sweep in the request log -- and between CI events the
-// answers are stable. The ref is treated as an OPAQUE key: a branch name
+// answers are stable. The required-builds hook paginates check-runs AND the
+// raw statuses list at per_page=100&page=N until a short page (consumer
+// survey 2026-07-11), so pagination is part of the cache key: per_page/page
+// are parsed like the PR-files route and a param-less request stores under
+// GitHub's defaults. The ref is treated as an OPAQUE key: a branch name
 // (slashes and all), a sha, or a tag is cached verbatim, never resolved, so
-// each spelling is its own snapshot. Both routes live under the /commits/*
-// subtree, whose OTHER tails (the single-commit read /commits/{sha}, the raw
-// /statuses list, /check-suites, /pulls, /comments, ...) are not modeled and
-// are forwarded to the passthrough proxy unchanged.
+// each spelling is its own snapshot. The /commits/* subtree's OTHER tails
+// (the single-commit read /commits/{sha}, /check-suites, /pulls, /comments,
+// ...) are not modeled and are forwarded to the passthrough proxy unchanged.
+//
+// The raw statuses list has TWO path spellings for one resource: the legacy
+// /repos/{owner}/{repo}/statuses/{ref} alias (what required-builds actually
+// sends) and the modern /commits/{ref}/statuses form. GitHub answers both
+// identically, so both registrations land in ONE handler and ONE row space
+// (kind = statuses_list, ref verbatim) -- a read through either spelling
+// warms the other.
 //
 // These routes deliberately do NOT read or write the commit_checks truth
 // table: its normalized per-context rows are lossy against these responses
 // (no timestamps, no descriptions, no run ids). Unifying the two is possible
-// future work; for v1 the whole trimmed document is snapshotted per ref.
+// future work; the whole trimmed document is snapshotted per exact request.
 //
 // Invalidation is the load-bearing part: status/check_run/check_suite events
-// flush the repo's rows (CI state changed somewhere in the repo -- per-sha
-// precision is not worth the bookkeeping for v1), push flushes too (a
-// branch-form ref's tip moved; a brand-new sha has no rows yet anyway), and
-// repository flushes like every response cache. Net effect: snapshots only
-// survive while a repo's CI is quiet -- exactly when the fleet sweeps re-poll
-// them. A 24h TTL backstops missed deliveries.
+// flush the payload-named refs' rows (every kind, every page; repo-wide when
+// the payload names none), push flushes the pushed ref, and repository
+// flushes like every response cache. Net effect: snapshots only survive
+// while a repo's CI is quiet -- exactly when the fleet sweeps re-poll them.
+// A 24h TTL backstops missed deliveries.
 
 // commitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
 // stale snapshot being served. Webhooks flush sooner; this is the backstop.
 const commitCICacheTTL = 24 * time.Hour
 
-// stage-2: the bare param-less requests this route models today store and
-// read under GitHub's default pagination shape; stage 2 parses real
-// ?per_page/?page values (and adds the statuses-list kind) instead of these
-// constants.
 const (
+	// commitCIDefaultPerPage is GitHub's default page size on all three
+	// listing forms when the request does not send per_page.
 	commitCIDefaultPerPage = 30
-	commitCIDefaultPage    = 1
+
+	// commitCIMaxCachedPage caps which pages are modeled. The CI consumers
+	// page shallowly (a commit with >10 pages of statuses at per_page=100 is
+	// pathological); deeper pagination passes through.
+	commitCIMaxCachedPage = 10
 )
 
+// parseCommitCIShape reports the paging shape of a commit-CI query and
+// whether the cache models it (modeled on parsePullFilesShape). Unknown
+// params (the check-runs filters ?check_name/?status/?filter/?app_id change
+// the body's contents entirely), repeated params, an out-of-range per_page,
+// or a page beyond the modeled cap make it non-cacheable.
+func parseCommitCIShape(q url.Values) (perPage, page int, ok bool) {
+	perPage, page = commitCIDefaultPerPage, 1
+	for key, vals := range q {
+		if len(vals) != 1 {
+			return 0, 0, false
+		}
+		v := vals[0]
+		switch key {
+		case "per_page":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > 100 {
+				return 0, 0, false
+			}
+			perPage = n
+		case "page":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > commitCIMaxCachedPage {
+				return 0, 0, false
+			}
+			page = n
+		default:
+			return 0, 0, false
+		}
+	}
+	return perPage, page, true
+}
+
 // commitsSubtree dispatches GET /repos/{owner}/{repo}/commits/* by its path
-// tail: a `{ref}/status` tail is the cached combined-status route and a
-// `{ref}/check-runs` tail the cached check-runs route -- the suffix anchor is
-// what lets a ref carry slashes (claude/my-branch/status), which a
-// single-segment route parameter could never match. Every other tail (the
-// single-commit read, /statuses, /check-suites, ...) is forwarded to the
-// passthrough proxy, exactly as it was before this subtree was registered.
+// tail: a `{ref}/status` tail is the cached combined-status route, a
+// `{ref}/check-runs` tail the cached check-runs route, and a `{ref}/statuses`
+// tail the cached raw statuses list -- the suffix anchor is what lets a ref
+// carry slashes (claude/my-branch/status), which a single-segment route
+// parameter could never match. Every other tail (the single-commit read,
+// /check-suites, ...) is forwarded to the passthrough proxy, exactly as it
+// was before this subtree was registered.
 func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	tail := chi.URLParam(r, "*")
 	if ref, ok := strings.CutSuffix(tail, "/status"); ok && ref != "" {
@@ -70,20 +118,48 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindCheckRuns, denyKindCheckRuns)
 		return
 	}
+	if ref, ok := strings.CutSuffix(tail, "/statuses"); ok && ref != "" {
+		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
+		return
+	}
 	h.ghProxy.ServeHTTP(w, r)
 }
 
-// cachedCommitCI serves one commit-CI snapshot (combined status or check
-// runs) from absorbed state, fetching and absorbing on a miss.
+// statusesAlias serves GET /repos/{owner}/{repo}/statuses/{ref} -- the LEGACY
+// spelling of the raw statuses list, and the one the consumers actually send
+// (required-builds' listStatuses; survey 2026-07-11). The wildcard is the
+// whole ref (slashes and all); it lands in the same handler and the same
+// (kind = statuses_list) row space as the modern /commits/{ref}/statuses
+// form, since GitHub answers both identically. Only GET is registered, so
+// the required-builds status PUBLISH -- POST /repos/{o}/{r}/statuses/{sha} --
+// falls to MethodNotAllowed and the passthrough proxy, untouched.
+func (h *handlers) statusesAlias(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "*")
+	if ref == "" {
+		h.ghProxy.ServeHTTP(w, r)
+		return
+	}
+	h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
+}
+
+// cachedCommitCI serves one commit-CI snapshot (combined status, check runs,
+// or the raw statuses list) from absorbed state, fetching and absorbing on a
+// miss. All three kinds share the pagination shape parse: per_page/page join
+// the cache key, so each paginated form is its own self-contained snapshot.
 func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, kind, denyKind string) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
-	// Only the default JSON representation with NO query params is modeled:
-	// ?per_page/?page change which entries the body carries, and the
-	// check-runs filters (?check_name, ?status, ?filter, ?app_id) change its
-	// contents entirely. A caller sending any of them passes through.
-	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
+	// Only the default JSON representation with the modeled paging shape is
+	// cached: the check-runs filters (?check_name, ?status, ?filter, ?app_id)
+	// change the body's contents entirely and pass through, as does anything
+	// else parseCommitCIShape rejects.
+	if !acceptsDefaultJSON(r) {
+		h.ghProxy.ServeHTTP(w, r)
+		return
+	}
+	perPage, page, ok := parseCommitCIShape(r.URL.Query())
+	if !ok {
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
@@ -98,7 +174,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 
 	now := time.Now()
-	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, commitCIDefaultPerPage, commitCIDefaultPage, now); err != nil {
+	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
 		slog.Warn("commit CI cache read failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	} else if ok {
 		h.serveCommitCI(w, r, c.Doc, true)
@@ -122,7 +198,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	if err := h.store.PutCachedCommitCI(r.Context(), ghdata.CachedCommitCI{
 		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Doc: doc,
-	}, commitCIDefaultPerPage, commitCIDefaultPage, now, commitCICacheTTL); err != nil {
+	}, perPage, page, now, commitCICacheTTL); err != nil {
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
@@ -142,18 +218,32 @@ func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, doc str
 // absorbCommitCI parses a commit-CI 200 into the trimmed document (rendered
 // once here; hits serve the stored bytes). Reports false -- serve verbatim,
 // store nothing -- for any other status or any shape the model cannot hold.
+// The statuses LIST is a bare JSON array; the other two kinds are objects.
 func absorbCommitCI(kind string, status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
 	}
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
+	if len(trimmed) == 0 {
 		return "", false
 	}
-	if kind == ghdata.CommitCIKindCheckRuns {
+	switch kind {
+	case ghdata.CommitCIKindCheckRuns:
+		if trimmed[0] != '{' {
+			return "", false
+		}
 		return absorbCheckRuns(trimmed)
+	case ghdata.CommitCIKindStatusesList:
+		if trimmed[0] != '[' {
+			return "", false
+		}
+		return absorbStatusesList(trimmed)
+	default:
+		if trimmed[0] != '{' {
+			return "", false
+		}
+		return absorbCombinedStatus(trimmed)
 	}
-	return absorbCombinedStatus(trimmed)
 }
 
 // commitStatusItemJSON is one trimmed entry of the combined status's statuses
@@ -225,6 +315,58 @@ func absorbCombinedStatus(trimmed []byte) (string, bool) {
 	return string(rendered), true
 }
 
+// statusListItemJSON is one trimmed entry of the raw statuses LIST. The
+// consumers' contract (required-builds' listStatuses, survey 2026-07-11):
+// context/state/description/target_url are read, deduplication is by context
+// FIRST-WINS relying on the response's newest-first order -- so the rebuild
+// preserves item order EXACTLY, and description/target_url are nullable
+// strings whose keys are ALWAYS emitted (null when null, matching GitHub).
+// target_url is a pinned exception to the no-URL doctrine (the hook renders
+// it as the build's details link); the per-status id/node_id, the creator
+// user object, and url/avatar_url stay dropped.
+type statusListItemJSON struct {
+	Context     string  `json:"context"`
+	State       string  `json:"state"`
+	Description *string `json:"description"` // nullable; key always emitted
+	TargetURL   *string `json:"target_url"`  // nullable; pinned consumer-read exception
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+// absorbStatusesList parses a raw statuses-list 200 -- a BARE JSON ARRAY,
+// unlike the other two kinds -- into the trimmed document. Every item must
+// carry a context and a state; an empty array (a ref with no statuses, or a
+// page past the end) is a valid, cacheable answer.
+func absorbStatusesList(trimmed []byte) (string, bool) {
+	var raw []struct {
+		Context     string  `json:"context"`
+		State       string  `json:"state"`
+		Description *string `json:"description"`
+		TargetURL   *string `json:"target_url"`
+		CreatedAt   string  `json:"created_at"`
+		UpdatedAt   string  `json:"updated_at"`
+	}
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return "", false
+	}
+	items := make([]statusListItemJSON, 0, len(raw))
+	for _, s := range raw {
+		if s.Context == "" || s.State == "" {
+			return "", false
+		}
+		items = append(items, statusListItemJSON{
+			Context: s.Context, State: s.State,
+			Description: s.Description, TargetURL: s.TargetURL,
+			CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		})
+	}
+	rendered, err := marshalTrimmed(items)
+	if err != nil {
+		return "", false
+	}
+	return string(rendered), true
+}
+
 // appIDJSON is a check run's producing app, trimmed to its id -- the one app
 // field the org's known consumer contract (required-builds-manager's
 // own-check filter) branches on. The rest of GitHub's app object (slug, name,
@@ -233,23 +375,37 @@ type appIDJSON struct {
 	ID int64 `json:"id"`
 }
 
+// checkRunOutputJSON is a check run's output, trimmed to its title -- the one
+// output field the consumers read (required-builds renders output.title on
+// its breakdown page; survey 2026-07-11). summary/text stay dropped: they are
+// UNBOUNDED display markdown no mirror-pointed consumer reads.
+type checkRunOutputJSON struct {
+	Title *string `json:"title"` // nullable; key always emitted
+}
+
 // checkRunItemJSON is one trimmed entry of the check_runs array: the bounded
 // state fields a CI watcher branches on. conclusion/started_at/completed_at
 // are nullable while a run is queued/in progress and the keys are always
-// emitted, exactly as upstream. Dropped: html_url/details_url/url (no
-// mirror-pointed consumer reads them -- Step-0 survey, 2026-07-05),
-// node_id/external_id, check_suite, pull_requests, and the UNBOUNDED `output`
-// object (title/summary/text can be hundreds of KB of display markdown; no
-// consumer reads it through the mirror).
+// emitted, exactly as upstream. The 2026-07-11 consumer survey re-added three
+// fields the 2026-07-05 survey had dropped -- required-builds reads
+// output.title (trimmed to exactly that; see checkRunOutputJSON) and renders
+// details_url/html_url as its breakdown links, so both URL fields are PINNED
+// exceptions to the no-URL doctrine (nullable pointers, keys always emitted:
+// GitHub sends details_url null for runs without one). Still dropped: `url`,
+// node_id/external_id, check_suite, pull_requests, and the rest of `output`
+// (summary/text -- unbounded display markdown).
 type checkRunItemJSON struct {
-	ID          int64      `json:"id"`
-	HeadSHA     string     `json:"head_sha"`
-	Name        string     `json:"name"`
-	Status      string     `json:"status"`
-	Conclusion  *string    `json:"conclusion"`   // nullable until completed
-	StartedAt   *string    `json:"started_at"`   // nullable while queued
-	CompletedAt *string    `json:"completed_at"` // nullable until completed
-	App         *appIDJSON `json:"app"`          // nullable; trimmed to {id}
+	ID          int64              `json:"id"`
+	HeadSHA     string             `json:"head_sha"`
+	Name        string             `json:"name"`
+	Status      string             `json:"status"`
+	Conclusion  *string            `json:"conclusion"`   // nullable until completed
+	StartedAt   *string            `json:"started_at"`   // nullable while queued
+	CompletedAt *string            `json:"completed_at"` // nullable until completed
+	App         *appIDJSON         `json:"app"`          // nullable; trimmed to {id}
+	Output      checkRunOutputJSON `json:"output"`       // always emitted; trimmed to {title}
+	DetailsURL  *string            `json:"details_url"`  // nullable; pinned consumer-read exception
+	HTMLURL     *string            `json:"html_url"`     // nullable; pinned consumer-read exception
 }
 
 // checkRunsJSON is the trimmed rebuild of a check-runs listing:
@@ -278,6 +434,11 @@ func absorbCheckRuns(trimmed []byte) (string, bool) {
 			App         *struct {
 				ID int64 `json:"id"`
 			} `json:"app"`
+			Output *struct {
+				Title *string `json:"title"`
+			} `json:"output"`
+			DetailsURL *string `json:"details_url"`
+			HTMLURL    *string `json:"html_url"`
 		} `json:"check_runs"`
 	}
 	if err := json.Unmarshal(trimmed, &raw); err != nil || raw.CheckRuns == nil {
@@ -295,9 +456,15 @@ func absorbCheckRuns(trimmed []byte) (string, bool) {
 		item := checkRunItemJSON{
 			ID: cr.ID, HeadSHA: sha, Name: cr.Name, Status: cr.Status,
 			Conclusion: cr.Conclusion, StartedAt: cr.StartedAt, CompletedAt: cr.CompletedAt,
+			DetailsURL: cr.DetailsURL, HTMLURL: cr.HTMLURL,
 		}
 		if cr.App != nil {
 			item.App = &appIDJSON{ID: cr.App.ID}
+		}
+		// GitHub always sends the output object on real check runs; a missing
+		// or null one still rebuilds as {"title": null} so the key is stable.
+		if cr.Output != nil {
+			item.Output = checkRunOutputJSON{Title: cr.Output.Title}
 		}
 		doc.CheckRuns = append(doc.CheckRuns, item)
 	}

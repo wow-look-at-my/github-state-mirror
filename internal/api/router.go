@@ -251,17 +251,26 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
 
 		// The /commits/* subtree dispatcher (respcache_commitci.go): a tail
-		// ending in /status (the combined commit status) or /check-runs is a
-		// cached commit-CI route -- the suffix anchor is what lets the ref
-		// carry slashes, which a single-segment {ref} parameter could never
-		// match. Snapshots are keyed by the VERBATIM ref (branch, sha, or
-		// tag; never resolved) and flushed by status/check_run/check_suite
-		// (CI moved) plus push/repository webhooks. Every other tail -- the
-		// single-commit read /commits/{sha} (a different response shape),
-		// the raw /statuses list, /check-suites, /pulls, /comments, ... --
-		// stays passthrough, now forwarded by the dispatcher instead of
-		// falling to the router's NotFound.
+		// ending in /status (the combined commit status), /check-runs, or
+		// /statuses (the raw statuses LIST) is a cached commit-CI route --
+		// the suffix anchor is what lets the ref carry slashes, which a
+		// single-segment {ref} parameter could never match. Snapshots are
+		// keyed by the VERBATIM ref (branch, sha, or tag; never resolved) +
+		// kind + per_page/page, and flushed per payload-named ref by
+		// status/check_run/check_suite (CI moved) plus push/repository
+		// webhooks. Every other tail -- the single-commit read
+		// /commits/{sha} (a different response shape), /check-suites,
+		// /pulls, /comments, ... -- stays passthrough, forwarded by the
+		// dispatcher instead of falling to the router's NotFound.
 		r.Get("/repos/{owner}/{repo}/commits/*", h.commitsSubtree)
+
+		// The LEGACY statuses-list spelling /statuses/{ref} -- the path the
+		// consumers actually send (required-builds paginates it per_page=100
+		// until a short page) -- lands in the SAME handler and row space as
+		// the modern /commits/{ref}/statuses form above. GET only: the
+		// required-builds status PUBLISH (POST /statuses/{sha}) falls to
+		// MethodNotAllowed and the passthrough proxy, untouched.
+		r.Get("/repos/{owner}/{repo}/statuses/*", h.statusesAlias)
 
 		// Cached compare (respcache_compare.go): the three-dot base...head
 		// comparison pr-minder's auto_open_pr / close-empty gates run per
