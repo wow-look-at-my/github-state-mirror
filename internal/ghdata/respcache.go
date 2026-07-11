@@ -107,11 +107,23 @@ func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now tim
 }
 
 // InvalidateContentsCache drops every cached contents row for a repo -- the
-// conservative whole-repo flush a push/repository webhook triggers.
-// owner/repo are normalized here so callers can pass payload casing.
+// conservative whole-repo flush a repository webhook (or a push whose ref /
+// default branch is unknown) triggers. owner/repo are normalized here so
+// callers can pass payload casing.
 func (s *Store) InvalidateContentsCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+}
+
+// InvalidateContentsForRef drops one requested ref spelling's contents rows
+// (ref "" = the default-branch rows) -- the per-ref push flush. A push only
+// moves the pushed ref's answers, so other refs' rows survive. owner/repo
+// are normalized here so callers can pass payload casing; ref is matched
+// verbatim, exactly as rows are keyed.
+func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref string) error {
+	return s.q.DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }
 
@@ -190,12 +202,26 @@ func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit,
 }
 
 func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedGitCommit, now time.Time) error {
-	return q.UpsertGitCommitCache(ctx, dbgen.UpsertGitCommitCacheParams{
+	if err := q.UpsertGitCommitCache(ctx, dbgen.UpsertGitCommitCacheParams{
 		Owner: c.Owner, Repo: c.Repo, Sha: c.SHA, Message: c.Message,
 		AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.AuthorDate,
 		CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.CommitterDate,
 		TreeSha: c.TreeSHA, Parents: joinParents(c.Parents),
 		FetchedAt: rfc3339(now), LastUsedAt: rfc3339(now),
+	}); err != nil {
+		return err
+	}
+	// INVARIANT: upserting a REAL commit must clear any git_commit_miss_cache
+	// marker for its sha, so a sha that was probed before it existed stops
+	// answering 404 the moment the commit materializes. EVERY absorb path --
+	// the single-commit fetch (PutCachedGitCommit), the push-payload absorb
+	// (UpsertGitCommits), and the commits-list/compare absorbs -- funnels
+	// through THIS function, so a new absorber can never skip the un-miss.
+	// The clear runs on q (the caller's transaction when there is one) so a
+	// rolled-back absorb never half-applies. Keys are re-normalized
+	// defensively; callers already pass lowercased owner/repo/sha.
+	return q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
+		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Sha: strings.ToLower(c.SHA),
 	})
 }
 

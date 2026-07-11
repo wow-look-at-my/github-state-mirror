@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -86,15 +87,46 @@ func upstreamCheckRun(id int, name, status string, conclusion, startedAt, comple
 	}
 }
 
+// upstreamStatusListItem builds one GitHub-shaped raw statuses-LIST entry:
+// the creator user object and url/avatar_url clutter around the fields the
+// rebuild keeps (context/state/description/target_url/timestamps).
+// description and targetURL may be nil (GitHub sends null for both).
+func upstreamStatusListItem(id int, context, state string, description, targetURL any) map[string]any {
+	return map[string]any{
+		"url":         "https://api.github.com/repos/org1/repo1/statuses/" + shaTip,
+		"avatar_url":  "https://avatars.githubusercontent.com/u/1",
+		"id":          id,
+		"node_id":     "SC_list",
+		"state":       state,
+		"description": description,
+		"target_url":  targetURL,
+		"context":     context,
+		"created_at":  "2026-07-01T10:00:00Z",
+		"updated_at":  "2026-07-01T10:05:00Z",
+		"creator": map[string]any{
+			"login": "octocat", "id": 1, "type": "User",
+			"avatar_url": "https://avatars.githubusercontent.com/u/1",
+			"url":        "https://api.github.com/users/octocat",
+			"html_url":   "https://github.com/octocat",
+		},
+	}
+}
+
 // commitCIUpstream is the fake GitHub for the commit-CI cache tests.
 type commitCIUpstream struct {
 	statusHits    int32
 	checkRunsHits int32
+	statusesHits  int32
 	otherHits     int32
 	probeHits     int32
 	status        func(w http.ResponseWriter, r *http.Request)
 	checkRuns     func(w http.ResponseWriter, r *http.Request)
+	statuses      func(w http.ResponseWriter, r *http.Request)
 	probe         func(w http.ResponseWriter, r *http.Request)
+	// lastPostPath/lastPostBody record the most recent POST the fake saw --
+	// the status-publish passthrough regression test reads them.
+	lastPostPath string
+	lastPostBody string
 }
 
 // refOf extracts the {ref} between /commits/ and the trailing literal.
@@ -122,6 +154,14 @@ func newCommitCIUpstream() *commitCIUpstream {
 			},
 		})
 	}
+	u.statuses = func(w http.ResponseWriter, r *http.Request) {
+		// Newest first, like GitHub -- the consumers' first-wins context
+		// dedup depends on this order surviving the rebuild.
+		servePRJSON(w, []any{
+			upstreamStatusListItem(2, "ci/build", "success", "2/2 builds passed", "https://rbm.example.com/b/org1/repo1/"+shaTip),
+			upstreamStatusListItem(1, "ci/build", "pending", nil, nil),
+		})
+	}
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
 		// Report a private repo so callers earn grants (like the other fakes).
 		servePRJSON(w, map[string]any{
@@ -139,6 +179,20 @@ func (u *commitCIUpstream) handler() http.Handler {
 		switch {
 		case r.URL.Path == "/user":
 			servePRJSON(w, map[string]any{"login": testUserLogin, "id": testUserID})
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/statuses/"):
+			// The required-builds status PUBLISH. Record what arrived so the
+			// passthrough regression test can prove the mirror forwarded it
+			// untouched, and answer a GitHub-shaped 201.
+			body, _ := io.ReadAll(r.Body)
+			u.lastPostPath, u.lastPostBody = r.URL.Path, string(body)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 999, "state": "success", "context": "all-builds",
+				"url": "https://api.github.com/repos/org1/repo1/statuses/x"}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/statuses/") && len(parts) >= 5 && parts[3] == "statuses":
+			// The legacy statuses-list alias /repos/{o}/{r}/statuses/{ref}.
+			atomic.AddInt32(&u.statusesHits, 1)
+			u.statuses(w, r)
 		case strings.Contains(r.URL.Path, "/commits/"):
 			// Dispatch by the tail after /commits/ with the same suffix-cut
 			// rule the mirror uses, so a branch literally NAMED "status"
@@ -155,7 +209,13 @@ func (u *commitCIUpstream) handler() http.Handler {
 				u.checkRuns(w, r)
 				return
 			}
-			// The unmodeled subtree tails (single-commit read, /statuses,
+			if ref, ok := strings.CutSuffix(tail, "/statuses"); ok && ref != "" {
+				// The modern statuses-list spelling: same answer as the alias.
+				atomic.AddInt32(&u.statusesHits, 1)
+				u.statuses(w, r)
+				return
+			}
+			// The unmodeled subtree tails (single-commit read,
 			// /check-suites): answer 200 so the passthrough tests can assert
 			// the forward happened.
 			atomic.AddInt32(&u.otherHits, 1)
@@ -214,10 +274,12 @@ func TestCachedCommitStatus_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedCheckRuns_MissAbsorbHit covers the check-runs core flow: miss
-// then identical hit, with the rebuild dropping url/html_url/details_url,
-// node_id/external_id, check_suite, pull_requests, and the unbounded output
-// object -- while the nullable conclusion/completed_at of an in-progress run
-// survive as null and the app object is trimmed to {id}.
+// then identical hit. The rebuild drops url, node_id/external_id,
+// check_suite, pull_requests, and output's unbounded summary/text -- while
+// keeping the three consumer-read fields the 2026-07-11 survey re-added
+// (output trimmed to {title}, details_url, html_url -- the required-builds
+// hook renders all three), the nullable conclusion/completed_at of an
+// in-progress run as null, and the app object trimmed to {id}.
 func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/main/check-runs"
@@ -226,19 +288,26 @@ func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits))
-	assertNoURLKeys(t, w1.Body.Bytes())
+	assertNoURLKeys(t, w1.Body.Bytes(), "details_url", "html_url")
 	assert.JSONEq(t, fmt.Sprintf(`{
 		"total_count": 2,
 		"check_runs": [
 			{"id": 101, "head_sha": %q, "name": "build/main", "status": "completed",
 			 "conclusion": "success", "started_at": "2026-07-01T10:00:00Z",
-			 "completed_at": "2026-07-01T10:04:00Z", "app": {"id": 777}},
+			 "completed_at": "2026-07-01T10:04:00Z", "app": {"id": 777},
+			 "output": {"title": "Build report"},
+			 "details_url": "https://ci.example.com/builds/1",
+			 "html_url": "https://github.com/org1/repo1/runs/101"},
 			{"id": 102, "head_sha": %q, "name": "test/main", "status": "in_progress",
 			 "conclusion": null, "started_at": "2026-07-01T10:01:00Z",
-			 "completed_at": null, "app": {"id": 777}}
+			 "completed_at": null, "app": {"id": 777},
+			 "output": {"title": "Build report"},
+			 "details_url": "https://ci.example.com/builds/1",
+			 "html_url": "https://github.com/org1/repo1/runs/102"}
 		]
 	}`, shaTip, shaTip), w1.Body.String())
-	assert.NotContains(t, w1.Body.String(), "never stored", "the output object must be dropped")
+	assert.NotContains(t, w1.Body.String(), "never stored", "output.summary must be dropped")
+	assert.NotContains(t, w1.Body.String(), "annotations", "output's annotation fields must be dropped")
 	assert.NotContains(t, w1.Body.String(), "check_suite", "the check_suite object must be dropped")
 	assert.NotContains(t, w1.Body.String(), "slug", "the app object must be trimmed to its id")
 
@@ -292,32 +361,36 @@ func TestCachedCommitCI_RefKeying(t *testing.T) {
 }
 
 // TestCachedCommitCI_PassthroughShapes: shapes the cache does not model pass
-// through verbatim, uncached, every time -- any query param, a non-default
-// Accept, and every OTHER /commits/* subtree tail (the single-commit read,
-// the raw /statuses list, /check-suites, a branch literally named "status"
-// read as a single commit).
+// through verbatim, uncached, every time -- unknown/out-of-range/repeated
+// query params, a non-default Accept, and every OTHER /commits/* subtree tail
+// (the single-commit read, /check-suites, a branch literally named "status"
+// read as a single commit). (?per_page/?page themselves became modeled in
+// round 2 -- see TestCachedCommitCI_PaginationKeying.)
 func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 
-	// Query params are not modeled on either route.
+	// Unknown, out-of-range, and repeated params are not modeled.
 	for _, target := range []string{
-		"/repos/org1/repo1/commits/main/status?per_page=100",
-		"/repos/org1/repo1/commits/main/status?page=2",
-		"/repos/org1/repo1/commits/main/check-runs?per_page=100&page=2",
+		"/repos/org1/repo1/commits/main/status?per_page=101",
+		"/repos/org1/repo1/commits/main/status?page=11",
+		"/repos/org1/repo1/commits/main/status?per_page=50&per_page=50",
 		"/repos/org1/repo1/commits/main/check-runs?check_name=build",
 		"/repos/org1/repo1/commits/main/check-runs?filter=latest",
+		"/repos/org1/repo1/statuses/main?sort=created",
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
 		require.Equal(t, http.StatusOK, w.Code, target)
 		assert.Empty(t, w.Header().Get(cacheHeader), "unmodeled shape must pass through: %s", target)
 	}
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
-	assert.Equal(t, int32(3), atomic.LoadInt32(&u.checkRunsHits))
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.statusHits))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.checkRunsHits))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 
-	// A non-default Accept passes through on both routes.
+	// A non-default Accept passes through on all three route forms.
 	for _, target := range []string{
 		"/repos/org1/repo1/commits/main/status",
 		"/repos/org1/repo1/commits/main/check-runs",
+		"/repos/org1/repo1/statuses/main",
 	} {
 		req := authedReq("GET", target, nil)
 		req.Header.Set("Accept", "application/vnd.github.raw")
@@ -327,13 +400,11 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 
 	// The rest of the /commits/* subtree stays passthrough: the single-commit
 	// read (including a branch literally named "status" or "check-runs" --
-	// their tails have no /status "/check-runs" SUFFIX), the raw /statuses
-	// list, and /check-suites.
+	// their tails have no /status "/check-runs" SUFFIX) and /check-suites.
 	for _, target := range []string{
 		"/repos/org1/repo1/commits/" + shaTip,
 		"/repos/org1/repo1/commits/status",
 		"/repos/org1/repo1/commits/check-runs",
-		"/repos/org1/repo1/commits/main/statuses",
 		"/repos/org1/repo1/commits/main/check-suites",
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
@@ -341,16 +412,138 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 		assert.Empty(t, w.Header().Get(cacheHeader), "other subtree tails must pass through: %s", target)
 		assert.Contains(t, w.Body.String(), "forwarded", target)
 	}
-	assert.Equal(t, int32(5), atomic.LoadInt32(&u.otherHits))
+	assert.Equal(t, int32(4), atomic.LoadInt32(&u.otherHits))
 
 	// Passthroughs stored nothing: a cacheable shape still misses.
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/main/status", nil))
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
 }
 
+// TestCachedCommitCI_PaginationKeying: round 2 made ?per_page/?page part of
+// the cache key on every commit-CI form -- each paginated shape is its own
+// self-contained snapshot (the required-builds hook paginates check-runs and
+// statuses at per_page=100&page=N until a short page), the bare shape stores
+// under GitHub's defaults as its own key, and the combined /status route
+// inherits the same parse.
+func TestCachedCommitCI_PaginationKeying(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+
+	targets := []string{
+		"/repos/org1/repo1/commits/main/check-runs",
+		"/repos/org1/repo1/commits/main/check-runs?per_page=100",
+		"/repos/org1/repo1/commits/main/check-runs?per_page=100&page=2",
+		"/repos/org1/repo1/commits/main/status?per_page=100",
+	}
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code, target)
+		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each pagination shape is its own key: %s", target)
+	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.checkRunsHits))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits))
+
+	// Every shape serves from its own row now.
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.checkRunsHits), "hits must not call upstream")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits), "hits must not call upstream")
+}
+
+// TestCachedStatusesList_MissAbsorbHit covers the raw statuses LIST -- via
+// the LEGACY /statuses/{ref} alias, the spelling the consumers actually send.
+// The rebuild is a bare JSON array preserving response order EXACTLY (the
+// consumers' first-wins context dedup depends on newest-first), with
+// description/target_url nullable but ALWAYS keyed (target_url is a pinned
+// consumer-read exception to the no-URL ban) and the per-status id/node_id/
+// creator/url/avatar_url dropped. The modern /commits/{ref}/statuses spelling
+// shares the row: a read through it hits what the alias absorbed.
+func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	alias := "/repos/org1/repo1/statuses/main"
+
+	w1 := do(t, router, authedReq("GET", alias, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
+	assertNoURLKeys(t, w1.Body.Bytes(), "target_url")
+	assert.Equal(t, fmt.Sprintf(`[{"context":"ci/build","state":"success","description":"2/2 builds passed",`+
+		`"target_url":"https://rbm.example.com/b/org1/repo1/%s",`+
+		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"},`+
+		`{"context":"ci/build","state":"pending","description":null,"target_url":null,`+
+		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"}]`, shaTip),
+		w1.Body.String(), "order preserved newest-first; null keys always emitted")
+	assert.NotContains(t, w1.Body.String(), "octocat", "the creator user object must be dropped")
+	assert.NotContains(t, w1.Body.String(), "node_id", "per-status ids must be dropped")
+
+	w2 := do(t, router, authedReq("GET", alias, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits), "hit must not call upstream")
+
+	// The modern spelling of the same resource shares the row space.
+	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/main/statuses", nil))
+	require.Equal(t, http.StatusOK, w3.Code)
+	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "both path spellings share one row space")
+	assert.Equal(t, w1.Body.String(), w3.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
+
+	// A status event flushes the statuses-list snapshot like the other kinds
+	// (one commit_ci_cache table, one flush matrix).
+	postWebhook(t, router, "status", fmt.Sprintf(`{"sha":%q,"state":"success","context":"ci/build",
+		"branches":[{"name":"main"}],
+		"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip))
+	w4 := do(t, router, authedReq("GET", alias, nil))
+	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a status event must flush the statuses-list snapshot")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusesHits))
+
+	// An empty array (a ref with no statuses / a page past the end) is a
+	// valid cacheable answer, and the paginated form keys its own row.
+	u.statuses = func(w http.ResponseWriter, r *http.Request) { servePRJSON(w, []any{}) }
+	paged := alias + "?per_page=100&page=2"
+	w5 := do(t, router, authedReq("GET", paged, nil))
+	require.Equal(t, http.StatusOK, w5.Code)
+	assert.Equal(t, "miss", w5.Header().Get(cacheHeader))
+	assert.Equal(t, "[]", w5.Body.String())
+	w6 := do(t, router, authedReq("GET", paged, nil))
+	assert.Equal(t, "hit", w6.Header().Get(cacheHeader), "an empty page is a valid cacheable answer")
+
+	// An empty alias tail (/statuses/) is not a resource -- passthrough.
+	w7 := do(t, router, authedReq("GET", "/repos/org1/repo1/statuses/", nil))
+	assert.Empty(t, w7.Header().Get(cacheHeader), "an empty ref tail must pass through")
+}
+
+// TestStatusPublishPassthrough is the HIGHEST-BLAST-RADIUS regression guard
+// for the statuses-list registration: POST /repos/{o}/{r}/statuses/{sha} is
+// required-builds' status PUBLISH -- the org-wide all-builds gate rides on it
+// -- and it must reach the upstream proxy untouched (the GET-only route falls
+// to chi's MethodNotAllowed -> the passthrough proxy) and be recorded as a
+// write, never swallowed by the cache.
+func TestStatusPublishPassthrough(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	body := fmt.Sprintf(`{"state":"success","context":"all-builds","description":"2/2 builds passed",`+
+		`"target_url":"https://rbm.example.com/b/org1/repo1/%s"}`, shaTip)
+
+	req := authedReq("POST", "/repos/org1/repo1/statuses/"+shaTip, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := do(t, router, req)
+
+	require.Equal(t, http.StatusCreated, w.Code, "the upstream's own 201 must pass back")
+	assert.Empty(t, w.Header().Get(cacheHeader), "a status publish is never a cached response")
+	assert.Contains(t, w.Body.String(), `"id": 999`, "the upstream's verbatim body must pass back")
+	assert.Equal(t, "/repos/org1/repo1/statuses/"+shaTip, u.lastPostPath, "the POST must reach upstream on its exact path")
+	assert.JSONEq(t, body, u.lastPostBody, "the POST body must reach upstream untouched")
+}
+
 // TestCachedCommitCI_WebhookFlush: each of status/check_run/check_suite (CI
-// state moved), push (branch tips moved), and repository events flushes BOTH
-// of the repo's snapshot kinds.
+// state moved on the ref the payload names -- the branch these snapshots are
+// keyed by), push with no usable ref (repo-wide fallback), and repository
+// events flushes BOTH of the ref's snapshot kinds. (Round 2 made the CI-event
+// flush per-ref: the payloads below all name "main" -- via the status
+// branches array or the suite head_branch -- exactly like GitHub's real
+// deliveries; a per-branch survival case lives in the dispatcher tests.)
 func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	statusTarget := "/repos/org1/repo1/commits/main/status"
@@ -367,6 +560,7 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 
 	for _, tc := range []struct{ event, body string }{
 		{"status", fmt.Sprintf(`{"sha":%q,"state":"success","context":"ci/build",
+			"branches":[{"name":"main"}],
 			"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip)},
 		{"check_run", fmt.Sprintf(`{"action":"completed",
 			"check_run":{"head_sha":%q,"status":"completed","conclusion":"success","name":"build",

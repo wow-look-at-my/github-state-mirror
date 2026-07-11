@@ -251,17 +251,26 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
 
 		// The /commits/* subtree dispatcher (respcache_commitci.go): a tail
-		// ending in /status (the combined commit status) or /check-runs is a
-		// cached commit-CI route -- the suffix anchor is what lets the ref
-		// carry slashes, which a single-segment {ref} parameter could never
-		// match. Snapshots are keyed by the VERBATIM ref (branch, sha, or
-		// tag; never resolved) and flushed by status/check_run/check_suite
-		// (CI moved) plus push/repository webhooks. Every other tail -- the
-		// single-commit read /commits/{sha} (a different response shape),
-		// the raw /statuses list, /check-suites, /pulls, /comments, ... --
-		// stays passthrough, now forwarded by the dispatcher instead of
-		// falling to the router's NotFound.
+		// ending in /status (the combined commit status), /check-runs, or
+		// /statuses (the raw statuses LIST) is a cached commit-CI route --
+		// the suffix anchor is what lets the ref carry slashes, which a
+		// single-segment {ref} parameter could never match. Snapshots are
+		// keyed by the VERBATIM ref (branch, sha, or tag; never resolved) +
+		// kind + per_page/page, and flushed per payload-named ref by
+		// status/check_run/check_suite (CI moved) plus push/repository
+		// webhooks. Every other tail -- the single-commit read
+		// /commits/{sha} (a different response shape), /check-suites,
+		// /pulls, /comments, ... -- stays passthrough, forwarded by the
+		// dispatcher instead of falling to the router's NotFound.
 		r.Get("/repos/{owner}/{repo}/commits/*", h.commitsSubtree)
+
+		// The LEGACY statuses-list spelling /statuses/{ref} -- the path the
+		// consumers actually send (required-builds paginates it per_page=100
+		// until a short page) -- lands in the SAME handler and row space as
+		// the modern /commits/{ref}/statuses form above. GET only: the
+		// required-builds status PUBLISH (POST /statuses/{sha}) falls to
+		// MethodNotAllowed and the passthrough proxy, untouched.
+		r.Get("/repos/{owner}/{repo}/statuses/*", h.statusesAlias)
 
 		// Cached compare (respcache_compare.go): the three-dot base...head
 		// comparison pr-minder's auto_open_pr / close-empty gates run per
@@ -271,6 +280,18 @@ func NewRouter(
 		// cross-fork owner:branch baseheads pass through. Flushed by
 		// push/repository webhooks.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
+
+		// Cached workflow-runs listing (respcache_actionsruns.go): the
+		// per-sha runs page pr-minder's zombie probe (reads total_count
+		// only) and required-builds' listWorkflowRuns poll. head_sha is
+		// REQUIRED for a cacheable shape (the unfiltered listing churns
+		// constantly and is deliberately unmodeled); any other filter param
+		// passes through, and deeper /actions/runs/{id}/... paths keep
+		// falling to the NotFound passthrough (this is an exact-literal
+		// registration). Flushed per sha by status/check_run/check_suite/
+		// workflow_job events, repo-wide by repository, + 24h TTL (run
+		// DELETION emits no webhook).
+		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
 
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring

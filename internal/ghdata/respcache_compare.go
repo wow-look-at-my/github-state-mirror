@@ -24,13 +24,21 @@ import (
 // ALL of a repo's rows; expires_at is the 24h TTL backstop. WHO may read a
 // cached comparison is the reveal layer's job (internal/api).
 
-// CachedCompare is one cached comparison: the trimmed document exactly as the
-// API layer will serve it.
+// CachedCompare is one cached comparison: the rendered document exactly as
+// the API layer will serve it. BaseRef/HeadRef are the basehead's two sides
+// (the API layer splits at the "..." its route guard already requires), kept
+// as their own columns so a push to one ref can flush exactly the
+// comparisons naming it. Status is the upstream answer the row absorbed: 200
+// (a real comparison) or 404 (an expiring unknown-ref miss marker, absorbed
+// by the round-2 route work); Doc holds the rendered body either way.
 type CachedCompare struct {
 	Owner    string // lowercased
 	Repo     string // lowercased
 	Basehead string // raw base...head path tail, exact
-	Doc      string // trimmed compare document as JSON
+	BaseRef  string // basehead's base side (before the "...")
+	HeadRef  string // basehead's head side (after the "...")
+	Status   int    // 200, or 404 (unknown-ref miss marker)
+	Doc      string // rendered document as JSON (trimmed compare, or the 404 body)
 }
 
 // GetCachedCompare returns the cached comparison, or (zero, false) on a miss
@@ -53,7 +61,9 @@ func (s *Store) GetCachedCompare(ctx context.Context, owner, repo, basehead stri
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Basehead: basehead,
 	})
 	return CachedCompare{
-		Owner: row.Owner, Repo: row.Repo, Basehead: row.Basehead, Doc: row.Doc,
+		Owner: row.Owner, Repo: row.Repo, Basehead: row.Basehead,
+		BaseRef: row.BaseRef, HeadRef: row.HeadRef, Status: int(row.Status),
+		Doc: row.Doc,
 	}, true, nil
 }
 
@@ -77,6 +87,7 @@ func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits [
 	}
 	if err := q.UpsertCompareCache(ctx, dbgen.UpsertCompareCacheParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Basehead: c.Basehead,
+		BaseRef: c.BaseRef, HeadRef: c.HeadRef, Status: int64(c.Status),
 		Doc:       c.Doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
@@ -96,11 +107,24 @@ func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits [
 }
 
 // InvalidateCompareCache drops every cached comparison for a repo -- the
-// push/repository webhook flush (a push to either side of any basehead can
-// change the comparison, so the whole repo flushes). owner/repo are
-// normalized here so callers can pass payload casing.
+// repository webhook flush, and the fallback when a push payload's ref is
+// unknown (a push to either side of any basehead can change the comparison).
+// owner/repo are normalized here so callers can pass payload casing.
 func (s *Store) InvalidateCompareCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteCompareCacheByRepo(ctx, dbgen.DeleteCompareCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+}
+
+// InvalidateCompareForRef drops every cached comparison naming one ref on
+// EITHER side (base_ref or head_ref) -- the per-ref push flush. Comparisons
+// not touching the pushed ref survive. The ref is matched verbatim (compare
+// rows never key an empty side; the route guard requires both sides
+// non-empty); owner/repo are normalized here so callers can pass payload
+// casing.
+func (s *Store) InvalidateCompareForRef(ctx context.Context, owner, repo, ref string) error {
+	return s.q.DeleteCompareCacheForRef(ctx, dbgen.DeleteCompareCacheForRefParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+		BaseRef: ref, HeadRef: ref,
 	})
 }

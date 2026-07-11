@@ -53,9 +53,11 @@ const (
 	denyKindCompare      = "compare"
 	denyKindCommitStatus = "commit_status"
 	denyKindCheckRuns    = "check_runs"
-	denyKindPullFiles    = "pull_files" // GET /repos/{owner}/{repo}/pulls/{number}/files
-	denyKindBranches     = "branches"   // GET /repos/{owner}/{repo}/branches
-	denyKindRepo         = "repo"       // GET /repos/{owner}/{repo}
+	denyKindPullFiles    = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
+	denyKindBranches     = "branches"      // GET /repos/{owner}/{repo}/branches
+	denyKindRepo         = "repo"          // GET /repos/{owner}/{repo}
+	denyKindStatusesList = "statuses_list" // the raw statuses LIST (both path spellings)
+	denyKindWorkflowRuns = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
 )
 
 // revealOutcome is the reveal decision for one request.

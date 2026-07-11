@@ -32,9 +32,14 @@ import (
 // its branch names (claude/foo...release/v1). The whole trimmed document is
 // stored per exact basehead; the compare's commits are also absorbed into the
 // global git_commits_cache rows (synergy with the single-commit and
-// commits-list routes). A comparison depends on both refs' tips, so
-// push/repository webhooks flush all of a repo's rows, with a 24h TTL
-// backstop.
+// commits-list routes). Round 2 also absorbs the 404 unknown-ref VERDICT
+// (status 404 on the row, a notFoundJSON doc): the fleet's close-empty pass
+// compares base...head for fork PRs whose head ref does not exist in the
+// base repo -- a 404 repeated every sweep by design. A comparison (and a
+// verdict) depends on both refs' tips/existence, so a push flushes every row
+// naming the pushed ref on EITHER side (stage 1's per-ref grain; a payload
+// without a usable ref falls back repo-wide), repository events flush
+// repo-wide, and the 24h TTL backstops.
 
 // compareCacheTTL bounds how long a MISSED push delivery could leave a stale
 // comparison being served. Webhooks flush sooner; this is the backstop.
@@ -88,7 +93,9 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	if c, ok, err := h.store.GetCachedCompare(r.Context(), owner, repo, basehead, now); err != nil {
 		slog.Warn("compare cache read failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	} else if ok {
-		h.serveCompare(w, r, c.Doc, true)
+		// The stored row carries the status it absorbed: 200 (a real
+		// comparison) or 404 (an unknown-ref verdict).
+		h.serveCompare(w, r, c.Status, c.Doc, true)
 		return
 	}
 
@@ -100,30 +107,53 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	status := http.StatusOK
 	doc, commits, absorbed := absorbCompare(owner, repo, resp.StatusCode, body)
+	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {
+		// The 404 unknown-ref VERDICT is absorbed too (round 2): the fleet's
+		// close-empty pass compares base...head for fork PRs whose head ref
+		// does not exist in the base repo -- a 404 repeated on EVERY sweep,
+		// by design. It stays honest the same way a 200 row does: ref
+		// creation/deletion arrives as a push event and the per-ref compare
+		// flush (base_ref/head_ref match) clears the verdict, renames flush
+		// repo-wide via repository events, and the 24h TTL backstops.
+		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
+			doc, commits, absorbed, status = string(doc404), nil, true, http.StatusNotFound
+		}
+	}
 	if overflow || !absorbed {
-		// Includes 404 (unknown ref -- it can be pushed later) and 5xx:
-		// relayed verbatim, never stored.
+		// 5xx and unexpected shapes: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
+	// The route guard above (compareBaseheadCacheable) guarantees the
+	// three-dot form with both sides non-empty, so the split cannot fail;
+	// the two sides feed the per-ref webhook invalidation.
+	baseRef, headRef, _ := strings.Cut(basehead, "...")
 	if err := h.store.PutCachedCompare(r.Context(), ghdata.CachedCompare{
-		Owner: owner, Repo: repo, Basehead: basehead, Doc: doc,
+		Owner: owner, Repo: repo, Basehead: basehead,
+		BaseRef: baseRef, HeadRef: headRef, Status: status,
+		Doc: doc,
 	}, commits, now, compareCacheTTL); err != nil {
 		slog.Warn("compare cache write failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
-	h.serveCompare(w, r, doc, false)
+	h.serveCompare(w, r, status, doc, false)
 }
 
-// serveCompare writes the trimmed compare document. The doc is rendered once
-// at absorb time and stored verbatim, so hit and miss serve identical bytes.
-func (h *handlers) serveCompare(w http.ResponseWriter, r *http.Request, doc string, hit bool) {
+// serveCompare writes the stored compare document under the status it
+// absorbed (200 comparison / 404 verdict). The doc is rendered once at absorb
+// time and stored verbatim, so hit and miss serve identical bytes.
+func (h *handlers) serveCompare(w http.ResponseWriter, r *http.Request, status int, doc string, hit bool) {
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		if status == http.StatusOK {
+			h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		} else {
+			h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, status)
+		}
 	}
-	writeRebuilt(w, http.StatusOK, []byte(doc), hit)
+	writeRebuilt(w, status, []byte(doc), hit)
 }
 
 // compareFileJSON is one trimmed entry of the comparison's files array. The

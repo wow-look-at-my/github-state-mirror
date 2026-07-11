@@ -87,6 +87,8 @@ type CommitCiCache struct {
 	Repo       string
 	Ref        string
 	Kind       string
+	PerPage    int64
+	Page       int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -111,6 +113,9 @@ type CompareCache struct {
 	Owner      string
 	Repo       string
 	Basehead   string
+	BaseRef    string
+	HeadRef    string
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -146,6 +151,17 @@ type DenyCache struct {
 	Message      string
 	DeniedAt     string
 	ExpiresAt    string
+}
+
+type GitCommitMissCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Sha        string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type GitCommitsCache struct {
@@ -186,6 +202,17 @@ type PrLabel struct {
 	PrNumber int64
 	Name     string
 	Color    string
+}
+
+type PullDiff406Cache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type PullFilesCache struct {
@@ -306,4 +333,17 @@ type WorkflowJob struct {
 	CompletedAt  string
 	RunnerName   string
 	UpdatedAt    string
+}
+
+type WorkflowRunsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	HeadSha    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }

@@ -38,6 +38,12 @@ WHERE owner = ? AND repo = ? AND path = ? AND ref = ?;
 -- name: DeleteContentsCacheByRepo :exec
 DELETE FROM contents_cache WHERE owner = ? AND repo = ?;
 
+-- DeleteContentsCacheForRef drops one requested ref spelling's rows (an
+-- empty ref = the default-branch rows) -- the per-ref push flush. A push to
+-- branch X only moves X-relative answers, so other refs' rows survive.
+-- name: DeleteContentsCacheForRef :exec
+DELETE FROM contents_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
 -- name: DeleteExpiredContentsCache :exec
 DELETE FROM contents_cache WHERE expires_at <= ?;
 
@@ -99,11 +105,18 @@ ON CONFLICT (owner, repo, ref_param, per_page, page) DO UPDATE SET
 UPDATE commits_list_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?;
 
--- DeleteCommitsListCacheByRepo drops a repo's snapshots -- the push/repository
--- webhook flush (a push moves every ref-relative listing). The absorbed
--- git_commits_cache rows are immutable and stay.
+-- DeleteCommitsListCacheByRepo drops a repo's snapshots -- the repository
+-- webhook flush and the unparseable-push fallback (a push moves every
+-- ref-relative listing). The absorbed git_commits_cache rows are immutable
+-- and stay.
 -- name: DeleteCommitsListCacheByRepo :exec
 DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCommitsListCacheForRef drops one requested ref spelling's snapshots
+-- (an empty ref = the default-branch listing) -- the per-ref push flush. The
+-- absorbed git_commits_cache rows are immutable and stay.
+-- name: DeleteCommitsListCacheForRef :exec
+DELETE FROM commits_list_cache WHERE owner = ? AND repo = ? AND ref_param = ?;
 
 -- name: DeleteExpiredCommitsListCache :exec
 DELETE FROM commits_list_cache WHERE expires_at <= ?;
@@ -120,9 +133,12 @@ SELECT * FROM compare_cache
 WHERE owner = ? AND repo = ? AND basehead = ?;
 
 -- name: UpsertCompareCache :exec
-INSERT INTO compare_cache (owner, repo, basehead, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, basehead) DO UPDATE SET
+    base_ref = excluded.base_ref,
+    head_ref = excluded.head_ref,
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -132,11 +148,17 @@ ON CONFLICT (owner, repo, basehead) DO UPDATE SET
 UPDATE compare_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND basehead = ?;
 
--- DeleteCompareCacheByRepo drops a repo's compare docs -- the push/repository
--- webhook flush (a push to either side of any basehead can change the
--- comparison, so the whole repo flushes).
+-- DeleteCompareCacheByRepo drops a repo's compare docs -- the repository
+-- webhook flush and the unparseable-push fallback (a push to either side of
+-- any basehead can change the comparison).
 -- name: DeleteCompareCacheByRepo :exec
 DELETE FROM compare_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCompareCacheForRef drops every comparison naming one ref on EITHER
+-- side -- the per-ref push flush (callers pass the pushed ref twice, once
+-- per side). Comparisons not touching the pushed ref survive.
+-- name: DeleteCompareCacheForRef :exec
+DELETE FROM compare_cache WHERE owner = ? AND repo = ? AND (base_ref = ? OR head_ref = ?);
 
 -- name: DeleteExpiredCompareCache :exec
 DELETE FROM compare_cache WHERE expires_at <= ?;
@@ -146,17 +168,17 @@ DELETE FROM compare_cache WHERE id IN (
     SELECT id FROM compare_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
--- ---- commit_ci_cache (GET /repos/{owner}/{repo}/commits/{ref}/status and
--- ---- GET /repos/{owner}/{repo}/commits/{ref}/check-runs) ----
+-- ---- commit_ci_cache (GET /repos/{owner}/{repo}/commits/{ref}/status,
+-- ---- GET .../commits/{ref}/check-runs, and GET .../commits/{ref}/statuses) ----
 
 -- name: GetCommitCICache :one
 SELECT * FROM commit_ci_cache
-WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?;
 
 -- name: UpsertCommitCICache :exec
-INSERT INTO commit_ci_cache (owner, repo, ref, kind, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, ref, kind) DO UPDATE SET
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref, kind, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -164,15 +186,20 @@ ON CONFLICT (owner, repo, ref, kind) DO UPDATE SET
 
 -- name: TouchCommitCICache :exec
 UPDATE commit_ci_cache SET last_used_at = ?
-WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?;
 
--- DeleteCommitCICacheByRepo drops a repo's combined-status and check-runs
--- snapshots together -- the status/check_run/check_suite/push/repository
--- webhook flush (CI state changed somewhere in the repo, or a branch-form
--- ref's tip moved; both kinds share the trigger set, so one whole-repo
--- delete covers them).
+-- DeleteCommitCICacheByRepo drops ALL of a repo's commit-CI snapshots (every
+-- kind, every ref, every page) -- the repository webhook flush and the
+-- no-per-ref-signal fallbacks (unparseable push/check payloads).
 -- name: DeleteCommitCICacheByRepo :exec
 DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCommitCICacheForRef drops one verbatim ref spelling's snapshots (all
+-- kinds, all pages) -- the per-ref status/check_run/check_suite/push flush.
+-- Other refs' snapshots survive: each spelling is its own row and the
+-- payload names exactly which spellings moved.
+-- name: DeleteCommitCICacheForRef :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ?;
 
 -- name: DeleteExpiredCommitCICache :exec
 DELETE FROM commit_ci_cache WHERE expires_at <= ?;
@@ -388,4 +415,117 @@ DELETE FROM branches_list_cache WHERE expires_at <= ?;
 -- name: PruneBranchesListCacheLRU :exec
 DELETE FROM branches_list_cache WHERE id IN (
     SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=...) ----
+
+-- name: GetWorkflowRunsCache :one
+SELECT * FROM workflow_runs_cache
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowRunsCache :exec
+INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowRunsCache :exec
+UPDATE workflow_runs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowRunsCacheByRepo drops a repo's workflow-runs snapshots --
+-- the repository webhook flush and the sha-less payload fallback.
+-- name: DeleteWorkflowRunsCacheByRepo :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
+-- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
+-- snapshots survive.
+-- name: DeleteWorkflowRunsCacheForHeadSHA :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+
+-- name: DeleteExpiredWorkflowRunsCache :exec
+DELETE FROM workflow_runs_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowRunsCacheLRU :exec
+DELETE FROM workflow_runs_cache WHERE id IN (
+    SELECT id FROM workflow_runs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- git_commit_miss_cache (expiring 404s for GET /repos/{owner}/{repo}/git/commits/{sha}) ----
+
+-- name: GetGitCommitMissCache :one
+SELECT * FROM git_commit_miss_cache
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: UpsertGitCommitMissCache :exec
+INSERT INTO git_commit_miss_cache (owner, repo, sha, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitCommitMissCache :exec
+UPDATE git_commit_miss_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteGitCommitMissCacheByRepo :exec
+DELETE FROM git_commit_miss_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteGitCommitMiss un-misses one sha. Every real git-commit upsert runs
+-- it (ghdata.upsertGitCommit), so a sha that materializes -- pushed, listed,
+-- or compared into git_commits_cache -- stops answering 404 immediately.
+-- name: DeleteGitCommitMiss :exec
+DELETE FROM git_commit_miss_cache WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteExpiredGitCommitMissCache :exec
+DELETE FROM git_commit_miss_cache WHERE expires_at <= ?;
+
+-- name: PruneGitCommitMissCacheLRU :exec
+DELETE FROM git_commit_miss_cache WHERE id IN (
+    SELECT id FROM git_commit_miss_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- pull_diff406_cache (406 verdicts for the single-PR diff read) ----
+
+-- name: GetPullDiff406Cache :one
+SELECT * FROM pull_diff406_cache
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: UpsertPullDiff406Cache :exec
+INSERT INTO pull_diff406_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullDiff406Cache :exec
+UPDATE pull_diff406_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- DeletePullDiff406CacheByRepo drops a repo's 406 verdicts -- the
+-- push/repository webhook flush (a base push can move a PR's three-dot diff
+-- across the 406 size boundary in either direction).
+-- name: DeletePullDiff406CacheByRepo :exec
+DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ?;
+
+-- DeletePullDiff406CacheForPR drops one PR's 406 verdict -- the
+-- pull_request/pull_request_review event flush (a head push or retarget can
+-- shrink the diff back under the boundary).
+-- name: DeletePullDiff406CacheForPR :exec
+DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredPullDiff406Cache :exec
+DELETE FROM pull_diff406_cache WHERE expires_at <= ?;
+
+-- name: PrunePullDiff406CacheLRU :exec
+DELETE FROM pull_diff406_cache WHERE id IN (
+    SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );

@@ -115,11 +115,24 @@ func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam 
 }
 
 // InvalidateCommitsListCache drops every cached commits-list snapshot for a
-// repo -- the push/repository webhook flush (a push moves every ref-relative
-// listing). The absorbed git_commits_cache rows are immutable and stay.
-// owner/repo are normalized here so callers can pass payload casing.
+// repo -- the repository webhook flush, and the fallback when a push
+// payload's ref (or the repo's default branch, which owns the empty-ref
+// rows) is unknown. The absorbed git_commits_cache rows are immutable and
+// stay. owner/repo are normalized here so callers can pass payload casing.
 func (s *Store) InvalidateCommitsListCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteCommitsListCacheByRepo(ctx, dbgen.DeleteCommitsListCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+}
+
+// InvalidateCommitsListForRef drops one requested ref spelling's snapshots
+// (refParam "" = the default-branch listing) -- the per-ref push flush. A
+// push only moves the pushed ref's listings, so other refs' snapshots (and
+// the immutable git_commits_cache rows) survive. owner/repo are normalized
+// here so callers can pass payload casing; refParam is matched verbatim,
+// exactly as snapshots are keyed.
+func (s *Store) InvalidateCommitsListForRef(ctx context.Context, owner, repo, refParam string) error {
+	return s.q.DeleteCommitsListCacheForRef(ctx, dbgen.DeleteCommitsListCacheForRefParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), RefParam: refParam,
 	})
 }

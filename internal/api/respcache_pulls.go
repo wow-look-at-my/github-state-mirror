@@ -52,8 +52,9 @@ import (
 //   (reopen/edit/relabel); a push never does (it cannot mutate a closed PR);
 //   the 24h TTL backstop bounds missed deliveries, like PRRowFresh.
 //
-// getPullDiff-style requests (Accept: application/vnd.github.diff etc.) pass
-// through verbatim, exactly like the contents route's raw/html media types.
+//   DIFF READS (the single-PR route with the diff media type) get the
+//   406-verdict flow in respcache_pulldiff.go; any OTHER non-default Accept
+//   (raw/html/full, a multi-range Accept) passes through exactly as before.
 
 const (
 	// pullsListCacheTTL bounds how long a MISSED pull_request delivery could
@@ -271,7 +272,17 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	numStr := chi.URLParam(r, "number")
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
-	if err != nil || number <= 0 || !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
+	if err != nil || number <= 0 || r.URL.RawQuery != "" {
+		h.ghProxy.ServeHTTP(w, r)
+		return
+	}
+	if !acceptsDefaultJSON(r) {
+		// The DIFF representation gets the 406-verdict flow (see the file
+		// comment); every other non-default Accept keeps today's passthrough.
+		if acceptsPullDiff(r) {
+			h.cachedPullDiff(w, r, owner, repo, number, numStr)
+			return
+		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}

@@ -49,9 +49,13 @@ const (
 	// list when the request does not send per_page.
 	pullFilesDefaultPerPage = 30
 
-	// pullFilesMaxCachedPage caps which pages are modeled. Consumers page
-	// shallowly; deeper pagination passes through.
-	pullFilesMaxCachedPage = 10
+	// pullFilesMaxCachedPage caps which pages are modeled. GitHub's files API
+	// stops at 3000 files, which is 30 pages at the consumers' per_page=100
+	// (pr-minder's assembleDiffFromFiles pages exactly that shape until a
+	// short page -- consumer survey 2026-07-11); the margin covers the
+	// trailing empty page that ends its loop and smaller per_page shapes.
+	// Pages past the cap still pass through.
+	pullFilesMaxCachedPage = 40
 
 	// pullFilesDocMaxBytes caps the rendered trimmed document: `patch` is
 	// unbounded, and a monster page is not worth a cache row. An over-cap
