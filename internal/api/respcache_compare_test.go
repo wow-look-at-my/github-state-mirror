@@ -369,26 +369,80 @@ func TestCachedCompare_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.compareHits))
 }
 
-// TestCachedCompare_Non200NotStored: 404 (unknown ref -- it can be pushed
-// later), 5xx -- anything but a 200 -- is relayed verbatim and stores nothing.
-func TestCachedCompare_Non200NotStored(t *testing.T) {
+// TestCachedCompare_ErrorStatusNotStored: 5xx (and any status that is neither
+// a 200 comparison nor a 404 verdict) is relayed verbatim and stores nothing.
+func TestCachedCompare_ErrorStatusNotStored(t *testing.T) {
 	router, _, db, u := compareCacheStack(t)
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"message":"upstream sad"}`))
 	}
 
 	for i := 1; i <= 2; i++ {
-		w := do(t, router, authedReq("GET", "/repos/org1/repo1/compare/main...ghostbranch", nil))
-		require.Equal(t, http.StatusNotFound, w.Code)
-		assert.Empty(t, w.Header().Get(cacheHeader), "a non-200 must be replayed unstored")
+		w := do(t, router, authedReq("GET", "/repos/org1/repo1/compare/main...dev", nil))
+		require.Equal(t, http.StatusBadGateway, w.Code)
+		assert.Empty(t, w.Header().Get(cacheHeader), "a 5xx must be replayed unstored")
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.compareHits))
 	}
 
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM compare_cache`).Scan(&count))
-	assert.Zero(t, count, "a non-200 answer must store no compare doc")
+	assert.Zero(t, count, "an error answer must store no compare doc")
+}
+
+// TestCachedCompare_404VerdictCached: round 2 absorbs the 404 unknown-ref
+// VERDICT -- the fleet's close-empty pass compares base...head for fork PRs
+// whose head ref does not exist in the base repo, re-earning the same 404
+// every sweep. Absorbed as a status-404 row ({"message": ..., "status":
+// "404"}, documentation_url dropped), served from state on the next read, and
+// FLUSHED when a push names the missing ref (its creation is exactly what
+// changes the answer): the per-ref compare flush matches base_ref/head_ref.
+func TestCachedCompare_404VerdictCached(t *testing.T) {
+	router, _, _, u := compareCacheStack(t)
+	real404 := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/commits/commits","status":"404"}`))
+	}
+	u.compare = real404
+	target := "/repos/org1/repo1/compare/main...ghostbranch"
+
+	// Miss: the 404 verdict is absorbed and relayed REBUILT.
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits))
+	assertNoURLKeys(t, w1.Body.Bytes())
+	assert.JSONEq(t, `{"message":"Not Found","status":"404"}`, w1.Body.String())
+
+	// Hit: the verdict answers, zero upstream calls.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit and miss must be byte-identical")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits), "a cached verdict must not call upstream")
+
+	// A push naming an UNRELATED ref leaves the verdict alone (the per-ref
+	// grain)...
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/unrelated","before":%q,"after":%q,`+
+			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
+		shaBase, shaTip))
+	w3 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "a push to an unrelated ref must not flush the verdict")
+
+	// ...while a push CREATING the missing head ref flushes it, and the next
+	// read fetches the now-real comparison.
+	u.compare = newCompareCacheUpstream().compare
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/ghostbranch","before":%q,"after":%q,`+
+			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
+		shaBase, shaTip))
+	w4 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w4.Code, "the created ref's comparison must be refetched")
+	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a push naming the missing ref must flush the 404 verdict")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.compareHits))
 }
 
 // TestCachedCompare_RevealDenied: an unauthorized caller gets GitHub's own
