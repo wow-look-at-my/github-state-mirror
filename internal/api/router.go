@@ -281,6 +281,18 @@ func NewRouter(
 		// push/repository webhooks.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
 
+		// Cached workflow-runs listing (respcache_actionsruns.go): the
+		// per-sha runs page pr-minder's zombie probe (reads total_count
+		// only) and required-builds' listWorkflowRuns poll. head_sha is
+		// REQUIRED for a cacheable shape (the unfiltered listing churns
+		// constantly and is deliberately unmodeled); any other filter param
+		// passes through, and deeper /actions/runs/{id}/... paths keep
+		// falling to the NotFound passthrough (this is an exact-literal
+		// registration). Flushed per sha by status/check_run/check_suite/
+		// workflow_job events, repo-wide by repository, + 24h TTL (run
+		// DELETION emits no webhook).
+		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the
