@@ -54,11 +54,15 @@ A **GitHub App backend** whose installation tokens rotate hourly would earn gran
 
 ### REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Ten REST routes are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
+Fifteen REST route families are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes:
 the mirror **absorbs the state** contained in the response into structured
 tables and **rebuilds a trimmed response** from that state, with **every URL
 field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`,
-`download_url`, `documentation_url`, ...), and `_links`. Consumers are
+`download_url`, `documentation_url`, ...), and `_links` — except a small
+per-route **pinned allowlist** of consumer-read link fields (the statuses
+`target_url`, the check-run `details_url`/`html_url`, and the workflow-run
+`html_url`, all rendered by the required-builds hook; consumer survey
+2026-07-11 — adding one requires a fresh survey). Consumers are
 first-party tooling (pr-minder etc.) that read state fields only. Hits and
 misses both serve the rebuilt shape, marked with an `X-GSM-Cache: hit|miss`
 header; requests the route cannot model (a non-default `Accept` such as
@@ -70,15 +74,21 @@ pass through verbatim, uncached.
   listing (entries as `{type, size, name, path, sha}`), **and a `404`**
   (rebuilt as `{"message": ..., "status": "404"}`) are all cached — the 404
   "config file absent" answer is half the win for config probes. Invalidated
-  by `push` and `repository` webhooks (conservative whole-repo flush) with a
-  24 h TTL backstop so a missed webhook can never serve stale state forever.
+  per pushed ref (plus the empty-ref default-branch spelling) by `push`,
+  repo-wide by `repository`, with a 24 h TTL backstop so a missed webhook can
+  never serve stale state forever.
 - `GET /repos/{owner}/{repo}/git/commits/{sha}` — rebuilt as
   `{sha, author, committer, message, tree: {sha}, parents: [{sha}, ...]}`.
-  Immutable content: no invalidation, no TTL, bounded only by LRU pruning.
+  Immutable content: positive rows have no invalidation and no TTL, bounded
+  only by LRU pruning.
   **Push webhooks also feed this cache**: the payload's commits (id, tree,
   message, timestamp, author/committer, with parents derived from the
   payload's linear chain) are absorbed on delivery, so the common post-push
-  read hits without any GitHub fetch ever having happened.
+  read hits without any GitHub fetch ever having happened. A **404 is cached
+  as an expiring miss marker** (24 h TTL; pr-minder re-reads GC'd test-merge
+  shas forever, and each read used to be a fresh upstream 404) that ANY real
+  absorb of the sha clears — a sha that materializes stops answering 404
+  immediately, and consumers fail open on 404 regardless.
 - `GET /repos/{owner}/{repo}/commits` — the commits list (pr-minder's
   fork-point detection pages this per branch). Each listed commit is absorbed
   into the same `git_commits_cache` rows as above; a per-query snapshot —
@@ -88,10 +98,11 @@ pass through verbatim, uncached.
   `{sha, commit: {author, committer, message, tree: {sha}}, parents: [{sha},
   ...]}`. Only `sha`/`per_page` (1..100)/`page` (1..10) are modeled; anything
   else (`path`, `since`, `author`, ...) passes through, and only a `200` is
-  absorbed (404/409/5xx relay unstored). Snapshots are flushed by `push` and
-  `repository` webhooks (a push moves every ref-relative listing; the
-  absorbed commit rows stay) with a 24 h TTL backstop. The single-commit
-  sub-path `/commits/{sha}` is a different shape and stays passthrough.
+  absorbed (404/409/5xx relay unstored). Snapshots are flushed per pushed ref
+  (plus the empty-ref default-branch spelling) by `push` and repo-wide by
+  `repository` (the absorbed commit rows stay) with a 24 h TTL backstop. The
+  single-commit sub-path `/commits/{sha}` is a different shape and stays
+  passthrough.
 - `GET /repos/{owner}/{repo}/compare/{basehead}` — the three-dot
   `base...head` comparison (pr-minder's empty-PR / open-PR gates run one per
   branch, every fleet sweep). Rebuilt as `{status, ahead_by, behind_by,
@@ -106,30 +117,57 @@ pass through verbatim, uncached.
   `git_commits_cache`. Only the bare query shape with the default JSON
   `Accept` is modeled — any query param, the `.diff`/`.patch` media types, a
   cross-fork `owner:branch` basehead, or a basehead without `...` passes
-  through — and only a `200` is absorbed (404/5xx relay unstored). Flushed by
-  `push` and `repository` webhooks (either side of any comparison may have
-  moved) with a 24 h TTL backstop.
-- `GET /repos/{owner}/{repo}/commits/{ref}/status` and
-  `GET /repos/{owner}/{repo}/commits/{ref}/check-runs` — the combined commit
-  status and the check-runs listing for a ref (what fleet-wide CI watchers
-  poll per repo/branch/sha). The `{ref}` is cached **verbatim** — a branch
-  name (slashes and all), a sha, or a tag, never resolved — so each spelling
-  is its own snapshot. Rebuilt as `{state, sha, total_count, statuses:
-  [{context, state, description, created_at, updated_at}]}` and
-  `{total_count, check_runs: [{id, head_sha, name, status, conclusion,
-  started_at, completed_at, app: {id}}]}` — nullable fields (a status's
-  description; an in-progress run's conclusion/completed_at) are preserved
-  as null, while URL fields (including per-status `target_url` and per-run
-  `html_url`/`details_url` — no known consumer reads them through the
-  mirror), the repository object, and the unbounded check-run `output` are
-  dropped. Only the bare query shape with the default JSON `Accept` is
-  modeled (any query param passes through), and only a `200` is absorbed
-  (404/5xx relay unstored). Flushed by `status`/`check_run`/`check_suite`
-  events (CI state moved somewhere in the repo) plus `push` and `repository`
-  webhooks, with a 24 h TTL backstop — so snapshots survive exactly while a
-  repo's CI is quiet, which is when watchers re-poll. Other `/commits/*`
-  sub-paths (the single-commit read, `/statuses`, `/check-suites`, ...) stay
+  through. A `200` absorbs the comparison; a **`404` absorbs as an
+  unknown-ref verdict** (served as a cached 404 — the fleet's close-empty
+  pass compares `base...head` for fork PRs whose head ref doesn't exist in
+  the base repo, re-earning the same 404 every sweep); 5xx relays unstored.
+  A push flushes every comparison naming the pushed ref on either side (so a
+  verdict clears the moment its missing ref is created), `repository` events
+  flush repo-wide, with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}/commits/{ref}/status`,
+  `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`, and the raw statuses
+  list — under **both** its spellings, the legacy alias
+  `GET /repos/{owner}/{repo}/statuses/{ref}` (what consumers actually send)
+  and the modern `/commits/{ref}/statuses` (one handler, one row space; the
+  status **publish**, `POST /statuses/{sha}`, keeps passing through to
+  GitHub untouched). The `{ref}` is cached **verbatim** — a branch name
+  (slashes and all), a sha, or a tag, never resolved — so each spelling is
+  its own snapshot, and `per_page` (1..100) / `page` (1..10) are part of the
+  key (consumers paginate check-runs and statuses at `per_page=100&page=N`).
+  Rebuilt as `{state, sha, total_count, statuses: [{context, state,
+  description, created_at, updated_at}]}`, `{total_count, check_runs: [{id,
+  head_sha, name, status, conclusion, started_at, completed_at, app: {id},
+  output: {title}, details_url, html_url}]}`, and (statuses list) a bare
+  array of `{context, state, description, target_url, created_at,
+  updated_at}` preserving response order exactly — nullable fields are
+  preserved as null; the per-status `target_url` and per-run
+  `details_url`/`html_url` are pinned consumer-read exceptions to the
+  URL-drop rule, `output` is trimmed to exactly `{title}` (never the
+  unbounded summary/text), and the repository/creator objects and per-item
+  ids are dropped. Check-runs filter params (`check_name`, `filter`, ...)
+  pass through, and only a `200` is absorbed (404/5xx relay unstored).
+  Flushed per payload-named ref (head branches + the sha) by
+  `status`/`check_run`/`check_suite` events, per pushed ref by `push`, and
+  repo-wide by `repository`, with a 24 h TTL backstop — so snapshots survive
+  exactly while a ref's CI is quiet, which is when watchers re-poll. Other
+  `/commits/*` sub-paths (the single-commit read, `/check-suites`, ...) stay
   passthrough.
+- `GET /repos/{owner}/{repo}/actions/runs?head_sha=<sha>` — the per-sha
+  workflow-runs listing (pr-minder's zombie probe reads only `total_count`
+  at `per_page=1`; required-builds pages it at `per_page=100`). `head_sha`
+  is **required** for a cacheable shape (the unfiltered listing churns with
+  every run in the repo and is deliberately unmodeled; all other filter
+  params pass through, and deeper `/actions/runs/{id}/...` paths stay
+  passthrough). Whole-doc snapshots per `(owner, repo, head_sha, per_page,
+  page)`; rebuilt as `{total_count, workflow_runs: [{id, name, head_sha,
+  status, conclusion, html_url, created_at, updated_at, run_started_at}]}` —
+  `total_count` copied verbatim (GitHub's total matching count, not the page
+  length), nullable fields preserved, `html_url` a pinned consumer-read
+  exception. The zero-runs answer is cacheable (it IS the zombie probe's
+  verdict). Flushed per sha by `status`/`check_run`/`check_suite`/
+  `workflow_job` events (queued jobs included) and repo-wide by
+  `repository`; run **deletion** emits no webhook, so the 24 h TTL bounds it
+  (consumers fail safe on a stale answer).
 - `POST /app/installations/{id}/access_tokens` — the installation-token mint.
   The bearer here is a GitHub App JWT; the mirror verifies it (`GET /app`) and
   caches the minted `201` per (app, installation, request-body hash), serving
@@ -153,9 +191,56 @@ pass through verbatim, uncached.
   resolve, so a null/unknown mergeable always misses (the fetch absorbs
   GitHub's computed answer), and a push to a PR's base or head branch
   un-resolves the stored value — the cache can never wedge that poll on a
-  stale answer. Closed PRs are never stored (absorbing one deletes the cached
-  row); `Accept: application/vnd.github.diff` (the pr-minder diff read)
-  passes through.
+  stale answer. A fetched CLOSED answer still deletes any cached open row
+  (the open-PR table retains open PRs only) but is absorbed as a rendered
+  whole-document snapshot and served from cache thereafter — closed PRs are
+  what every pr-minder drain re-reads, and each such read used to be a fresh
+  passthrough. The closed document is the open rebuild's exact shape plus
+  GitHub's real `merged` and `mergeable` (present, typically null); it is
+  flushed per PR by every `pull_request`/`pull_request_review` event (so a
+  reopen cannot serve it stale), repo-wide by `repository` events, bounded by
+  a 24 h TTL — and deliberately not flushed by pushes (a push cannot mutate a
+  closed PR). `Accept: application/vnd.github.diff` (the pr-minder diff read)
+  gets its own flow: a **406 "diff too large" verdict is cached per PR** (the
+  answer pr-minder re-earns before every files-API fallback), while a **200
+  diff body is never stored** (that would be verbatim byte caching, which the
+  cache model rejects) and relays untouched every time. The verdict is
+  flushed per PR by `pull_request` events, repo-wide by `push`/`repository`
+  (a base push can move a diff across the size boundary), with a 24 h TTL.
+- `GET /repos/{owner}/{repo}/pulls/{number}/files` — the PR files listing
+  (pr-minder's fallback when GitHub 406s a too-large unified diff). Whole-doc
+  snapshots per exact page (`owner, repo, number, per_page, page`); the
+  trimmed per-file item is `{filename, status, additions, deletions, changes,
+  previous_filename?, patch?}` with the **presence of `previous_filename` and
+  `patch` preserved exactly** (consumers test `typeof f.patch === 'string'`;
+  GitHub legitimately omits `patch` on binary/oversized files), the per-file
+  blob `sha` and every URL field dropped. `patch` is unbounded, so a rendered
+  document over 1 MiB passes through unstored. Only `per_page` (1..100) and
+  `page` (1..40 — GitHub's files API caps at 3000 files = 30 pages at
+  `per_page=100`, plus margin) are modeled; a non-numeric `{number}` or any
+  other param passes through, and only a `200` is absorbed (an empty page
+  past the end is a valid cacheable answer). Flushed per PR by every
+  `pull_request`/`pull_request_review` event, repo-wide by `push` and
+  `repository`, with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}/branches` — the branches listing (pr-minder's
+  fork-point detection lists every branch tip per repo, fleet-wide). Whole-doc
+  snapshots per exact page; trimmed item `{name, commit: {sha}, protected}`
+  with `commit.url`, the protection object, and `protection_url` dropped.
+  Same paging shape guard as the files route; the single-branch
+  `/branches/{branch}` read stays passthrough. Branch create, delete, and
+  tip-move all arrive as pushes, so `push` and `repository` webhooks flush
+  repo-wide, with a 24 h TTL backstop.
+- `GET /repos/{owner}/{repo}` — the bare repository read (default-branch
+  lookups and status-only "can I see this repo?" probes). No snapshot table
+  and no TTL: the response is rebuilt straight from the `repos` truth row the
+  webhooks, fleet sync, and consistency check already maintain — truth
+  freshness is the freshness model, exactly as the GraphQL route serves truth.
+  Served only when the row can answer completely (known visibility — unknown
+  fails closed — a known default branch, and the canonical full name);
+  otherwise the fetch's absorbed `200` heals the row. Trimmed rebuild:
+  `{name, full_name, owner: {login}, private, visibility, default_branch,
+  archived, disabled}`. Query params and `HEAD` requests pass through; a
+  non-200 relays unstored.
 - `GET /repos/{owner}/{repo}/installation` — the App-level "which installation
   covers this repo" lookup. App-JWT verified like the token mint, cached per
   app as `{id, account{login,type}, repository_selection, app_id, app_slug,
@@ -183,9 +268,12 @@ Any request the mirror does not serve from cache is **transparently forwarded to
 - Responses are passed through verbatim, including status, body, and headers such as `Link` (pagination) and `X-RateLimit-*`. The mirror's own CORS headers are authoritative; GitHub's duplicate `Access-Control-Allow-*` are stripped while `Access-Control-Expose-Headers` is preserved so browsers can read those rate-limit/link headers.
 - This path is uncached: it never reads or writes the freshness store.
 
-### OAuth token-exchange relay
+### OAuth relay (github.com login endpoints)
 
-- `POST /login/oauth/access_token` — relays a GitHub OAuth "exchange code for token" request to `github.com` and returns the response with the mirror's CORS headers. A purely client-side app (e.g. the repo-nightmare PR viewer) cannot call GitHub's token endpoint directly because it sends no CORS headers; the mirror stands in as the CORS-correct relay. It carries **no** bearer token (the OAuth `client_secret` in the body is the credential), so it is unauthenticated, and it targets `github.com` — not the `api.github.com` passthrough.
+GitHub's login endpoints live on `github.com` — not `api.github.com` — and send no CORS headers, so a purely client-side app (e.g. the repo-nightmare PR viewer) cannot call them directly: the browser blocks the JS from reading the response and the login silently fails. The mirror stands in as the CORS-correct relay, forwarding the body verbatim and returning GitHub's response with the mirror's CORS headers. These routes carry **no** bearer token (the body is the credential — an OAuth `client_secret`, or just a public `client_id` for the device flow), so they are unauthenticated and target fixed `github.com` URLs — not the `api.github.com` passthrough.
+
+- `POST /login/oauth/access_token` — the OAuth "exchange code for token" request. This is also the device flow's **polling leg**: a `{client_id, device_code, grant_type: "urn:ietf:params:oauth:grant-type:device_code"}` poll passes through unchanged (the body is opaque bytes to the relay).
+- `POST /login/device/code` — starts a device authorization sign-in (RFC 8628, the same flow `gh auth login` uses): relays the `{client_id, scope}` request and returns GitHub's `device_code`/`user_code`/`verification_uri` JSON, after which the client polls the `access_token` route above.
 
 ### Webhook
 
@@ -197,6 +285,64 @@ Any request the mirror does not serve from cache is **transparently forwarded to
   The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
 
   Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`; `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these; expect high volume in a CI-heavy org — each delivery costs one cheap synchronous SQLite upsert.
+
+### Subscriber notifications (`/_mirror/subscriptions`)
+
+Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**: their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its synchronous dispatcher has applied the delivery to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
+
+The top-level **`/_mirror/*` prefix is the reserved mirror-native namespace**: GitHub's API has no underscore-prefixed top-level paths, and registered routes always win over the passthrough proxy, so nothing under `/_mirror/*` can ever collide with proxied GitHub traffic.
+
+**Registering** (same bearer-token auth as every data route; subscriptions are owned by the principal your token resolves to, so an app using `X-Mirror-Identity` keeps its subscriptions across token rotations):
+
+```sh
+# Create (201). repos/events are optional filters; empty = everything you may see.
+curl -X POST https://mirror.example.com/_mirror/subscriptions \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -d '{"url":"https://consumer.example.com/mirror-hook","secret":"<16..256 chars>","repos":["my-org","my-org/one-repo"],"events":["push","pull_request"]}'
+
+curl -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions          # list your own
+curl -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_...  # one (404 for a foreign id)
+curl -X PATCH -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_... \
+  -d '{"active":true}'                                                                                  # partial update / re-enable
+curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.com/_mirror/subscriptions/sub_...  # 204
+```
+
+Subscription JSON: `{id, url, repos, events, active, consecutive_failures, disabled_reason, created_at, updated_at, last_success_at, last_failure_at, last_error}`. The `secret` is **never** returned by any response. `url` must be absolute https with no userinfo (plain http is allowed only for loopback hosts, so local receivers work) and must not be a private/link-local IP literal; `repos` entries are `owner` or `owner/repo` (matched case-insensitively); `events` are GitHub event names (`push`, `pull_request`, ...). Each principal may hold at most 20 subscriptions (409 beyond).
+
+**Deliveries** are `POST`s with `Content-Type: application/json`, `X-Mirror-Event` (event name), `X-Mirror-Delivery` (the notification id), and `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>` — **GitHub's exact signature scheme**, so the webhook verification code you already have works unchanged. Example payload (fields absent from the event are omitted):
+
+```json
+{
+  "mirror_delivery": "ntf_9f0c...",
+  "subscription_id": "sub_5a1b...",
+  "github_delivery": "b6bf1c50-...",
+  "event": "pull_request",
+  "action": "opened",
+  "owner": "my-org",
+  "repo": "my-repo",
+  "repo_full_name": "my-org/my-repo",
+  "pr_number": 123,
+  "sha": "0a1b2c...",
+  "disposition": "applied",
+  "ingested_at": "2026-07-10T12:00:00.123456789Z",
+  "sent_at": "2026-07-10T12:00:00.234567890Z"
+}
+```
+
+PR events carry `pr_number` + the head `sha`; pushes carry `ref` + the after `sha`; status/check/workflow-job events carry the commit `sha`. **Correlation note:** `github_delivery` is the `X-GitHub-Delivery` GUID **the mirror received** — it is NOT the GUID GitHub sent *you* for the same event (GitHub mints one per receiver). Correlate on `owner`/`repo` plus the identifier fields instead.
+
+Delivery semantics:
+
+- Only dispositions **`applied`** and **`invalidated`** notify (`ignored`/`error` don't), and only deliveries that resolve to a single `owner/repo` — repo-less events (`installation`, `installation_repositories`) never notify.
+- Any **2xx** from your endpoint counts as delivered. A failed delivery is retried up to 3 attempts (short backoff, ~8s per attempt); a terminal failure increments `consecutive_failures` and stamps `last_failure_at`/`last_error`.
+- At **10 consecutive terminal failures** the subscription is **auto-disabled** (`active=false`, `disabled_reason` set). Re-enable it after fixing your endpoint with `PATCH {"active": true}`, which also resets the failure counter.
+- Notifications are fanned out **after** the webhook response to GitHub — subscriber endpoints can never slow the mirror's ingestion.
+
+**Authorization (reveal-gated, fail closed):** a subscription is notified about a repo only if its principal could read that repo through the reveal layer's non-probing fast paths at delivery time — the repo is **public** in global truth, or the principal holds a **live grant**. There is no per-notification probe (no caller token exists at delivery time); unknown visibility reads as private, so a private repo's activity never reaches a principal that has not proven access. Earn the grant the normal way (an org list-sync or any revealed read with your token) before expecting private-repo notifications.
+
+**Persistence:** subscriptions are service **config**, not cache. They live in their own SQLite file (`SUBSCRIPTIONS_DB_PATH`, default derived from `DB_PATH`: `github-mirror.db` → `github-mirror-subscriptions.db`) which **survives the cache DB's SchemaVersion nukes** and every deploy.
+
+**Operator view:** admin-only `GET /api/notifications` (dashboard session auth) returns in-memory delivery counters (`delivered` / `failed` / `gated` / `auto_disabled`), the recent delivery attempts (bounded ring; resets on restart), and every subscription with its principal (secrets redacted). JSON only — there is no dashboard tab.
 
 ## Web Dashboard
 
@@ -217,10 +363,11 @@ Dashboard routes (session-cookie auth, not bearer tokens):
 - `POST /logout` — clear the session
 - `GET /api/me` — `{ authenticated, login_configured, login, is_admin }`
 - `GET /api/cache?scope=mine|all` — global truth totals plus the signed-in user's principal(s) (`mine`) or every known principal (`all`, admin only)
-- `GET /api/requests` — recent data-API requests and their cache disposition (hit/miss/passthrough/write), per-disposition totals, and cumulative route-shape groups (`groups`: method + normalized route with per-disposition counts, sorted by total, since restart) (admin only; in-memory, resets on restart)
+- `GET /api/requests` — recent data-API requests and their cache disposition (hit/miss/passthrough/write), per-disposition totals, and cumulative route-shape groups (`groups`: method + normalized route with per-disposition counts, sorted by total, since restart) (admin only; in-memory, resets on restart). The payload also carries the SQLite database's on-disk size (`db_size_bytes` plus `db_wal_size_bytes` for the `-wal` sidecar, statted per request from `DB_PATH`; omitted when the file is missing), which the Requests tab renders on its summary line as e.g. `DB 1.4 GB (+125.8 MB WAL)`.
 - `GET /api/webhooks` — recent webhook deliveries and their dispositions (admin only)
 - `GET /api/jobs?limit=<n>` — recent GitHub Actions jobs recorded from `workflow_job` webhooks: running jobs first (newest started first), then completed (newest completed first); `limit` defaults to 100, capped at 500 (admin only)
 - `GET /api/ratelimit` — `{live, observed, note?}`: the GitHub App's per-installation `GET /rate_limit` poll (`live`) plus the passively observed `X-RateLimit-*` readings per (identity, resource) (`observed`; in-memory, resets on restart). With no App configured (or a failed poll) `live` is empty and `note` explains why — the observed half is returned regardless (admin only)
+- `GET /api/notifications` — subscriber-notification observability: cumulative delivery counters (`delivered`/`failed`/`gated`/`auto_disabled`), recent delivery attempts (in-memory ring, resets on restart), and every subscription with its principal — secrets redacted (admin only)
 - `GET /api/cache/data` — the global truth rows as flattened JSON; with `?principal=<key>` instead returns that principal's live (unexpired) access grants (admin only; `<key>` is the full principal key, e.g. `user:6569500` or `app:3433933`)
 - `GET /api/cache/check[?org=<owner>]` — consistency-check diff of global truth against GitHub's live state (admin only; requires a configured GitHub App; strictly read-only)
 - `POST /api/cache/check?apply=true[&org=<owner>]` — the same check, then RECONCILE: correct the drift from the fetched snapshot and report an `applied` tally (admin only; `?apply` on a GET is rejected with 405)
@@ -240,6 +387,7 @@ The service has **no static service token**. API requests authenticate with the 
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
+| `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's SchemaVersion nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because the cache reveals data per the caller's proven GitHub access, not origin. |
 | `GITHUB_OAUTH_CLIENT_ID` | For dashboard login | — | GitHub OAuth App client ID. Register the app's callback URL as `<BASE_URL>/auth/callback`. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | For dashboard login | — | GitHub OAuth App client secret. |

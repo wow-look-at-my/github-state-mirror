@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -71,8 +72,25 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 // token against this same handler, so it must answer GET /user with a login.
 func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
+	s := newFullTestStack(t, authSvc, ghHandler)
+	return s.router, s.store, s.db, s.ghURL
+}
+
+// testStack is the full router assembly for tests that also need the
+// subscriber-notification pieces (the notifier for deterministic flushes).
+type testStack struct {
+	router   http.Handler
+	store    *ghdata.Store
+	db       *sql.DB
+	ghURL    string
+	notifier *notify.Notifier
+}
+
+func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
+	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := database.Open(dbPath)
 	require.Nil(t, err)
 
 	t.Cleanup(func() { db.Close() })
@@ -86,6 +104,18 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
+	// Subscriptions live in their own DB file, like production. Single-attempt
+	// deliveries keep tests deterministic (retry behavior is covered by the
+	// notify package's own tests); Drain before the DB closes, like main.
+	subs, err := notify.Open(filepath.Join(dir, "subscriptions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { subs.Close() })
+	notifier := notify.New(notify.Config{
+		Store: subs, Access: store,
+		Attempts: 1, AttemptTimeout: 5 * time.Second, Backoff: []time.Duration{time.Millisecond},
+	})
+	t.Cleanup(func() { notifier.Drain(5 * time.Second) })
+
 	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
@@ -98,8 +128,8 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter)
-	return router, store, db, ghSrv.URL
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier}
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {

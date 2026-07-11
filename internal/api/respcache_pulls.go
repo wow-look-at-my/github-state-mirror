@@ -36,23 +36,36 @@ import (
 //   maintenance). A rebuilt list as long as the request's per_page may be
 //   truncated upstream -- served as a miss, never from state.
 //
-//   SINGLE: the row must be rest-complete, RECENTLY TOUCHED (PRRowFresh --
-//   the staleness backstop for a missed `closed` delivery), AND its mergeable
-//   KNOWN. GitHub computes `mergeable` lazily and pr-minder polls this
-//   endpoint waiting for it to resolve, so an unknown/null mergeable always
-//   misses (fetch + absorb the computed answer) -- the cache must never wedge
-//   that poll. Branch pushes un-resolve the stored value (see
-//   NullPRMergeableByBranch) so a known answer can't go silently stale after
-//   either side moves.
+//   SINGLE (open): the row must be rest-complete, RECENTLY TOUCHED
+//   (PRRowFresh -- the staleness backstop for a missed `closed` delivery),
+//   AND its mergeable KNOWN. GitHub computes `mergeable` lazily and pr-minder
+//   polls this endpoint waiting for it to resolve, so an unknown/null
+//   mergeable always misses (fetch + absorb the computed answer) -- the cache
+//   must never wedge that poll. Branch pushes un-resolve the stored value
+//   (see NullPRMergeableByBranch) so a known answer can't go silently stale
+//   after either side moves.
 //
-// getPullDiff-style requests (Accept: application/vnd.github.diff etc.) pass
-// through verbatim, exactly like the contents route's raw/html media types.
+//   SINGLE (closed): a fetched CLOSED/merged PR is absorbed as a rendered
+//   whole-doc snapshot (closed_pull_cache) -- the open-only pull_requests
+//   invariant is untouched (the stale open row is still deleted; closed PRs
+//   live only in the doc side table). pull_request events flush the PR's doc
+//   (reopen/edit/relabel); a push never does (it cannot mutate a closed PR);
+//   the 24h TTL backstop bounds missed deliveries, like PRRowFresh.
+//
+//   DIFF READS (the single-PR route with the diff media type) get the
+//   406-verdict flow in respcache_pulldiff.go; any OTHER non-default Accept
+//   (raw/html/full, a multi-range Accept) passes through exactly as before.
 
 const (
 	// pullsListCacheTTL bounds how long a MISSED pull_request delivery could
 	// leave a stale absorbed list being served. Webhooks are the maintenance;
 	// this is only the backstop.
 	pullsListCacheTTL = 24 * time.Hour
+
+	// closedPullCacheTTL bounds how long a MISSED pull_request delivery
+	// (reopen/edit/relabel) could leave a stale closed-PR doc being served --
+	// the same accepted staleness class as PRRowFresh.
+	closedPullCacheTTL = 24 * time.Hour
 
 	// pullsDefaultPerPage is GitHub's default page size for the list route
 	// when the request does not send per_page.
@@ -243,20 +256,33 @@ func allRestComplete(rows []dbgen.PullRequest) bool {
 
 // ---- GET /repos/{owner}/{repo}/pulls/{number} ----
 
-// cachedPull serves a single OPEN PR from state when the row is
-// rest-complete AND its mergeable is known; everything else -- unknown or
-// null mergeable, closed or unknown PRs, non-numeric path segments like
-// /pulls/comments, query params, non-default Accept -- misses or passes
-// through. A fetched open PR is absorbed (including GitHub's computed
-// mergeable, null and all); a fetched closed PR deletes any cached row and
-// replays verbatim (the cache retains open PRs only).
+// cachedPull serves a single PR from state: an OPEN row when it is
+// rest-complete AND its mergeable is known, or a CLOSED PR's rendered doc
+// (closed_pull_cache -- every drain re-reads settled PRs, and each read used
+// to be a fresh passthrough). Everything else -- unknown or null mergeable,
+// unknown PRs, non-numeric path segments like /pulls/comments, query params,
+// non-default Accept -- misses or passes through. A fetched open PR is
+// absorbed (including GitHub's computed mergeable, null and all) and drops
+// any stale closed doc; a fetched closed PR deletes any cached open row (the
+// truth table retains open PRs only) and is absorbed as a whole-doc snapshot,
+// served rebuilt.
 func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
 	numStr := chi.URLParam(r, "number")
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
-	if err != nil || number <= 0 || !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
+	if err != nil || number <= 0 || r.URL.RawQuery != "" {
+		h.ghProxy.ServeHTTP(w, r)
+		return
+	}
+	if !acceptsDefaultJSON(r) {
+		// The DIFF representation gets the 406-verdict flow (see the file
+		// comment); every other non-default Accept keeps today's passthrough.
+		if acceptsPullDiff(r) {
+			h.cachedPullDiff(w, r, owner, repo, number, numStr)
+			return
+		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
@@ -274,6 +300,15 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
+		return
+	}
+
+	// No servable open row -- a CLOSED PR's rendered doc answers instead.
+	if doc, ok, err := h.store.GetCachedClosedPull(r.Context(), owner, repo, number, time.Now()); err != nil {
+		slog.Warn("closed PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
+	} else if ok {
+		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
 
@@ -299,16 +334,32 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pr.State != "OPEN" {
-		// Closed/merged: the cache retains open PRs only. Drop any stale row
-		// and hand GitHub's own answer through, unstored.
+		// Closed/merged: the truth table retains open PRs only, so drop any
+		// stale row -- and absorb GitHub's answer as a rendered whole-doc
+		// snapshot, served rebuilt (hit and miss byte-identical).
 		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
-		h.replayUnstored(w, r, resp, body)
+		doc, mErr := marshalTrimmed(renderClosedPull(pr, labels, raw.Merged != nil && *raw.Merged))
+		if mErr != nil {
+			slog.Warn("closed PR render failed", "path", r.URL.Path, "error", mErr)
+			h.replayUnstored(w, r, resp, body)
+			return
+		}
+		if err := h.store.PutCachedClosedPull(r.Context(), owner, repo, number, string(doc), time.Now(), closedPullCacheTTL); err != nil {
+			slog.Warn("closed PR doc store failed", "owner", owner, "repo", repo, "number", number, "error", err)
+		}
+		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+		writeRebuilt(w, http.StatusOK, doc, false)
 		return
 	}
 	if err := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now()); err != nil {
 		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
+	}
+	// A reopened PR must not keep serving its stale closed doc.
+	if err := h.store.InvalidateClosedPullForPR(r.Context(), owner, repo, number); err != nil {
+		slog.Warn("closed PR doc invalidate failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
@@ -351,6 +402,7 @@ type restPRJSON struct {
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 	MergeCommitSHA *string `json:"merge_commit_sha"`
+	Merged         *bool   `json:"merged"`    // single-PR responses only
 	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
 	Additions      *int64  `json:"additions"` // single-PR responses only
 	Deletions      *int64  `json:"deletions"` // single-PR responses only
@@ -590,6 +642,25 @@ func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJS
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels)}
 	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate), so merged is
 	// false by definition.
+	switch pr.Mergeable.String {
+	case "MERGEABLE":
+		v := true
+		out.Mergeable = &v
+	case "CONFLICTING":
+		v := false
+		out.Mergeable = &v
+	}
+	return out
+}
+
+// renderClosedPull renders the trimmed document a CLOSED/merged answer is
+// stored and served as -- rendered once at absorb time, so hit and miss are
+// byte-identical. renderPullListItem lowercases the stored state, so the doc
+// carries "closed" exactly as GitHub does; merged is GitHub's own answer
+// (unlike the open rebuild's by-definition false), and mergeable maps like
+// renderSinglePull's (typically null for a closed PR).
+func renderClosedPull(pr dbgen.PullRequest, labels []dbgen.PrLabel, merged bool) pullSingleJSON {
+	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels), Merged: merged}
 	switch pr.Mergeable.String {
 	case "MERGEABLE":
 		v := true

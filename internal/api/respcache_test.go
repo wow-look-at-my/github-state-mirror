@@ -36,14 +36,25 @@ const goodAppJWT = "good-app-jwt"
 // cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
 // tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
-	contentsHits int32
-	commitHits   int32
-	mintHits     int32
-	probeHits    int32
+	contentsHits  int32
+	commitHits    int32
+	mintHits      int32
+	probeHits     int32
+	pullFilesHits int32
+	branchesHits  int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
+	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
+	pullFiles func(w http.ResponseWriter, r *http.Request)
+	// branches answers GET /repos/{o}/{r}/branches; settable per test.
+	branches func(w http.ResponseWriter, r *http.Request)
+	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
+	// test (the miss-marker tests answer 404).
+	gitCommit func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
+	// The bare-repo route's miss fetches land here too, so probeHits counts
+	// BOTH reveal probes AND cachedRepo fetches.
 	probe func(w http.ResponseWriter, r *http.Request)
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
@@ -72,6 +83,24 @@ func newRespCacheUpstream() *respCacheUpstream {
 			"_links": {"self": "https://api.github.com/x"}
 		}`, fmt.Sprintf("%040d", n))
 	}
+	u.gitCommit = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprintf(w, `{
+			"sha": %q, "node_id": "C_kwAE",
+			"url": "https://api.github.com/repos/org1/repo1/git/commits/x",
+			"html_url": "https://github.com/org1/repo1/commit/x",
+			"author": {"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+			"committer": {"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+			"tree": {"sha": %q, "url": "https://api.github.com/trees/x"},
+			"message": "fix: a thing <with> & symbols",
+			"parents": [{"sha": %q, "url": "https://api.github.com/parent", "html_url": "https://github.com/parent"}],
+			"verification": {"verified": false, "reason": "unsigned"}
+		}`, shaCommit, shaTree1, shaBase)
+	}
+	// The URL-stuffed default bodies live next to their route tests:
+	// respcache_pullfiles_test.go / respcache_branches_test.go.
+	u.pullFiles = defaultPullFilesUpstream
+	u.branches = defaultBranchesUpstream
 	return u
 }
 
@@ -96,26 +125,23 @@ func (u *respCacheUpstream) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
 		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
-			// The reveal probe: is this repo visible to the caller's token?
+			// The reveal probe (and the cachedRepo route's miss fetch): is
+			// this repo visible to the caller's token? Anchored, so the
+			// deeper-path cases below can never be shadowed by it.
 			atomic.AddInt32(&u.probeHits, 1)
 			u.probe(w, r)
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
+			atomic.AddInt32(&u.pullFilesHits, 1)
+			u.pullFiles(w, r)
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			atomic.AddInt32(&u.branchesHits, 1)
+			u.branches(w, r)
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)
 		case strings.Contains(r.URL.Path, "/git/commits/"):
 			atomic.AddInt32(&u.commitHits, 1)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			fmt.Fprintf(w, `{
-				"sha": %q, "node_id": "C_kwAE",
-				"url": "https://api.github.com/repos/org1/repo1/git/commits/x",
-				"html_url": "https://github.com/org1/repo1/commit/x",
-				"author": {"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
-				"committer": {"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
-				"tree": {"sha": %q, "url": "https://api.github.com/trees/x"},
-				"message": "fix: a thing <with> & symbols",
-				"parents": [{"sha": %q, "url": "https://api.github.com/parent", "html_url": "https://github.com/parent"}],
-				"verification": {"verified": false, "reason": "unsigned"}
-			}`, shaCommit, shaTree1, shaBase)
+			u.gitCommit(w, r)
 		case strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			n := atomic.AddInt32(&u.mintHits, 1)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -159,9 +185,19 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 }
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key
-// the trimmed contract bans: url, *_url, or _links.
-func assertNoURLKeys(t *testing.T, body []byte) {
+// the trimmed contract bans: url, *_url, or _links. `allowed` names EXACT key
+// names exempted for that one route -- pinned exceptions for consumer-read
+// link fields (the required-builds hook renders per-status `target_url` and
+// per-run `details_url`/`html_url`, and reads the workflow-run `html_url`;
+// consumer survey 2026-07-11). Adding an exception requires a fresh consumer
+// survey, per CLAUDE.md; with no allowlist the ban is total, exactly as
+// before.
+func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 	t.Helper()
+	allow := make(map[string]bool, len(allowed))
+	for _, k := range allowed {
+		allow[strings.ToLower(k)] = true
+	}
 	var v interface{}
 	require.NoError(t, json.Unmarshal(body, &v), "rebuilt body must be valid JSON: %s", body)
 	var walk func(v interface{}, at string)
@@ -170,7 +206,7 @@ func assertNoURLKeys(t *testing.T, body []byte) {
 		case map[string]interface{}:
 			for k, val := range x {
 				lk := strings.ToLower(k)
-				assert.False(t, lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links",
+				assert.False(t, !allow[lk] && (lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links"),
 					"rebuilt body must not contain URL key %q (at %s): %s", k, at, body)
 				walk(val, at+"."+k)
 			}
@@ -421,117 +457,7 @@ func TestCachedContents_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "expiry must force a refetch")
 }
 
-// TestCachedGitCommit_HitImmuneToPush: a fetched git commit is absorbed,
-// rebuilt trimmed (node_id/verification/urls dropped), served from state on
-// the next read — and, being immutable, survives push events untouched.
-func TestCachedGitCommit_HitImmuneToPush(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
-	target := "/repos/org1/repo1/git/commits/" + shaCommit
-
-	w1 := do(t, router, authedReq("GET", target, nil))
-	require.Equal(t, http.StatusOK, w1.Code)
-	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
-	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"sha": %q,
-		"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-		"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-		"message": "fix: a thing <with> & symbols",
-		"tree": {"sha": %q},
-		"parents": [{"sha": %q}]
-	}`, shaCommit, shaTree1, shaBase), w1.Body.String())
-
-	// Push events do NOT invalidate immutable commit state.
-	postWebhook(t, router, "push", `{"repository":{"name":"repo1","owner":{"login":"org1"}}}`)
-
-	w2 := do(t, router, authedReq("GET", target, nil))
-	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
-	assert.Equal(t, w1.Body.String(), w2.Body.String())
-	assert.Equal(t, int32(1), atomic.LoadInt32(&u.commitHits), "immutable commit must survive push events")
-}
-
-// TestCachedGitCommit_AbsorbedFromPushWebhook: a push payload's commits are
-// upserted into GLOBAL truth — for a repo nobody ever fetched — so the
-// post-push read hits WITHOUT any GitHub fetch ever having happened, and
-// rebuilds to the same trimmed shape a fetch-sourced row does. (The reader
-// still pays the reveal probe: their own proof of repo access.)
-func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
-
-	// No seeding: the dispatcher applies to GLOBAL truth unconditionally —
-	// this repo has never been fetched by anyone.
-	push := fmt.Sprintf(`{
-		"repository": {"name":"repo1","owner":{"login":"org1"}},
-		"before": %q, "after": %q, "forced": false,
-		"head_commit": {"timestamp": "2026-07-03T10:00:00Z"},
-		"commits": [
-			{"id": %q, "tree_id": %q, "message": "first", "timestamp": "2026-07-03T09:59:00Z",
-			 "author": {"name":"Alice","email":"alice@example.com"},
-			 "committer": {"name":"Bob","email":"bob@example.com"}},
-			{"id": %q, "tree_id": %q, "message": "second", "timestamp": "2026-07-03T10:00:00Z",
-			 "author": {"name":"Alice","email":"alice@example.com"},
-			 "committer": {"name":"Bob","email":"bob@example.com"}}
-		]
-	}`, shaBase, shaTip, shaMid, shaTree1, shaTip, shaTree2)
-	postWebhook(t, router, "push", push)
-
-	// First commit: parent is the payload's `before`.
-	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaMid, nil))
-	require.Equal(t, http.StatusOK, w1.Code)
-	assert.Equal(t, "hit", w1.Header().Get(cacheHeader), "webhook-absorbed commit must be a hit")
-	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"sha": %q,
-		"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-03T09:59:00Z"},
-		"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-03T09:59:00Z"},
-		"message": "first",
-		"tree": {"sha": %q},
-		"parents": [{"sha": %q}]
-	}`, shaMid, shaTree1, shaBase), w1.Body.String())
-
-	// Second commit: parent is its predecessor in the chain.
-	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
-	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
-	var tip struct {
-		Parents []struct {
-			SHA string `json:"sha"`
-		} `json:"parents"`
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-	}
-	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &tip))
-	require.Len(t, tip.Parents, 1)
-	assert.Equal(t, shaMid, tip.Parents[0].SHA)
-	assert.Equal(t, shaTree2, tip.Tree.SHA)
-
-	assert.Equal(t, int32(0), atomic.LoadInt32(&u.commitHits),
-		"push-absorbed commits must serve without ANY GitHub fetch ever having happened")
-}
-
-// TestCachedGitCommit_ForcedPushNotAbsorbed: a forced push's payload chain is
-// untrustworthy (before is not the parent), so nothing is absorbed and the
-// read falls back to a normal fetch-miss.
-func TestCachedGitCommit_ForcedPushNotAbsorbed(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
-
-	push := fmt.Sprintf(`{
-		"repository": {"name":"repo1","owner":{"login":"org1"}},
-		"before": %q, "after": %q, "forced": true,
-		"commits": [
-			{"id": %q, "tree_id": %q, "message": "rewritten", "timestamp": "2026-07-03T10:00:00Z",
-			 "author": {"name":"A","email":"a@x"}, "committer": {"name":"B","email":"b@x"}}
-		]
-	}`, shaBase, shaTip, shaTip, shaTree1)
-	postWebhook(t, router, "push", push)
-
-	w := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "forced-push commits must not be absorbed")
-	assert.Equal(t, int32(1), atomic.LoadInt32(&u.commitHits))
-}
+// (The git-commit route tests live in respcache_gitcommit_test.go.)
 
 // TestCachedInstallToken_HitVariantsAndFlush covers the token-mint cache: the
 // same app+installation+body serves from cache until expiry; a different body

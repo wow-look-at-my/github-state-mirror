@@ -31,15 +31,23 @@ import (
 // Cached routes:
 //
 //   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404)
-//   - GET /repos/{owner}/{repo}/git/commits/{sha}   (200 only; immutable)
+//   - GET /repos/{owner}/{repo}/git/commits/{sha}   (respcache_gitcommits.go;
+//     200 immutable + expiring 404 miss markers)
 //   - POST /app/installations/{id}/access_tokens    (201; App-JWT verified)
 //   - GET /repos/{owner}/{repo}/pulls               (respcache_pulls.go)
-//   - GET /repos/{owner}/{repo}/pulls/{number}      (respcache_pulls.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}      (respcache_pulls.go; the
+//     diff-Accept read's 406 verdicts in respcache_pulldiff.go)
 //   - GET /repos/{owner}/{repo}/installation        (respcache_pulls.go)
 //   - GET /repos/{owner}/{repo}/commits             (respcache_commits.go)
 //   - GET /repos/{owner}/{repo}/compare/{basehead}  (respcache_compare.go)
 //   - GET /repos/{owner}/{repo}/commits/{ref}/status      (respcache_commitci.go)
 //   - GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/statuses    (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/statuses/{ref}      (its legacy alias, same file)
+//   - GET /repos/{owner}/{repo}/actions/runs        (respcache_actionsruns.go)
+//   - GET /repos/{owner}/{repo}                     (respcache_repo.go)
+//   - GET /repos/{owner}/{repo}/branches            (respcache_branches.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}/files (respcache_pullfiles.go)
 //
 // The single-PR route was once deliberately passthrough because its body
 // carries the lazily-computed `mergeable` field that pr-minder polls for; it
@@ -274,173 +282,6 @@ func renderContents(c ghdata.CachedContents) (int, []byte, error) {
 	default:
 		return 0, nil, fmt.Errorf("unknown contents kind %q", c.Kind)
 	}
-}
-
-// ---- GET /repos/{owner}/{repo}/git/commits/{sha} ----
-
-// cachedGitCommit serves a git commit from absorbed state. Commits are
-// immutable, so cached rows never expire and no webhook invalidates them —
-// only LRU pruning bounds the table. Rows are also absorbed from push webhook
-// payloads (internal/sync/webhook.go), so the common post-push read can hit
-// without any GitHub fetch ever having happened.
-func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
-	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
-	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	sha := strings.ToLower(chi.URLParam(r, "sha"))
-
-	// Only full hex object ids are cache keys (a short sha is ambiguous over
-	// time); the endpoint takes no query params. Anything else — passthrough.
-	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !isFullHexSHA(sha) {
-		h.ghProxy.ServeHTTP(w, r)
-		return
-	}
-
-	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindGitCommit, owner+"/"+repo+"@"+sha); outcome {
-	case revealDenied:
-		h.serveDenyVerdict(w, r, verdict, cached)
-		return
-	case revealError:
-		h.revealFailed(w, r)
-		return
-	}
-
-	now := time.Now()
-	if c, ok, err := h.store.GetCachedGitCommit(r.Context(), owner, repo, sha, now); err == nil && ok {
-		h.serveGitCommit(w, r, c, true)
-		return
-	} else if err != nil {
-		slog.Warn("git commit cache read failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
-	}
-
-	resp, body, overflow, err := h.fetchUpstream(r, nil)
-	if err != nil {
-		h.upstreamError(w, r, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	c, absorbed := absorbGitCommit(owner, repo, sha, resp.StatusCode, body)
-	if overflow || !absorbed {
-		// Includes 404s: a sha not found now may be pushed later, so a 404 is
-		// never cached for this immutable-content route.
-		h.replayUnstored(w, r, resp, body)
-		return
-	}
-	if err := h.store.PutCachedGitCommit(r.Context(), c, now); err != nil {
-		slog.Warn("git commit cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
-	}
-	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
-	h.serveGitCommit(w, r, c, false)
-}
-
-func (h *handlers) serveGitCommit(w http.ResponseWriter, r *http.Request, c ghdata.CachedGitCommit, hit bool) {
-	body, err := marshalTrimmed(renderGitCommit(c))
-	if err != nil {
-		slog.Warn("git commit cache render failed", "sha", c.SHA, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
-	}
-	writeRebuilt(w, http.StatusOK, body, hit)
-}
-
-// gitPersonJSON is a commit author/committer identity.
-type gitPersonJSON struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Date  string `json:"date"`
-}
-
-// gitSHAJSON is a bare object reference ({"sha": ...}).
-type gitSHAJSON struct {
-	SHA string `json:"sha"`
-}
-
-// gitCommitJSON is the trimmed rebuild of a git commit: one consistent shape
-// regardless of source (upstream fetch or push webhook). Fields GitHub has
-// that we drop — node_id, verification, url/html_url and the tree/parent
-// urls — stay dropped.
-type gitCommitJSON struct {
-	SHA       string        `json:"sha"`
-	Author    gitPersonJSON `json:"author"`
-	Committer gitPersonJSON `json:"committer"`
-	Message   string        `json:"message"`
-	Tree      gitSHAJSON    `json:"tree"`
-	Parents   []gitSHAJSON  `json:"parents"`
-}
-
-func renderGitCommit(c ghdata.CachedGitCommit) gitCommitJSON {
-	parents := make([]gitSHAJSON, 0, len(c.Parents))
-	for _, p := range c.Parents {
-		parents = append(parents, gitSHAJSON{SHA: p})
-	}
-	return gitCommitJSON{
-		SHA:       c.SHA,
-		Author:    gitPersonJSON{Name: c.AuthorName, Email: c.AuthorEmail, Date: c.AuthorDate},
-		Committer: gitPersonJSON{Name: c.CommitterName, Email: c.CommitterEmail, Date: c.CommitterDate},
-		Message:   c.Message,
-		Tree:      gitSHAJSON{SHA: c.TreeSHA},
-		Parents:   parents,
-	}
-}
-
-// absorbGitCommit parses an upstream git-commit response into cacheable state.
-// Only a well-formed 200 is absorbed.
-func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.CachedGitCommit, bool) {
-	if status != http.StatusOK {
-		return ghdata.CachedGitCommit{}, false
-	}
-	var g struct {
-		SHA     string `json:"sha"`
-		Message string `json:"message"`
-		Author  struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
-			Date  string `json:"date"`
-		} `json:"author"`
-		Committer struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
-			Date  string `json:"date"`
-		} `json:"committer"`
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-		Parents []struct {
-			SHA string `json:"sha"`
-		} `json:"parents"`
-	}
-	if err := json.Unmarshal(body, &g); err != nil || g.SHA == "" || g.Tree.SHA == "" {
-		return ghdata.CachedGitCommit{}, false
-	}
-	parents := make([]string, 0, len(g.Parents))
-	for _, p := range g.Parents {
-		parents = append(parents, p.SHA)
-	}
-	return ghdata.CachedGitCommit{
-		Owner: owner, Repo: repo, SHA: sha, Message: g.Message,
-		AuthorName: g.Author.Name, AuthorEmail: g.Author.Email, AuthorDate: g.Author.Date,
-		CommitterName: g.Committer.Name, CommitterEmail: g.Committer.Email, CommitterDate: g.Committer.Date,
-		TreeSHA: g.Tree.SHA, Parents: parents,
-	}, true
-}
-
-// isFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex
-// object id.
-func isFullHexSHA(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // ---- POST /app/installations/{id}/access_tokens ----

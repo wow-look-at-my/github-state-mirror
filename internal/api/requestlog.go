@@ -119,6 +119,12 @@ type requestLogSnapshot struct {
 	ByDisposition map[string]int64       `json:"by_disposition"`
 	Groups        []requestGroupSnapshot `json:"groups"`
 	Recent        []requestEvent         `json:"recent"`
+	// DBSizeBytes / DBWALSizeBytes are the SQLite database file's (and its -wal
+	// sidecar's) on-disk sizes — the cache's real footprint. Filled by the
+	// dashboard handler (which knows DB_PATH), not by snapshot(); 0/omitted
+	// when the file is missing or unreadable.
+	DBSizeBytes    int64 `json:"db_size_bytes,omitempty"`
+	DBWALSizeBytes int64 `json:"db_wal_size_bytes,omitempty"`
 }
 
 func (l *requestLog) snapshot(limit int) requestLogSnapshot {

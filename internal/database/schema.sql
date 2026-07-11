@@ -2,7 +2,10 @@
 -- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
 --
 -- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
--- pull_requests, pr_labels, commit_checks, contents_cache, git_commits_cache)
+-- pull_requests, pr_labels, commit_checks, and the per-route response-cache
+-- tables: contents_cache, git_commits_cache, commits_list_cache,
+-- compare_cache, commit_ci_cache, pulls_list_cache, pull_files_cache,
+-- closed_pull_cache, branches_list_cache)
 -- hold ONE row per resource -- no actor/scope dimension. Webhooks and fetches
 -- by any principal all write the same truth. What a caller may READ is decided
 -- at serve time by the reveal-by-permission layer: a repo's cached state is
@@ -186,6 +189,7 @@ CREATE INDEX idx_access_grants_repo ON access_grants (owner, repo);
 CREATE TABLE deny_cache (
     principal     TEXT NOT NULL,
     resource_kind TEXT NOT NULL,  -- contents | git_commit | repo_pulls | pull | repo_commits | compare
+                                  -- | commit_status | check_runs | pull_files | branches | repo
     resource_key  TEXT NOT NULL,  -- route-specific resource key
     owner         TEXT NOT NULL,  -- lowercased
     repo          TEXT NOT NULL,  -- lowercased
@@ -299,72 +303,253 @@ CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
 -- gates run per branch, every fleet sweep). One row per exact modeled request:
 -- (owner, repo, basehead), where basehead is the raw base...head path tail
 -- (branch names keep their slashes; the cross-fork owner:branch form is never
--- cached). doc holds the ALREADY-TRIMMED compare document as JSON -- {status,
--- ahead_by, behind_by, total_commits, merge_base_commit:{sha}, commits:[...],
--- files:[...]} with every URL field dropped and per-file patch NEVER stored
--- (no consumer reads it from compare; omitting it is also what keeps rows
--- modest -- the absorb cap bounds a row at a few hundred KB for a huge
--- comparison, most are a few KB). The presence/absence of the files array is
--- preserved exactly: pr-minder reads changed_files = files.length and treats
--- an ABSENT array as unknown (fail open), so the rebuild must never invent or
--- drop it. A comparison depends on both refs' tips, so push/repository
--- webhooks flush ALL of a repo's rows (either side of any basehead may have
--- moved); expires_at is the 24h TTL backstop for missed deliveries. The
--- compare's commits are also upserted into git_commits_cache on absorb
--- (synergy with the single-commit and commits-list routes); the doc is
--- self-contained, so a hit never depends on those rows. owner/repo lowercased
--- like the other cached-route tables.
+-- cached). base_ref/head_ref are the basehead's two sides (split at '...'),
+-- stored separately so a push to ONE ref can flush exactly the comparisons
+-- naming it on either side instead of the whole repo. status is the upstream
+-- answer the row absorbed: 200 (a real comparison) or -- round 2 -- 404
+-- ("unknown ref"), stored as an expiring miss marker so a fleet sweep probing
+-- a deleted branch does not hammer GitHub; doc holds the rendered body either
+-- way. For a 200, doc is the ALREADY-TRIMMED compare document as JSON --
+-- {status, ahead_by, behind_by, total_commits, merge_base_commit:{sha},
+-- commits:[...], files:[...]} with every URL field dropped and per-file patch
+-- NEVER stored (no consumer reads it from compare; omitting it is also what
+-- keeps rows modest -- the absorb cap bounds a row at a few hundred KB for a
+-- huge comparison, most are a few KB). The presence/absence of the files
+-- array is preserved exactly: pr-minder reads changed_files = files.length
+-- and treats an ABSENT array as unknown (fail open), so the rebuild must
+-- never invent or drop it. A comparison depends on both refs' tips, so a
+-- push flushes the pushed ref's rows (base_ref or head_ref match; repo-wide
+-- when the ref is unknown) and repository events flush the whole repo;
+-- expires_at is the 24h TTL backstop for missed deliveries. The compare's
+-- commits are also upserted into git_commits_cache on absorb (synergy with
+-- the single-commit and commits-list routes); the doc is self-contained, so
+-- a hit never depends on those rows. owner/repo lowercased like the other
+-- cached-route tables.
 CREATE TABLE compare_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased
     repo         TEXT NOT NULL,              -- lowercased
     basehead     TEXT NOT NULL,              -- raw base...head path tail, exact
-    doc          TEXT NOT NULL,              -- trimmed compare document as JSON
+    base_ref     TEXT NOT NULL,              -- basehead's base side (before the '...')
+    head_ref     TEXT NOT NULL,              -- basehead's head side (after the '...')
+    status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
+    doc          TEXT NOT NULL,              -- rendered document as JSON (trimmed compare, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
 CREATE UNIQUE INDEX idx_compare_cache_key ON compare_cache (owner, repo, basehead);
+CREATE INDEX idx_compare_cache_base_ref ON compare_cache (owner, repo, base_ref);
+CREATE INDEX idx_compare_cache_head_ref ON compare_cache (owner, repo, head_ref);
 CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 
 -- State for GET /repos/{owner}/{repo}/commits/{ref}/status (the combined
--- commit status; kind='status') and GET .../commits/{ref}/check-runs (the
--- check runs for a ref; kind='check_runs') -- one snapshot table for both,
--- since the routes share the key shape, TTL, and flush triggers exactly. ref
--- is stored VERBATIM as requested (a branch name -- slashes and all -- a sha,
--- or a tag; NEVER resolved), so each spelling is its own row: a branch-form
--- row describes "that branch's tip at fetch time" and is flushed when the tip
+-- commit status; kind='status'), GET .../commits/{ref}/check-runs (the check
+-- runs for a ref; kind='check_runs'), and -- round 2 -- GET
+-- .../commits/{ref}/statuses (the raw statuses LIST; kind='statuses_list')
+-- -- one snapshot table for all three, since the routes share the key shape,
+-- TTL, and flush triggers exactly. Rows are per pagination shape: round 2
+-- added (per_page, page) to the key so paginated requests can be modeled; a
+-- param-less request uses the defaults per_page=30, page=1. ref is stored
+-- VERBATIM as requested (a branch name -- slashes and all -- a sha, or a
+-- tag; NEVER resolved), so each spelling is its own row: a branch-form row
+-- describes "that branch's tip at fetch time" and is flushed when the tip
 -- can move. doc holds the ALREADY-TRIMMED document as JSON: for status
 -- {state, sha, total_count, statuses:[{context, state, description,
 -- created_at, updated_at}]}, for check_runs {total_count, check_runs:[{id,
--- head_sha, name, status, conclusion, started_at, completed_at, app:{id}}]}
--- -- every URL field dropped (incl. target_url/html_url/details_url; no
--- mirror-pointed consumer reads them) and the unbounded check-run `output`
--- never stored. These rows deliberately do NOT read or write the commit_checks
+-- head_sha, name, status, conclusion, started_at, completed_at, app:{id},
+-- output:{title}, details_url, html_url}]}, for statuses_list the bare
+-- trimmed array of {context, state, description, target_url, created_at,
+-- updated_at}. URL fields are dropped EXCEPT the survey-pinned consumer-read
+-- exceptions (2026-07-11 survey: the required-builds hook renders them) --
+-- the statuses-list target_url and the check-run details_url/html_url;
+-- everything else URL-ish stays dropped, incl. the combined status's
+-- per-status target_url, and the check-run output is trimmed to {title}
+-- (the unbounded summary/text never stored).
+-- These rows deliberately do NOT read or write the commit_checks
 -- truth table: its normalized per-context rows are lossy against these
 -- responses (no timestamps, no descriptions, no run ids), so the snapshot is
 -- kept whole; unifying the two is possible future work. status/check_run/
--- check_suite webhooks flush ALL of a repo's rows (CI state changed somewhere
--- in the repo; per-sha precision is not worth the bookkeeping for v1), push
--- flushes too (branch-form refs' tips moved; a brand-new sha has no rows yet
--- anyway), repository flushes like everywhere else; expires_at is the 24h TTL
--- backstop for missed deliveries. owner/repo lowercased like the other
--- cached-route tables.
+-- check_suite webhooks flush the payload-named refs' rows (the head
+-- branch(es) plus the sha -- each spelling is its own row; repo-wide only
+-- when the payload names none), push flushes the pushed ref's rows (its tip
+-- moved; a brand-new sha has no rows yet anyway; repo-wide when the ref is
+-- unknown), repository flushes the whole repo like everywhere else;
+-- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
+-- lowercased like the other cached-route tables.
 CREATE TABLE commit_ci_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased
     repo         TEXT NOT NULL,              -- lowercased
     ref          TEXT NOT NULL,              -- verbatim ref path segment(s), never resolved
-    kind         TEXT NOT NULL,              -- 'status' or 'check_runs'
+    kind         TEXT NOT NULL,              -- 'status' | 'check_runs' | 'statuses_list'
+    per_page     INTEGER NOT NULL,           -- default 30 for param-less requests
+    page         INTEGER NOT NULL,           -- default 1 for param-less requests
     doc          TEXT NOT NULL,              -- trimmed document as JSON
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_commit_ci_cache_key ON commit_ci_cache (owner, repo, ref, kind);
+CREATE UNIQUE INDEX idx_commit_ci_cache_key ON commit_ci_cache (owner, repo, ref, kind, per_page, page);
 CREATE INDEX idx_commit_ci_cache_lru ON commit_ci_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/pulls/{number}/files (the
+-- PR files listing). doc holds the ALREADY-TRIMMED JSON array -- per-file
+-- {filename, status, additions, deletions, changes, previous_filename?,
+-- patch?} with the presence/absence of previous_filename and patch preserved
+-- exactly (consumers test for a string patch; binary/oversized files
+-- legitimately lack one) and every URL field dropped. patch is unbounded, so
+-- a rendered doc larger than 1 MiB is never stored (the request passes
+-- through unstored). A PR's files move whenever its head or base moves, so
+-- pull_request events flush that one PR's pages (head pushes -- including
+-- fork heads whose pushes we never see -- base retargets, reopens) and
+-- push/repository events flush the whole repo (the belt for missed
+-- pull_request deliveries); expires_at is the 24h TTL backstop. owner/repo
+-- lowercased like the other cached-route tables.
+CREATE TABLE pull_files_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    number       INTEGER NOT NULL,
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed files array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_pull_files_cache_key ON pull_files_cache (owner, repo, number, per_page, page);
+CREATE INDEX idx_pull_files_cache_lru ON pull_files_cache (last_used_at);
+
+-- Rendered-doc snapshots for the single-PR route's CLOSED/merged answers
+-- (GET /repos/{owner}/{repo}/pulls/{number} where GitHub reports the PR
+-- closed). The open-only invariant of the pull_requests truth table is
+-- untouched: a fetched closed PR still deletes any cached open row, and
+-- closed PRs live ONLY here, as trimmed documents rendered once at absorb
+-- time from GitHub's own response (never re-derived). A closed PR only
+-- changes via pull_request events (reopened/edited/relabeled), which flush
+-- that one PR's doc; repository events flush the whole repo; a push is
+-- deliberately NOT a flush -- it cannot mutate a closed PR. expires_at is the
+-- 24h TTL backstop for missed deliveries, the same accepted staleness class
+-- as PRRowFresh. owner/repo lowercased like the other cached-route tables.
+CREATE TABLE closed_pull_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    number       INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed single-PR document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_closed_pull_cache_key ON closed_pull_cache (owner, repo, number);
+CREATE INDEX idx_closed_pull_cache_lru ON closed_pull_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/branches (the branches
+-- listing). doc holds the ALREADY-TRIMMED JSON array -- per-branch {name,
+-- commit:{sha}, protected} with commit.url and the protection object/URL
+-- dropped. A listing moves whenever any branch is created, deleted, or its
+-- tip advances -- all of which arrive as push events (a delete carries
+-- deleted=true) -- so push/repository webhooks flush a repo's snapshots;
+-- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
+-- lowercased like the other cached-route tables.
+CREATE TABLE branches_list_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed branches array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_branches_list_cache_key ON branches_list_cache (owner, repo, per_page, page);
+CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
+
+-- Per-page snapshots for GET /repos/{owner}/{repo}/actions/runs?head_sha=...
+-- (the workflow-runs listing filtered to one commit -- pr-minder's
+-- hasWorkflowRuns zombie probe, repeated per bot PR by the reconcile hook's
+-- fleet sweeps). Whole-doc snapshots per exact pagination shape, keyed by
+-- (owner, repo, head_sha, per_page, page); doc holds the ALREADY-TRIMMED
+-- document as JSON. A sha's runs change when its CI moves, so
+-- status/check_run/check_suite/workflow_job/workflow_run webhooks flush that
+-- sha's rows (workflow_job is the precise signal -- its head_sha names the
+-- row directly; workflow_run is the ONLY signal for a startup_failure run,
+-- which creates no jobs, check runs, or statuses; repo-wide only when a
+-- payload carries no sha) and repository events flush the whole repo;
+-- expires_at is the 24h TTL backstop for missed deliveries.
+-- owner/repo lowercased like the other cached-route tables; head_sha
+-- lowercased full hex.
+CREATE TABLE workflow_runs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    head_sha     TEXT NOT NULL,              -- lowercased full hex
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed runs document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflow_runs_cache_key ON workflow_runs_cache (owner, repo, head_sha, per_page, page);
+CREATE INDEX idx_workflow_runs_cache_lru ON workflow_runs_cache (last_used_at);
+
+-- Expiring 404 verdicts for GET /repos/{owner}/{repo}/git/commits/{sha}. The
+-- git_commits_cache above never stores a 404 (a missing sha can be pushed
+-- later), but pr-minder's mergeWouldBeEmpty re-reads a GC'd test-merge sha
+-- FOREVER -- every fleet sweep re-probes the same permanently-missing object
+-- -- so round 2 caches the miss itself, bounded by expires_at. doc holds the
+-- rendered 404 body. A sha that later materializes is un-missed by the
+-- absorb path: every real git-commit upsert clears this row (see
+-- ghdata.upsertGitCommit), so the marker can never shadow a commit that now
+-- exists. repository events flush the whole repo; owner/repo lowercased,
+-- sha lowercased full hex.
+CREATE TABLE git_commit_miss_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    sha          TEXT NOT NULL,              -- lowercased full hex
+    doc          TEXT NOT NULL,              -- rendered 404 body as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 (miss markers always expire)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_commit_miss_cache_key ON git_commit_miss_cache (owner, repo, sha);
+CREATE INDEX idx_git_commit_miss_cache_lru ON git_commit_miss_cache (last_used_at);
+
+-- 406 "diff too large" verdicts for GET /repos/{owner}/{repo}/pulls/{number}
+-- with the diff media type (pr-minder's getPullDiff probes the unified diff
+-- first and falls back to paging the files API on a 406; an oversized PR
+-- re-earns the same 406 on every describe hand-off). doc holds the rendered
+-- 406 body. 200 diff bodies are NEVER stored -- that would be verbatim byte
+-- caching, which the cache doctrine rejects; only the bounded negative
+-- verdict is worth a row. Flushed per PR by pull_request/pull_request_review
+-- events and repo-wide by push (a base push can move the three-dot diff
+-- across the size boundary in either direction) and repository events;
+-- expires_at is the 24h TTL backstop. owner/repo lowercased like the other
+-- cached-route tables.
+CREATE TABLE pull_diff406_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    number       INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- rendered 406 body as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 (miss markers always expire)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_pull_diff406_cache_key ON pull_diff406_cache (owner, repo, number);
+CREATE INDEX idx_pull_diff406_cache_lru ON pull_diff406_cache (last_used_at);
 
 -- State for POST /app/installations/{id}/access_tokens responses (the
 -- installation-token mint cache). This table stays keyed by the verified app

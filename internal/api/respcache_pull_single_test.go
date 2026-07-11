@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,10 +162,13 @@ func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 }
 
 // TestCachedPull_DiffAcceptPassthrough: pr-minder's getPullDiff sends the
-// diff media type on this endpoint -- such requests must reach GitHub
-// verbatim, every time, uncached.
+// diff media type on this endpoint. A 200 diff BODY is deliberately never
+// stored (verbatim byte caching is rejected doctrine) -- so a diff that fits
+// under GitHub's size boundary reaches GitHub and relays untouched, EVERY
+// time, byte-identically, with the diff Accept forwarded upstream. Only the
+// 406 verdict is cached (TestCachedPullDiff_406VerdictCached).
 func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
-	router, _, _, u := pullsCacheStack(t)
+	router, _, db, u := pullsCacheStack(t)
 	rawDiff := "diff --git a/f b/f\n+x\n"
 	u.single = func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") == "application/vnd.github.diff" {
@@ -184,6 +188,109 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 		assert.Empty(t, w.Header().Get(cacheHeader))
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.singleHits))
 	}
+
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pull_diff406_cache`).Scan(&count))
+	assert.Zero(t, count, "a 200 diff must store nothing")
+}
+
+// TestCachedPullDiff_406VerdictCached: an oversized PR's diff read earns a
+// 406 "diff too large" from GitHub, and pr-minder re-earns it around every
+// describe hand-off before falling back to the files API -- so the VERDICT is
+// cached per PR: absorbed on the first read (rebuilt {"message": ...}, 406,
+// X-GSM-Cache: miss), served from state on the second (zero upstream calls),
+// flushed by the PR's own pull_request event (a head push can shrink the diff
+// back under the boundary).
+func TestCachedPullDiff_406VerdictCached(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		// 406 any diff-bearing Accept (single- or multi-range), like GitHub
+		// answering an oversized PR's diff read.
+		if strings.Contains(r.Header.Get("Accept"), ".diff") {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotAcceptable)
+			_, _ = w.Write([]byte(`{"message":"Sorry, the diff exceeded the maximum number of lines (20000)",` +
+				`"documentation_url":"https://docs.github.com/rest/pulls/pulls"}`))
+			return
+		}
+		servePRJSON(w, upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
+	}
+	diffReq := func() *http.Request {
+		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+		req.Header.Set("Accept", "application/vnd.github.diff")
+		return req
+	}
+
+	// Miss: the 406 is absorbed and served rebuilt.
+	w1 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+	assertNoURLKeys(t, w1.Body.Bytes())
+	assert.JSONEq(t, `{"message":"Sorry, the diff exceeded the maximum number of lines (20000)"}`, w1.Body.String())
+	assert.Equal(t, "application/json; charset=utf-8", w1.Header().Get("Content-Type"))
+
+	// Hit: the cached verdict answers, zero upstream calls.
+	w2 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit and miss must be byte-identical")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits), "a cached verdict must not call upstream")
+
+	// The PR's own event flushes the verdict -- the head moved, so the diff
+	// may fit again -- and the next read refetches.
+	postWebhook(t, router, "pull_request",
+		prEvent("synchronize", upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")))
+	w3 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a pull_request event must flush the PR's 406 verdict")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
+
+	// The v3-suffixed spelling of the same media type shares the flow (and
+	// the row the previous miss stored).
+	req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	w4 := do(t, router, req)
+	require.Equal(t, http.StatusNotAcceptable, w4.Code)
+	assert.Equal(t, "hit", w4.Header().Get(cacheHeader), "both diff media-type spellings share the verdict row")
+
+	// A multi-range Accept is NOT the consumer shape: plain passthrough,
+	// GitHub's own body verbatim (documentation_url and all).
+	req = authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+	req.Header.Set("Accept", "application/vnd.github.diff, application/json")
+	w5 := do(t, router, req)
+	require.Equal(t, http.StatusNotAcceptable, w5.Code)
+	assert.Empty(t, w5.Header().Get(cacheHeader), "a multi-range Accept must pass through")
+	assert.Contains(t, w5.Body.String(), "documentation_url", "the passthrough is GitHub's verbatim body")
+}
+
+// TestCachedPullDiff_PushFlushesRepoWide: a push flushes every PR's 406
+// verdict for the repo -- a BASE push can move any PR's three-dot diff across
+// the size boundary in either direction, with no per-PR signal.
+func TestCachedPullDiff_PushFlushesRepoWide(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotAcceptable)
+		_, _ = w.Write([]byte(`{"message":"too large"}`))
+	}
+	diffReq := func() *http.Request {
+		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+		req.Header.Set("Accept", "application/vnd.github.diff")
+		return req
+	}
+
+	do(t, router, diffReq())
+	w := do(t, router, diffReq())
+	require.Equal(t, "hit", w.Header().Get(cacheHeader))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
+		shaBase, shaTip))
+
+	w2 := do(t, router, diffReq())
+	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "a push must flush the repo's 406 verdicts")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
 // TestCachedPull_NonNumericAndQueryPassthrough: /pulls/comments (a real
@@ -201,10 +308,12 @@ func TestCachedPull_NonNumericAndQueryPassthrough(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
-// TestCachedPull_ClosedNotStored: a fetched closed PR is replayed verbatim
-// (GitHub's own body, URL fields and all), never stored -- and it evicts any
-// stale open row so the list stops carrying it.
-func TestCachedPull_ClosedNotStored(t *testing.T) {
+// TestCachedPull_ClosedAbsorbedAsDoc: a fetched closed PR evicts any stale
+// open row (the truth table retains open PRs only) and is absorbed as a
+// rendered whole-doc snapshot -- served trimmed on the miss, then replayed
+// byte-identically from closed_pull_cache with zero upstream calls (every
+// drain re-reads settled PRs; each read used to be a fresh passthrough).
+func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
 
@@ -230,13 +339,89 @@ func TestCachedPull_ClosedNotStored(t *testing.T) {
 
 	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Empty(t, w.Header().Get(cacheHeader), "a closed PR is replayed verbatim, unstored")
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "the closing read absorbs the rendered doc")
+	assertNoURLKeys(t, w.Body.Bytes())
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "closed", body["state"])
-	assert.Contains(t, body, "url", "verbatim replay keeps GitHub's own fields")
+	assert.Equal(t, true, body["merged"], "merged is GitHub's own answer, not the open rebuild's by-definition false")
+	assert.Nil(t, body["mergeable"])
 
 	_, _, ok, err = store.RestSinglePull(seedCtx(), "org1", "repo1", 7)
 	require.NoError(t, err)
-	assert.False(t, ok, "absorbing a closed PR must delete the cached row")
+	assert.False(t, ok, "absorbing a closed PR must delete the cached open row")
+
+	// The next read serves the identical doc from state, zero upstream.
+	fetched := atomic.LoadInt32(&u.singleHits)
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w.Body.String(), w2.Body.String(), "hit and miss must be byte-identical")
+	assert.Equal(t, fetched, atomic.LoadInt32(&u.singleHits))
+}
+
+// TestCachedPull_ClosedDocReopenFlush: the closed-PR doc's lifecycle around a
+// reopen. The cached doc carries GitHub's own merged answer and an EXPLICIT
+// null mergeable (the key must exist); a `reopened` pull_request event
+// flushes it, so the next read fetches GitHub's fresh OPEN answer instead of
+// serving the stale closed snapshot -- and the open absorb keeps the doc and
+// the open row mutually exclusive.
+func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
+	router, store, _, u := pullsCacheStack(t)
+	target := "/repos/org1/repo1/pulls/7"
+
+	// A merged-closed PR: absorbed as a rendered doc on the first read.
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamPR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr["mergeable"] = nil
+		pr["merged"] = true
+		servePRJSON(w, pr)
+	}
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "miss", w.Header().Get(cacheHeader))
+
+	// The cached doc survives with merged: true (GitHub's answer, not the
+	// open rebuild's by-definition false) and mergeable PRESENT as null.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	require.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &doc))
+	assert.Equal(t, true, doc["merged"], "merged: true must survive on the merged-closed doc")
+	mv, present := doc["mergeable"]
+	require.True(t, present, "mergeable must be present on the closed doc (explicit null, like GitHub)")
+	assert.Nil(t, mv, "a closed PR's mergeable is null")
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+
+	// The PR reopens: GitHub now answers open, and the reopened event must
+	// flush the doc so the next read cannot serve it stale. (The event's own
+	// payload also re-seeds the open row -- with an unresolved mergeable, so
+	// the read still reaches GitHub.)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr["mergeable"] = true
+		pr["merged"] = false
+		servePRJSON(w, pr)
+	}
+	postWebhook(t, router, "pull_request",
+		prEvent("reopened", upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")))
+
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "the reopened flush must force a refetch")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
+	var reopened map[string]any
+	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &reopened))
+	assert.Equal(t, "open", reopened["state"], "the fresh answer is the OPEN PR, never the stale closed doc")
+	assert.Equal(t, false, reopened["merged"])
+
+	// Steady state: the absorbed open row (known mergeable) hits, and the
+	// closed doc is gone from the side table.
+	w4 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w4.Header().Get(cacheHeader))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
+	_, ok, err := store.GetCachedClosedPull(seedCtx(), "org1", "repo1", 7, time.Now())
+	require.NoError(t, err)
+	assert.False(t, ok, "the open absorb must drop the stale closed doc")
 }

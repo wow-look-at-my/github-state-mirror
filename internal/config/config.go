@@ -10,11 +10,17 @@ import (
 )
 
 type Config struct {
-	ListenAddr      string
-	DBPath          string
-	WebhookSecret   string
-	AllowedOrigins  []string
-	RefreshInterval time.Duration
+	ListenAddr    string
+	DBPath        string
+	WebhookSecret string
+	// SubscriptionsDBPath is the subscriber-notification config DB — a
+	// SEPARATE SQLite file that survives the cache DB's SchemaVersion nukes.
+	// Empty = derive from DBPath (github-mirror.db ->
+	// github-mirror-subscriptions.db; notify.DeriveDBPath, applied in
+	// cmd/server).
+	SubscriptionsDBPath string
+	AllowedOrigins      []string
+	RefreshInterval     time.Duration
 
 	// GitHub App credentials for background (periodic) refreshes. The service
 	// holds no static user token: API requests are authenticated by the
@@ -34,11 +40,12 @@ type Config struct {
 
 func Load() Config {
 	c := Config{
-		ListenAddr:      envOr("LISTEN_ADDR", ":8080"),
-		DBPath:          envOr("DB_PATH", "github-mirror.db"),
-		WebhookSecret:   os.Getenv("WEBHOOK_SECRET"),
-		AllowedOrigins:  parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval: 6 * time.Hour,
+		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
+		DBPath:              envOr("DB_PATH", "github-mirror.db"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
+		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RefreshInterval:     6 * time.Hour,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),

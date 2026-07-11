@@ -108,6 +108,8 @@ export interface RequestsResponse {
     by_disposition: Record<string, number>;
     groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
+    db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
+    db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
 }
 
 // ---- GitHub App rate limit ----

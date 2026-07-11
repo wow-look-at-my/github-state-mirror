@@ -396,12 +396,21 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 // CheckPayload is a single commit-check state parsed from a status/check_run/
 // check_suite webhook. Context is a stable dedup key (latest state wins).
 type CheckPayload struct {
-	Owner           string
-	Repo            string
-	SHA             string
-	Context         string
-	State           string // normalized: SUCCESS / FAILURE / ERROR / PENDING
-	OnDefaultBranch bool   // the check ran on the repo's default branch
+	Owner   string
+	Repo    string
+	SHA     string
+	Context string
+	State   string // normalized: SUCCESS / FAILURE / ERROR / PENDING
+	// Branches is every branch name the payload associates with the commit
+	// (empty names dropped): for a `status` event each branches[].name; for
+	// check_run/check_suite the suite's head_branch when non-empty. Together
+	// with SHA these are the ref SPELLINGS whose cached CI answers the event
+	// moved (commit_ci_cache keys the verbatim requested ref). NOTE: GitHub
+	// caps the status payload's branches array (~10 entries), so a commit on
+	// many branches can be under-reported -- acceptable, because branch-form
+	// CI rows are bounded by the 24h TTL and current consumers poll by sha.
+	Branches        []string
+	OnDefaultBranch bool // the check ran on the repo's default branch
 }
 
 // ParseCheckPayload extracts a commit-check state from a status, check_run, or
@@ -452,14 +461,19 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		defaultBranch = body.Repository.DefaultBranch
 	}
 
-	var branches []string
+	// p.Branches collects only NON-EMPTY names; the OnDefaultBranch check
+	// below reads the same list, which is behavior-identical to the old
+	// unfiltered local slice (an empty name can never equal a non-empty
+	// default branch).
 	switch eventType {
 	case "status":
 		p.SHA = body.SHA
 		p.Context = "status:" + body.Context
 		p.State = normalizeStatusState(body.State)
 		for _, b := range body.Branches {
-			branches = append(branches, b.Name)
+			if b.Name != "" {
+				p.Branches = append(p.Branches, b.Name)
+			}
 		}
 	case "check_run":
 		if body.CheckRun == nil {
@@ -468,8 +482,8 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		p.SHA = body.CheckRun.HeadSHA
 		p.Context = "check_run:" + body.CheckRun.Name
 		p.State = normalizeCheckState(body.CheckRun.Status, body.CheckRun.Conclusion)
-		if body.CheckRun.CheckSuite != nil {
-			branches = append(branches, body.CheckRun.CheckSuite.HeadBranch)
+		if body.CheckRun.CheckSuite != nil && body.CheckRun.CheckSuite.HeadBranch != "" {
+			p.Branches = append(p.Branches, body.CheckRun.CheckSuite.HeadBranch)
 		}
 	case "check_suite":
 		if body.CheckSuite == nil {
@@ -482,13 +496,15 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		}
 		p.Context = "check_suite:" + slug
 		p.State = normalizeCheckState(body.CheckSuite.Status, body.CheckSuite.Conclusion)
-		branches = append(branches, body.CheckSuite.HeadBranch)
+		if body.CheckSuite.HeadBranch != "" {
+			p.Branches = append(p.Branches, body.CheckSuite.HeadBranch)
+		}
 	default:
 		return CheckPayload{}, fmt.Errorf("unsupported check event type: %s", eventType)
 	}
 
 	if defaultBranch != "" {
-		for _, b := range branches {
+		for _, b := range p.Branches {
 			if b == defaultBranch {
 				p.OnDefaultBranch = true
 				break
@@ -662,6 +678,24 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: missing owner/repo/job id")
 	}
 	return p, nil
+}
+
+// ParseWorkflowRunHeadSHA extracts workflow_run.head_sha from a workflow_run
+// webhook payload ("" when absent or unparseable). Deliberately minimal: the
+// dispatcher's only use for the event is flushing that sha's cached
+// workflow-runs pages -- a startup_failure run creates no jobs, check runs,
+// or statuses, so this delivery is the sole signal the cached listing moved
+// -- and nothing else reads the payload.
+func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
+	var body struct {
+		WorkflowRun *struct {
+			HeadSHA string `json:"head_sha"`
+		} `json:"workflow_run"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.WorkflowRun == nil {
+		return ""
+	}
+	return body.WorkflowRun.HeadSHA
 }
 
 func strOrEmpty(s *string) string {
