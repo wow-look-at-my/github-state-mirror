@@ -80,7 +80,8 @@ pass through verbatim, uncached.
 - `GET /repos/{owner}/{repo}/git/commits/{sha}` — rebuilt as
   `{sha, author, committer, message, tree: {sha}, parents: [{sha}, ...]}`.
   Immutable content: positive rows have no invalidation and no TTL, bounded
-  only by LRU pruning.
+  only by LRU pruning (so this is the one table that actually grows to the
+  `CACHE_MAX_ROWS` ceiling).
   **Push webhooks also feed this cache**: the payload's commits (id, tree,
   message, timestamp, author/committer, with parents derived from the
   payload's linear chain) are absorbed on delivery, so the common post-push
@@ -248,7 +249,8 @@ pass through verbatim, uncached.
   plus a 24 h TTL.
 
 Cached state is global truth, revealed per caller by the reveal layer; caps +
-LRU pruning bound each response-cache table. (Only the App-credential caches —
+LRU pruning bound each response-cache table (per-table row ceiling
+`CACHE_MAX_ROWS`, default 1,000,000). (Only the App-credential caches —
 minted tokens and repo-installation lookups — stay keyed by the app principal:
 a minted token is per-credential, not shared truth.)
 
@@ -389,6 +391,7 @@ The service has **no static service token**. API requests authenticate with the 
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
 | `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's SchemaVersion nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because the cache reveals data per the caller's proven GitHub access, not origin. |
+| `CACHE_MAX_ROWS` | No | `1000000` | Per-table row ceiling for the response caches (LRU rows beyond it are pruned on every write). One knob for every cache table: all but `git_commits_cache` are TTL-bounded (~24 h backstop or token expiry), so for them the cap is only a runaway safety net; `git_commits_cache` (immutable rows, no TTL) is the one table that actually grows to the ceiling. A value that is unparseable or < 1 fails startup. |
 | `GITHUB_OAUTH_CLIENT_ID` | For dashboard login | — | GitHub OAuth App client ID. Register the app's callback URL as `<BASE_URL>/auth/callback`. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | For dashboard login | — | GitHub OAuth App client secret. |
 | `SESSION_SECRET` | Recommended | random per-process | HMAC key for signed session cookies. If unset, a random key is generated at startup, so sessions reset on restart. Set it in production. |

@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
 func TestAppPrivateKeyPEM_Inline(t *testing.T) {
@@ -53,4 +55,42 @@ func TestAppPrivateKeyPEM_Unset(t *testing.T) {
 func TestGitHubAppConfigured(t *testing.T) {
 	assert.False(t, Config{}.GitHubAppConfigured())
 	assert.True(t, Config{GitHubAppID: "42"}.GitHubAppConfigured())
+}
+
+// TestLoad_CacheMaxRowsDefault: an absent (or empty) CACHE_MAX_ROWS keeps the
+// default ceiling.
+func TestLoad_CacheMaxRowsDefault(t *testing.T) {
+	t.Setenv("CACHE_MAX_ROWS", "")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, defaultCacheMaxRows, cfg.CacheMaxRows)
+	assert.Equal(t, int64(1_000_000), cfg.CacheMaxRows)
+}
+
+// TestLoad_CacheMaxRowsValid: a valid override is applied verbatim.
+func TestLoad_CacheMaxRowsValid(t *testing.T) {
+	t.Setenv("CACHE_MAX_ROWS", "50000")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, int64(50000), cfg.CacheMaxRows)
+}
+
+// TestLoad_CacheMaxRowsInvalid: an unparseable or < 1 value must fail Load (a
+// loud misconfiguration -- the server refuses to start), never fall back
+// silently to a cap the operator didn't set.
+func TestLoad_CacheMaxRowsInvalid(t *testing.T) {
+	for _, v := range []string{"abc", "1.5", "10k", "0", "-5"} {
+		t.Setenv("CACHE_MAX_ROWS", v)
+		_, err := Load()
+		assert.Error(t, err, "CACHE_MAX_ROWS=%q must fail Load", v)
+	}
+}
+
+// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to
+// ghdata.CacheMaxRows' own initializer, so a consumer that never runs
+// config.Load (tests, library use) sees the same ceiling the server defaults
+// to and the two literals cannot drift. (No test in THIS binary mutates the
+// ghdata var, so it is read at its initializer value.)
+func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
+	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
 }

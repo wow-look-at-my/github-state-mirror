@@ -22,11 +22,19 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.WebhookSecret == "" {
 		slog.Warn("WEBHOOK_SECRET not set; the /webhook endpoint will reject all deliveries")
 	}
+
+	// Apply the configured response-cache row ceiling (CACHE_MAX_ROWS) before
+	// anything writes through the store.
+	ghdata.CacheMaxRows = cfg.CacheMaxRows
 
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
