@@ -169,7 +169,7 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 	for i, target := range []string{
 		"/repos/org1/repo1/pulls/7/files?foo=1",        // unknown param
 		"/repos/org1/repo1/pulls/7/files?per_page=101", // out of range
-		"/repos/org1/repo1/pulls/7/files?page=11",      // beyond the modeled cap
+		"/repos/org1/repo1/pulls/7/files?page=41",      // beyond the modeled cap
 		"/repos/org1/repo1/pulls/comments/files",       // non-numeric {number}
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
@@ -178,8 +178,14 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 		assert.Equal(t, int32(i+1), atomic.LoadInt32(&u.pullFilesHits), target)
 	}
 
+	// The last modeled page (GitHub's 3000-file cap = 30 pages at per_page=100,
+	// plus margin) is cacheable; the page-cap boundary sits at exactly 40.
+	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files?page=40", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "page 40 is within the modeled cap")
+
 	// Passthroughs stored nothing: a cacheable shape still misses.
-	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files", nil))
+	w = do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files", nil))
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
 }
 

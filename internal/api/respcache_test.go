@@ -179,9 +179,19 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 }
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key
-// the trimmed contract bans: url, *_url, or _links.
-func assertNoURLKeys(t *testing.T, body []byte) {
+// the trimmed contract bans: url, *_url, or _links. `allowed` names EXACT key
+// names exempted for that one route -- pinned exceptions for consumer-read
+// link fields (the required-builds hook renders per-status `target_url` and
+// per-run `details_url`/`html_url`, and reads the workflow-run `html_url`;
+// consumer survey 2026-07-11). Adding an exception requires a fresh consumer
+// survey, per CLAUDE.md; with no allowlist the ban is total, exactly as
+// before.
+func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 	t.Helper()
+	allow := make(map[string]bool, len(allowed))
+	for _, k := range allowed {
+		allow[strings.ToLower(k)] = true
+	}
 	var v interface{}
 	require.NoError(t, json.Unmarshal(body, &v), "rebuilt body must be valid JSON: %s", body)
 	var walk func(v interface{}, at string)
@@ -190,7 +200,7 @@ func assertNoURLKeys(t *testing.T, body []byte) {
 		case map[string]interface{}:
 			for k, val := range x {
 				lk := strings.ToLower(k)
-				assert.False(t, lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links",
+				assert.False(t, !allow[lk] && (lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links"),
 					"rebuilt body must not contain URL key %q (at %s): %s", k, at, body)
 				walk(val, at+"."+k)
 			}
