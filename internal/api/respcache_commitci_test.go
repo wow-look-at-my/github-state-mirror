@@ -349,8 +349,12 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 }
 
 // TestCachedCommitCI_WebhookFlush: each of status/check_run/check_suite (CI
-// state moved), push (branch tips moved), and repository events flushes BOTH
-// of the repo's snapshot kinds.
+// state moved on the ref the payload names -- the branch these snapshots are
+// keyed by), push with no usable ref (repo-wide fallback), and repository
+// events flushes BOTH of the ref's snapshot kinds. (Round 2 made the CI-event
+// flush per-ref: the payloads below all name "main" -- via the status
+// branches array or the suite head_branch -- exactly like GitHub's real
+// deliveries; a per-branch survival case lives in the dispatcher tests.)
 func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	statusTarget := "/repos/org1/repo1/commits/main/status"
@@ -367,6 +371,7 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 
 	for _, tc := range []struct{ event, body string }{
 		{"status", fmt.Sprintf(`{"sha":%q,"state":"success","context":"ci/build",
+			"branches":[{"name":"main"}],
 			"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip)},
 		{"check_run", fmt.Sprintf(`{"action":"completed",
 			"check_run":{"head_sha":%q,"status":"completed","conclusion":"success","name":"build",
