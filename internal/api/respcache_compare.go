@@ -107,8 +107,16 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
+	// The route guard above (compareBaseheadCacheable) guarantees the
+	// three-dot form with both sides non-empty, so the split cannot fail;
+	// the two sides feed the per-ref webhook invalidation. Status is always
+	// 200 here -- stage-2 also absorbs 404 "unknown ref" answers as
+	// expiring miss markers.
+	baseRef, headRef, _ := strings.Cut(basehead, "...")
 	if err := h.store.PutCachedCompare(r.Context(), ghdata.CachedCompare{
-		Owner: owner, Repo: repo, Basehead: basehead, Doc: doc,
+		Owner: owner, Repo: repo, Basehead: basehead,
+		BaseRef: baseRef, HeadRef: headRef, Status: http.StatusOK,
+		Doc: doc,
 	}, commits, now, compareCacheTTL); err != nil {
 		slog.Warn("compare cache write failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	}

@@ -44,6 +44,15 @@ import (
 // stale snapshot being served. Webhooks flush sooner; this is the backstop.
 const commitCICacheTTL = 24 * time.Hour
 
+// stage-2: the bare param-less requests this route models today store and
+// read under GitHub's default pagination shape; stage 2 parses real
+// ?per_page/?page values (and adds the statuses-list kind) instead of these
+// constants.
+const (
+	commitCIDefaultPerPage = 30
+	commitCIDefaultPage    = 1
+)
+
 // commitsSubtree dispatches GET /repos/{owner}/{repo}/commits/* by its path
 // tail: a `{ref}/status` tail is the cached combined-status route and a
 // `{ref}/check-runs` tail the cached check-runs route -- the suffix anchor is
@@ -89,7 +98,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 
 	now := time.Now()
-	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, now); err != nil {
+	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, commitCIDefaultPerPage, commitCIDefaultPage, now); err != nil {
 		slog.Warn("commit CI cache read failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	} else if ok {
 		h.serveCommitCI(w, r, c.Doc, true)
@@ -113,7 +122,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	if err := h.store.PutCachedCommitCI(r.Context(), ghdata.CachedCommitCI{
 		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Doc: doc,
-	}, now, commitCICacheTTL); err != nil {
+	}, commitCIDefaultPerPage, commitCIDefaultPage, now, commitCICacheTTL); err != nil {
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
