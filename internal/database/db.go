@@ -12,14 +12,22 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 15: three new response-cache tables -- pull_files_cache
-// (trimmed per-page GET /repos/{owner}/{repo}/pulls/{number}/files
-// snapshots), closed_pull_cache (the single-PR route's rendered CLOSED/merged
-// answers; the open-only pull_requests invariant is untouched -- closed PRs
-// live only in the doc side table), and branches_list_cache (trimmed per-page
-// GET /repos/{owner}/{repo}/branches snapshots). Bumping nukes the DB on
-// deploy; global truth rebuilds from webhooks and each caller's own fetches.
-// (14 was a no-schema-change nuke of truth rows poisoned by the
+// SchemaVersion 16: respcache round 2. commit_ci_cache gains pagination
+// columns (per_page, page; the unique key is now owner/repo/ref/kind/
+// per_page/page) and a third kind 'statuses_list' (the raw statuses LIST
+// route); compare_cache gains base_ref/head_ref (the basehead's two sides,
+// split at '...', so a push can flush per ref instead of per repo) and a
+// status column (404 "unknown ref" answers become expiring miss markers);
+// and three new tables -- workflow_runs_cache (per-page snapshots of
+// GET /repos/{owner}/{repo}/actions/runs?head_sha=...),
+// git_commit_miss_cache (expiring 404 verdicts for the single git-commit
+// read; cleared by any real commit upsert so a sha that materializes stops
+// answering 404), and pull_diff406_cache (406 "diff too large" verdicts for
+// the single-PR diff read; 200 diff bodies are never stored). Bumping nukes
+// the DB on deploy; global truth rebuilds from webhooks and each caller's
+// own fetches.
+// (15 added pull_files_cache, closed_pull_cache, and branches_list_cache;
+// 14 was a no-schema-change nuke of truth rows poisoned by the
 // collaborator-repo bleed -- repos a User login merely collaborates on,
 // absorbed keyed by the WRONG owner; the fixed fetch (ownerAffiliations:
 // OWNER + the dropForeignRepoNode guard in ghclient) keeps them out
@@ -33,7 +41,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 15
+const SchemaVersion = 16
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
