@@ -19,9 +19,16 @@ import (
 // by the verified app identity because their answers are app-specific.
 
 // CacheMaxRows bounds each cached-route table: after every write the least
-// recently used rows beyond this cap are pruned (along with expired rows). It
-// is a variable only so tests can lower it; production uses the default.
-var CacheMaxRows int64 = 10000
+// recently used rows beyond this cap are pruned (along with expired rows).
+// cmd/server sets it from the CACHE_MAX_ROWS env var at startup (default
+// 1,000,000); tests lower it directly. It is deliberately ONE knob for every
+// table: all but git_commits_cache are TTL-bounded (~24h backstop or token
+// expiry), so for them the cap is only a runaway safety net -- while
+// git_commits_cache (immutable rows, no TTL) is the one table that actually
+// grows to the ceiling, evicting its oldest-accessed row on every absorb once
+// pinned there (and degrading any commits-list snapshot naming the evicted
+// sha into a miss).
+var CacheMaxRows int64 = 1_000_000
 
 // rfc3339 formats a time in the fixed-width UTC RFC3339 form used across the
 // schema. Fixed width means lexicographic comparison in SQL (the expired-row
