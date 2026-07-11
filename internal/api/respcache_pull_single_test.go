@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,10 +162,13 @@ func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 }
 
 // TestCachedPull_DiffAcceptPassthrough: pr-minder's getPullDiff sends the
-// diff media type on this endpoint -- such requests must reach GitHub
-// verbatim, every time, uncached.
+// diff media type on this endpoint. A 200 diff BODY is deliberately never
+// stored (verbatim byte caching is rejected doctrine) -- so a diff that fits
+// under GitHub's size boundary reaches GitHub and relays untouched, EVERY
+// time, byte-identically, with the diff Accept forwarded upstream. Only the
+// 406 verdict is cached (TestCachedPullDiff_406VerdictCached).
 func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
-	router, _, _, u := pullsCacheStack(t)
+	router, _, db, u := pullsCacheStack(t)
 	rawDiff := "diff --git a/f b/f\n+x\n"
 	u.single = func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") == "application/vnd.github.diff" {
@@ -184,6 +188,109 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 		assert.Empty(t, w.Header().Get(cacheHeader))
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.singleHits))
 	}
+
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pull_diff406_cache`).Scan(&count))
+	assert.Zero(t, count, "a 200 diff must store nothing")
+}
+
+// TestCachedPullDiff_406VerdictCached: an oversized PR's diff read earns a
+// 406 "diff too large" from GitHub, and pr-minder re-earns it around every
+// describe hand-off before falling back to the files API -- so the VERDICT is
+// cached per PR: absorbed on the first read (rebuilt {"message": ...}, 406,
+// X-GSM-Cache: miss), served from state on the second (zero upstream calls),
+// flushed by the PR's own pull_request event (a head push can shrink the diff
+// back under the boundary).
+func TestCachedPullDiff_406VerdictCached(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		// 406 any diff-bearing Accept (single- or multi-range), like GitHub
+		// answering an oversized PR's diff read.
+		if strings.Contains(r.Header.Get("Accept"), ".diff") {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotAcceptable)
+			_, _ = w.Write([]byte(`{"message":"Sorry, the diff exceeded the maximum number of lines (20000)",` +
+				`"documentation_url":"https://docs.github.com/rest/pulls/pulls"}`))
+			return
+		}
+		servePRJSON(w, upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
+	}
+	diffReq := func() *http.Request {
+		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+		req.Header.Set("Accept", "application/vnd.github.diff")
+		return req
+	}
+
+	// Miss: the 406 is absorbed and served rebuilt.
+	w1 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+	assertNoURLKeys(t, w1.Body.Bytes())
+	assert.JSONEq(t, `{"message":"Sorry, the diff exceeded the maximum number of lines (20000)"}`, w1.Body.String())
+	assert.Equal(t, "application/json; charset=utf-8", w1.Header().Get("Content-Type"))
+
+	// Hit: the cached verdict answers, zero upstream calls.
+	w2 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit and miss must be byte-identical")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits), "a cached verdict must not call upstream")
+
+	// The PR's own event flushes the verdict -- the head moved, so the diff
+	// may fit again -- and the next read refetches.
+	postWebhook(t, router, "pull_request",
+		prEvent("synchronize", upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")))
+	w3 := do(t, router, diffReq())
+	require.Equal(t, http.StatusNotAcceptable, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a pull_request event must flush the PR's 406 verdict")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
+
+	// The v3-suffixed spelling of the same media type shares the flow (and
+	// the row the previous miss stored).
+	req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	w4 := do(t, router, req)
+	require.Equal(t, http.StatusNotAcceptable, w4.Code)
+	assert.Equal(t, "hit", w4.Header().Get(cacheHeader), "both diff media-type spellings share the verdict row")
+
+	// A multi-range Accept is NOT the consumer shape: plain passthrough,
+	// GitHub's own body verbatim (documentation_url and all).
+	req = authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+	req.Header.Set("Accept", "application/vnd.github.diff, application/json")
+	w5 := do(t, router, req)
+	require.Equal(t, http.StatusNotAcceptable, w5.Code)
+	assert.Empty(t, w5.Header().Get(cacheHeader), "a multi-range Accept must pass through")
+	assert.Contains(t, w5.Body.String(), "documentation_url", "the passthrough is GitHub's verbatim body")
+}
+
+// TestCachedPullDiff_PushFlushesRepoWide: a push flushes every PR's 406
+// verdict for the repo -- a BASE push can move any PR's three-dot diff across
+// the size boundary in either direction, with no per-PR signal.
+func TestCachedPullDiff_PushFlushesRepoWide(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotAcceptable)
+		_, _ = w.Write([]byte(`{"message":"too large"}`))
+	}
+	diffReq := func() *http.Request {
+		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
+		req.Header.Set("Accept", "application/vnd.github.diff")
+		return req
+	}
+
+	do(t, router, diffReq())
+	w := do(t, router, diffReq())
+	require.Equal(t, "hit", w.Header().Get(cacheHeader))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
+		shaBase, shaTip))
+
+	w2 := do(t, router, diffReq())
+	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "a push must flush the repo's 406 verdicts")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
 // TestCachedPull_NonNumericAndQueryPassthrough: /pulls/comments (a real
