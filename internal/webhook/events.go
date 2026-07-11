@@ -680,6 +680,24 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 	return p, nil
 }
 
+// ParseWorkflowRunHeadSHA extracts workflow_run.head_sha from a workflow_run
+// webhook payload ("" when absent or unparseable). Deliberately minimal: the
+// dispatcher's only use for the event is flushing that sha's cached
+// workflow-runs pages -- a startup_failure run creates no jobs, check runs,
+// or statuses, so this delivery is the sole signal the cached listing moved
+// -- and nothing else reads the payload.
+func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
+	var body struct {
+		WorkflowRun *struct {
+			HeadSHA string `json:"head_sha"`
+		} `json:"workflow_run"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.WorkflowRun == nil {
+		return ""
+	}
+	return body.WorkflowRun.HeadSHA
+}
+
 func strOrEmpty(s *string) string {
 	if s == nil {
 		return ""

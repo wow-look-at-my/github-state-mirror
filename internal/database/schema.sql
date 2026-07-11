@@ -358,11 +358,16 @@ CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 -- can move. doc holds the ALREADY-TRIMMED document as JSON: for status
 -- {state, sha, total_count, statuses:[{context, state, description,
 -- created_at, updated_at}]}, for check_runs {total_count, check_runs:[{id,
--- head_sha, name, status, conclusion, started_at, completed_at, app:{id}}]},
--- for statuses_list the bare trimmed statuses array
--- -- every URL field dropped (incl. target_url/html_url/details_url; no
--- mirror-pointed consumer reads them) and the unbounded check-run `output`
--- never stored. These rows deliberately do NOT read or write the commit_checks
+-- head_sha, name, status, conclusion, started_at, completed_at, app:{id},
+-- output:{title}, details_url, html_url}]}, for statuses_list the bare
+-- trimmed array of {context, state, description, target_url, created_at,
+-- updated_at}. URL fields are dropped EXCEPT the survey-pinned consumer-read
+-- exceptions (2026-07-11 survey: the required-builds hook renders them) --
+-- the statuses-list target_url and the check-run details_url/html_url;
+-- everything else URL-ish stays dropped, incl. the combined status's
+-- per-status target_url, and the check-run output is trimmed to {title}
+-- (the unbounded summary/text never stored).
+-- These rows deliberately do NOT read or write the commit_checks
 -- truth table: its normalized per-context rows are lossy against these
 -- responses (no timestamps, no descriptions, no run ids), so the snapshot is
 -- kept whole; unifying the two is possible future work. status/check_run/
@@ -473,10 +478,12 @@ CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
 -- fleet sweeps). Whole-doc snapshots per exact pagination shape, keyed by
 -- (owner, repo, head_sha, per_page, page); doc holds the ALREADY-TRIMMED
 -- document as JSON. A sha's runs change when its CI moves, so
--- status/check_run/check_suite/workflow_job webhooks flush that sha's rows
--- (workflow_job is the precise signal -- its head_sha names the row directly;
--- repo-wide only when a payload carries no sha) and repository events flush
--- the whole repo; expires_at is the 24h TTL backstop for missed deliveries.
+-- status/check_run/check_suite/workflow_job/workflow_run webhooks flush that
+-- sha's rows (workflow_job is the precise signal -- its head_sha names the
+-- row directly; workflow_run is the ONLY signal for a startup_failure run,
+-- which creates no jobs, check runs, or statuses; repo-wide only when a
+-- payload carries no sha) and repository events flush the whole repo;
+-- expires_at is the 24h TTL backstop for missed deliveries.
 -- owner/repo lowercased like the other cached-route tables; head_sha
 -- lowercased full hex.
 CREATE TABLE workflow_runs_cache (
