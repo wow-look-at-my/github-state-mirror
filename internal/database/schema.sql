@@ -127,6 +127,15 @@ CREATE TABLE pull_requests (
     head_repo_full_name  TEXT,   -- head.repo.full_name; NULL when the head repo is gone (deleted fork)
     auto_merge_method    TEXT,   -- native auto-merge method when armed (merge|squash|rebase); NULL = not armed
     merge_commit_sha     TEXT,   -- GitHub's test-merge sha; NULL until computed
+    merge_stale_sha      TEXT,   -- the test-merge sha a base/head push invalidated. A tip change ALWAYS
+                                 -- changes the test-merge sha (different parents), so a refetch re-offering
+                                 -- THIS sha is a pre-push answer (GitHub's recompute lag) and must not
+                                 -- re-resolve mergeable; cleared when a non-null sha is accepted.
+    merge_stale_at       TEXT,   -- when the push invalidated it. The marker only rejects within a bounded
+                                 -- window (ghdata.MergeStaleTTL == the strftime '-1 hour' in
+                                 -- UpsertPullRequest) so a sha wrongly marked stale -- absorbed
+                                 -- post-recompute before the late push delivery landed -- cannot wedge the
+                                 -- row into missing forever.
     touched_at           TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner, repo, number)
 );

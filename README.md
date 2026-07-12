@@ -192,7 +192,12 @@ pass through verbatim, uncached.
   resolve, so a null/unknown mergeable always misses (the fetch absorbs
   GitHub's computed answer), and a push to a PR's base or head branch
   un-resolves the stored value — the cache can never wedge that poll on a
-  stale answer. A fetched CLOSED answer still deletes any cached open row
+  stale answer. The push also **remembers the invalidated test-merge sha**:
+  a tip change always changes the test-merge sha, so a refetch re-offering
+  that exact sha is a pre-push answer (GitHub's recompute lag) and is stored
+  and served unresolved — the poll keeps reaching GitHub, each miss
+  re-triggering the recompute, until GitHub serves a fresh sha (bounded by a
+  ~1 h marker window plus the 24 h row TTL). A fetched CLOSED answer still deletes any cached open row
   (the open-PR table retains open PRs only) but is absorbed as a rendered
   whole-document snapshot and served from cache thereafter — closed PRs are
   what every pr-minder drain re-reads, and each such read used to be a fresh

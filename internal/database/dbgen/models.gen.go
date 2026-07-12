@@ -256,6 +256,8 @@ type PullRequest struct {
 	HeadRepoFullName   sql.NullString
 	AutoMergeMethod    sql.NullString
 	MergeCommitSha     sql.NullString
+	MergeStaleSha      sql.NullString
+	MergeStaleAt       sql.NullString
 	TouchedAt          string
 }
 

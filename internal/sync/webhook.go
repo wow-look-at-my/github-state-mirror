@@ -177,20 +177,30 @@ func (d *WebhookDispatcher) onWorkflowJob(ctx context.Context, event webhook.Eve
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParsePushPayload(event.Raw)
 	if err != nil {
+		// Even an unparseable push proves something moved in this repo, and a
+		// moved branch stales every affected PR's merge fields. The targeted
+		// per-branch un-resolve below needs the parsed ref, so conservatively
+		// un-resolve merge fields on ALL the repo's open PRs first (a
+		// wrongly-nulled row just re-fetches; a wrongly-kept one can serve a
+		// frozen pre-push answer) -- then fall back to the generic staleness
+		// marking.
+		if owner, name := event.RepoOwner(), event.RepoName(); owner != "" && name != "" {
+			if nerr := d.store.NullPRMergeableByRepo(ctx, owner, name); nerr != nil {
+				slog.Warn("webhook: repo-wide un-resolve PR mergeable failed", "repo", owner+"/"+name, "error", nerr)
+			}
+		}
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
-	}
-	d.absorbPushCommits(ctx, payload)
-	if err := d.store.SetRepoPushedAt(ctx, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
-		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("apply push failed")
 	}
 	// A branch push makes GitHub recompute mergeability for every open PR
 	// based on (or heading from) that branch, and no webhook ever carries the
-	// recomputed value -- so un-resolve the cached mergeable rather than let
-	// the single-PR cache keep serving the pre-push answer. Best-effort and
-	// disposition-neutral, like the commit absorption above.
+	// recomputed value -- so un-resolve the cached mergeable (remembering the
+	// invalidated test-merge sha: a refetch re-offering it is stale by
+	// definition) rather than let the single-PR cache keep serving the
+	// pre-push answer. This invalidation runs FIRST, before any other fallible
+	// step, so a transient error elsewhere in the handler can never skip it --
+	// each step logs its own failure and the handler carries on.
 	if branch := payload.Branch(); branch != "" {
-		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch); err != nil {
+		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
 		// A push to the DEFAULT branch likewise stales default_branch_status:
@@ -204,6 +214,11 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 			}
 		}
+	}
+	d.absorbPushCommits(ctx, payload)
+	if err := d.store.SetRepoPushedAt(ctx, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
+		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		return errored("apply push failed")
 	}
 	return applied("updated pushed_at")
 }
