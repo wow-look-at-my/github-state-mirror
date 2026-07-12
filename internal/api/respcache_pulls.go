@@ -296,9 +296,13 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The hit gate: rest-complete, mergeable KNOWN, the stored test-merge sha
+	// not the push-invalidated one (belt and braces -- the guarded writes null
+	// that sha instead of storing it), and recently touched.
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
-	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && ghdata.PRRowFresh(pr, time.Now()) {
+	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) &&
+		!ghdata.PRMergeShaStale(pr, time.Now()) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
 		return
 	}
@@ -354,8 +358,9 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		writeRebuilt(w, http.StatusOK, doc, false)
 		return
 	}
-	if err := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now()); err != nil {
-		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
+	staleRejected, aerr := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now())
+	if aerr != nil {
+		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", aerr)
 	}
 	// A reopened PR must not keep serving its stale closed doc.
 	if err := h.store.InvalidateClosedPullForPR(r.Context(), owner, repo, number); err != nil {
@@ -363,6 +368,16 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	if staleRejected {
+		// The fetch re-offered the test-merge sha a push just invalidated: a
+		// pre-push answer (GitHub's recompute lag), stored unresolved above.
+		// Serve it unresolved too -- exactly what GitHub answers once its
+		// recompute actually starts -- never the value the mirror just proved
+		// stale; the consumer's resolve-poll carries on and every poll misses
+		// (re-triggering the recompute) until GitHub serves a fresh sha.
+		pr.Mergeable = sql.NullString{}
+		pr.MergeCommitSha = sql.NullString{}
+	}
 	h.serveSinglePull(w, r, pr, labels, false)
 }
 

@@ -138,6 +138,72 @@ func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
+// TestCachedPull_StaleShaRefetchNeverReresolves: the webhooks#66 frozen-sha
+// scenario end to end. A base push un-resolves the row AND remembers the
+// invalidated test-merge sha; GitHub's recompute lags, so the refetch
+// re-offers the SAME sha with a resolved mergeable -- a pre-push answer by
+// definition (a tip change always changes the test-merge sha). The mirror
+// must NOT re-resolve from it (the old behavior: one lagged refetch
+// re-resolved the stale sha and every later read was a hit serving it frozen,
+// never touching GitHub again): the answer is stored AND served unresolved,
+// every poll keeps missing -- each miss re-triggering GitHub's recompute --
+// until GitHub serves a NEW sha, which resolves the row and hits again.
+func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	target := "/repos/org1/repo1/pulls/7"
+
+	offeredSha := shaMid // the pre-push test-merge sha (upstreamPR's default)
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr["mergeable"] = true
+		pr["merged"] = false
+		pr["merge_commit_sha"] = offeredSha
+		servePRJSON(w, pr)
+	}
+
+	// Absorb the resolved pre-push answer; it serves as a hit.
+	do(t, router, authedReq("GET", target, nil))
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w.Header().Get(cacheHeader))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+
+	// The PR's base branch moves.
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
+		shaBase, shaTip))
+
+	// GitHub's recompute lags: it re-offers the SAME sha, still "resolved".
+	// The mirror rejects it -- miss, served unresolved, stored unresolved.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "miss", w2.Header().Get(cacheHeader))
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &body2))
+	assert.Nil(t, body2["mergeable"], "a pre-push answer must be served unresolved")
+	assert.Nil(t, body2["merge_commit_sha"], "the provably-stale sha must not be served")
+
+	// The poll KEEPS reaching GitHub: the rejected answer re-resolved nothing.
+	w3 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a re-offered invalidated sha must never re-resolve the row")
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.singleHits))
+
+	// GitHub's recompute lands: a NEW sha resolves the row on the next miss...
+	offeredSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	w4 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "miss", w4.Header().Get(cacheHeader))
+	var body4 map[string]any
+	require.NoError(t, json.Unmarshal(w4.Body.Bytes(), &body4))
+	assert.Equal(t, true, body4["mergeable"])
+	assert.Equal(t, offeredSha, body4["merge_commit_sha"], "the fresh sha serves")
+
+	// ...and the next read is a hit again, serving the fresh answer.
+	w5 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w5.Header().Get(cacheHeader))
+	assert.Equal(t, w4.Body.String(), w5.Body.String())
+	assert.Equal(t, int32(4), atomic.LoadInt32(&u.singleHits))
+	assertNoURLKeys(t, w5.Body.Bytes())
+}
+
 // TestCachedPull_GraphQLRowIncompleteMisses: a GraphQL-sourced row -- known
 // mergeable but missing the REST-only fields -- can never be rebuilt, so the
 // single-PR route must miss (fetch + absorb) instead of serving a partial body.

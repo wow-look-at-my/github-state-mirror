@@ -343,15 +343,31 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 // mergeability when either side moves and never webhooks the result, so the
 // last-known value is stale the moment the push lands. This keeps the
 // single-PR route's known-mergeable gate honest (it misses and re-fetches
-// instead of serving the pre-push answer).
-func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch string) error {
+// instead of serving the pre-push answer). The nulled sha is remembered
+// (merge_stale_sha, stamped at now): the pushed branch provably moved, so a
+// refetch re-offering that exact sha is a pre-push answer and the absorb
+// paths refuse to re-resolve from it (see MergeStaleTTL).
+func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch string, now time.Time) error {
 	if branch == "" {
 		return nil
 	}
 	return s.q.NullPRMergeableByBranch(ctx, dbgen.NullPRMergeableByBranchParams{
-		Owner: owner, Repo: repo,
+		StaleAt: rfc3339(now),
+		Owner:   owner, Repo: repo,
 		BaseRefName: sql.NullString{String: branch, Valid: true},
 		HeadRefName: sql.NullString{String: branch, Valid: true},
+	})
+}
+
+// NullPRMergeableByRepo un-resolves merge fields on ALL the repo's open PRs --
+// the conservative fallback for a push whose payload didn't parse (the ref is
+// unknown, so any PR may be affected). It deliberately records NO
+// merge_stale_sha: the stale-by-definition invariant holds only for a branch
+// that provably moved, and marking an UNMOVED PR's sha stale would make its
+// (still valid) re-offered sha unabsorbable for the whole window.
+func (s *Store) NullPRMergeableByRepo(ctx context.Context, owner, repo string) error {
+	return s.q.NullPRMergeableByRepo(ctx, dbgen.NullPRMergeableByRepoParams{
+		Owner: owner, Repo: repo,
 	})
 }
 

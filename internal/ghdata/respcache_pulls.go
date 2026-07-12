@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -36,6 +37,56 @@ import (
 // inside the window; only a PR that stopped producing events -- e.g. one whose
 // close delivery was missed -- ages out. Variable for tests.
 var PRRowTTL = 24 * time.Hour
+
+// MergeStaleTTL bounds how long a push-invalidated test-merge sha
+// (merge_stale_sha, stamped merge_stale_at by NullPRMergeableByBranch) keeps
+// rejecting re-offered answers as stale. Within the window a refetch offering
+// that exact sha is a pre-push answer (a base/head tip change always changes
+// the test-merge sha) and is stored unresolved; the window exists because the
+// converse can race -- a fetch absorbed AFTER GitHub's recompute but BEFORE
+// the (late) push delivery lands stores the FRESH sha, which the push then
+// wrongly marks stale -- and without expiry that row would reject GitHub's
+// current answer forever (every read a refetch). An hour is orders of
+// magnitude above GitHub's recompute lag under active polling (each rejected
+// miss re-triggers the recompute) while bounding the wrong-mark worst case.
+//
+// This is a const, not a test-settable var, because the SAME window is
+// hardcoded in queries/ghdata.sql as the strftime '-1 hour' cutoffs inside
+// UpsertPullRequest -- change both together. Tests age the MARKER instead
+// (NullPRMergeableByBranch takes the stamp time).
+const MergeStaleTTL = time.Hour
+
+// mergeStaleMarkerLive reports whether the row carries a live
+// push-invalidated-sha marker (both columns set, stamp inside MergeStaleTTL).
+// An unparseable stamp reads as expired: fail open to the plain absorb.
+func mergeStaleMarkerLive(pr dbgen.PullRequest, now time.Time) bool {
+	if !pr.MergeStaleSha.Valid || pr.MergeStaleSha.String == "" || !pr.MergeStaleAt.Valid {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, pr.MergeStaleAt.String)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < MergeStaleTTL
+}
+
+// staleShaOffered reports whether offered is exactly the test-merge sha a
+// recent push invalidated on the existing row -- stale by definition, because
+// the push moved the PR's base or head and a tip change always changes the
+// test-merge sha. Mirrors UpsertPullRequest's SQL stale guard; keep the two
+// in sync.
+func staleShaOffered(existing dbgen.PullRequest, offered sql.NullString, now time.Time) bool {
+	return mergeStaleMarkerLive(existing, now) &&
+		offered.Valid && offered.String != "" && offered.String == existing.MergeStaleSha.String
+}
+
+// PRMergeShaStale reports whether the row's OWN merge_commit_sha is the
+// push-invalidated one. The guarded writes never store that state (the sha is
+// nulled instead), so this is belt and braces for the single-PR hit gate: a
+// row that somehow holds the provably-stale sha must miss, never serve it.
+func PRMergeShaStale(pr dbgen.PullRequest, now time.Time) bool {
+	return staleShaOffered(pr, pr.MergeCommitSha, now)
+}
 
 // PRRestComplete reports whether a pull_requests row carries the REST-only
 // fields the cached /pulls routes rebuild from. GraphQL-sourced rows
@@ -232,27 +283,59 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // including null ("GitHub is recomputing") -- so it is force-set after the
 // upsert: a null answer must keep the single-PR route missing (and
 // re-fetching) until GitHub resolves it, never resurrect a stale value.
-func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) error {
+//
+// One answer is NOT authoritative: a response whose merge_commit_sha is the
+// exact sha a branch push just invalidated (a live merge_stale_sha marker).
+// The push moved the PR's base or head, and a tip change always changes the
+// test-merge sha -- so GitHub re-offering the invalidated sha means its
+// recompute hasn't landed and the WHOLE answer (resolved mergeable included)
+// predates the push. Such an answer is stored UNRESOLVED (mergeable NULL,
+// merge_commit_sha NULL, marker kept), so reads keep missing -- each one
+// re-triggering the recompute -- until GitHub serves a NEW sha, which clears
+// the marker. The upsert's SQL guard nulls the columns; the Go check here
+// exists because the authoritative force-set below would otherwise resurrect
+// the rejected value, and so the route can serve the response unresolved too.
+// staleRejected reports that outcome to the caller.
+func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
+	existing, err := q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
+		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number,
+	})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	staleRejected = err == nil && staleShaOffered(existing, pr.MergeCommitSha, now)
+
 	if err := upsertPRTx(ctx, q, pr, rfc3339(now)); err != nil {
-		return err
+		return false, err
+	}
+	mergeable := pr.Mergeable
+	if staleRejected {
+		mergeable = sql.NullString{}
 	}
 	if err := q.SetPRMergeable(ctx, dbgen.SetPRMergeableParams{
-		Mergeable: pr.Mergeable,
+		Mergeable: mergeable,
 		Owner:     pr.Owner, Repo: pr.Repo, Number: pr.Number,
 	}); err != nil {
-		return err
+		return false, err
 	}
 	if err := replacePRLabelsTx(ctx, q, pr.Owner, pr.Repo, pr.Number, labels); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if staleRejected {
+		slog.Info("single-PR absorb: refetch re-offered the push-invalidated test-merge sha; stored unresolved",
+			"owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "sha", pr.MergeCommitSha.String)
+	}
+	return staleRejected, nil
 }
 
 // InvalidatePullsListMarkers drops the repo's "list complete" marker -- the

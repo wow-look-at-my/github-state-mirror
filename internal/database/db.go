@@ -12,7 +12,15 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 16: respcache round 2. commit_ci_cache gains pagination
+// SchemaVersion 17: pull_requests gains merge_stale_sha/merge_stale_at -- the
+// push-invalidated test-merge sha memory. A base/head push records the sha it
+// nulls; a refetch re-offering that exact sha is stale by definition (a tip
+// change always changes the test-merge sha) and is stored unresolved instead
+// of re-resolving, so the single-PR route keeps missing (each miss
+// re-triggering GitHub's recompute) until GitHub serves a fresh sha. Bumping
+// nukes the DB on deploy; run the consistency check's apply mode (Reconcile)
+// once after deploy to rebuild truth promptly.
+// (16 was respcache round 2: commit_ci_cache gained pagination
 // columns (per_page, page; the unique key is now owner/repo/ref/kind/
 // per_page/page) and a third kind 'statuses_list' (the raw statuses LIST
 // route); compare_cache gains base_ref/head_ref (the basehead's two sides,
@@ -23,10 +31,8 @@ var schemaSQL string
 // git_commit_miss_cache (expiring 404 verdicts for the single git-commit
 // read; cleared by any real commit upsert so a sha that materializes stops
 // answering 404), and pull_diff406_cache (406 "diff too large" verdicts for
-// the single-PR diff read; 200 diff bodies are never stored). Bumping nukes
-// the DB on deploy; global truth rebuilds from webhooks and each caller's
-// own fetches.
-// (15 added pull_files_cache, closed_pull_cache, and branches_list_cache;
+// the single-PR diff read; 200 diff bodies are never stored);
+// 15 added pull_files_cache, closed_pull_cache, and branches_list_cache;
 // 14 was a no-schema-change nuke of truth rows poisoned by the
 // collaborator-repo bleed -- repos a User login merely collaborates on,
 // absorbed keyed by the WRONG owner; the fixed fetch (ownerAffiliations:
@@ -41,7 +47,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 16
+const SchemaVersion = 17
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
