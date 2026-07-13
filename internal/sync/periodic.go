@@ -27,8 +27,18 @@ func NewPeriodicRefresher(mgr *freshness.Manager, interval time.Duration, sessio
 	return &PeriodicRefresher{mgr: mgr, interval: interval, sessions: sessions}
 }
 
-// Start launches the periodic refresh loop. It blocks until ctx is canceled.
+// Start launches the periodic refresh loop: one fleet refresh immediately at
+// startup, then one per interval. It blocks until ctx is canceled.
+//
+// The startup run is load-bearing: a bare ticker's first fire is a full
+// interval after process start, and under a deploy cadence shorter than the
+// interval (schema-bump deploys also nuke the freshness markers) the fleet
+// sync never completed at all.
 func (p *PeriodicRefresher) Start(ctx context.Context) {
+	if ctx.Err() == nil {
+		p.refreshAll(ctx)
+	}
+
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
@@ -56,7 +66,13 @@ func (p *PeriodicRefresher) refreshAll(ctx context.Context) {
 	}
 
 	slog.Info("periodic refresh starting", "sessions", len(sessions))
-	for _, s := range sessions {
+	for i, s := range sessions {
+		// A shutdown mid-cycle must be visible, not a silently truncated
+		// fleet: stop starting new fetches and say how much was left undone.
+		if ctx.Err() != nil {
+			slog.Warn("periodic refresh interrupted by shutdown", "owners_remaining", len(sessions)-i)
+			return
+		}
 		if s.Owner == "" {
 			continue
 		}

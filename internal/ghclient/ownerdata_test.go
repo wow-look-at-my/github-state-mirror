@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -237,6 +238,25 @@ func TestGetOwnerData_NullOwnerFailsLoudly(t *testing.T) {
 	_, err := c.GetOwnerData(context.Background(), "ghost")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolved to null")
+}
+
+// TestGetOwnerData_GraphQLErrorsNotRetried: GraphQL-level errors[] arrive as
+// HTTP 200 semantic answers, not transport blips -- they must fail fast on the
+// first attempt (only 502/503/504/429 and network errors are retried).
+func TestGetOwnerData_GraphQLErrorsNotRetried(t *testing.T) {
+	calls := 0
+	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errors": []map[string]string{{"message": "Something went wrong"}},
+		})
+	})
+	c.SetRetryBackoff([]time.Duration{0})
+
+	_, err := c.GetOwnerData(context.Background(), "org1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "graphql errors")
+	assert.Equal(t, 1, calls)
 }
 
 // TestOwnerRepoVisibilities: the checker-private visibility twin resolves any

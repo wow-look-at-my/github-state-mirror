@@ -110,7 +110,7 @@ type ConsistencyReport struct {
 
 // ScopeFreshness is one owner's most-recent sync metadata.
 type ScopeFreshness struct {
-	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown
+	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown/never_synced
 	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
 	Error         string `json:"error,omitempty"`           // last fetch error, if any
 	Principal     string `json:"principal,omitempty"`       // whose sync marker this is
@@ -381,15 +381,28 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 }
 
 // recordTruthFreshness copies the most recently fetched org-sync marker for
-// one owner into the report (read-only; no markers adds nothing). Any
+// one owner into the report (read-only). An owner with NO marker rows is
+// surfaced explicitly as "never_synced" -- silently omitting it hid "the fleet
+// refresher never completed a cycle" behind an absent map key. Any
 // principal's sync refreshes global truth, so the NEWEST marker is what
 // bounds truth staleness.
 func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *ConsistencyReport, owner string) {
 	if c.fresh == nil {
 		return
 	}
+	record := func(sf ScopeFreshness) {
+		if report.TruthFreshness == nil {
+			report.TruthFreshness = make(map[string]ScopeFreshness)
+		}
+		report.TruthFreshness[owner] = sf
+	}
 	metas, err := c.fresh.ListByKindKeyAllActors(ctx, KindOrgRepos, owner)
-	if err != nil || len(metas) == 0 {
+	if err != nil {
+		record(ScopeFreshness{State: "unknown", Error: "list freshness markers: " + err.Error()})
+		return
+	}
+	if len(metas) == 0 {
+		record(ScopeFreshness{State: "never_synced"})
 		return
 	}
 	var newest *freshness.Metadata
@@ -409,8 +422,5 @@ func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *C
 	if newest.LastFetchedAt != nil {
 		sf.LastFetchedAt = newest.LastFetchedAt.UTC().Format(time.RFC3339)
 	}
-	if report.TruthFreshness == nil {
-		report.TruthFreshness = make(map[string]ScopeFreshness)
-	}
-	report.TruthFreshness[owner] = sf
+	record(sf)
 }

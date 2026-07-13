@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +33,15 @@ type fakeOwner struct {
 // answering BOTH owner-agnostic queries (repositoryOwner data + visibility)
 // per owner. The checker no longer sends organization() queries at all.
 func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.Server {
+	return consistencyFakeGitHubFailing(t, owners, 0)
+}
+
+// consistencyFakeGitHubFailing is consistencyFakeGitHub with a transient-
+// failure knob: the first fail502 /graphql requests answer 502 Bad Gateway
+// before the normal responses resume (the client's bounded-retry path).
+func consistencyFakeGitHubFailing(t *testing.T, owners map[string]fakeOwner, fail502 int) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
 	mux := http.NewServeMux()
 	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
@@ -47,6 +56,15 @@ func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_someuser"})
 	})
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if fail502 > 0 {
+			fail502--
+			mu.Unlock()
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("Bad Gateway"))
+			return
+		}
+		mu.Unlock()
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
 			Query     string         `json:"query"`
@@ -150,6 +168,8 @@ func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.S
 	t.Cleanup(func() { db.Close() })
 
 	gh := ghclient.NewWithBaseURL(srvURL)
+	// Zero backoff: a test exercising the transient-retry path must not sleep.
+	gh.SetRetryBackoff([]time.Duration{0})
 	store := ghdata.NewStore(db)
 	fresh := freshness.NewStore(db)
 	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
@@ -358,6 +378,50 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.GreaterOrEqual(t, rep.Summary.PRsOnlyInCache, 2)
 	assert.GreaterOrEqual(t, rep.Summary.FieldMismatches, 3)
 	assert.Zero(t, rep.Summary.VisibilityLeaks)
+}
+
+// TestConsistencyChecker_NeverSyncedFreshness: an owner with cached repos but
+// ZERO freshness marker rows must appear in truth_freshness as never_synced --
+// the silent omission is what hid "the fleet refresher never completed a
+// cycle" in the 2026-07-13 report.
+func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {
+	srv := driftFake(t)
+	checker, store, _ := newCheckerTest(t, srv.URL)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u",
+	}))
+
+	rep, err := checker.Check(ctx, "org1")
+	require.NoError(t, err)
+	sf, ok := rep.TruthFreshness["org1"]
+	require.True(t, ok, "a marker-less owner must still get a truth_freshness entry")
+	assert.Equal(t, "never_synced", sf.State)
+	assert.Empty(t, sf.LastFetchedAt)
+	assert.Empty(t, sf.Principal)
+	assert.Empty(t, sf.Error)
+}
+
+// TestConsistencyChecker_TransientFetchRetried: a single 502 on an owner's
+// GraphQL fetch is retried by the client, so the owner is CHECKED -- not holed
+// out of the report under orgs_skipped (the pre-retry behavior).
+func TestConsistencyChecker_TransientFetchRetried(t *testing.T) {
+	srv := consistencyFakeGitHubFailing(t, map[string]fakeOwner{
+		"org1": {
+			repos: []map[string]any{liveRepo("org1", "repo1", "SUCCESS", nil)},
+			vis:   []map[string]any{visNode("repo1", "PUBLIC", false)},
+		},
+	}, 1)
+	checker, store, _ := newCheckerTest(t, srv.URL)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
+	}))
+
+	rep, err := checker.Check(ctx, "org1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"org1"}, rep.OrgsChecked, "a once-502ing fetch must be retried, not skipped")
+	assert.Empty(t, rep.OrgsSkipped)
 }
 
 // TestConsistencyChecker_ServedNow: a live pulls-list marker marks PR
