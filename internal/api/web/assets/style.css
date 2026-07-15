@@ -452,24 +452,3 @@ details.raw > summary { cursor: pointer; color: var(--fg-muted); font-size: 13px
     .page-head { align-items: flex-start; }
     .modal-backdrop { padding: 12px 6px; }
 }
-
-/* ---- Timeline tab (the <gsm-timeline> traffic chart) ---- */
-gsm-timeline { display: block; }
-gsm-timeline .timeline-note { color: var(--fg-muted); padding: 12px 4px; }
-gsm-timeline timeline-view {
-    display: block;
-    height: 460px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-elev);
-    overflow: hidden;
-    /* Theme the js-snippets <timeline-view> to the dashboard palette. */
-    --timeline-bg: var(--bg-elev);
-    --timeline-fg: var(--fg);
-    --timeline-muted: var(--fg-muted);
-    --timeline-grid: var(--border-muted);
-    --timeline-hairline: var(--border);
-    --timeline-now: var(--accent);
-    --timeline-emphasis: var(--red);
-    --timeline-font: var(--sans);
-}

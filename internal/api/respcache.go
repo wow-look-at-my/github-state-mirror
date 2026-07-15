@@ -504,32 +504,19 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	}
 	copyForwardHeaders(req.Header, r.Header)
 
-	// Time the real upstream round-trip (headers through buffered body) into
-	// the timeline ring: cached-route MISS fetches are GitHub calls the
-	// passthrough proxy never sees, so this seam is what makes the Timeline
-	// chart's "requests going through the proxy" complete. Recorded as a
-	// "miss" — the fetch exists because the cache missed.
-	who := callerLabel(r)
-	start := time.Now()
-	recordFetch := func(status int, disp string) {
-		h.timeline.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), status, disp, who.Key, who.Name)
-	}
-
 	resp, err := h.upstream.Do(req)
 	if err != nil {
-		recordFetch(0, DispError)
 		return nil, nil, false, err
 	}
 	// Passively record the X-RateLimit-* headers on every cached-route miss
 	// fetch, labeled with the same identity the request log records.
+	who := callerLabel(r)
 	h.meter.Observe(who.Key, who.Name, resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
-		recordFetch(resp.StatusCode, DispError)
 		resp.Body.Close()
 		return nil, nil, false, err
 	}
-	recordFetch(resp.StatusCode, DispMiss)
 	overflow := false
 	if len(buf) > maxAbsorbBodyBytes {
 		overflow = true

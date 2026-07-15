@@ -444,7 +444,7 @@ func TestWebhookHandlerNonBlocking(t *testing.T) {
 	require.NoError(t, err)
 
 	const ghSecret = "gh-webhook-secret"
-	handler := webhook.Handler(ghSecret, staticDispatcher{result: applied()}, nil, n)
+	handler := webhook.Handler(ghSecret, staticDispatcher{result: applied()}, n)
 
 	body := `{"action":"opened","pull_request":{"number":9,"head":{"sha":"beef"}},"repository":{"name":"repo1","owner":{"login":"my-org"}}}`
 	mac := hmac.New(sha256.New, []byte(ghSecret))

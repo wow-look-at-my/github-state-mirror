@@ -22,7 +22,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
-	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
@@ -32,7 +31,7 @@ import (
 // asset must also be added to newDashboard's hashed-name rewrite and to the CI
 // preview job's copied-assets list (.github/workflows/ci.yml).
 //
-//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/style.css
 var webFS embed.FS
 
 // dashboard serves the login flow, the static page, and the cache-stats API.
@@ -68,12 +67,9 @@ type dashboard struct {
 	// dbPath is the SQLite database file path (DB_PATH), statted per request
 	// by handleRequests to report the cache's on-disk footprint.
 	dbPath string
-	// timeline is the in-memory timed-traffic ring (webhook deliveries +
-	// proxied requests) behind the admin-only GET /api/timeline. Nil-safe.
-	timeline *reqtimeline.Recorder
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -81,11 +77,9 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	}
 	appJS := mustReadAsset("web/assets/app.js")
 	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
-	timelineJS := mustReadAsset("web/assets/timeline.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
 	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
-	timelineName := hashedAssetName("timeline", "js", timelineJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// Rewrite the served HTML to point at the content-addressed URLs. The
@@ -94,7 +88,6 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	// server hands out references the hashed URLs.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
 	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
-	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -105,7 +98,6 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		assets: []contentAsset{
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
-			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
 		reqlog:   reqlog,
@@ -113,7 +105,6 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		meter:    meter,
 		notifier: notifier,
 		dbPath:   dbPath,
-		timeline: timeline,
 	}
 }
 
@@ -156,7 +147,6 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/webhooks", d.handleWebhooks)
 	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
-	r.Get("/api/timeline", d.handleTimeline)
 
 	// Admin-only: browse the actual cached rows for one scope, run a consistency
 	// check that re-fetches the source of truth from GitHub (GET = read-only;

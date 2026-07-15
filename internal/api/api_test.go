@@ -26,7 +26,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
-	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -78,15 +77,13 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 }
 
 // testStack is the full router assembly for tests that also need the
-// subscriber-notification pieces (the notifier for deterministic flushes) or
-// the timeline ring (for asserting timed traffic events).
+// subscriber-notification pieces (the notifier for deterministic flushes).
 type testStack struct {
 	router   http.Handler
 	store    *ghdata.Store
 	db       *sql.DB
 	ghURL    string
 	notifier *notify.Notifier
-	timeline *reqtimeline.Recorder
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
@@ -131,9 +128,8 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	// nil app -> the consistency checker reports Available()==false, the realistic
 	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
-	timeline := reqtimeline.New()
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline)
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline}
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier}
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {

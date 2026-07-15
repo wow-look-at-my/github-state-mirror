@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,7 +44,7 @@ func signPayload(secret string, body []byte) string {
 func TestHandler_ValidWebhook(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{Disposition: DispApplied}}
-	handler := Handler(secret, dispatcher, nil)
+	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened","pull_request":{"number":42},"repository":{"name":"repo","owner":{"login":"org"}}}`
 	sig := signPayload(secret, []byte(body))
@@ -62,7 +61,7 @@ func TestHandler_ValidWebhook(t *testing.T) {
 
 func TestHandler_NoSecretRejected(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
-	handler := Handler("", dispatcher, nil)
+	handler := Handler("", dispatcher)
 
 	body := `{"action":"opened"}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -79,7 +78,7 @@ func TestHandler_NoSecretRejected(t *testing.T) {
 func TestHandler_InvalidSignature(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{}
-	handler := Handler(secret, dispatcher, nil)
+	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened"}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -93,7 +92,7 @@ func TestHandler_InvalidSignature(t *testing.T) {
 }
 
 func TestHandler_MethodNotAllowed(t *testing.T) {
-	handler := Handler("", &recordingDispatcher{}, nil)
+	handler := Handler("", &recordingDispatcher{})
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
 	w := httptest.NewRecorder()
@@ -104,7 +103,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 
 func TestHandler_MissingEventType(t *testing.T) {
 	secret := "test-secret"
-	handler := Handler(secret, &recordingDispatcher{}, nil)
+	handler := Handler(secret, &recordingDispatcher{})
 
 	body := `{"action":"opened"}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -119,7 +118,7 @@ func TestHandler_MissingEventType(t *testing.T) {
 
 func TestHandler_MissingSignature(t *testing.T) {
 	secret := "test-secret"
-	handler := Handler(secret, &recordingDispatcher{}, nil)
+	handler := Handler(secret, &recordingDispatcher{})
 
 	body := `{"action":"opened"}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -135,7 +134,7 @@ func TestHandler_MissingSignature(t *testing.T) {
 func TestHandler_DispatchSynchronous(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{Disposition: DispApplied}}
-	handler := Handler(secret, dispatcher, nil)
+	handler := Handler(secret, dispatcher)
 
 	body := `{"action":"opened","repository":{"name":"repo","owner":{"login":"org"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -156,78 +155,6 @@ func TestHandler_DispatchSynchronous(t *testing.T) {
 	assert.Equal(t, "test-delivery-id", events[0].DeliveryID)
 }
 
-// recordingDeliveryRecorder captures RecordDelivery calls for assertions.
-type recordingDeliveryRecorder struct {
-	mu    sync.Mutex
-	calls []struct {
-		event    Event
-		result   DispatchResult
-		received bool
-		durValid bool
-	}
-}
-
-func (r *recordingDeliveryRecorder) RecordDelivery(event Event, result DispatchResult, receivedAt time.Time, duration time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, struct {
-		event    Event
-		result   DispatchResult
-		received bool
-		durValid bool
-	}{event, result, !receivedAt.IsZero(), duration >= 0})
-}
-
-// TestHandler_RecordsDelivery verifies the recorder observes a verified
-// delivery with its real fields and a measured (non-negative, non-faked)
-// duration — and that the response is unchanged by the recording.
-func TestHandler_RecordsDelivery(t *testing.T) {
-	secret := "test-secret"
-	dispatcher := &recordingDispatcher{result: DispatchResult{Event: "pull_request", Disposition: DispApplied}}
-	rec := &recordingDeliveryRecorder{}
-	handler := Handler(secret, dispatcher, rec)
-
-	body := `{"action":"opened","pull_request":{"number":42},"repository":{"name":"repo","owner":{"login":"org"}}}`
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
-	req.Header.Set("X-GitHub-Event", "pull_request")
-	req.Header.Set("X-GitHub-Delivery", "delivery-123")
-	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, DispApplied, w.Header().Get("X-GSM-Disposition"))
-
-	require.Len(t, rec.calls, 1)
-	call := rec.calls[0]
-	assert.Equal(t, "pull_request", call.event.Type)
-	assert.Equal(t, "opened", call.event.Action)
-	assert.Equal(t, "delivery-123", call.event.DeliveryID)
-	assert.Equal(t, "org/repo", call.event.RepoFullName())
-	assert.Equal(t, DispApplied, call.result.Disposition)
-	assert.True(t, call.received, "receivedAt must be stamped")
-	assert.True(t, call.durValid, "duration must be a real non-negative measurement")
-}
-
-// TestHandler_RecorderSkipsUnverified: a delivery that fails signature
-// verification never reaches the recorder (nothing unverified may leave a
-// timeline trace).
-func TestHandler_RecorderSkipsUnverified(t *testing.T) {
-	rec := &recordingDeliveryRecorder{}
-	handler := Handler("test-secret", &recordingDispatcher{}, rec)
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
-	req.Header.Set("X-GitHub-Event", "push")
-	req.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Empty(t, rec.calls)
-}
-
 func TestHandler_WritesOutcome(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{
@@ -235,7 +162,7 @@ func TestHandler_WritesOutcome(t *testing.T) {
 		Disposition: DispIgnored,
 		Detail:      "action edited not tracked",
 	}}
-	handler := Handler(secret, dispatcher, nil)
+	handler := Handler(secret, dispatcher)
 
 	body := `{}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
