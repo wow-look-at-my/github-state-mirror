@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -193,11 +194,15 @@ func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
 // surfaces on /api/ratelimit — the end-to-end passive-observation path.
 func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	svc := configuredAuth(t)
+	// The reset must be in the FUTURE: the ratemeter lazily prunes
+	// observations whose reset moment has passed, and this test exercises the
+	// observation path, not the aging rule.
+	reset := time.Now().Add(time.Hour).Unix()
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "5000")
 		w.Header().Set("X-RateLimit-Remaining", "4321")
 		w.Header().Set("X-RateLimit-Used", "679")
-		w.Header().Set("X-RateLimit-Reset", "1767225600")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
 		w.Header().Set("X-RateLimit-Resource", "core")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
@@ -227,7 +232,7 @@ func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	assert.Equal(t, 5000, o.Limit)
 	assert.Equal(t, 4321, o.Remaining)
 	assert.Equal(t, 679, o.Used)
-	assert.Equal(t, int64(1767225600), o.Reset)
+	assert.Equal(t, reset, o.Reset)
 	assert.NotEmpty(t, o.ObservedAt)
 	_, err := time.Parse(time.RFC3339, o.ObservedAt)
 	assert.NoError(t, err, "observed_at must be RFC3339")
