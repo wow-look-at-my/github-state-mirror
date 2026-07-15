@@ -113,7 +113,7 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	if doc, ok, err := h.store.GetCachedBranchesList(r.Context(), owner, repo, int64(perPage), int64(page), now); err != nil {
 		slog.Warn("branches list cache read failed", "owner", owner, "repo", repo, "error", err)
 	} else if ok {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
@@ -136,7 +136,7 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("branches list cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 

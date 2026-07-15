@@ -59,14 +59,20 @@ function fmtDur(ms) {
 // ---- event → component translation ----
 function stateFor(e) {
     if (e.kind === "webhook") {
-        if (e.disposition === "error")
+        // error = dispatch failed; unverified/rejected/unparseable = a
+        // delivery refused before dispatch — all unmissable.
+        if (e.disposition === "error" || e.disposition === "unverified" ||
+            e.disposition === "rejected" || e.disposition === "unparseable")
             return "failed";
         if (e.disposition === "ignored")
             return "dim"; // received but not tracked
         return "";
     }
-    // Requests: an upstream 5xx or a failed fetch is unmissable; 4xx stays
-    // neutral (a 404 passthrough is often the legitimate answer).
+    if (e.kind === "notify") {
+        return e.disposition === "failed" ? "failed" : "";
+    }
+    // Requests/exchanges: an upstream 5xx or a failed exchange is unmissable;
+    // 4xx stays neutral (a 404 passthrough is often the legitimate answer).
     if (e.disposition === "error" || (e.status !== undefined && e.status >= 500))
         return "failed";
     return "";
@@ -78,6 +84,9 @@ function labelFor(e) {
             return slash >= 0 ? e.repo.slice(slash + 1) : e.repo;
         }
         return e.action ?? "";
+    }
+    if (e.kind === "notify") {
+        return e.status ? String(e.status) : "";
     }
     return e.status ? String(e.status) : "";
 }
@@ -113,9 +122,19 @@ function tooltipFor(hit) {
         root.appendChild(r);
     };
     if (e.kind === "webhook") {
-        root.appendChild(elem("div", "tt-title", "⇐ " + (e.event_type ?? "webhook") + (e.action ? "." + e.action : "")));
+        root.appendChild(elem("div", "tt-title", e.event_type
+            ? "⇐ " + e.event_type + (e.action ? "." + e.action : "")
+            : e.lane));
         row("repo", e.repo ?? "");
         row("delivery", e.delivery_id ?? "");
+        row("disposition", e.disposition ?? "");
+        row("detail", e.detail ?? "");
+    }
+    else if (e.kind === "notify") {
+        root.appendChild(elem("div", "tt-title", e.lane));
+        row("target", e.target ?? "");
+        row("status", e.status ? String(e.status) : "");
+        row("attempt", e.attempt ? String(e.attempt) + (e.final ? " (final)" : "") : "");
         row("disposition", e.disposition ?? "");
     }
     else {
@@ -123,6 +142,7 @@ function tooltipFor(hit) {
         row("status", e.status ? String(e.status) : "");
         row("actor", e.actor_name ? e.actor_name + " (" + (e.actor ?? "") + ")" : (e.actor ?? ""));
         row("disposition", e.disposition ?? "");
+        row("detail", e.detail ?? "");
     }
     row("duration", fmtDur(e.dur_ms));
     row("at", new Date(Date.parse(e.start)).toISOString());
@@ -264,18 +284,26 @@ class GsmTimeline extends HTMLElement {
         if (typeof tl.markFresh === "function")
             tl.markFresh();
     }
-    // Lane order: webhook lanes first, then request lanes, each alphabetical —
-    // deterministic and viewport-independent (the webhook-runner precedent:
-    // activity-based ordering makes rows jump around).
+    // Lane order: webhook lanes first, then request/exchange lanes, then the
+    // outbound notify lane — each group alphabetical: deterministic and
+    // viewport-independent (the webhook-runner precedent: activity-based
+    // ordering makes rows jump around).
     computeLanes() {
         const webhooks = [];
         const requests = [];
+        const notify = [];
         for (const [id, kind] of this.laneKinds) {
-            (kind === "webhook" ? webhooks : requests).push(id);
+            if (kind === "webhook")
+                webhooks.push(id);
+            else if (kind === "notify")
+                notify.push(id);
+            else
+                requests.push(id);
         }
         webhooks.sort();
         requests.sort();
-        return [...webhooks, ...requests].map((id) => ({ id, label: id }));
+        notify.sort();
+        return [...webhooks, ...requests, ...notify].map((id) => ({ id, label: id }));
     }
     // Re-apply lane order only when it actually changed (setLanes re-ingests).
     syncLanes(tl) {

@@ -210,22 +210,77 @@ func TestHandler_RecordsDelivery(t *testing.T) {
 	assert.True(t, call.durValid, "duration must be a real non-negative measurement")
 }
 
-// TestHandler_RecorderSkipsUnverified: a delivery that fails signature
-// verification never reaches the recorder (nothing unverified may leave a
-// timeline trace).
-func TestHandler_RecorderSkipsUnverified(t *testing.T) {
+// TestHandler_RecordsUnverified: a delivery that fails signature verification
+// IS recorded (everything on the chart — a gap is a bug), under the
+// unverified disposition with the claimed metadata, real duration, and an
+// unchanged 403 response. The dispatcher is never invoked.
+func TestHandler_RecordsUnverified(t *testing.T) {
 	rec := &recordingDeliveryRecorder{}
-	handler := Handler("test-secret", &recordingDispatcher{}, rec)
+	dispatcher := &recordingDispatcher{}
+	handler := Handler("test-secret", dispatcher, rec)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
 	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "bad-delivery")
 	req.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Empty(t, rec.calls)
+	assert.Empty(t, dispatcher.getEvents(), "an unverified delivery must never dispatch")
+	require.Len(t, rec.calls, 1)
+	call := rec.calls[0]
+	assert.Equal(t, DispUnverified, call.result.Disposition)
+	assert.Equal(t, "signature verification failed", call.result.Detail)
+	assert.Equal(t, "push", call.event.Type, "claimed type rides as untrusted metadata")
+	assert.Equal(t, "bad-delivery", call.event.DeliveryID)
+	assert.True(t, call.received)
+	assert.True(t, call.durValid)
+}
+
+// TestHandler_RecordsEveryRejectionPath: no delivery attempt escapes the
+// recorder — unset secret, wrong method, and a verified delivery missing its
+// event type each record with their own disposition, and every response is
+// byte-for-byte what it was before recording existed.
+func TestHandler_RecordsEveryRejectionPath(t *testing.T) {
+	secret := "test-secret"
+
+	// Unset secret: fail closed, recorded as unverified.
+	rec := &recordingDeliveryRecorder{}
+	handler := Handler("", &recordingDispatcher{}, rec)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+	req.Header.Set("X-GitHub-Event", "push")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Len(t, rec.calls, 1)
+	assert.Equal(t, DispUnverified, rec.calls[0].result.Disposition)
+	assert.Equal(t, "webhook secret not configured", rec.calls[0].result.Detail)
+
+	// Wrong method: recorded as rejected.
+	rec = &recordingDeliveryRecorder{}
+	handler = Handler(secret, &recordingDispatcher{}, rec)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/webhook", nil))
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	require.Len(t, rec.calls, 1)
+	assert.Equal(t, DispRejected, rec.calls[0].result.Disposition)
+
+	// Verified but missing the event type: recorded as unparseable.
+	rec = &recordingDeliveryRecorder{}
+	handler = Handler(secret, &recordingDispatcher{}, rec)
+	body := `{}`
+	req = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
+	req.Header.Set("X-GitHub-Delivery", "d-unparseable")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	require.Len(t, rec.calls, 1)
+	assert.Equal(t, DispUnparseable, rec.calls[0].result.Disposition)
+	assert.Equal(t, "d-unparseable", rec.calls[0].event.DeliveryID)
+	assert.True(t, rec.calls[0].durValid)
 }
 
 func TestHandler_WritesOutcome(t *testing.T) {

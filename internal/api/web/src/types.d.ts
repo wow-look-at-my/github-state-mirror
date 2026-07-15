@@ -115,13 +115,13 @@ export interface RequestsResponse {
     db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
 }
 
-// ---- traffic timeline (webhook deliveries + proxied requests) ----
+// ---- traffic timeline (every exchange the mirror participates in) ----
 // One timed event on the Timeline chart. Kind-specific fields are omitted for
-// the other kind; dur_ms is the REAL measured duration (never fabricated).
+// the other kinds; dur_ms is the REAL measured duration (never fabricated).
 export interface TimelineEvent {
     id: number;
-    kind: string; // "webhook" | "request"
-    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>"
+    kind: string; // "webhook" | "request" | "notify"
+    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>" | "⇒ notify"
     start: string; // RFC3339
     dur_ms: number;
     disposition?: string;
@@ -130,12 +130,18 @@ export interface TimelineEvent {
     action?: string;
     delivery_id?: string;
     repo?: string;
-    // request fields
+    // request/exchange fields
     method?: string;
     route?: string;
     status?: number;
     actor?: string;
     actor_name?: string;
+    // free-form tooltip line (e.g. an unverified delivery's claimed type)
+    detail?: string;
+    // notify fields
+    target?: string;
+    attempt?: number;
+    final?: boolean;
 }
 
 export interface TimelineResponse {

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
@@ -579,4 +581,57 @@ func TestNotifierNilSafe(t *testing.T) {
 	subs, err := n.AllSubscriptions(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, subs)
+}
+
+// TestNotifierRecordsTimelineAttempts: every outbound delivery attempt lands
+// on the timeline ring with its real duration — a failed non-final attempt, a
+// failed FINAL attempt, and a delivered one — target host only (never the
+// full URL).
+func TestNotifierRecordsTimelineAttempts(t *testing.T) {
+	access := newFakeAccess()
+	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)
+	tl := reqtimeline.New()
+
+	// First subscription answers 500 on every attempt (2 attempts, both
+	// failed, second final); then a second delivery succeeds first try.
+	rec := &capture{respond: http.StatusInternalServerError}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+	n, st := newTestNotifier(t, access, func(c *Config) {
+		c.Attempts = 2
+		c.Backoff = []time.Duration{time.Millisecond}
+		c.Timeline = tl
+	})
+	_, err := st.Create(context.Background(), "user:1", NewSubscription{URL: srv.URL, Secret: testSecret()}, time.Now())
+	require.NoError(t, err)
+
+	n.NotifyIngest(prEvent("my-org", "repo1", 1, "s1"), applied(), time.Now())
+	require.True(t, n.Flush(10*time.Second))
+
+	snap := tl.Snapshot(0)
+	require.Len(t, snap.Events, 2, "one timeline event per real attempt")
+	first, second := snap.Events[0], snap.Events[1]
+	assert.Equal(t, reqtimeline.KindNotify, first.Kind)
+	assert.Equal(t, "⇒ notify", first.Lane)
+	assert.Equal(t, "failed", first.Disposition)
+	assert.Equal(t, 1, first.Attempt)
+	assert.False(t, first.Final, "attempt 1 of 2 is not terminal")
+	assert.Equal(t, http.StatusInternalServerError, first.Status)
+	assert.Equal(t, "failed", second.Disposition)
+	assert.Equal(t, 2, second.Attempt)
+	assert.True(t, second.Final, "the last retry is terminal")
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, u.Host, first.Target, "target is the host only, never the full URL")
+
+	// A delivered attempt records final=true, disposition delivered.
+	rec.respond = http.StatusOK
+	n.NotifyIngest(prEvent("my-org", "repo1", 2, "s2"), applied(), time.Now())
+	require.True(t, n.Flush(10*time.Second))
+	snap = tl.Snapshot(2)
+	require.Len(t, snap.Events, 1)
+	assert.Equal(t, "delivered", snap.Events[0].Disposition)
+	assert.True(t, snap.Events[0].Final)
+	assert.Equal(t, http.StatusOK, snap.Events[0].Status)
+	assert.GreaterOrEqual(t, snap.Events[0].DurMs, int64(0))
 }

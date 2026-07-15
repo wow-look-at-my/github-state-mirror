@@ -70,6 +70,17 @@ func main() {
 	meter := ratemeter.New()
 	gh.SetRateObserver(meter.Observe)
 
+	// Timed-traffic timeline: an in-memory 24h ring of EVERY exchange the
+	// mirror participates in — webhook deliveries (any outcome), inbound
+	// data-API requests, upstream fetches/probes, the client's own GitHub
+	// calls, login relays, subscriber-notification attempts — each with its
+	// real measured duration. The dashboard's "Timeline" chart; a gap on it
+	// is a bug. In-memory like the request log and rate meter (a live view,
+	// not an audit log); resets on restart. The transport-level exchange
+	// observer charts every call gh itself makes, one event per real attempt.
+	timeline := reqtimeline.New()
+	gh.SetExchangeObserver(api.TimelineExchangeObserver(timeline))
+
 	// Register all fetchers.
 	syncpkg.RegisterAll(mgr, gh, store)
 
@@ -88,7 +99,7 @@ func main() {
 	// notifications to matching subscriptions, reveal-gated per principal
 	// (public repo or live grant — fail closed). Deliveries run detached and
 	// are drained at shutdown before the DBs close.
-	notifier := notify.New(notify.Config{Store: subsStore, Access: store})
+	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})
 
 	// Periodic refresher. Without an app configured, sessions is nil and periodic
 	// refreshes are disabled; per-request data still works via each caller's
@@ -120,12 +131,6 @@ func main() {
 	if !authSvc.Configured() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
-
-	// Timed-traffic timeline: an in-memory 24h ring of incoming webhook
-	// deliveries and outgoing proxied requests, each with its real measured
-	// duration — the dashboard's "Timeline" chart. In-memory like the request
-	// log and rate meter (a live view, not an audit log); resets on restart.
-	timeline := reqtimeline.New()
 
 	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
 	// all data access goes through the already-open db handle.

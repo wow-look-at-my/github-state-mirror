@@ -1,30 +1,78 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The dashboard's "Timeline" tab: a swimlane chart of incoming GitHub webhook
-// deliveries (one lane per event type) and outgoing proxied GitHub requests
-// (one lane per method + route shape), each with its REAL measured duration.
-// The data lives in internal/reqtimeline — an in-memory, 24h/100k-bounded
-// ring fed by exactly three seams:
+// requestStartKey carries the instant the router received a request, stamped
+// by stampRequestStart on EVERY inbound request so any record site can report
+// a real end-to-end duration.
+type requestStartKey struct{}
+
+// stampRequestStart is the first router middleware: it stamps the receipt
+// time into the request context. observeStatus reads it back so every
+// inbound data-API event on the timeline carries the request's real
+// end-to-end duration.
+func stampRequestStart(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestStartKey{}, time.Now())))
+	})
+}
+
+// requestStartFrom returns the router receipt stamp, if the request passed
+// through stampRequestStart.
+func requestStartFrom(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(requestStartKey{}).(time.Time)
+	return t, ok
+}
+
+// The dashboard's "Timeline" tab: a swimlane chart of EVERY exchange the
+// mirror participates in, each with its REAL measured duration. A gap on
+// this chart is a bug — nothing the mirror does is deliberately hidden (the
+// operator's ruling, 2026-07-15). The data lives in internal/reqtimeline —
+// an in-memory, 24h/100k-bounded ring fed by:
 //
-//   - the webhook handler (via deliveryTimeline below): receipt→dispatch time
-//     of every verified delivery;
-//   - recordPassthrough (requestlog.go): every request the passthrough proxy
-//     forwards, timed end-to-end including the upstream round-trip;
-//   - fetchUpstream (respcache.go): every cached-route MISS's upstream fetch —
-//     real GitHub round-trips a proxy-only hook would never see.
+//   - the webhook handler (via deliveryTimeline below): receipt→completion of
+//     EVERY delivery attempt, verified or not — rejected/unverified deliveries
+//     record on a fixed "⇐ (unverified)" lane (headers on that path are
+//     attacker-controlled and must never mint lanes);
+//   - requestLog.observe/observeStatus (requestlog.go): every inbound
+//     data-API request the mirror serves — hits, misses, passthroughs,
+//     writes, errors — timed end-to-end from the router's receipt stamp;
+//   - fetchUpstream (respcache.go): the mirror→GitHub leg of every
+//     cached-route miss (disposition "upstream");
+//   - probeRepoAccess (reveal.go): every reveal probe (disposition "probe");
+//   - ghclient's transport observer (TimelineExchangeObserver below): every
+//     call the mirror's own GitHub client makes — identity resolution, app
+//     verification, token mints, fleet-refresh and consistency-check
+//     GraphQL, rate-limit polls — one event per real attempt (disposition
+//     "internal");
+//   - relayGitHubLogin (oauth.go): the github.com login relays (disposition
+//     "relay");
+//   - the subscriber notifier (internal/notify): every outbound delivery
+//     attempt on the "⇒ notify" lane.
 //
-// ghclient's own background traffic (periodic refreshes, consistency checks,
-// token mints it makes itself) is deliberately NOT recorded: it does not go
-// "through the proxy", and the chart is about proxied traffic.
+// The dashboard's own UI endpoints (/api/*, the login pages, assets) are the
+// one surface not charted: the chart polling itself would recursively fill
+// the chart with the act of viewing it. That exclusion is stated here and in
+// the docs — never silently.
+
+// Timeline-only dispositions for exchanges that are not inbound cache
+// answers. Inbound events keep the request-log vocabulary (hit / miss /
+// passthrough / write / error).
+const (
+	dispUpstream = "upstream" // the mirror→GitHub leg of a cached-route miss
+	dispProbe    = "probe"    // a reveal-layer authorization probe
+	dispInternal = "internal" // the mirror's own ghclient exchange
+	dispRelay    = "relay"    // a github.com login relay
+)
 
 // deliveryTimeline adapts the reqtimeline recorder to the webhook package's
 // DeliveryRecorder seam (internal/webhook must not import internal/reqtimeline
@@ -34,7 +82,29 @@ type deliveryTimeline struct {
 }
 
 func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.DispatchResult, receivedAt time.Time, duration time.Duration) {
-	d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
+	switch result.Disposition {
+	case webhook.DispUnverified, webhook.DispRejected:
+		// Rejected before verification: nothing in the request is
+		// trustworthy. Fixed lane; claimed metadata rides as clamped detail.
+		d.tl.RecordWebhookRejected(receivedAt, duration, result.Disposition, event.Type, event.DeliveryID)
+	default:
+		d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
+	}
+}
+
+// TimelineExchangeObserver adapts the timeline ring onto ghclient's
+// transport-level exchange observer, so every call the mirror's own GitHub
+// client makes is charted — per real attempt, under the same bounded route
+// lanes the proxied traffic uses. Wired in cmd/server next to SetRateObserver.
+func TimelineExchangeObserver(tl *reqtimeline.Recorder) ghclient.ExchangeObserver {
+	return func(identity, name, method, path string, status int, start time.Time, dur time.Duration) {
+		disp := dispInternal
+		if status == 0 {
+			// The exchange died before a response arrived — a real failure.
+			disp = DispError
+		}
+		tl.RecordRequest(start, dur, method, normalizeRoute(path), status, disp, identity, name)
+	}
 }
 
 // timelineDeliveryRecorder wraps a recorder for webhook.Handler, keeping the

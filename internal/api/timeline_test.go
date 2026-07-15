@@ -21,6 +21,19 @@ type timelinePayload struct {
 	Now            string              `json:"now"`
 }
 
+// eventsWhere filters a snapshot's events by disposition, so assertions stay
+// robust as more sources record onto the shared ring (e.g. requireAuth's
+// ghclient /user resolution).
+func eventsWhere(snap reqtimeline.Snapshot, disposition string) []reqtimeline.Event {
+	var out []reqtimeline.Event
+	for _, e := range snap.Events {
+		if e.Disposition == disposition {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // TestTimeline_AdminGated: /api/timeline follows the /api/requests admin
 // model — 401 anonymous, 403 signed-in non-admin, 200 admin.
 func TestTimeline_AdminGated(t *testing.T) {
@@ -126,13 +139,18 @@ func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 	assert.False(t, e.Start.IsZero(), "start must be stamped")
 	assert.GreaterOrEqual(t, e.DurMs, int64(0), "duration is a real measurement")
 
-	// An unverified delivery leaves no trace.
+	// An unverified delivery is recorded too — on the FIXED unverified lane
+	// (never a lane from its untrusted headers), claimed type as detail.
 	bad := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	bad.Header.Set("X-GitHub-Event", "pull_request")
 	bad.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
 	w = do(t, s.router, bad)
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Len(t, s.timeline.Snapshot(0).Events, 1)
+	unverified := eventsWhere(s.timeline.Snapshot(0), "unverified")
+	require.Len(t, unverified, 1)
+	assert.Equal(t, "⇐ (unverified)", unverified[0].Lane)
+	assert.Equal(t, "claimed event: pull_request", unverified[0].Detail)
+	assert.Empty(t, unverified[0].EventType, "untrusted type must not populate trusted fields")
 }
 
 // TestTimeline_PassthroughRecorded: a request the passthrough proxy forwards
@@ -161,11 +179,12 @@ func TestTimeline_PassthroughRecorded(t *testing.T) {
 	assert.GreaterOrEqual(t, e.DurMs, int64(0))
 }
 
-// TestTimeline_MissFetchRecorded: a cached route's miss goes through
-// fetchUpstream, which times the real GitHub round-trip into the ring — the
-// reveal probe deliberately records nothing (only the two choke points feed
-// the chart).
-func TestTimeline_MissFetchRecorded(t *testing.T) {
+// TestTimeline_EveryExchangeRecorded: one cached-route miss puts EVERY real
+// exchange on the chart — requireAuth's own /user resolution (the ghclient
+// transport observer), the reveal probe, the mirror→GitHub upstream leg, and
+// the inbound request itself (end-to-end). The follow-up HIT is recorded too:
+// a served request is never concealed just because no upstream call happened.
+func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 	u := newRespCacheUpstream()
 	s := newFullTestStack(t, testAuth(), u.handler())
 
@@ -174,17 +193,71 @@ func TestTimeline_MissFetchRecorded(t *testing.T) {
 	require.Equal(t, "miss", w.Header().Get("X-GSM-Cache"))
 
 	snap := s.timeline.Snapshot(0)
-	require.Len(t, snap.Events, 1, "exactly the contents fetch — the probe records nothing")
-	e := snap.Events[0]
-	assert.Equal(t, reqtimeline.KindRequest, e.Kind)
-	assert.Equal(t, DispMiss, e.Disposition)
-	assert.Equal(t, "/repos/{owner}/{repo}/contents/{path}", e.Route)
-	assert.Equal(t, http.StatusOK, e.Status)
-	assert.Equal(t, testUserActor, e.Actor, "cached routes run inside requireAuth, so the principal labels the event")
 
-	// A HIT makes no upstream call and records nothing new.
+	// requireAuth resolved the bearer via ghclient GET /user — an "internal"
+	// exchange, labeled by credential shape (no principal in ctx yet).
+	internal := eventsWhere(snap, "internal")
+	require.Len(t, internal, 1)
+	assert.Equal(t, "/user", internal[0].Route)
+	assert.True(t, strings.HasPrefix(internal[0].Actor, "token:"), "actor %q", internal[0].Actor)
+
+	// The reveal probe (GET /repos/{owner}/{repo}) is its own exchange.
+	probes := eventsWhere(snap, "probe")
+	require.Len(t, probes, 1)
+	assert.Equal(t, "/repos/{owner}/{repo}", probes[0].Route)
+	assert.Equal(t, testUserActor, probes[0].Actor)
+
+	// The mirror→GitHub leg of the miss.
+	upstream := eventsWhere(snap, "upstream")
+	require.Len(t, upstream, 1)
+	assert.Equal(t, "/repos/{owner}/{repo}/contents/{path}", upstream[0].Route)
+	assert.Equal(t, http.StatusOK, upstream[0].Status)
+
+	// The inbound request, end-to-end, disposition miss.
+	miss := eventsWhere(snap, DispMiss)
+	require.Len(t, miss, 1)
+	assert.Equal(t, "/repos/{owner}/{repo}/contents/{path}", miss[0].Route)
+	assert.Equal(t, testUserActor, miss[0].Actor, "cached routes run inside requireAuth, so the principal labels the event")
+
+	// A HIT is served from memory — still a served request, still charted.
 	w = do(t, s.router, authedReq(http.MethodGet, "/repos/org1/repo1/contents/.github/cfg.jsonc", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, "hit", w.Header().Get("X-GSM-Cache"))
-	assert.Len(t, s.timeline.Snapshot(0).Events, 1)
+	hits := eventsWhere(s.timeline.Snapshot(0), DispHit)
+	require.Len(t, hits, 1)
+	assert.Equal(t, "/repos/{owner}/{repo}/contents/{path}", hits[0].Route)
+	assert.GreaterOrEqual(t, hits[0].DurMs, int64(0))
+	// No second probe/upstream fetch happened (grant + cache served it).
+	assert.Len(t, eventsWhere(s.timeline.Snapshot(0), "upstream"), 1)
+}
+
+// TestTimeline_OAuthRelayRecorded: the github.com login relay's upstream call
+// is timed onto the chart under the mirror's fixed relay lane, anonymous
+// actor.
+func TestTimeline_OAuthRelayRecorded(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"gho_x"}`))
+	}))
+	defer relay.Close()
+	oldURL := githubOAuthTokenURL
+	githubOAuthTokenURL = relay.URL
+	defer func() { githubOAuthTokenURL = oldURL }()
+
+	s := newFullTestStack(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/login/oauth/access_token", strings.NewReader("client_id=x&code=y"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := do(t, s.router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	relays := eventsWhere(s.timeline.Snapshot(0), "relay")
+	require.Len(t, relays, 1)
+	e := relays[0]
+	assert.Equal(t, "POST /login/oauth/access_token", e.Lane)
+	assert.Equal(t, http.StatusOK, e.Status)
+	assert.Equal(t, "anonymous", e.Actor)
+	assert.GreaterOrEqual(t, e.DurMs, int64(0))
 }

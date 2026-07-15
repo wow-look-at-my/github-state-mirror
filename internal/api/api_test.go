@@ -132,6 +132,9 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
 	timeline := reqtimeline.New()
+	// Wire the client's exchange observer like cmd/server does, so tests see
+	// the ghclient calls (e.g. requireAuth's /user resolution) on the chart.
+	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline)
 	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline}
 }

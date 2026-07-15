@@ -202,7 +202,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveCommitCI(w, r, doc, false)
 }
 
@@ -210,7 +210,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 // absorb time and stored verbatim, so hit and miss serve identical bytes.
 func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, doc string, hit bool) {
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, []byte(doc), hit)
 }

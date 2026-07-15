@@ -177,6 +177,9 @@ func NewRouter(
 	timeline *reqtimeline.Recorder,
 ) http.Handler {
 	r := chi.NewRouter()
+	// First: stamp every request's receipt time, so any record site can put a
+	// real end-to-end duration on the Timeline chart.
+	r.Use(stampRequestStart)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// CORS so browser clients on other origins (e.g. the repo-nightmare PR
@@ -185,15 +188,17 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 
 	// In-memory record of data-API requests (hit/miss/passthrough) for the
-	// dashboard's "Requests" view.
+	// dashboard's "Requests" view. Every observed request is also mirrored,
+	// timed end-to-end, onto the Timeline chart.
 	reqlog := newRequestLog()
+	reqlog.timeline = timeline
 
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
 	// proxied request is recorded as a passthrough — and timed into the
 	// timeline ring for the dashboard's "Timeline" chart.
-	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog, timeline)
+	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every

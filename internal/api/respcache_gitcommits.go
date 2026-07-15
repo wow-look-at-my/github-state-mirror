@@ -74,7 +74,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 	if doc, ok, err := h.store.GetCachedGitCommitMiss(r.Context(), owner, repo, sha, now); err != nil {
 		slog.Warn("git commit miss cache read failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
 	} else if ok {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, http.StatusNotFound)
+		h.reqlog.observeStatus(r, DispHit, http.StatusNotFound)
 		writeRebuilt(w, http.StatusNotFound, []byte(doc), true)
 		return
 	}
@@ -97,7 +97,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 				if err := h.store.PutCachedGitCommitMiss(r.Context(), owner, repo, sha, string(doc), now, gitCommitMissTTL); err != nil {
 					slog.Warn("git commit miss cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
 				}
-				h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+				h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 				writeRebuilt(w, http.StatusNotFound, doc, false)
 				return
 			}
@@ -111,7 +111,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("git commit cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveGitCommit(w, r, c, false)
 }
 
@@ -123,7 +123,7 @@ func (h *handlers) serveGitCommit(w http.ResponseWriter, r *http.Request, c ghda
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }

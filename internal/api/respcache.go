@@ -147,7 +147,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	// grant so steady consumers never age out mid-use. (A 404 is not proof
 	// either way; the reveal layer already vouched for this read.)
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveContents(w, r, c, false)
 }
 
@@ -160,7 +160,7 @@ func (h *handlers) serveContents(w http.ResponseWriter, r *http.Request, c ghdat
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, status, body, hit)
 }
@@ -335,7 +335,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now()
 	if t, ok, err := h.store.GetCachedInstallToken(ctx, actorKey, installID, bodyHash, now); err == nil && ok {
-		h.reqlog.record(who, r.Method, r.URL.Path, DispHit)
+		h.reqlog.observeAs(r, who, DispHit, 0)
 		h.serveInstallToken(w, t, true)
 		return
 	} else if err != nil {
@@ -357,7 +357,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	if err := h.store.PutCachedInstallToken(ctx, actorKey, t, now, serveUntil); err != nil {
 		slog.Warn("install token cache write failed", "installation", installID, "error", err)
 	}
-	h.reqlog.recordStatus(who, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
 	h.serveInstallToken(w, t, false)
 }
 
@@ -504,11 +504,10 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	}
 	copyForwardHeaders(req.Header, r.Header)
 
-	// Time the real upstream round-trip (headers through buffered body) into
-	// the timeline ring: cached-route MISS fetches are GitHub calls the
-	// passthrough proxy never sees, so this seam is what makes the Timeline
-	// chart's "requests going through the proxy" complete. Recorded as a
-	// "miss" — the fetch exists because the cache missed.
+	// Time the real mirror→GitHub leg (headers through buffered body) into
+	// the timeline ring as its own "upstream" event, distinct from the
+	// inbound miss the route records end-to-end via observeStatus: both
+	// exchanges are real, so both are on the chart.
 	who := callerLabel(r)
 	start := time.Now()
 	recordFetch := func(status int, disp string) {
@@ -529,7 +528,7 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 		resp.Body.Close()
 		return nil, nil, false, err
 	}
-	recordFetch(resp.StatusCode, DispMiss)
+	recordFetch(resp.StatusCode, dispUpstream)
 	overflow := false
 	if len(buf) > maxAbsorbBodyBytes {
 		overflow = true
@@ -568,14 +567,14 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	_, _ = w.Write(body)
 	// A response larger than the absorb buffer streams its tail through.
 	_, _ = io.Copy(w, resp.Body)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispPassthrough, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispPassthrough, resp.StatusCode)
 }
 
 // upstreamError reports a failed upstream fetch, mirroring the passthrough
 // proxy's error handling.
 func (h *handlers) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Warn("cached route upstream fetch failed", "method", r.Method, "path", r.URL.Path, "error", err)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispError, http.StatusBadGateway)
+	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway", http.StatusBadGateway)
 }
 

@@ -25,8 +25,9 @@ import (
 
 // Event kinds.
 const (
-	KindWebhook = "webhook" // an incoming GitHub webhook delivery
-	KindRequest = "request" // an outgoing proxied GitHub request
+	KindWebhook = "webhook" // an incoming GitHub webhook delivery (any outcome)
+	KindRequest = "request" // an HTTP exchange on the GitHub data plane (inbound request or upstream call)
+	KindNotify  = "notify"  // an outbound subscriber-notification delivery attempt
 )
 
 // Defaults for New. Retention is the primary bound; the count cap is a coarse
@@ -71,6 +72,16 @@ type Event struct {
 	// display name when one is known (display-only, like the request log).
 	Actor     string `json:"actor,omitempty"`
 	ActorName string `json:"actor_name,omitempty"`
+
+	// Detail is a short free-form tooltip line (e.g. an unverified delivery's
+	// claimed event type). Metadata only — never bodies or secrets.
+	Detail string `json:"detail,omitempty"`
+
+	// Notify fields: the delivery target's host, the 1-based attempt number,
+	// and whether this attempt was terminal (success, or the last retry).
+	Target  string `json:"target,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
+	Final   bool   `json:"final,omitempty"`
 }
 
 // end is the instant the event finished — the eviction clock. Events are
@@ -123,9 +134,70 @@ func (r *Recorder) RecordWebhook(start time.Time, dur time.Duration, eventType, 
 	})
 }
 
-// RecordRequest records one outgoing proxied GitHub request with its real
-// measured upstream duration. route must already be a normalized route SHAPE
-// (normalizeRoute), never a raw path — lanes stay bounded.
+// RecordWebhookRejected records a delivery that was REJECTED before dispatch
+// (bad/missing signature, unset secret, unreadable body, wrong method). The
+// lane is the FIXED "⇐ (unverified)" — never derived from request headers,
+// which are attacker-controlled on this path and would otherwise mint
+// unbounded lanes. The claimed event type rides along as clamped tooltip
+// detail only.
+func (r *Recorder) RecordWebhookRejected(start time.Time, dur time.Duration, disposition, claimedType, deliveryID string) {
+	if r == nil {
+		return
+	}
+	detail := ""
+	if claimedType != "" {
+		detail = "claimed event: " + clampDisplay(claimedType)
+	}
+	r.record(Event{
+		Kind:        KindWebhook,
+		Lane:        "⇐ (unverified)",
+		Start:       start,
+		DurMs:       dur.Milliseconds(),
+		Disposition: disposition,
+		DeliveryID:  clampDisplay(deliveryID),
+		Detail:      detail,
+	})
+}
+
+// RecordNotify records one outbound subscriber-notification delivery attempt
+// with its real measured duration. Every attempt is a real request and gets
+// its own event; final marks the terminal one (success, or the last retry).
+func (r *Recorder) RecordNotify(start time.Time, dur time.Duration, target string, status int, attempt int, final bool, disposition string) {
+	if r == nil {
+		return
+	}
+	r.record(Event{
+		Kind:        KindNotify,
+		Lane:        "⇒ notify",
+		Start:       start,
+		DurMs:       dur.Milliseconds(),
+		Target:      clampDisplay(target),
+		Status:      status,
+		Attempt:     attempt,
+		Final:       final,
+		Disposition: disposition,
+	})
+}
+
+// clampDisplay bounds an untrusted display string (rune-safe) so junk input
+// can't bloat events; lanes never use these values.
+func clampDisplay(s string) string {
+	const maxDisplay = 64
+	if len(s) <= maxDisplay {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxDisplay {
+		return s
+	}
+	return string(runes[:maxDisplay]) + "…"
+}
+
+// RecordRequest records one HTTP exchange on the GitHub data plane — an
+// inbound data-API request the mirror served, or an upstream call the mirror
+// made (cached-route fetch, reveal probe, ghclient exchange, login relay) —
+// with its real measured duration. route must already be a normalized route
+// SHAPE (normalizeRoute), never a raw path — lanes stay bounded.
 func (r *Recorder) RecordRequest(start time.Time, dur time.Duration, method, route string, status int, disposition, actorKey, actorName string) {
 	if r == nil {
 		return

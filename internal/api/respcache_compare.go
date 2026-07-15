@@ -138,7 +138,7 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("compare cache write failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveCompare(w, r, status, doc, false)
 }
 
@@ -148,9 +148,9 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) serveCompare(w http.ResponseWriter, r *http.Request, status int, doc string, hit bool) {
 	if hit {
 		if status == http.StatusOK {
-			h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+			h.reqlog.observe(r, DispHit)
 		} else {
-			h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, status)
+			h.reqlog.observeStatus(r, DispHit, status)
 		}
 	}
 	writeRebuilt(w, status, []byte(doc), hit)
