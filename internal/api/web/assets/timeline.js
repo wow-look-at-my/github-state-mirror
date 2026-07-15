@@ -144,8 +144,13 @@ class GsmTimeline extends HTMLElement {
         this.laneOrderKey = "";
     }
     connectedCallback() {
-        if (this.view || this.note)
-            return; // reconnect of a live instance
+        if (this.view || this.note) {
+            // Reconnect of an already-booted instance (app.ts never moves the
+            // element, but be correct anyway): resume the poll the disconnect
+            // stopped.
+            this.startPolling();
+            return;
+        }
         this.note = elem("p", "timeline-note", "chart loading…");
         this.appendChild(this.note);
         void this.boot();
@@ -173,13 +178,16 @@ class GsmTimeline extends HTMLElement {
         await this.poll(); // first page: setData + initial viewport
         this.note?.remove();
         this.note = null;
-        if (this.timer === undefined && this.isConnected) {
-            this.timer = setInterval(() => {
-                if (document.hidden)
-                    return;
-                void this.poll();
-            }, POLL_MS);
-        }
+        this.startPolling();
+    }
+    startPolling() {
+        if (this.timer !== undefined || !this.isConnected || !this.view)
+            return;
+        this.timer = setInterval(() => {
+            if (document.hidden)
+                return;
+            void this.poll();
+        }, POLL_MS);
     }
     // Dynamic-import the Pages component, retrying forever on a fixed cadence
     // (cache-busted — browsers memoize failed module fetches). Bails out only
