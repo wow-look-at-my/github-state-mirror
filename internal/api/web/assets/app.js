@@ -156,7 +156,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -212,6 +212,8 @@ function loadView(scope, silent = false) {
         return loadWebhooks(silent);
     if (scope === "requests")
         return loadRequests(silent);
+    if (scope === "timeline")
+        return loadTimeline();
     if (scope === "ratelimit")
         return loadRateLimits(silent);
     return loadScope(scope, silent);
@@ -438,6 +440,29 @@ function webhookTable(deliveries) {
         return el("tr", null, el("td", null, el("span", { class: "disp " + disp, text: disp })), el("td", { class: "wh-event", text: evt }), el("td", { class: "wh-repo", text: d.repo || "—" }), el("td", { class: "wh-detail", text: d.detail || "" }), el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }), el("td", { class: "wh-when", text: fmtTime(d.received_at) }));
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
+}
+// ---- traffic timeline (admin only) ----
+// A swimlane chart of incoming webhook deliveries (one lane per event type)
+// and outgoing proxied GitHub requests (one lane per route shape), each bar a
+// REAL measured duration — rendered by the <gsm-timeline> element
+// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
+// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
+// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
+// paused while the page is hidden) and merges new events in place. The shared
+// auto-refresh tick just lands here and finds the element already present.
+async function loadTimeline() {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    sub.textContent = "Incoming GitHub webhooks and outgoing proxied requests — real measured durations, last 24h (in-memory, resets on restart)";
+    if (body.querySelector("gsm-timeline"))
+        return; // element self-updates; never rebuild it
+    body.innerHTML = "";
+    const tl = el("gsm-timeline");
+    // In demo mode route the element's polls through demoApi (canned data for
+    // the backend-free preview); production keeps its bounded default fetcher.
+    if (DEMO)
+        tl.fetcher = (path) => api(path);
+    body.appendChild(tl);
 }
 // ---- request activity (admin only) ----
 // Shows data-API requests hitting the cache and how each was served: a cache
@@ -1220,6 +1245,13 @@ function demoApi(path, method = "GET") {
             return Promise.reject(err);
         }
         return Promise.resolve(d.requests);
+    }
+    if (path.startsWith("/api/timeline")) {
+        if (!d.timeline)
+            return demoReject(403);
+        // The canned payload is served for every poll; the element merges by
+        // event id, so re-serving the same events is harmless.
+        return Promise.resolve(d.timeline);
     }
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit)
