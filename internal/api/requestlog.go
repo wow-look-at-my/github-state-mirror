@@ -12,7 +12,6 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
-	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
 // Request dispositions recorded for the dashboard's "Requests" view.
@@ -163,18 +162,12 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 // the dashboard shows whether the forwarded call actually succeeded. Used both as
 // the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
 // forward target, so each proxied request is counted exactly once regardless of
-// entry path. Each request is also timed end-to-end (upstream round-trip plus
-// response streaming) into the timeline ring — the real measured duration the
-// dashboard's Timeline chart renders. tl is nil-safe.
-func recordPassthrough(next http.Handler, log *requestLog, tl *reqtimeline.Recorder) http.Handler {
+// entry path.
+func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		who := callerLabel(r)
-		disp := passthroughDisposition(r)
-		log.recordStatus(who, r.Method, r.URL.Path, disp, sw.status)
-		tl.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), sw.status, disp, who.Key, who.Name)
+		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, passthroughDisposition(r), sw.status)
 	})
 }
 

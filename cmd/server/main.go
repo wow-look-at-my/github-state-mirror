@@ -18,7 +18,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
-	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
@@ -121,15 +120,9 @@ func main() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
-	// Timed-traffic timeline: an in-memory 24h ring of incoming webhook
-	// deliveries and outgoing proxied requests, each with its real measured
-	// duration — the dashboard's "Timeline" chart. In-memory like the request
-	// log and rate meter (a live view, not an audit log); resets on restart.
-	timeline := reqtimeline.New()
-
 	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
 	// all data access goes through the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
