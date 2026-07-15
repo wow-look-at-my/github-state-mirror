@@ -192,3 +192,35 @@ func TestObserve_Concurrent(t *testing.T) {
 	wg.Wait()
 	assert.Len(t, s.Snapshot(), 10)
 }
+
+// TestObserve_Name: the verified display name is recorded alongside the
+// identity, survives nameless re-observations of the same identity (the key
+// pins the principal), and a fresh name overwrites.
+func TestObserve_Name(t *testing.T) {
+	s := New()
+	headers := map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+	}
+
+	s.Observe("app:99", "pr-minder", respWith(headers))
+	require.Len(t, s.Snapshot(), 1)
+	assert.Equal(t, "pr-minder", s.Snapshot()[0].Name)
+
+	// A nameless observation of the same identity keeps the known name.
+	s.Observe("app:99", "", respWith(headers))
+	require.Len(t, s.Snapshot(), 1)
+	assert.Equal(t, "pr-minder", s.Snapshot()[0].Name, "a nameless reading must not erase the known name")
+
+	// A new verified name overwrites (e.g. an app was renamed).
+	s.Observe("app:99", "pr-minder-2", respWith(headers))
+	assert.Equal(t, "pr-minder-2", s.Snapshot()[0].Name)
+
+	// An identity never observed with a name has none.
+	s.Observe("token:abc", "", respWith(headers))
+	for _, o := range s.Snapshot() {
+		if o.Identity == "token:abc" {
+			assert.Equal(t, "", o.Name)
+		}
+	}
+}

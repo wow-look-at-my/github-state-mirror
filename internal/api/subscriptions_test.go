@@ -227,10 +227,33 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	svc := configuredAuth(t)
 	stack := newFullTestStack(t, svc, twoUserGH())
 
+	// A live receiver so a delivery attempt lands in the activity ring.
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer receiver.Close()
+
 	_, err := stack.notifier.Store().Create(context.Background(), "user:42", notify.NewSubscription{
-		URL: "https://example.com/hook", Secret: testSubSecret,
+		URL: receiver.URL, Secret: testSubSecret,
 	}, time.Now())
 	require.NoError(t, err)
+
+	// A recorded identity for the subscription's principal: the operator view
+	// resolves it to the login.
+	require.NoError(t, stack.store.RecordActorIdentity(context.Background(), "user:42", "octocat"))
+
+	// Drive one delivery so the recent-attempts ring has an entry to decorate.
+	require.NoError(t, stack.store.UpsertRepo(context.Background(), dbgen.Repo{
+		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
+		Visibility: ghdata.VisibilityPublic,
+	}))
+	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	wh := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
+	wh.Header.Set("X-GitHub-Event", "push")
+	wh.Header.Set("X-GitHub-Delivery", "gh-guid-admin")
+	wh.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(payload)))
+	whw := httptest.NewRecorder()
+	stack.router.ServeHTTP(whw, wh)
+	require.Equal(t, http.StatusOK, whw.Code)
+	require.True(t, stack.notifier.Flush(5*time.Second), "delivery must complete")
 
 	// Anonymous: 401. Signed-in non-admin: 403.
 	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
@@ -261,5 +284,8 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "user:42", resp.Subscriptions[0].Principal, "the operator view names the principal")
-	assert.NotNil(t, resp.Recent)
+	assert.Equal(t, "octocat", resp.Subscriptions[0].PrincipalName, "the recorded login decorates the principal")
+	require.NotEmpty(t, resp.Recent, "the driven delivery must appear in the activity ring")
+	assert.Equal(t, "user:42", resp.Recent[0].Principal)
+	assert.Equal(t, "octocat", resp.Recent[0].PrincipalName, "attempts are decorated with the recorded login")
 }

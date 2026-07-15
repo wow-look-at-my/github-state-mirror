@@ -611,7 +611,9 @@ function requestLegend() {
 function requestTable(events) {
     const rows = events.map((e) => {
         const disp = e.disposition || "passthrough";
-        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), el("td", { class: "wh-detail", text: e.actor || "" }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
+        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), 
+        // Resolved name when known (full key in the tooltip); bare key otherwise.
+        el("td", { class: "wh-detail", text: e.actor_name || e.actor || "", title: e.actor_name ? e.actor : null }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Upstream" }), el("th", { text: "Method" }), el("th", { text: "Path" }), el("th", { text: "Caller" }), el("th", { text: "When" }))), el("tbody", null, rows));
 }
@@ -682,14 +684,16 @@ async function loadRateLimits(silent = false) {
 }
 // observedRateGrid renders one tile per (identity, resource). The backend
 // sorts by identity then resource, so one identity's buckets sit together;
-// each tile is a <rate-meter> plus an "observed …" caption.
+// each tile is a <rate-meter> plus an "observed …" caption. A resolved
+// display name leads the tile; the bare identity key then moves to the
+// caption so it stays visible (and remains the tile name when unresolved).
 function observedRateGrid(observed) {
     const grid = el("div", { class: "rate-grid" });
     for (const o of observed) {
         grid.appendChild(el("div", { class: "rate-observed" }, el("rate-meter", {
-            name: o.identity + " — " + o.resource,
+            name: (o.name || o.identity) + " — " + o.resource,
             limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
-        }), el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
+        }), o.name ? el("div", { class: "rate-observed-at fingerprint", text: o.identity }) : null, el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
     }
     return grid;
 }
@@ -1135,7 +1139,9 @@ function discrepancyTable(items) {
     return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
 }
 function truthFreshnessTable(rows) {
-    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), el("td", { class: "fingerprint", text: f.principal || "—" }), el("td", { class: "wh-detail", text: f.error || "" })));
+    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), 
+    // Resolved name first, with the key alongside; bare key when unresolved.
+    el("td", { class: "fingerprint", text: f.principal_name ? f.principal_name + " · " + f.principal : (f.principal || "—") }), el("td", { class: "wh-detail", text: f.error || "" })));
     return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Owner" }), el("th", { text: "State" }), el("th", { text: "Last synced" }), el("th", { text: "By principal" }), el("th", { text: "Error" }))), el("tbody", null, trs));
 }
 // ---- boot ----
