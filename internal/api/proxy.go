@@ -48,7 +48,8 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store) http.Handler {
 			// which carries the inbound request's context and headers, so
 			// callerLabel resolves the same identity the request log records.
 			if resp.Request != nil {
-				meter.Observe(callerLabel(resp.Request), resp)
+				who := callerLabel(resp.Request)
+				meter.Observe(who.Key, who.Name, resp)
 			}
 			return stripUpstreamCORS(resp)
 		},

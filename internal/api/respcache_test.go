@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -638,4 +639,30 @@ func TestRespCache_RepositoryEventFlushesContents(t *testing.T) {
 	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "repository event must flush contents state")
+}
+
+// TestCachedInstallToken_RecordsAppIdentity: the token-mint route self-verifies
+// its App JWT outside requireAuth, so it records the verified app:<id> -> slug
+// mapping itself (the same gap as the repo-installation route). An
+// unverifiable bearer records nothing.
+func TestCachedInstallToken_RecordsAppIdentity(t *testing.T) {
+	router, store, _, _ := respCacheStack(t)
+
+	bad := httptest.NewRequest("POST", "/app/installations/42/access_tokens", strings.NewReader(""))
+	bad.Header.Set("Authorization", "Bearer not-an-app-jwt")
+	_ = do(t, router, bad)
+	ids, err := store.ListActorIdentities(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, ids, "an unverified bearer must not record an identity")
+
+	req := httptest.NewRequest("POST", "/app/installations/42/access_tokens", strings.NewReader(""))
+	req.Header.Set("Authorization", "Bearer "+goodAppJWT)
+	w := do(t, router, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	ids, err = store.ListActorIdentities(context.Background())
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "app:777", ids[0].Actor)
+	assert.Equal(t, "testapp", ids[0].Login)
 }

@@ -78,6 +78,12 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				}
 				actorKey := fmt.Sprintf("app:%d", ident.ID)
 				ctx = actor.WithActor(ctx, actorKey)
+				if ident.Slug != "" {
+					// The app slug is GitHub-verified (GET /app answered it):
+					// carry it as the principal's display name so downstream
+					// surfaces (request log, rate meter, logs) can show it.
+					ctx = actor.WithName(ctx, ident.Slug)
+				}
 				record(ctx, actorKey, ident.Slug)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -104,6 +110,11 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				actorKey = fmt.Sprintf("user:%d", ident.ID)
 			}
 			ctx = actor.WithActor(ctx, actorKey)
+			if ident.IsUser && ident.Login != "" {
+				// The login came from GitHub's own GET /user answer: carry it
+				// as the display name. Non-user tokens have no name.
+				ctx = actor.WithName(ctx, ident.Login)
+			}
 			// Remember the actor->login mapping so the dashboard can group a
 			// user's scope by login. A non-user token has no login and is
 			// skipped by the recorder.
@@ -181,7 +192,12 @@ func NewRouter(
 	// proxied request is recorded as a passthrough.
 	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter}
+	// One debounced principal->name recorder shared by requireAuth and the
+	// self-verifying app-JWT routes (token mint, repo installation), so every
+	// GitHub-verified identity lands in actor_identities.
+	recordIdentity := newIdentityRecorder(store)
+
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
@@ -225,7 +241,7 @@ func NewRouter(
 	// TRIMMED body with every URL field (url, *_url, _links) dropped; and
 	// everything else falls through to the verbatim passthrough, uncached.
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(gh, newIdentityRecorder(store)))
+		r.Use(requireAuth(gh, recordIdentity))
 
 		// Subscriber-notification CRUD (subscriptions.go), under the RESERVED
 		// mirror-native /_mirror/* namespace (GitHub has no underscore-prefixed

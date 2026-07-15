@@ -25,14 +25,18 @@ type Attempt struct {
 	At             string `json:"at"` // RFC3339Nano UTC
 	SubscriptionID string `json:"subscription_id"`
 	Principal      string `json:"principal"`
-	Event          string `json:"event"`
-	Action         string `json:"action,omitempty"`
-	Repo           string `json:"repo"` // owner/repo
-	Disposition    string `json:"disposition"`
-	Outcome        string `json:"outcome"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	Error          string `json:"error,omitempty"` // short error class, never a secret
-	DurationMS     int64  `json:"duration_ms"`
+	// PrincipalName is Principal's recorded display name. The notify package
+	// never sets it — the admin handler joins it from actor_identities when
+	// serving the activity view (display-only decoration).
+	PrincipalName string `json:"principal_name,omitempty"`
+	Event         string `json:"event"`
+	Action        string `json:"action,omitempty"`
+	Repo          string `json:"repo"` // owner/repo
+	Disposition   string `json:"disposition"`
+	Outcome       string `json:"outcome"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	Error         string `json:"error,omitempty"` // short error class, never a secret
+	DurationMS    int64  `json:"duration_ms"`
 }
 
 // Counters are the cumulative since-restart totals.

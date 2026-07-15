@@ -59,8 +59,9 @@ type Client struct {
 // server can passively record the X-RateLimit-* headers GitHub attaches (see
 // internal/ratemeter). identity is the principal from the request context
 // when one is set, else a label derived from the credential's shape — never
-// the raw token value.
-type RateObserver func(identity string, resp *http.Response)
+// the raw token value. name is the principal's verified display name from
+// the same context ("" when none).
+type RateObserver func(identity, name string, resp *http.Response)
 
 // SetRateObserver installs the rate observer. Call it once during startup
 // wiring, before the client serves requests: the field is read without
@@ -78,7 +79,13 @@ func (c *Client) observeRate(ctx context.Context, credential string, resp *http.
 		return
 	}
 	identity := actor.FromContext(ctx)
-	if identity == "" {
+	name := ""
+	if identity != "" {
+		// Only pair a name with a ctx-resolved principal: names are set
+		// alongside the actor, so a credential-shape fallback identity must
+		// never borrow one.
+		name = actor.NameFromContext(ctx)
+	} else {
 		switch {
 		case credential == "":
 			identity = "anonymous"
@@ -88,7 +95,7 @@ func (c *Client) observeRate(ctx context.Context, credential string, resp *http.
 			identity = "token:" + Fingerprint(credential)[:12]
 		}
 	}
-	c.rateObserver(identity, resp)
+	c.rateObserver(identity, name, resp)
 }
 
 // New creates a Client targeting the public GitHub API. The client carries no

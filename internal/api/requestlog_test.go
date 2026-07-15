@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,13 +15,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
 
 func TestRequestLog_RecordAndSnapshot(t *testing.T) {
 	l := newRequestLog()
-	l.record("app:1", "POST", "/graphql", DispMiss)
-	l.record("app:1", "POST", "/graphql", DispHit)
-	l.record("token:x", "GET", "/rate_limit", DispPassthrough)
+	l.record(callerIdent{Key: "app:1"}, "POST", "/graphql", DispMiss)
+	l.record(callerIdent{Key: "app:1"}, "POST", "/graphql", DispHit)
+	l.record(callerIdent{Key: "token:x"}, "GET", "/rate_limit", DispPassthrough)
 
 	snap := l.snapshot(10)
 	assert.Equal(t, int64(3), snap.Total)
@@ -35,7 +39,7 @@ func TestRequestLog_RecordAndSnapshot(t *testing.T) {
 func TestRequestLog_CapAndLimit(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestLogRecentCap+50; i++ {
-		l.record("a", "GET", "/p", DispHit)
+		l.record(callerIdent{Key: "a"}, "GET", "/p", DispHit)
 	}
 	all := l.snapshot(0)
 	assert.Equal(t, int64(requestLogRecentCap+50), all.Total, "total counts every record")
@@ -59,14 +63,89 @@ func TestCallerLabel(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Header.Set("X-Mirror-Identity", "h."+payload+".s")
-	assert.Equal(t, "app:42", callerLabel(r), "identity header -> app:<id>")
+	assert.Equal(t, "app:42", callerLabel(r).Key, "identity header -> app:<id>")
+	assert.Equal(t, "", callerLabel(r).Name, "an UNVERIFIED identity assertion must never carry a name")
 
 	r2 := httptest.NewRequest("GET", "/x", nil)
 	r2.Header.Set("Authorization", "Bearer some-token")
-	assert.True(t, strings.HasPrefix(callerLabel(r2), "token:"), "bearer -> token:<fingerprint>")
+	assert.True(t, strings.HasPrefix(callerLabel(r2).Key, "token:"), "bearer -> token:<fingerprint>")
+	assert.Equal(t, "", callerLabel(r2).Name, "a token fingerprint has no name")
 
 	r3 := httptest.NewRequest("GET", "/x", nil)
-	assert.Equal(t, "anonymous", callerLabel(r3))
+	assert.Equal(t, "anonymous", callerLabel(r3).Key)
+
+	// The requireAuth path: ctx carries the resolved actor AND its verified
+	// display name; callerLabel surfaces both.
+	r4 := httptest.NewRequest("GET", "/x", nil)
+	ctx := actor.WithName(actor.WithActor(r4.Context(), "app:99"), "pr-minder")
+	assert.Equal(t, callerIdent{Key: "app:99", Name: "pr-minder"}, callerLabel(r4.WithContext(ctx)))
+}
+
+// TestRequestLog_ActorName: record captures the caller's verified display name
+// alongside the key, and the JSON omits actor_name entirely when none is known.
+func TestRequestLog_ActorName(t *testing.T) {
+	l := newRequestLog()
+	l.record(callerIdent{Key: "app:99", Name: "pr-minder"}, "POST", "/graphql", DispHit)
+	l.record(callerIdent{Key: "token:abcdef012345"}, "GET", "/meta", DispPassthrough)
+
+	snap := l.snapshot(10)
+	require.Len(t, snap.Recent, 2)
+	assert.Equal(t, "", snap.Recent[0].ActorName, "no verified name -> empty")
+	assert.Equal(t, "pr-minder", snap.Recent[1].ActorName)
+
+	raw, err := json.Marshal(snap.Recent[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "actor_name", "empty names are omitted from the JSON")
+	raw, err = json.Marshal(snap.Recent[1])
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"actor_name":"pr-minder"`)
+}
+
+// TestPrincipalNameAttr: the slog attr carries principal_name only when the
+// context has a verified name; otherwise it is an empty group handlers elide.
+func TestPrincipalNameAttr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	logger.Warn("named", "k", "v", principalNameAttr(actor.WithName(context.Background(), "octocat")))
+	assert.Contains(t, buf.String(), "principal_name=octocat")
+
+	buf.Reset()
+	logger.Warn("unnamed", "k", "v", principalNameAttr(context.Background()))
+	assert.NotContains(t, buf.String(), "principal_name")
+}
+
+// TestDashboard_Requests_ActorName drives an authenticated request through
+// requireAuth (which resolves the user's login) and verifies /api/requests
+// rows carry both the principal key and its display name.
+func TestDashboard_Requests_ActorName(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+
+	orgQuery := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	gq := authedReq(http.MethodPost, "/graphql", strings.NewReader(orgQuery))
+	gq.Header.Set("Content-Type", "application/json")
+	gw := httptest.NewRecorder()
+	router.ServeHTTP(gw, gq)
+	require.Equal(t, http.StatusOK, gw.Code)
+
+	req := httptest.NewRequest("GET", "/api/requests", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var snap requestLogSnapshot
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &snap))
+	var found bool
+	for _, e := range snap.Recent {
+		if e.Path == "/graphql" {
+			found = true
+			assert.Equal(t, testUserActor, e.Actor)
+			assert.Equal(t, testUserLogin, e.ActorName, "the resolved login rides the request row")
+		}
+	}
+	require.True(t, found, "the graphql request must be in the log")
 }
 
 // TestDashboard_Requests_Admin drives real requests through the router and

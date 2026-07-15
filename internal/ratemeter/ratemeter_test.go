@@ -32,7 +32,7 @@ func TestObserve_ParsesHeaders(t *testing.T) {
 	s := New()
 	// Pin the clock before the fixture's reset so the entry is live.
 	pinned(s, time.Unix(1767225000, 0))
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4321",
 		"X-RateLimit-Used":      "679",
@@ -56,7 +56,7 @@ func TestObserve_ParsesHeaders(t *testing.T) {
 // belongs to the default "core" bucket.
 func TestObserve_ResourceDefaultsToCore(t *testing.T) {
 	s := New()
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4999",
 	}))
@@ -69,7 +69,7 @@ func TestObserve_ResourceDefaultsToCore(t *testing.T) {
 // TestObserve_UsedDerivedWhenAbsent: X-RateLimit-Used missing -> limit-remaining.
 func TestObserve_UsedDerivedWhenAbsent(t *testing.T) {
 	s := New()
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 	}))
@@ -84,10 +84,10 @@ func TestObserve_UsedDerivedWhenAbsent(t *testing.T) {
 // one of Limit/Remaining) is discarded too.
 func TestObserve_IgnoresResponsesWithoutRateHeaders(t *testing.T) {
 	s := New()
-	s.Observe("user:42", respWith(nil))
-	s.Observe("user:42", respWith(map[string]string{"X-RateLimit-Limit": "5000"}))
-	s.Observe("user:42", respWith(map[string]string{"X-RateLimit-Remaining": "10"}))
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(nil))
+	s.Observe("user:42", "", respWith(map[string]string{"X-RateLimit-Limit": "5000"}))
+	s.Observe("user:42", "", respWith(map[string]string{"X-RateLimit-Remaining": "10"}))
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "junk",
 		"X-RateLimit-Remaining": "10",
 	}))
@@ -98,11 +98,11 @@ func TestObserve_IgnoresResponsesWithoutRateHeaders(t *testing.T) {
 // replaces the earlier one.
 func TestObserve_LastWriteWins(t *testing.T) {
 	s := New()
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 	}))
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "3999",
 	}))
@@ -116,7 +116,7 @@ func TestObserve_LastWriteWins(t *testing.T) {
 // "anonymous" rather than an invisible blank row.
 func TestObserve_EmptyIdentityLabeled(t *testing.T) {
 	s := New()
-	s.Observe("", respWith(map[string]string{
+	s.Observe("", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "60",
 		"X-RateLimit-Remaining": "59",
 	}))
@@ -131,7 +131,7 @@ func TestObserve_EmptyIdentityLabeled(t *testing.T) {
 func TestObserve_Bounded(t *testing.T) {
 	s := New()
 	for i := 0; i < maxEntries+50; i++ {
-		s.Observe(fmt.Sprintf("token:%012d", i), respWith(map[string]string{
+		s.Observe(fmt.Sprintf("token:%012d", i), "", respWith(map[string]string{
 			"X-RateLimit-Limit":     "5000",
 			"X-RateLimit-Remaining": "4000",
 		}))
@@ -156,7 +156,7 @@ func TestSnapshot_Sorted(t *testing.T) {
 	for _, in := range []struct{ id, res string }{
 		{"user:9", "search"}, {"app:1", "graphql"}, {"user:9", "core"}, {"app:1", "core"},
 	} {
-		s.Observe(in.id, respWith(map[string]string{
+		s.Observe(in.id, "", respWith(map[string]string{
 			"X-RateLimit-Limit":     "10",
 			"X-RateLimit-Remaining": "9",
 			"X-RateLimit-Resource":  in.res,
@@ -179,12 +179,12 @@ func TestPrune_PastResetDies(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	advance := pinned(s, now)
 
-	s.Observe("user:soon", respWith(map[string]string{
+	s.Observe("user:soon", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 60),
 	}))
-	s.Observe("user:later", respWith(map[string]string{
+	s.Observe("user:later", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 3600),
@@ -209,7 +209,7 @@ func TestPrune_ZeroResetAgesOutAfterAnHour(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	advance := pinned(s, now)
 
-	s.Observe("user:noreset", respWith(map[string]string{
+	s.Observe("user:noreset", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 	}))
@@ -229,14 +229,14 @@ func TestPrune_PiggybacksOnObserve(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	advance := pinned(s, now)
 
-	s.Observe("user:dead", respWith(map[string]string{
+	s.Observe("user:dead", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4000",
 		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 10),
 	}))
 
 	advance(now.Add(time.Hour))
-	s.Observe("user:live", respWith(map[string]string{
+	s.Observe("user:live", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4999",
 		"X-RateLimit-Reset":     fmt.Sprint(now.Add(2 * time.Hour).Unix()),
@@ -254,7 +254,7 @@ func TestPrune_PiggybacksOnObserve(t *testing.T) {
 // wiring may pass a nil meter without guards.
 func TestNilStore_Safe(t *testing.T) {
 	var s *Store
-	s.Observe("user:42", respWith(map[string]string{
+	s.Observe("user:42", "", respWith(map[string]string{
 		"X-RateLimit-Limit":     "10",
 		"X-RateLimit-Remaining": "9",
 	}))
@@ -271,7 +271,7 @@ func TestObserve_Concurrent(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
-				s.Observe(fmt.Sprintf("user:%d", i%10), respWith(map[string]string{
+				s.Observe(fmt.Sprintf("user:%d", i%10), "", respWith(map[string]string{
 					"X-RateLimit-Limit":     "5000",
 					"X-RateLimit-Remaining": fmt.Sprint(5000 - i),
 				}))
@@ -281,4 +281,36 @@ func TestObserve_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Len(t, s.Snapshot(), 10)
+}
+
+// TestObserve_Name: the verified display name is recorded alongside the
+// identity, survives nameless re-observations of the same identity (the key
+// pins the principal), and a fresh name overwrites.
+func TestObserve_Name(t *testing.T) {
+	s := New()
+	headers := map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+	}
+
+	s.Observe("app:99", "pr-minder", respWith(headers))
+	require.Len(t, s.Snapshot(), 1)
+	assert.Equal(t, "pr-minder", s.Snapshot()[0].Name)
+
+	// A nameless observation of the same identity keeps the known name.
+	s.Observe("app:99", "", respWith(headers))
+	require.Len(t, s.Snapshot(), 1)
+	assert.Equal(t, "pr-minder", s.Snapshot()[0].Name, "a nameless reading must not erase the known name")
+
+	// A new verified name overwrites (e.g. an app was renamed).
+	s.Observe("app:99", "pr-minder-2", respWith(headers))
+	assert.Equal(t, "pr-minder-2", s.Snapshot()[0].Name)
+
+	// An identity never observed with a name has none.
+	s.Observe("token:abc", "", respWith(headers))
+	for _, o := range s.Snapshot() {
+		if o.Identity == "token:abc" {
+			assert.Equal(t, "", o.Name)
+		}
+	}
 }

@@ -38,6 +38,12 @@ type Observation struct {
 	// or a credential-derived label ("app-jwt", "token:<fp12>"). Never a raw
 	// token value.
 	Identity string
+	// Name is the identity's verified display name (a user login, an app
+	// slug, an installation's account login) when the caller supplied one.
+	// Display-only; never part of the (identity, resource) key. A later
+	// observation without a name keeps the last known one — the identity is
+	// the same principal either way.
+	Name string
 	// Resource is the GitHub rate-limit bucket the reading is for
 	// (X-RateLimit-Resource: "core", "graphql", "search", ...). "core" when
 	// the header is absent.
@@ -79,12 +85,15 @@ type Store struct {
 func New() *Store { return &Store{obs: make(map[key]Observation), now: time.Now} }
 
 // Observe parses the X-RateLimit-* headers off resp and records the reading
-// under identity. A response carrying neither X-RateLimit-Limit nor a usable
-// X-RateLimit-Remaining (304s, non-API hosts, ...) is ignored — a partial
-// reading is garbage, so both must parse. X-RateLimit-Used is derived as
-// limit-remaining when absent. Last write wins: Observe runs at response
-// time, so the latest call is the freshest reading.
-func (s *Store) Observe(identity string, resp *http.Response) {
+// under identity. name is the identity's verified display name ("" when
+// unknown; a named entry keeps its last known name across nameless
+// observations of the same identity). A response carrying neither
+// X-RateLimit-Limit nor a usable X-RateLimit-Remaining (304s, non-API hosts,
+// ...) is ignored — a partial reading is garbage, so both must parse.
+// X-RateLimit-Used is derived as limit-remaining when absent. Last write
+// wins: Observe runs at response time, so the latest call is the freshest
+// reading.
+func (s *Store) Observe(identity, name string, resp *http.Response) {
 	if s == nil || resp == nil {
 		return
 	}
@@ -114,11 +123,19 @@ func (s *Store) Observe(identity string, resp *http.Response) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
-	if _, exists := s.obs[k]; !exists && len(s.obs) >= maxEntries {
+	prev, exists := s.obs[k]
+	if !exists && len(s.obs) >= maxEntries {
 		s.evictOldestLocked()
+	}
+	if name == "" {
+		// Keep the last verified name: the (identity, resource) key already
+		// pins the principal, so a nameless reading is the same actor seen
+		// through a path that didn't carry the name.
+		name = prev.Name
 	}
 	s.obs[k] = Observation{
 		Identity:   identity,
+		Name:       name,
 		Resource:   resource,
 		Limit:      limit,
 		Remaining:  remaining,

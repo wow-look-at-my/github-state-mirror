@@ -227,6 +227,7 @@ func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	require.Len(t, body.Observed, 1)
 	o := body.Observed[0]
 	assert.Equal(t, "token:"+ghclient.Fingerprint(testToken)[:12], o.Identity)
+	assert.Equal(t, "", o.Name, "a token-fingerprint identity has no verified name")
 	assert.Equal(t, "core", o.Resource)
 	assert.Equal(t, 5000, o.Limit)
 	assert.Equal(t, 4321, o.Remaining)
@@ -271,6 +272,8 @@ func TestRateLimit_ObservedGroupsByPrincipal(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.NotEmpty(t, body.Observed)
 	assert.Equal(t, testUserActor, body.Observed[0].Identity)
+	assert.Equal(t, testUserLogin, body.Observed[0].Name,
+		"the requireAuth-resolved login rides the observation as its display name")
 }
 
 func TestRateLimit_Unauthenticated(t *testing.T) {
