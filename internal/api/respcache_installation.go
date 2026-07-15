@@ -40,12 +40,22 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
 	ctx := actor.WithActor(r.Context(), actorKey)
+	if ident.Slug != "" {
+		ctx = actor.WithName(ctx, ident.Slug)
+	}
+	// This route sits outside requireAuth, so its verified app identity would
+	// otherwise never reach actor_identities; record it here so the dashboard
+	// resolves app:<id> to the slug.
+	if h.recordIdentity != nil {
+		h.recordIdentity(ctx, actorKey, ident.Slug)
+	}
+	who := callerIdent{Key: actorKey, Name: ident.Slug}
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedRepoInstallation(ctx, actorKey, owner, repo, now); err == nil && ok {
-		h.reqlog.record(actorKey, r.Method, r.URL.Path, DispHit)
+		h.reqlog.record(who, r.Method, r.URL.Path, DispHit)
 		h.serveRepoInstallation(w, c, true)
 		return
 	} else if err != nil {
@@ -67,7 +77,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
 		slog.Warn("repo installation cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
-	h.reqlog.recordStatus(actorKey, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.recordStatus(who, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.serveRepoInstallation(w, c, false)
 }
 

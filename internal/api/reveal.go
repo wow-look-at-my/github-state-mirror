@@ -95,7 +95,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 	if principal != "" {
 		ok, err := h.store.HasGrant(ctx, principal, owner, repo, now)
 		if err != nil {
-			slog.Warn("reveal: grant lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+			slog.Warn("reveal: grant lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			return revealError, ghdata.DenyVerdict{}, false
 		}
 		if ok {
@@ -105,7 +105,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		// 3. Cached deny verdict for this exact resource.
 		v, ok, err := h.store.GetDenyVerdict(ctx, principal, kind, resourceKey, now)
 		if err != nil {
-			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			return revealError, ghdata.DenyVerdict{}, false
 		}
 		if ok {
@@ -137,7 +137,8 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 	}
 	defer resp.Body.Close()
 	// Passively record the X-RateLimit-* headers the probe response carries.
-	h.meter.Observe(callerLabel(r), resp)
+	who := callerLabel(r)
+	h.meter.Observe(who.Key, who.Name, resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes))
 	if err != nil {
 		return revealError, ghdata.DenyVerdict{}, false
@@ -156,7 +157,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		}
 		if principal != "" {
 			if err := h.store.RecordGrant(ctx, principal, owner, repo, ghdata.GrantSourceProbe, now); err != nil {
-				slog.Warn("reveal probe: record grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+				slog.Warn("reveal probe: record grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 				return revealError, ghdata.DenyVerdict{}, false
 			}
 		}
@@ -171,13 +172,13 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
 			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
-				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			}
 			if resp.StatusCode == http.StatusForbidden {
 				// A 403 is unambiguous about repo access; a stale grant (if
 				// any survived) must go.
 				if err := h.store.RevokeGrant(ctx, principal, owner, repo); err != nil {
-					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 				}
 			}
 		}

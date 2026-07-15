@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -55,7 +56,12 @@ func passthroughDisposition(r *http.Request) string {
 
 // requestEvent is one recorded data-API request.
 type requestEvent struct {
-	Actor       string `json:"actor"`
+	Actor string `json:"actor"`
+	// ActorName is the principal's VERIFIED display name (user login / app
+	// slug), captured from the request context at record time. Empty (and
+	// omitted) when no verified name is known — notably the unverified
+	// X-Mirror-Identity "app:<iss>" label, which must never gain a name.
+	ActorName   string `json:"actor_name,omitempty"`
 	Method      string `json:"method"`
 	Path        string `json:"path"`
 	Disposition string `json:"disposition"`
@@ -87,11 +93,11 @@ func newRequestLog() *requestLog {
 	return &requestLog{byDisp: make(map[string]int64), groups: make(map[string]*routeGroup)}
 }
 
-func (l *requestLog) record(actorKey, method, path, disposition string) {
-	l.recordStatus(actorKey, method, path, disposition, 0)
+func (l *requestLog) record(who callerIdent, method, path, disposition string) {
+	l.recordStatus(who, method, path, disposition, 0)
 }
 
-func (l *requestLog) recordStatus(actorKey, method, path, disposition string, status int) {
+func (l *requestLog) recordStatus(who callerIdent, method, path, disposition string, status int) {
 	now := time.Now().UTC()
 	route := normalizeRoute(path) // pure; kept outside the critical section
 	l.mu.Lock()
@@ -100,7 +106,8 @@ func (l *requestLog) recordStatus(actorKey, method, path, disposition string, st
 	l.byDisp[disposition]++
 	l.bumpGroupLocked(method, route, path, disposition, now)
 	l.recent = append(l.recent, requestEvent{
-		Actor:       actorKey,
+		Actor:       who.Key,
+		ActorName:   who.Name,
 		Method:      method,
 		Path:        path,
 		Disposition: disposition,
@@ -192,30 +199,53 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
-// callerLabel derives a best-effort, display-only cache-partition label for a
-// request. It never makes a network call: it uses the actor already resolved by
-// requireAuth when present (the cached-endpoint path), else the App id from an
-// X-Mirror-Identity assertion (decoded WITHOUT verifying — a forged header only
-// mislabels a metric row, never a security boundary), else a short token
-// fingerprint, else "anonymous".
-func callerLabel(r *http.Request) string {
-	if a := actor.FromContext(r.Context()); a != "" {
-		return a
+// callerIdent identifies a request's caller for display surfaces (request
+// log, rate meter): the partition/label Key plus the VERIFIED display Name
+// (user login / app slug), empty when none was proven. Display-only — never a
+// storage key.
+type callerIdent struct {
+	Key  string
+	Name string
+}
+
+// callerLabel derives a best-effort, display-only caller identity for a
+// request. It never makes a network call: it uses the actor (and its verified
+// display name) already resolved by requireAuth when present (the
+// cached-endpoint path), else the App id from an X-Mirror-Identity assertion
+// (decoded WITHOUT verifying — a forged header only mislabels a metric row,
+// never a security boundary; deliberately NO name, names require
+// verification), else a short token fingerprint, else "anonymous".
+func callerLabel(r *http.Request) callerIdent {
+	ctx := r.Context()
+	if a := actor.FromContext(ctx); a != "" {
+		return callerIdent{Key: a, Name: actor.NameFromContext(ctx)}
 	}
 	if jwt := r.Header.Get("X-Mirror-Identity"); jwt != "" {
 		if iss := jwtIssuer(jwt); iss != "" {
-			return "app:" + iss
+			return callerIdent{Key: "app:" + iss}
 		}
-		return "app:?"
+		return callerIdent{Key: "app:?"}
 	}
 	if tok := bearerToken(r); tok != "" {
 		fp := ghclient.Fingerprint(tok)
 		if len(fp) > 12 {
 			fp = fp[:12]
 		}
-		return "token:" + fp
+		return callerIdent{Key: "token:" + fp}
 	}
-	return "anonymous"
+	return callerIdent{Key: "anonymous"}
+}
+
+// principalNameAttr returns an inline slog attr carrying the principal's
+// verified display name ("principal_name") when the context has one, or a
+// no-op attr (an empty group, which slog handlers elide) when it doesn't — so
+// log sites can append it unconditionally and only named principals gain the
+// field.
+func principalNameAttr(ctx context.Context) slog.Attr {
+	if name := actor.NameFromContext(ctx); name != "" {
+		return slog.Group("", slog.String("principal_name", name))
+	}
+	return slog.Group("")
 }
 
 // jwtIssuer extracts the `iss` claim from a JWT WITHOUT verifying its signature.
