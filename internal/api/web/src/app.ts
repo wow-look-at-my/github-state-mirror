@@ -579,7 +579,7 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
 async function loadTimeline(): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    sub.textContent = "Incoming GitHub webhooks and outgoing proxied requests — real measured durations, last 24h (in-memory, resets on restart)";
+    sub.textContent = "Every exchange the mirror participates in — webhook deliveries, served requests, upstream calls, its own GitHub traffic, notifications — real measured durations, last 24h (in-memory, resets on restart)";
     if (body.querySelector("gsm-timeline")) return; // element self-updates; never rebuild it
     body.innerHTML = "";
     const tl = el("gsm-timeline") as GsmTimelineElement;
