@@ -24,7 +24,7 @@ type timelinePayload struct {
 // TestTimeline_AdminGated: /api/timeline follows the /api/requests admin
 // model — 401 anonymous, 403 signed-in non-admin, 200 admin.
 func TestTimeline_AdminGated(t *testing.T) {
-	svc := newTestAuth(t)
+	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	}))
@@ -58,7 +58,7 @@ func TestTimeline_AdminGated(t *testing.T) {
 // TestTimeline_SinceCursor: ?since=<id> pages incrementally, and a garbage
 // cursor is a 400.
 func TestTimeline_SinceCursor(t *testing.T) {
-	svc := newTestAuth(t)
+	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	}))
