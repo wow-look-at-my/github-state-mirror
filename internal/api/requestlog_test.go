@@ -16,9 +16,9 @@ import (
 
 func TestRequestLog_RecordAndSnapshot(t *testing.T) {
 	l := newRequestLog()
-	l.record("app:1", "POST", "/graphql", DispMiss)
-	l.record("app:1", "POST", "/graphql", DispHit)
-	l.record("token:x", "GET", "/rate_limit", DispPassthrough)
+	l.record(callerIdent{Key: "app:1"}, "POST", "/graphql", DispMiss)
+	l.record(callerIdent{Key: "app:1"}, "POST", "/graphql", DispHit)
+	l.record(callerIdent{Key: "token:x"}, "GET", "/rate_limit", DispPassthrough)
 
 	snap := l.snapshot(10)
 	assert.Equal(t, int64(3), snap.Total)
@@ -35,7 +35,7 @@ func TestRequestLog_RecordAndSnapshot(t *testing.T) {
 func TestRequestLog_CapAndLimit(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestLogRecentCap+50; i++ {
-		l.record("a", "GET", "/p", DispHit)
+		l.record(callerIdent{Key: "a"}, "GET", "/p", DispHit)
 	}
 	all := l.snapshot(0)
 	assert.Equal(t, int64(requestLogRecentCap+50), all.Total, "total counts every record")
@@ -59,14 +59,14 @@ func TestCallerLabel(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Header.Set("X-Mirror-Identity", "h."+payload+".s")
-	assert.Equal(t, "app:42", callerLabel(r), "identity header -> app:<id>")
+	assert.Equal(t, "app:42", callerLabel(r).Key, "identity header -> app:<id>")
 
 	r2 := httptest.NewRequest("GET", "/x", nil)
 	r2.Header.Set("Authorization", "Bearer some-token")
-	assert.True(t, strings.HasPrefix(callerLabel(r2), "token:"), "bearer -> token:<fingerprint>")
+	assert.True(t, strings.HasPrefix(callerLabel(r2).Key, "token:"), "bearer -> token:<fingerprint>")
 
 	r3 := httptest.NewRequest("GET", "/x", nil)
-	assert.Equal(t, "anonymous", callerLabel(r3))
+	assert.Equal(t, "anonymous", callerLabel(r3).Key)
 }
 
 // TestDashboard_Requests_Admin drives real requests through the router and

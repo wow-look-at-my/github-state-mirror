@@ -320,12 +320,22 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
 	ctx := actor.WithActor(r.Context(), actorKey)
+	if ident.Slug != "" {
+		ctx = actor.WithName(ctx, ident.Slug)
+	}
+	// This route sits outside requireAuth, so its verified app identity would
+	// otherwise never reach actor_identities; record it here so the dashboard
+	// resolves app:<id> to the slug.
+	if h.recordIdentity != nil {
+		h.recordIdentity(ctx, actorKey, ident.Slug)
+	}
+	who := callerIdent{Key: actorKey, Name: ident.Slug}
 	installID := chi.URLParam(r, "id")
 	bodyHash := canonicalBodyHash(reqBody)
 
 	now := time.Now()
 	if t, ok, err := h.store.GetCachedInstallToken(ctx, actorKey, installID, bodyHash, now); err == nil && ok {
-		h.reqlog.record(actorKey, r.Method, r.URL.Path, DispHit)
+		h.reqlog.record(who, r.Method, r.URL.Path, DispHit)
 		h.serveInstallToken(w, t, true)
 		return
 	} else if err != nil {
@@ -347,7 +357,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	if err := h.store.PutCachedInstallToken(ctx, actorKey, t, now, serveUntil); err != nil {
 		slog.Warn("install token cache write failed", "installation", installID, "error", err)
 	}
-	h.reqlog.recordStatus(actorKey, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.recordStatus(who, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
 	h.serveInstallToken(w, t, false)
 }
 
@@ -443,7 +453,7 @@ func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status
 		return
 	}
 	if err := h.store.RecordGrant(r.Context(), principal, owner, repo, ghdata.GrantSourceProbe, time.Now()); err != nil {
-		slog.Warn("refresh grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+		slog.Warn("refresh grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(r.Context()))
 	}
 }
 
@@ -500,7 +510,8 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	}
 	// Passively record the X-RateLimit-* headers on every cached-route miss
 	// fetch, labeled with the same identity the request log records.
-	h.meter.Observe(callerLabel(r), resp)
+	who := callerLabel(r)
+	h.meter.Observe(who.Key, who.Name, resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
 		resp.Body.Close()

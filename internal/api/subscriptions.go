@@ -42,8 +42,11 @@ func (s *subscriptionsAPI) routes(r chi.Router) {
 // NO secret field — the stored HMAC key is never returned by any response.
 // Principal is populated only on the admin operator view.
 type subscriptionJSON struct {
-	ID                  string   `json:"id"`
-	Principal           string   `json:"principal,omitempty"`
+	ID        string `json:"id"`
+	Principal string `json:"principal,omitempty"`
+	// PrincipalName is Principal's recorded display name (from
+	// actor_identities); admin view only, like Principal.
+	PrincipalName       string   `json:"principal_name,omitempty"`
 	URL                 string   `json:"url"`
 	Repos               []string `json:"repos"`
 	Events              []string `json:"events"`
@@ -237,9 +240,11 @@ type notificationsResponse struct {
 
 // handleNotifications returns the notifier's in-memory delivery activity
 // (counters + recent attempts; resets on restart, the request-log stance) and
-// EVERY subscription with its principal — the operator view. Secrets are
-// structurally absent (subscriptionJSON has no secret field). Admin-only,
-// like the other global operator views.
+// EVERY subscription with its principal — the operator view. Principals are
+// decorated with their recorded display names (actor_identities, best-effort:
+// a failed lookup just leaves names absent). Secrets are structurally absent
+// (subscriptionJSON has no secret field). Admin-only, like the other global
+// operator views.
 func (d *dashboard) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -254,9 +259,15 @@ func (d *dashboard) handleNotifications(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	names := d.actorNames(r.Context())
+	for i := range recent {
+		recent[i].PrincipalName = names[recent[i].Principal]
+	}
 	views := make([]subscriptionJSON, 0, len(subs))
 	for _, sub := range subs {
-		views = append(views, subscriptionView(sub, true))
+		v := subscriptionView(sub, true)
+		v.PrincipalName = names[sub.Principal]
+		views = append(views, v)
 	}
 	writeJSON(w, notificationsResponse{Counters: counters, Recent: recent, Subscriptions: views})
 }

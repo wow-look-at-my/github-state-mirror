@@ -78,7 +78,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
 		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
-			"org", orgLogin, "actor", actor.FromContext(ctx), "error", ensureErr)
+			"org", orgLogin, "actor", actor.Short(actor.FromContext(ctx)), "error", ensureErr, principalNameAttr(ctx))
 	}
 	disp := DispHit
 	switch {

@@ -91,10 +91,17 @@ func main() {
 
 	// Periodic refresher. Without an app configured, sessions is nil and periodic
 	// refreshes are disabled; per-request data still works via each caller's
-	// Authorization header.
+	// Authorization header. Each cycle also records the installations'
+	// account logins as the app-installation principals' display names, so
+	// the dashboard resolves them instead of showing "(unknown)".
 	var sessions syncpkg.SessionFunc
 	if app != nil {
-		sessions = syncpkg.AppSessions(app)
+		recordIdentity := func(ctx context.Context, principal, name string) {
+			if err := store.RecordActorIdentity(ctx, principal, name); err != nil {
+				slog.Warn("record app-installation identity failed", "principal", principal, "error", err)
+			}
+		}
+		sessions = syncpkg.AppSessions(app, recordIdentity)
 	}
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
