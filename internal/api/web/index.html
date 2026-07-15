@@ -33,8 +33,13 @@
          renders canned data instead of calling the backend. Production never
          ships demo-data.js. assets/rate-meter.js (from src/rate-meter.ts)
          self-registers the <rate-meter> custom element app.js instantiates;
-         module execution order guarantees it is defined before app.js runs. -->
+         module execution order guarantees it is defined before app.js runs.
+         assets/timeline.js (from src/timeline.ts) likewise self-registers the
+         <gsm-timeline> element behind the admin Timeline tab; the element
+         itself imports the <timeline-view> chart component at runtime from
+         js-snippets' GitHub Pages (never vendored). -->
     <script type="module" src="assets/rate-meter.js"></script>
+    <script type="module" src="assets/timeline.js"></script>
     <script type="module" src="assets/app.js"></script>
 </body>
 </html>

@@ -35,10 +35,22 @@ type IngestNotifier interface {
 	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
 }
 
-// Handler returns an http.Handler that receives GitHub webhook POSTs. Any
-// non-nil notifiers are invoked (non-blocking) after each dispatch with the
-// dispatch outcome; the variadic keeps notifier-less call sites unchanged.
-func Handler(secret string, dispatcher Dispatcher, notifiers ...IngestNotifier) http.HandlerFunc {
+// DeliveryRecorder observes every VERIFIED delivery after its synchronous
+// dispatch completes, with the real measured handling duration (receipt after
+// signature verification → dispatch complete — parse included, never faked to
+// an instant). It feeds the dashboard's timeline chart (internal/reqtimeline).
+// Implementations must be fast and non-blocking (an in-memory append); nil
+// keeps the feature inert.
+type DeliveryRecorder interface {
+	RecordDelivery(event Event, result DispatchResult, receivedAt time.Time, duration time.Duration)
+}
+
+// Handler returns an http.Handler that receives GitHub webhook POSTs. A
+// non-nil recorder is told about each verified delivery with its measured
+// handling duration; any non-nil notifiers are invoked (non-blocking) after
+// each dispatch with the dispatch outcome — the variadic keeps notifier-less
+// call sites unchanged.
+func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers ...IngestNotifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -73,6 +85,12 @@ func Handler(secret string, dispatcher Dispatcher, notifiers ...IngestNotifier) 
 			return
 		}
 
+		// The handling clock starts here — after verification, before parse —
+		// so the recorded duration is the delivery's REAL parse+dispatch time,
+		// however short (webhook handling is fast; the timeline renders it as
+		// whatever it truly measured, never an artificial instant).
+		receivedAt := time.Now()
+
 		event := ParseEvent(eventType, body)
 		event.DeliveryID = r.Header.Get("X-GitHub-Delivery")
 
@@ -82,6 +100,10 @@ func Handler(secret string, dispatcher Dispatcher, notifiers ...IngestNotifier) 
 		ctx, cancel := context.WithTimeout(r.Context(), dispatchTimeout)
 		defer cancel()
 		result := dispatcher.Dispatch(ctx, event)
+
+		if recorder != nil {
+			recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+		}
 
 		// Ingest is done — hand the outcome to any subscriber notifier. The
 		// call is non-blocking by contract, so the response to GitHub is
