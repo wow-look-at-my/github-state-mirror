@@ -499,7 +499,6 @@ func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusi
 	}))
 }
 
-
 // jobTime renders a fixture timestamp N hours in the past — RELATIVE to now,
 // because workflow jobs completed more than workflowJobRetention (14d) ago are
 // pruned on write: hardcoded dates rotted out of the window and started
