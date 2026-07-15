@@ -17,6 +17,7 @@ import type {
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
     RequestEvent, RequestGroup, RequestsResponse,
+    TimelineResponse, GsmTimelineElement,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
 } from "./types";
@@ -186,6 +187,7 @@ async function renderDashboard(me: Me): Promise<void> {
         tabs = el("div", { class: "tabs" },
             el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"),
             el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"),
+            el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"),
             el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
             el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"),
@@ -245,6 +247,7 @@ async function renderDashboard(me: Me): Promise<void> {
 function loadView(scope: string, silent = false): Promise<void> {
     if (scope === "webhooks") return loadWebhooks(silent);
     if (scope === "requests") return loadRequests(silent);
+    if (scope === "timeline") return loadTimeline();
     if (scope === "ratelimit") return loadRateLimits(silent);
     return loadScope(scope, silent);
 }
@@ -562,6 +565,28 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
         )),
         el("tbody", null, rows),
     );
+}
+
+// ---- traffic timeline (admin only) ----
+// A swimlane chart of incoming webhook deliveries (one lane per event type)
+// and outgoing proxied GitHub requests (one lane per route shape), each bar a
+// REAL measured duration — rendered by the <gsm-timeline> element
+// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
+// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
+// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
+// paused while the page is hidden) and merges new events in place. The shared
+// auto-refresh tick just lands here and finds the element already present.
+async function loadTimeline(): Promise<void> {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    sub.textContent = "Incoming GitHub webhooks and outgoing proxied requests — real measured durations, last 24h (in-memory, resets on restart)";
+    if (body.querySelector("gsm-timeline")) return; // element self-updates; never rebuild it
+    body.innerHTML = "";
+    const tl = el("gsm-timeline") as GsmTimelineElement;
+    // In demo mode route the element's polls through demoApi (canned data for
+    // the backend-free preview); production keeps its bounded default fetcher.
+    if (DEMO) tl.fetcher = (path) => api<TimelineResponse>(path);
+    body.appendChild(tl);
 }
 
 // ---- request activity (admin only) ----
@@ -1522,6 +1547,12 @@ function demoApi<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
             return Promise.reject(err);
         }
         return Promise.resolve(d.requests as unknown as T);
+    }
+    if (path.startsWith("/api/timeline")) {
+        if (!d.timeline) return demoReject(403);
+        // The canned payload is served for every poll; the element merges by
+        // event id, so re-serving the same events is harmless.
+        return Promise.resolve(d.timeline as unknown as T);
     }
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit) return demoReject(503);

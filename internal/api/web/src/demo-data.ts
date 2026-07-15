@@ -6,6 +6,7 @@
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
     ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, DemoConfig,
+    TimelineEvent, TimelineResponse,
 } from "./types";
 
 function ago(seconds: number): string {
@@ -141,6 +142,57 @@ const demoRequests: RequestsResponse = {
         { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
     ],
+};
+
+// --- traffic timeline (admin "Timeline" tab) ---
+// Canned timed events over the last hour: webhook deliveries render as
+// instant pips (real ms-scale durations), proxied requests as spans of a few
+// hundred ms, one upstream 502 emphasized as failed. The element merges by id,
+// so re-serving this same payload on every demo poll is harmless.
+function demoTimelineEvents(): TimelineEvent[] {
+    const events: TimelineEvent[] = [];
+    let id = 0;
+    const wh = (secsAgo: number, durMs: number, type: string, action: string, repo: string, disposition = "applied"): void => {
+        events.push({
+            id: ++id, kind: "webhook", lane: "⇐ " + type, start: ago(secsAgo), dur_ms: durMs,
+            event_type: type, action: action || undefined, delivery_id: "demo-" + id, repo, disposition,
+        });
+    };
+    const rq = (secsAgo: number, durMs: number, method: string, route: string, status: number, disposition: string, actorName?: string): void => {
+        events.push({
+            id: ++id, kind: "request", lane: method + " " + route, start: ago(secsAgo), dur_ms: durMs,
+            method, route, status, disposition,
+            actor: actorName ? "app:3433933" : "token:00ff11ee22dd", actor_name: actorName,
+        });
+    };
+    // Webhook pips across three event-type lanes.
+    wh(3480, 12, "push", "", "wow-look-at-my/buildhost");
+    wh(3100, 9, "check_run", "completed", "wow-look-at-my/buildhost");
+    wh(2900, 21, "pull_request", "synchronize", "wow-look-at-my/buildhost");
+    wh(2350, 8, "check_run", "created", "wow-look-at-my/actions");
+    wh(1900, 14, "push", "", "wow-look-at-my/actions");
+    wh(1600, 6, "check_run", "completed", "wow-look-at-my/actions", "ignored");
+    wh(1150, 18, "pull_request", "opened", "wow-look-at-my/webhook-runner");
+    wh(700, 11, "push", "", "wow-look-at-my/webhook-runner");
+    wh(240, 7, "check_run", "completed", "wow-look-at-my/webhook-runner");
+    wh(60, 16, "pull_request", "closed", "wow-look-at-my/buildhost");
+    // Proxied request spans across three route lanes (one failed 502).
+    rq(3300, 640, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
+    rq(2700, 410, "POST", "/graphql", 200, "miss", "pr-minder");
+    rq(2200, 980, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss", "pr-minder");
+    rq(1750, 1450, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 502, "error", "pr-minder");
+    rq(1300, 520, "POST", "/graphql", 200, "miss", "pr-minder");
+    rq(850, 300, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss");
+    rq(400, 720, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
+    rq(120, 260, "POST", "/graphql", 200, "miss", "pr-minder");
+    return events;
+}
+
+const demoTimeline: TimelineResponse = {
+    events: demoTimelineEvents(),
+    max_id: 18,
+    retention_start: ago(24 * 3600),
+    now: ago(0),
 };
 
 // --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
@@ -320,6 +372,7 @@ const config: DemoConfig = {
             },
             requests: demoRequests,
             webhooks: demoWebhooks,
+            timeline: demoTimeline,
             ratelimit: demoRateLimit,
             browse: demoBrowse,
             grants: adminGrants,
