@@ -1,6 +1,7 @@
 package reqtimeline
 
 import (
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 	"time"
@@ -19,27 +20,20 @@ func TestRecordAndSnapshot(t *testing.T) {
 	r.RecordRequest(now.Add(-500*time.Millisecond), 320*time.Millisecond, "GET", "/repos/{owner}/{repo}/pulls", 200, "passthrough", "user:1", "octocat")
 
 	snap := r.Snapshot(0)
-	if len(snap.Events) != 2 {
-		t.Fatalf("want 2 events, got %d", len(snap.Events))
-	}
-	if snap.MaxID != 2 {
-		t.Fatalf("want MaxID 2, got %d", snap.MaxID)
-	}
+	require.Equal(t, 2, len(snap.Events))
+
+	require.Equal(t, uint64(2), snap.MaxID)
+
 	wh, rq := snap.Events[0], snap.Events[1]
-	if wh.Kind != KindWebhook || wh.Lane != "⇐ push" || wh.DurMs != 40 || wh.EventType != "push" ||
-		wh.Repo != "o/r" || wh.DeliveryID != "d-1" || wh.Disposition != "applied" {
-		t.Fatalf("webhook event mismatch: %+v", wh)
-	}
-	if rq.Kind != KindRequest || rq.Lane != "GET /repos/{owner}/{repo}/pulls" || rq.DurMs != 320 ||
-		rq.Status != 200 || rq.Actor != "user:1" || rq.ActorName != "octocat" || rq.Disposition != "passthrough" {
-		t.Fatalf("request event mismatch: %+v", rq)
-	}
-	if wh.ID != 1 || rq.ID != 2 {
-		t.Fatalf("IDs must be monotonic from 1: %d, %d", wh.ID, rq.ID)
-	}
-	if got, want := snap.RetentionStart, now.Add(-24*time.Hour); !got.Equal(want) {
-		t.Fatalf("retention start: got %v want %v", got, want)
-	}
+	require.False(t, wh.Kind != KindWebhook || wh.Lane != "⇐ push" || wh.DurMs != 40 || wh.EventType != "push" || wh.Repo != "o/r" || wh.DeliveryID != "d-1" || wh.Disposition != "applied")
+
+	require.False(t, rq.Kind != KindRequest || rq.Lane != "GET /repos/{owner}/{repo}/pulls" || rq.DurMs != 320 || rq.Status != 200 || rq.Actor != "user:1" || rq.ActorName != "octocat" || rq.Disposition != "passthrough")
+
+	require.False(t, wh.ID != 1 || rq.ID != 2)
+
+	got, want := snap.RetentionStart, now.Add(-24*time.Hour)
+	require.True(t, got.Equal(want))
+
 }
 
 func TestSinceCursor(t *testing.T) {
@@ -50,22 +44,18 @@ func TestSinceCursor(t *testing.T) {
 	}
 
 	snap := r.Snapshot(3)
-	if len(snap.Events) != 2 {
-		t.Fatalf("since=3: want 2 events, got %d", len(snap.Events))
-	}
-	if snap.Events[0].ID != 4 || snap.Events[1].ID != 5 {
-		t.Fatalf("since=3: want IDs 4,5 got %d,%d", snap.Events[0].ID, snap.Events[1].ID)
-	}
+	require.Equal(t, 2, len(snap.Events))
+
+	require.False(t, snap.Events[0].ID != 4 || snap.Events[1].ID != 5)
+
 	// A cursor at (or past) the newest ID yields an empty page but MaxID
 	// still reports the frontier.
 	snap = r.Snapshot(5)
-	if len(snap.Events) != 0 || snap.MaxID != 5 {
-		t.Fatalf("since=5: want 0 events MaxID 5, got %d events MaxID %d", len(snap.Events), snap.MaxID)
-	}
+	require.False(t, len(snap.Events) != 0 || snap.MaxID != 5)
+
 	snap = r.Snapshot(99)
-	if len(snap.Events) != 0 {
-		t.Fatalf("since past the frontier must be empty, got %d", len(snap.Events))
-	}
+	require.Equal(t, 0, len(snap.Events))
+
 }
 
 func TestRetentionEviction(t *testing.T) {
@@ -77,20 +67,16 @@ func TestRetentionEviction(t *testing.T) {
 
 	// Eviction is lazy on read: the 30h-old event is gone, the 1h-old stays.
 	snap := r.Snapshot(0)
-	if len(snap.Events) != 1 || snap.Events[0].ID != 2 {
-		t.Fatalf("want only event 2 after retention eviction, got %+v", snap.Events)
-	}
+	require.False(t, len(snap.Events) != 1 || snap.Events[0].ID != 2)
 
 	// Advance the clock past the survivor's window: read-side eviction drops
 	// it too, with no write in between (lazy on read, not only on write).
 	now = now.Add(25 * time.Hour)
 	snap = r.Snapshot(0)
-	if len(snap.Events) != 0 {
-		t.Fatalf("want empty after the window passed, got %+v", snap.Events)
-	}
-	if snap.MaxID != 2 {
-		t.Fatalf("MaxID must survive eviction, got %d", snap.MaxID)
-	}
+	require.Equal(t, 0, len(snap.Events))
+
+	require.Equal(t, uint64(2), snap.MaxID)
+
 }
 
 // The retention clock runs on END time: a long-running event whose START
@@ -100,9 +86,9 @@ func TestRetentionUsesEndTime(t *testing.T) {
 	r := newTestRecorder(time.Hour, 100, &now)
 	// Started 90m ago, ran 45m: ended 45m ago — inside the 1h window.
 	r.RecordRequest(now.Add(-90*time.Minute), 45*time.Minute, "GET", "/x", 200, "passthrough", "a", "")
-	if snap := r.Snapshot(0); len(snap.Events) != 1 {
-		t.Fatalf("event ending inside the window must survive, got %+v", snap.Events)
-	}
+	snap := r.Snapshot(0)
+	require.Equal(t, 1, len(snap.Events))
+
 }
 
 func TestCountCap(t *testing.T) {
@@ -112,12 +98,10 @@ func TestCountCap(t *testing.T) {
 		r.RecordWebhook(now, time.Millisecond, "push", "", "", "o/r", "applied")
 	}
 	snap := r.Snapshot(0)
-	if len(snap.Events) != 10 {
-		t.Fatalf("count cap: want 10 events, got %d", len(snap.Events))
-	}
-	if snap.Events[0].ID != 16 || snap.Events[9].ID != 25 {
-		t.Fatalf("count cap must drop the OLDEST: got IDs %d..%d", snap.Events[0].ID, snap.Events[9].ID)
-	}
+	require.Equal(t, 10, len(snap.Events))
+
+	require.False(t, snap.Events[0].ID != 16 || snap.Events[9].ID != 25)
+
 }
 
 // Compaction (the amortized head-reset) must not corrupt the live window.
@@ -135,16 +119,14 @@ func TestCompactionKeepsLiveEvents(t *testing.T) {
 		r.RecordWebhook(now, time.Millisecond, "push", "", "", "o/r", "applied")
 	}
 	snap := r.Snapshot(0)
-	if len(snap.Events) != 5 {
-		t.Fatalf("want the 5 live events after compaction, got %d", len(snap.Events))
-	}
+	require.Equal(t, 5, len(snap.Events))
+
 	for i, e := range snap.Events {
-		if want := uint64(3001 + i); e.ID != want {
-			t.Fatalf("event %d: want ID %d got %d", i, want, e.ID)
-		}
-		if e.EventType != "push" {
-			t.Fatalf("event %d: stale entry leaked through compaction: %+v", i, e)
-		}
+		want := uint64(3001 + i)
+		require.Equal(t, want, e.ID)
+
+		require.Equal(t, "push", e.EventType)
+
 	}
 }
 
@@ -154,9 +136,8 @@ func TestNilRecorderSafe(t *testing.T) {
 	r.RecordWebhook(time.Now(), time.Millisecond, "push", "", "", "", "applied")
 	r.RecordRequest(time.Now(), time.Millisecond, "GET", "/x", 200, "passthrough", "a", "")
 	snap := r.Snapshot(0)
-	if snap.Events == nil || len(snap.Events) != 0 {
-		t.Fatalf("nil recorder snapshot must be empty-but-non-nil, got %+v", snap.Events)
-	}
+	require.False(t, snap.Events == nil || len(snap.Events) != 0)
+
 }
 
 func TestConcurrentAccess(t *testing.T) {
@@ -176,16 +157,13 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 	snap := r.Snapshot(0)
-	if len(snap.Events) != 8000 {
-		t.Fatalf("want 8000 events after concurrent writes, got %d", len(snap.Events))
-	}
-	if snap.MaxID != 8000 {
-		t.Fatalf("want MaxID 8000, got %d", snap.MaxID)
-	}
+	require.Equal(t, 8000, len(snap.Events))
+
+	require.Equal(t, uint64(8000), snap.MaxID)
+
 	// IDs must be strictly increasing in the ring.
 	for i := 1; i < len(snap.Events); i++ {
-		if snap.Events[i].ID <= snap.Events[i-1].ID {
-			t.Fatalf("IDs out of order at %d: %d then %d", i, snap.Events[i-1].ID, snap.Events[i].ID)
-		}
+		require.Greater(t, snap.Events[i].ID, snap.Events[i-1].ID)
+
 	}
 }
