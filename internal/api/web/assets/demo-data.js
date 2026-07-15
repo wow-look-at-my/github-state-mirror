@@ -173,6 +173,12 @@ const demoRateLimit = {
         { identity: "app:3433933", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
         { identity: "app:3433933", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
         { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
+        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an
+        // identity that stopped calling). The server ages these out lazily, so
+        // the live dashboard should never show one; the backend-free preview
+        // keeps it visible to exercise the honest stale rendering
+        // ("reset 23h ago · stale", never "resets now").
+        { identity: "token:44aa55bb66cc", resource: "core", limit: 5000, remaining: 4880, used: 120, reset: resetIn(-82800), observed_at: ago(86100) },
         { identity: "user:583231", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
     ],
 };

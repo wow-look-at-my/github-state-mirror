@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,8 +20,18 @@ func respWith(headers map[string]string) *http.Response {
 	return &http.Response{StatusCode: http.StatusOK, Header: h}
 }
 
+// pinned fixes the store's clock (the now seam) at a settable instant and
+// returns the setter.
+func pinned(s *Store, at time.Time) func(time.Time) {
+	current := at
+	s.now = func() time.Time { return current }
+	return func(t time.Time) { current = t }
+}
+
 func TestObserve_ParsesHeaders(t *testing.T) {
 	s := New()
+	// Pin the clock before the fixture's reset so the entry is live.
+	pinned(s, time.Unix(1767225000, 0))
 	s.Observe("user:42", respWith(map[string]string{
 		"X-RateLimit-Limit":     "5000",
 		"X-RateLimit-Remaining": "4321",
@@ -158,6 +169,85 @@ func TestSnapshot_Sorted(t *testing.T) {
 		got[i] = o.Identity + "/" + o.Resource
 	}
 	assert.Equal(t, []string{"app:1/core", "app:1/graphql", "user:9/core", "user:9/search"}, got)
+}
+
+// TestPrune_PastResetDies: an observation whose reset moment has passed is
+// dead — an active identity would have been re-observed with a fresh future
+// reset — and Snapshot never returns it; entries with future resets survive.
+func TestPrune_PastResetDies(t *testing.T) {
+	s := New()
+	now := time.Unix(1_800_000_000, 0)
+	advance := pinned(s, now)
+
+	s.Observe("user:soon", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 60),
+	}))
+	s.Observe("user:later", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 3600),
+	}))
+	require.Len(t, s.Snapshot(), 2)
+
+	// At the exact reset second the entry still stands (prune is strictly
+	// after); one second past, it's gone.
+	advance(now.Add(60 * time.Second))
+	require.Len(t, s.Snapshot(), 2)
+	advance(now.Add(61 * time.Second))
+	snap := s.Snapshot()
+	require.Len(t, snap, 1)
+	assert.Equal(t, "user:later", snap[0].Identity)
+}
+
+// TestPrune_ZeroResetAgesOutAfterAnHour: a zero Reset (header absent) has no
+// window to judge by — the entry is neither immortal nor instantly dead: it
+// survives while ObservedAt is within staleTTL and is pruned past it.
+func TestPrune_ZeroResetAgesOutAfterAnHour(t *testing.T) {
+	s := New()
+	now := time.Unix(1_800_000_000, 0)
+	advance := pinned(s, now)
+
+	s.Observe("user:noreset", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+	}))
+	require.Len(t, s.Snapshot(), 1, "a zero reset must not mean instant death")
+
+	advance(now.Add(59 * time.Minute))
+	require.Len(t, s.Snapshot(), 1, "still within the 1h fallback bound")
+
+	advance(now.Add(61 * time.Minute))
+	assert.Empty(t, s.Snapshot(), "a zero reset must not mean immortal")
+}
+
+// TestPrune_PiggybacksOnObserve: the write side prunes too — a dead entry is
+// dropped from the map by an unrelated Observe, without waiting for a read.
+func TestPrune_PiggybacksOnObserve(t *testing.T) {
+	s := New()
+	now := time.Unix(1_800_000_000, 0)
+	advance := pinned(s, now)
+
+	s.Observe("user:dead", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 10),
+	}))
+
+	advance(now.Add(time.Hour))
+	s.Observe("user:live", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4999",
+		"X-RateLimit-Reset":     fmt.Sprint(now.Add(2 * time.Hour).Unix()),
+	}))
+
+	s.mu.Lock()
+	_, deadExists := s.obs[key{identity: "user:dead", resource: "core"}]
+	size := len(s.obs)
+	s.mu.Unlock()
+	assert.False(t, deadExists, "Observe must sweep dead entries")
+	assert.Equal(t, 1, size)
 }
 
 // TestNilStore_Safe: a nil *Store no-ops (the nil-recorder pattern), so
