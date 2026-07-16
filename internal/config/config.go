@@ -15,6 +15,10 @@ import (
 // var's own initializer by TestCacheMaxRowsDefaultMatchesGhdata.
 const defaultCacheMaxRows int64 = 1_000_000
 
+// defaultRefreshInterval is the default periodic fleet-refresh cadence (see
+// REFRESH_INTERVAL).
+const defaultRefreshInterval = 6 * time.Hour
+
 type Config struct {
 	ListenAddr    string
 	DBPath        string
@@ -60,13 +64,17 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	refreshInterval, err := parseRefreshInterval(os.Getenv("REFRESH_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
 		DBPath:              envOr("DB_PATH", "github-mirror.db"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
 		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval:     6 * time.Hour,
+		RefreshInterval:     refreshInterval,
 		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
@@ -98,6 +106,25 @@ func parseCacheMaxRows(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid CACHE_MAX_ROWS %d: must be >= 1", n)
 	}
 	return n, nil
+}
+
+// parseRefreshInterval parses the REFRESH_INTERVAL override for the periodic
+// fleet-refresh cadence (a Go duration string, e.g. "6h" or "30m").
+// Absent/empty keeps the default; a value that is unparseable or not positive
+// is an error (the server refuses to start) rather than a silent fallback
+// that would leave the operator running with a cadence they didn't set.
+func parseRefreshInterval(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultRefreshInterval, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: %w", s, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: must be positive", s)
+	}
+	return d, nil
 }
 
 // GitHubAppConfigured reports whether a GitHub App ID was provided. The private

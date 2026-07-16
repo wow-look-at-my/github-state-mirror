@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -71,6 +72,106 @@ func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, meta, "doFetch must seed the cache_metadata row itself")
 	assert.Equal(t, freshness.StateFresh, meta.State)
+}
+
+// TestPeriodicRefresher_StartRunsImmediately: Start's FIRST fleet refresh runs
+// at startup, not one full interval in. The interval here is an hour, so any
+// fetch observed within the test window can only be the startup cycle -- the
+// production regression was exactly a bare ticker whose first fire sat 6h
+// away while near-daily schema-bump deploys (which also nuke the freshness
+// markers) restarted the clock, so no cycle ever completed.
+func TestPeriodicRefresher_StartRunsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	fStore := freshness.NewStore(db)
+	mgr := freshness.NewManager(fStore)
+	rec := &recordingFetcher{}
+	mgr.RegisterFetcher(freshness.Policy{Kind: KindOrgRepos}, rec)
+
+	sessions := func(ctx context.Context) ([]Session, error) {
+		return []Session{
+			{Ctx: actor.WithActor(ctx, AppInstallationActor(1)), Owner: "wow-look-at-my", AccountType: "Organization", InstallationID: 1},
+			{Ctx: actor.WithActor(ctx, AppInstallationActor(2)), Owner: "PazerOP", AccountType: "User", InstallationID: 2},
+		}, nil
+	}
+	refresher := NewPeriodicRefresher(mgr, time.Hour, sessions)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		refresher.Start(ctx)
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return len(rec.calls()) == 2 },
+		5*time.Second, 10*time.Millisecond, "the startup cycle must fetch every session without waiting for a tick")
+	cancel()
+	<-done
+
+	// The startup cycle stamped a freshness row for EVERY enumerated session,
+	// org and User account alike, under its app-installation principal.
+	for owner, install := range map[string]int64{"wow-look-at-my": 1, "PazerOP": 2} {
+		meta, err := fStore.Get(context.Background(), freshness.ResourceID{
+			Kind: KindOrgRepos, Key: owner, Actor: AppInstallationActor(install),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, meta, "owner %s must have a freshness row after the startup cycle", owner)
+		assert.Equal(t, freshness.StateFresh, meta.State, "owner %s", owner)
+	}
+}
+
+// failingFetcher records like recordingFetcher but errors for one key.
+type failingFetcher struct {
+	recordingFetcher
+	failKey string
+}
+
+func (f *failingFetcher) Fetch(ctx context.Context, key string, etag string) (freshness.RefreshResult, error) {
+	_, _ = f.recordingFetcher.Fetch(ctx, key, etag)
+	if key == f.failKey {
+		return freshness.RefreshResult{}, errors.New("github api POST /graphql: 502 Bad Gateway")
+	}
+	return freshness.RefreshResult{RecordsChanged: 1}, nil
+}
+
+// TestPeriodicRefresher_FailingOwnerStillMarksOthers: one owner's failed fetch
+// must leave a visible error marker (state error + the message) and must not
+// stop the rest of the fleet from syncing fresh.
+func TestPeriodicRefresher_FailingOwnerStillMarksOthers(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	fStore := freshness.NewStore(db)
+	mgr := freshness.NewManager(fStore)
+	rec := &failingFetcher{failKey: "badorg"}
+	mgr.RegisterFetcher(freshness.Policy{Kind: KindOrgRepos}, rec)
+
+	sessions := func(ctx context.Context) ([]Session, error) {
+		return []Session{
+			{Ctx: actor.WithActor(ctx, AppInstallationActor(1)), Owner: "badorg", InstallationID: 1},
+			{Ctx: actor.WithActor(ctx, AppInstallationActor(2)), Owner: "goodorg", InstallationID: 2},
+		}, nil
+	}
+	NewPeriodicRefresher(mgr, time.Hour, sessions).refreshAll(context.Background())
+
+	bad, err := fStore.Get(context.Background(), freshness.ResourceID{
+		Kind: KindOrgRepos, Key: "badorg", Actor: AppInstallationActor(1),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, bad, "a failed fetch still seeds its marker row")
+	assert.Equal(t, freshness.StateError, bad.State)
+	assert.Contains(t, bad.ErrorMessage, "502 Bad Gateway")
+
+	good, err := fStore.Get(context.Background(), freshness.ResourceID{
+		Kind: KindOrgRepos, Key: "goodorg", Actor: AppInstallationActor(2),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, good)
+	assert.Equal(t, freshness.StateFresh, good.State, "one owner's failure must not block the rest")
 }
 
 // TestPeriodicRefresher_BypassesErrorBackoff: a deliberate periodic refresh

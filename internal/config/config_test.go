@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,6 +84,36 @@ func TestLoad_CacheMaxRowsInvalid(t *testing.T) {
 		t.Setenv("CACHE_MAX_ROWS", v)
 		_, err := Load()
 		assert.Error(t, err, "CACHE_MAX_ROWS=%q must fail Load", v)
+	}
+}
+
+// TestLoad_RefreshIntervalDefault: an absent (or empty) REFRESH_INTERVAL keeps
+// the 6h default cadence.
+func TestLoad_RefreshIntervalDefault(t *testing.T) {
+	t.Setenv("REFRESH_INTERVAL", "")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, defaultRefreshInterval, cfg.RefreshInterval)
+	assert.Equal(t, 6*time.Hour, cfg.RefreshInterval)
+}
+
+// TestLoad_RefreshIntervalValid: a valid Go duration override is applied
+// verbatim.
+func TestLoad_RefreshIntervalValid(t *testing.T) {
+	t.Setenv("REFRESH_INTERVAL", "30m")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, cfg.RefreshInterval)
+}
+
+// TestLoad_RefreshIntervalInvalid: an unparseable or non-positive value must
+// fail Load (a loud misconfiguration -- the server refuses to start), never
+// fall back silently to a cadence the operator didn't set.
+func TestLoad_RefreshIntervalInvalid(t *testing.T) {
+	for _, v := range []string{"abc", "10", "0", "-5m", "0s"} {
+		t.Setenv("REFRESH_INTERVAL", v)
+		_, err := Load()
+		assert.Error(t, err, "REFRESH_INTERVAL=%q must fail Load", v)
 	}
 }
 
