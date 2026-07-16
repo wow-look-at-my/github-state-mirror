@@ -19,6 +19,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -173,8 +174,12 @@ func NewRouter(
 	meter *ratemeter.Store,
 	notifier *notify.Notifier,
 	dbPath string,
+	timeline *reqtimeline.Recorder,
 ) http.Handler {
 	r := chi.NewRouter()
+	// First: stamp every request's receipt time, so any record site can put a
+	// real end-to-end duration on the Timeline chart.
+	r.Use(stampRequestStart)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// CORS so browser clients on other origins (e.g. the repo-nightmare PR
@@ -183,13 +188,16 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 
 	// In-memory record of data-API requests (hit/miss/passthrough) for the
-	// dashboard's "Requests" view.
+	// dashboard's "Requests" view. Every observed request is also mirrored,
+	// timed end-to-end, onto the Timeline chart.
 	reqlog := newRequestLog()
+	reqlog.timeline = timeline
 
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
-	// proxied request is recorded as a passthrough.
+	// proxied request is recorded as a passthrough — and timed into the
+	// timeline ring for the dashboard's "Timeline" chart.
 	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
 
 	// One debounced principal->name recorder shared by requireAuth and the
@@ -197,18 +205,20 @@ func NewRouter(
 	// GitHub-verified identity lands in actor_identities.
 	recordIdentity := newIdentityRecorder(store)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
 	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each
 	// synchronous dispatch the subscriber notifier fans the outcome out to
-	// registered endpoints (non-blocking; nil keeps the feature inert).
-	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, notifier))
+	// registered endpoints (non-blocking; nil keeps the feature inert). Each
+	// verified delivery's full handling duration is also recorded into the
+	// timeline ring (the dashboard's "Timeline" chart).
+	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline), notifier))
 
 	// GitHub OAuth relays for browser clients. A purely client-side app cannot
 	// POST to github.com's login endpoints directly (they send no CORS

@@ -499,12 +499,20 @@ func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusi
 	}))
 }
 
+// jobTime renders a fixture timestamp N hours in the past — RELATIVE to now,
+// because workflow jobs completed more than workflowJobRetention (14d) ago are
+// pruned on write: hardcoded dates rotted out of the window and started
+// failing these tests on 2026-07-15.
+func jobTime(hoursAgo int) string {
+	return time.Now().Add(-time.Duration(hoursAgo) * time.Hour).UTC().Format(time.RFC3339)
+}
+
 func TestDashboard_Jobs_Admin(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, _ := newTestStack(t, svc)
-	seedJob(t, store, 1, "done-old", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
-	seedJob(t, store, 2, "done-new", "completed", "failure", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
-	seedJob(t, store, 3, "running", "in_progress", "", "2026-07-03T10:00:00Z", "")
+	seedJob(t, store, 1, "done-old", "completed", "success", jobTime(73), jobTime(72))
+	seedJob(t, store, 2, "done-new", "completed", "failure", jobTime(49), jobTime(48))
+	seedJob(t, store, 3, "running", "in_progress", "", jobTime(24), "")
 
 	req := httptest.NewRequest("GET", "/api/jobs", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -528,9 +536,9 @@ func TestDashboard_Jobs_Admin(t *testing.T) {
 func TestDashboard_Jobs_Limit(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, _ := newTestStack(t, svc)
-	seedJob(t, store, 1, "a", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
-	seedJob(t, store, 2, "b", "completed", "success", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
-	seedJob(t, store, 3, "c", "in_progress", "", "2026-07-03T10:00:00Z", "")
+	seedJob(t, store, 1, "a", "completed", "success", jobTime(73), jobTime(72))
+	seedJob(t, store, 2, "b", "completed", "success", jobTime(49), jobTime(48))
+	seedJob(t, store, 3, "c", "in_progress", "", jobTime(24), "")
 
 	// limit honored.
 	req := httptest.NewRequest("GET", "/api/jobs?limit=1", nil)

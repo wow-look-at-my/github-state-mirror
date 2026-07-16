@@ -12,6 +12,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
 // Request dispositions recorded for the dashboard's "Requests" view.
@@ -85,12 +86,40 @@ type requestLog struct {
 	byDisp map[string]int64
 	groups map[string]*routeGroup // key: method + " " + normalizeRoute(path); bounded (requestgroups.go)
 	recent []requestEvent         // newest last; capped at requestLogRecentCap
+	// timeline mirrors every observed request onto the dashboard's Timeline
+	// chart with its real end-to-end duration (see observeStatus). Nil-safe.
+	timeline *reqtimeline.Recorder
 }
 
 const requestLogRecentCap = 500
 
 func newRequestLog() *requestLog {
 	return &requestLog{byDisp: make(map[string]int64), groups: make(map[string]*routeGroup)}
+}
+
+// observe records one served data-API request — into the request log AND,
+// timed end-to-end from the router's receipt stamp, into the timeline ring.
+// EVERY inbound disposition is charted: hits included (a hit is a request the
+// mirror served; concealing it from the chart would be a gap).
+func (l *requestLog) observe(r *http.Request, disposition string) {
+	l.observeStatus(r, disposition, 0)
+}
+
+func (l *requestLog) observeStatus(r *http.Request, disposition string, status int) {
+	l.observeAs(r, callerLabel(r), disposition, status)
+}
+
+// observeAs is observeStatus with an explicit caller identity — for the
+// self-verifying app-JWT routes, whose verified app:<id>+slug identity
+// callerLabel cannot derive.
+func (l *requestLog) observeAs(r *http.Request, who callerIdent, disposition string, status int) {
+	l.recordStatus(who, r.Method, r.URL.Path, disposition, status)
+	// The router stamps every request (stampRequestStart), so the stamp is
+	// always present on served traffic; a direct handler invocation in a unit
+	// test without the router is the only stampless path.
+	if start, ok := requestStartFrom(r.Context()); ok {
+		l.timeline.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), status, disposition, who.Key, who.Name)
+	}
 }
 
 func (l *requestLog) record(who callerIdent, method, path, disposition string) {
@@ -162,12 +191,13 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 // the dashboard shows whether the forwarded call actually succeeded. Used both as
 // the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
 // forward target, so each proxied request is counted exactly once regardless of
-// entry path.
+// entry path. observeStatus also times it end-to-end (upstream round-trip plus
+// response streaming) into the timeline ring.
 func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, passthroughDisposition(r), sw.status)
+		log.observeStatus(r, passthroughDisposition(r), sw.status)
 	})
 }
 

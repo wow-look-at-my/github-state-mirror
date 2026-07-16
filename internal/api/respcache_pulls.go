@@ -218,7 +218,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("pulls list absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.servePullsList(w, r, rows, labelsByPR, false)
 }
 
@@ -237,7 +237,7 @@ func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows [
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
@@ -311,7 +311,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	if doc, ok, err := h.store.GetCachedClosedPull(r.Context(), owner, repo, number, time.Now()); err != nil {
 		slog.Warn("closed PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	} else if ok {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
@@ -354,7 +354,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("closed PR doc store failed", "owner", owner, "repo", repo, "number", number, "error", err)
 		}
 		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+		h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 		writeRebuilt(w, http.StatusOK, doc, false)
 		return
 	}
@@ -367,7 +367,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("closed PR doc invalidate failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	if staleRejected {
 		// The fetch re-offered the test-merge sha a push just invalidated: a
 		// pre-push answer (GitHub's recompute lag), stored unresolved above.
@@ -389,7 +389,7 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }

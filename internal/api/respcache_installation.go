@@ -55,7 +55,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedRepoInstallation(ctx, actorKey, owner, repo, now); err == nil && ok {
-		h.reqlog.record(who, r.Method, r.URL.Path, DispHit)
+		h.reqlog.observeAs(r, who, DispHit, 0)
 		h.serveRepoInstallation(w, c, true)
 		return
 	} else if err != nil {
@@ -77,7 +77,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
 		slog.Warn("repo installation cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
-	h.reqlog.recordStatus(who, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
 	h.serveRepoInstallation(w, c, false)
 }
 
