@@ -79,6 +79,9 @@ export interface WebhooksResponse {
 // ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
+    // Verified display name for the actor (user login / app slug); absent when
+    // none was proven (e.g. token fingerprints, unverified identity headers).
+    actor_name?: string;
     method: string;
     path: string;
     disposition: string;
@@ -132,6 +135,9 @@ export interface InstallationRateLimit {
 // resets on restart.
 export interface ObservedRateLimit {
     identity: string;
+    // Verified display name for the identity (user login / app slug /
+    // installation account login); absent when none was observed.
+    name?: string;
     resource: string;
     limit: number;
     remaining: number;
@@ -269,6 +275,8 @@ export interface TruthFreshness {
     last_fetched_at?: string;
     error?: string;
     principal?: string;
+    // The principal's recorded display name (actor_identities), when known.
+    principal_name?: string;
 }
 
 export interface ConsistencyReport {

@@ -33,6 +33,11 @@ type handlers struct {
 	// (miss fetches, reveal probes) for the dashboard's "Rate limit" tab.
 	// Nil-safe: a nil meter records nothing.
 	meter *ratemeter.Store
+	// recordIdentity persists a principal->display-name mapping (the shared,
+	// debounced identityRecorder requireAuth uses). The self-verifying app-JWT
+	// routes (token mint, repo installation) call it so app:<id> principals
+	// resolve to their slug on the dashboard too. Nil-safe: nil records nothing.
+	recordIdentity identityRecorder
 }
 
 // NOTE: the mirror once served /user, /user/orgs, /compare, and /pulls/{n}/files

@@ -76,8 +76,11 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 		// Label the poll with the installation's stable principal (the same
 		// key the background refresher runs under), so the passive rate meter
 		// records it there instead of under an hourly-rotating token
-		// fingerprint.
+		// fingerprint — plus the account login as its display name.
 		tctx := actor.WithActor(ghclient.WithToken(ctx, token), AppInstallationActor(inst.ID))
+		if inst.Account.Login != "" {
+			tctx = actor.WithName(tctx, inst.Account.Login)
+		}
 		rl, err := c.gh.GetRateLimit(tctx)
 		if err != nil {
 			entry.Error = "fetch /rate_limit failed: " + err.Error()
@@ -114,6 +117,9 @@ type ScopeFreshness struct {
 	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
 	Error         string `json:"error,omitempty"`           // last fetch error, if any
 	Principal     string `json:"principal,omitempty"`       // whose sync marker this is
+	// PrincipalName is Principal's recorded display name (user login / app
+	// slug / installation account login) from actor_identities, when known.
+	PrincipalName string `json:"principal_name,omitempty"`
 }
 
 // OrgSkip records an owner that could not be checked and why (so the absence of
@@ -271,13 +277,16 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		byLogin[strings.ToLower(in.Account.Login)] = in
 	}
 
+	// Principal display names for the freshness markers, loaded once per run.
+	actorNames := c.actorNames(ctx)
+
 	for i, owner := range owners {
 		progress.emit(ProgressEvent{Phase: "owner", Owner: owner, Index: i + 1, Total: len(owners)})
 
 		// The owner's most-recent sync staleness, whether or not the owner
 		// ends up checked -- long-unsynced truth explains drift. (In apply
 		// mode this reads the PRE-apply marker; the apply stamps a fresh one.)
-		c.recordTruthFreshness(ctx, report, owner)
+		c.recordTruthFreshness(ctx, report, owner, actorNames)
 
 		skip := func(reason string) {
 			report.OrgsSkipped = append(report.OrgsSkipped, OrgSkip{Org: owner, Reason: reason})
@@ -380,13 +389,32 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 	return report, nil
 }
 
+// actorNames returns the recorded principal->display-name map (from
+// actor_identities), or an empty map when the lookup is unavailable or fails
+// — the report's principal keys then simply carry no name.
+func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
+	names := make(map[string]string)
+	if c.store == nil {
+		return names
+	}
+	identities, err := c.store.ListActorIdentities(ctx)
+	if err != nil {
+		return names
+	}
+	for _, id := range identities {
+		names[id.Actor] = id.Login
+	}
+	return names
+}
+
 // recordTruthFreshness copies the most recently fetched org-sync marker for
 // one owner into the report (read-only). An owner with NO marker rows is
 // surfaced explicitly as "never_synced" -- silently omitting it hid "the fleet
 // refresher never completed a cycle" behind an absent map key. Any
 // principal's sync refreshes global truth, so the NEWEST marker is what
-// bounds truth staleness.
-func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *ConsistencyReport, owner string) {
+// bounds truth staleness. names resolves the marker's principal key to its
+// recorded display name (best-effort).
+func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *ConsistencyReport, owner string, names map[string]string) {
 	if c.fresh == nil {
 		return
 	}
@@ -418,7 +446,7 @@ func (c *ConsistencyChecker) recordTruthFreshness(ctx context.Context, report *C
 	if newest == nil {
 		newest = &metas[0]
 	}
-	sf := ScopeFreshness{State: string(newest.State), Error: newest.ErrorMessage, Principal: newest.Actor}
+	sf := ScopeFreshness{State: string(newest.State), Error: newest.ErrorMessage, Principal: newest.Actor, PrincipalName: names[newest.Actor]}
 	if newest.LastFetchedAt != nil {
 		sf.LastFetchedAt = newest.LastFetchedAt.UTC().Format(time.RFC3339)
 	}

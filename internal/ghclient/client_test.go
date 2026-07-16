@@ -371,7 +371,7 @@ func rateHeaders(w http.ResponseWriter) {
 // identities it was called with.
 func observed(c *Client) *[]string {
 	var ids []string
-	c.SetRateObserver(func(identity string, resp *http.Response) {
+	c.SetRateObserver(func(identity, name string, resp *http.Response) {
 		ids = append(ids, identity)
 	})
 	return &ids

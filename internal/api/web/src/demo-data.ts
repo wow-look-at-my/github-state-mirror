@@ -129,14 +129,17 @@ const demoRequests: RequestsResponse = {
         { key: "PUT /repos/{owner}/{repo}/pulls/{number}/update-branch", method: "PUT", route: "/repos/{owner}/{repo}/pulls/{number}/update-branch", total: 17, hit: 0, miss: 0, passthrough: 0, write: 17, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", last_seen: ago(24) },
     ],
     recent: [
-        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
-        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
-        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
-        { actor: "user:583231", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
-        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
-        { actor: "app:3433933", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
+        { actor: "user:583231", actor_name: "octocat", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
+        // Unresolved caller: a non-user token's fingerprint label has no name,
+        // so the Caller column falls back to the bare key.
+        { actor: "token:00ff11ee22dd", method: "GET", path: "/repos/wow-look-at-my/buildhost/branches", disposition: "passthrough", status: 200, at: ago(17) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
     ],
 };
 
@@ -179,15 +182,23 @@ const demoRateLimit: RateLimitResponse = {
     ],
     observed: [
         // Sorted by identity then resource, matching the backend's snapshot.
-        { identity: "app-installation:481", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
+        // Resolved identities carry a display name; the token fingerprint and
+        // app-jwt rows stay nameless to demo the bare-key fallback.
+        { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
         // Zero-usage reading (nothing consumed this window, e.g. only 304s) —
         // hidden by the client-side used > 0 filter, so the preview exercises it.
-        { identity: "app-installation:481", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
+        { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
-        { identity: "app:3433933", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
-        { identity: "app:3433933", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
+        { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
+        { identity: "app:3433933", name: "pr-minder", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
         { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
-        { identity: "user:583231", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
+        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an
+        // identity that stopped calling). The server ages these out lazily, so
+        // the live dashboard should never show one; the backend-free preview
+        // keeps it visible to exercise the honest stale rendering
+        // ("reset 23h ago · stale", never "resets now").
+        { identity: "token:44aa55bb66cc", resource: "core", limit: 5000, remaining: 4880, used: 120, reset: resetIn(-82800), observed_at: ago(86100) },
+        { identity: "user:583231", name: "octocat", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
     ],
 };
 
@@ -228,8 +239,8 @@ const demoCheck: ConsistencyReport = {
     orgs_checked: ["wow-look-at-my"],
     orgs_skipped: [{ org: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" }],
     truth_freshness: {
-        "wow-look-at-my": { state: "fresh", last_fetched_at: ago(810), principal: "app:3433933" },
-        "octo-org": { state: "error", last_fetched_at: ago(5400), principal: "user:583231", error: "github api POST /graphql: 502 Bad Gateway" },
+        "wow-look-at-my": { state: "fresh", last_fetched_at: ago(810), principal: "app:3433933", principal_name: "pr-minder" },
+        "octo-org": { state: "error", last_fetched_at: ago(5400), principal: "user:583231", principal_name: "octocat", error: "github api POST /graphql: 502 Bad Gateway" },
     },
     summary: { orgs_checked: 1, repos_cached: 55, open_prs_cached: 119, discrepancies: 6, repos_only_in_cache: 2, repos_only_on_github: 1, repos_only_on_github_private: 1, repos_only_in_cache_archived: 1, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2, visibility_leaks: 1 },
     discrepancies: [

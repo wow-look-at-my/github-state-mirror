@@ -234,6 +234,9 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		ErrorMessage:  "github api POST /graphql: 502 Bad Gateway",
 		LastFetchedAt: &lastFetched,
 	}))
+	// A recorded identity for that principal: the report resolves the key to
+	// its display name.
+	require.NoError(t, store.RecordActorIdentity(ctx, "user:900", "octocat"))
 
 	// Global truth that has drifted from the live state above.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
@@ -332,6 +335,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		assert.Equal(t, "2024-05-01T12:00:00Z", sf.LastFetchedAt)
 		assert.Contains(t, sf.Error, "502 Bad Gateway")
 		assert.Equal(t, "user:900", sf.Principal)
+		assert.Equal(t, "octocat", sf.PrincipalName, "the recorded identity resolves the marker's principal")
 	}
 
 	// PR-level drift.
