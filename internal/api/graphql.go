@@ -87,7 +87,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	case outcome == freshness.OutcomeMiss:
 		disp = DispMiss
 	}
-	h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, disp)
+	h.reqlog.observe(r, disp)
 
 	// Read repos from GLOBAL truth, filtered to what the reveal layer permits
 	// this caller: public repos plus the caller's granted repos. The grant set

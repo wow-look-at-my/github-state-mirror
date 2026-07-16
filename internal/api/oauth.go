@@ -45,7 +45,7 @@ const maxOAuthBytes = 64 << 10 // 64 KiB
 // "urn:ietf:params:oauth:grant-type:device_code") goes through this same
 // endpoint unchanged — the body is opaque bytes to the relay.
 func (h *handlers) oauthAccessToken(w http.ResponseWriter, r *http.Request) {
-	relayGitHubLogin(w, r, githubOAuthTokenURL)
+	h.relayGitHubLogin(w, r, githubOAuthTokenURL)
 }
 
 // oauthDeviceCode relays a GitHub device authorization request (RFC 8628, the
@@ -59,14 +59,17 @@ func (h *handlers) oauthAccessToken(w http.ResponseWriter, r *http.Request) {
 // github.com URL — not the api.github.com passthrough. The subsequent polling
 // leg reuses the access-token relay above.
 func (h *handlers) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
-	relayGitHubLogin(w, r, githubDeviceCodeURL)
+	h.relayGitHubLogin(w, r, githubDeviceCodeURL)
 }
 
 // relayGitHubLogin forwards a login POST body verbatim to the given github.com
 // endpoint and passes the response back untouched — the shared core of the
 // token-exchange and device-code relays. Only the content-negotiation headers
-// travel upstream; CORS on the way back is corsMiddleware's alone.
-func relayGitHubLogin(w http.ResponseWriter, r *http.Request, upstreamURL string) {
+// travel upstream; CORS on the way back is corsMiddleware's alone. Each
+// upstream call is timed onto the Timeline chart (disposition "relay") under
+// the mirror's own fixed relay path as the lane — these carry no bearer
+// token, so the actor is "anonymous".
+func (h *handlers) relayGitHubLogin(w http.ResponseWriter, r *http.Request, upstreamURL string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxOAuthBytes+1))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -92,12 +95,15 @@ func relayGitHubLogin(w http.ResponseWriter, r *http.Request, upstreamURL string
 		req.Header.Set("Accept", ac)
 	}
 
+	start := time.Now()
 	resp, err := oauthRelayClient.Do(req)
 	if err != nil {
+		h.timeline.RecordRequest(start, time.Since(start), http.MethodPost, r.URL.Path, 0, DispError, "anonymous", "")
 		slog.Warn("github login relay failed", "url", upstreamURL, "error", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
+	h.timeline.RecordRequest(start, time.Since(start), http.MethodPost, r.URL.Path, resp.StatusCode, dispRelay, "anonymous", "")
 	defer resp.Body.Close()
 
 	// Pass GitHub's status, content type, and body through verbatim so the

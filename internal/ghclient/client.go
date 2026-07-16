@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
@@ -68,6 +69,75 @@ type RateObserver func(identity, name string, resp *http.Response)
 // synchronization on the hot path.
 func (c *Client) SetRateObserver(obs RateObserver) { c.rateObserver = obs }
 
+// ExchangeObserver receives every HTTP exchange this client performs against
+// GitHub — identity resolution (/user), app verification (/app), token mints,
+// GraphQL syncs, the consistency checker's fetches, rate-limit polls — with
+// its REAL measured duration (request sent → response headers received).
+// Each retry attempt is a separate real request and is observed separately.
+// identity/name follow the RateObserver convention: the ctx principal when
+// set, else a credential-shape label ("app-jwt", "token:<fp12>",
+// "anonymous") — never a raw token. status is 0 when the exchange failed
+// before a response arrived.
+type ExchangeObserver func(identity, name, method, path string, status int, start time.Time, duration time.Duration)
+
+// SetExchangeObserver installs the exchange observer by wrapping the client's
+// transport, so EVERY request the client makes — through any helper, present
+// or future — is timed at one choke point. Call it once during startup
+// wiring, before the client serves requests.
+func (c *Client) SetExchangeObserver(obs ExchangeObserver) {
+	if obs == nil {
+		return
+	}
+	base := c.httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.httpClient.Transport = &timingTransport{base: base, observe: obs}
+}
+
+// timingTransport times each RoundTrip and reports it to the exchange
+// observer. It never alters the request or response.
+type timingTransport struct {
+	base    http.RoundTripper
+	observe ExchangeObserver
+}
+
+func (t *timingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.base.RoundTrip(req)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	credential := strings.TrimSpace(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer"))
+	identity, name := exchangeIdentity(req.Context(), credential)
+	t.observe(identity, name, req.Method, req.URL.Path, status, start, time.Since(start))
+	return resp, err
+}
+
+// exchangeIdentity labels a call for the observers: the ctx principal (with
+// its verified name) when one is set, else a label derived from the
+// credential's shape — never the raw token value.
+func exchangeIdentity(ctx context.Context, credential string) (identity, name string) {
+	identity = actor.FromContext(ctx)
+	if identity != "" {
+		// Only pair a name with a ctx-resolved principal: names are set
+		// alongside the actor, so a credential-shape fallback identity must
+		// never borrow one.
+		return identity, actor.NameFromContext(ctx)
+	}
+	switch {
+	case credential == "":
+		return "anonymous", ""
+	case strings.Count(credential, ".") == 2:
+		// A JWT (dot-separated structure — GitHub tokens never contain dots)
+		// is the app's own credential.
+		return "app-jwt", ""
+	default:
+		return "token:" + Fingerprint(credential)[:12], ""
+	}
+}
+
 // observeRate reports a response to the rate observer (if any). The identity
 // is the principal in ctx when set (requireAuth / the background app
 // sessions); otherwise it is derived from the credential that made the call:
@@ -78,23 +148,7 @@ func (c *Client) observeRate(ctx context.Context, credential string, resp *http.
 	if c.rateObserver == nil || resp == nil {
 		return
 	}
-	identity := actor.FromContext(ctx)
-	name := ""
-	if identity != "" {
-		// Only pair a name with a ctx-resolved principal: names are set
-		// alongside the actor, so a credential-shape fallback identity must
-		// never borrow one.
-		name = actor.NameFromContext(ctx)
-	} else {
-		switch {
-		case credential == "":
-			identity = "anonymous"
-		case strings.Count(credential, ".") == 2:
-			identity = "app-jwt"
-		default:
-			identity = "token:" + Fingerprint(credential)[:12]
-		}
-	}
+	identity, name := exchangeIdentity(ctx, credential)
 	c.rateObserver(identity, name, resp)
 }
 

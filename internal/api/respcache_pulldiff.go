@@ -72,7 +72,7 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	if doc, ok, err := h.store.GetCachedPullDiff406(r.Context(), owner, repo, number, now); err != nil {
 		slog.Warn("pull diff 406 cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	} else if ok {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, http.StatusNotAcceptable)
+		h.reqlog.observeStatus(r, DispHit, http.StatusNotAcceptable)
 		writeRebuilt(w, http.StatusNotAcceptable, []byte(doc), true)
 		return
 	}
@@ -102,7 +102,7 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	if err := h.store.PutCachedPullDiff406(r.Context(), owner, repo, number, string(doc), now, pullDiff406TTL); err != nil {
 		slog.Warn("pull diff 406 cache write failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	}
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusNotAcceptable, doc, false)
 }
 

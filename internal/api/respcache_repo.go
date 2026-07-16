@@ -101,7 +101,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveRepoMeta(w, r, repoRow, false)
 }
 
@@ -125,7 +125,7 @@ func (h *handlers) serveRepoMeta(w http.ResponseWriter, r *http.Request, row dbg
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }

@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -270,4 +273,54 @@ func TestRateObserver_Unset(t *testing.T) {
 		w.Write([]byte("{}"))
 	})
 	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
+}
+
+// TestSetExchangeObserver_TimesEveryCall: the transport-level observer sees
+// every exchange the client performs — with method, path, status, a real
+// non-negative duration, and the credential-shape identity — and a ctx
+// principal (with verified name) takes precedence.
+func TestSetExchangeObserver_TimesEveryCall(t *testing.T) {
+	type obs struct {
+		identity, name, method, path string
+		status                       int
+		dur                          time.Duration
+	}
+	var mu sync.Mutex
+	var got []obs
+
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rate_limit" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	c.SetExchangeObserver(func(identity, name, method, path string, status int, start time.Time, dur time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		require.False(t, start.IsZero())
+		got = append(got, obs{identity, name, method, path, status, dur})
+	})
+
+	// A tokenless call labels anonymous.
+	_ = c.doJSON(context.Background(), "GET", "/meta", nil, nil)
+	// A bearer-token call labels by fingerprint shape.
+	_ = c.doJSON(WithToken(context.Background(), "ghs_sometoken"), "GET", "/meta", nil, nil)
+	// A ctx principal (with name) wins over the credential shape.
+	ctx := actor.WithName(actor.WithActor(WithToken(context.Background(), "ghs_other"), "app-installation:481"), "gsm-bot")
+	_ = c.doJSON(ctx, "POST", "/rate_limit", nil, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 3, "every exchange is observed")
+	assert.Equal(t, "anonymous", got[0].identity)
+	assert.Equal(t, "GET", got[0].method)
+	assert.Equal(t, "/meta", got[0].path)
+	assert.Equal(t, http.StatusOK, got[0].status)
+	assert.GreaterOrEqual(t, got[0].dur, time.Duration(0))
+	assert.True(t, strings.HasPrefix(got[1].identity, "token:"), "identity %q", got[1].identity)
+	assert.Empty(t, got[1].name, "a credential-shape identity never borrows a name")
+	assert.Equal(t, "app-installation:481", got[2].identity)
+	assert.Equal(t, "gsm-bot", got[2].name)
+	assert.Equal(t, http.StatusInternalServerError, got[2].status)
 }

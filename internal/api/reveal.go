@@ -130,14 +130,19 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		req.Header.Set("Authorization", auth)
 	}
 
+	// The probe is a real mirror→GitHub exchange: time it onto the chart
+	// (disposition "probe"; a transport failure records as an error).
+	who := callerLabel(r)
+	start := time.Now()
 	resp, err := h.upstream.Do(req)
 	if err != nil {
+		h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), 0, DispError, who.Key, who.Name)
 		slog.Warn("reveal probe failed", "repo", owner+"/"+repo, "error", err)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
+	h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), resp.StatusCode, dispProbe, who.Key, who.Name)
 	defer resp.Body.Close()
 	// Passively record the X-RateLimit-* headers the probe response carries.
-	who := callerLabel(r)
 	h.meter.Observe(who.Key, who.Name, resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes))
 	if err != nil {
@@ -201,9 +206,9 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 		return
 	}
 	if cached {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, v.Status)
+		h.reqlog.observeStatus(r, DispHit, v.Status)
 	} else {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, v.Status)
+		h.reqlog.observeStatus(r, DispMiss, v.Status)
 	}
 	writeRebuilt(w, v.Status, body, cached)
 }
@@ -212,7 +217,7 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 // the mirror cannot decide access right now, so the request fails without
 // caching anything. 502 mirrors the cached routes' upstream-error handling.
 func (h *handlers) revealFailed(w http.ResponseWriter, r *http.Request) {
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispError, http.StatusBadGateway)
+	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway: could not verify repository access with GitHub", http.StatusBadGateway)
 }
 

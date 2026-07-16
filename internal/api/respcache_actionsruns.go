@@ -136,7 +136,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	if doc, ok, err := h.store.GetCachedWorkflowRuns(r.Context(), owner, repo, headSHA, perPage, page, now); err != nil {
 		slog.Warn("workflow runs cache read failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
 	} else if ok {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
@@ -159,7 +159,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 

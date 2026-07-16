@@ -13,11 +13,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
@@ -72,6 +74,10 @@ type Config struct {
 	DisableAfter int
 	// UserAgent identifies the mirror to subscribers.
 	UserAgent string
+	// Timeline records every outbound delivery attempt (real per-attempt
+	// duration, status, terminal flag) onto the dashboard's Timeline chart.
+	// Nil-safe: nil records nothing.
+	Timeline *reqtimeline.Recorder
 }
 
 // Notifier fans a post-ingest event out to matching, authorized
@@ -91,6 +97,7 @@ type Notifier struct {
 	backoff        []time.Duration
 	disableAfter   int
 	userAgent      string
+	timeline       *reqtimeline.Recorder
 
 	mu       sync.Mutex // guards stopping + the Add-vs-Wait race
 	stopping bool
@@ -132,6 +139,7 @@ func New(cfg Config) *Notifier {
 		backoff:        cfg.Backoff,
 		disableAfter:   cfg.DisableAfter,
 		userAgent:      cfg.UserAgent,
+		timeline:       cfg.Timeline,
 		stop:           make(chan struct{}),
 	}
 }
@@ -334,8 +342,17 @@ func (n *Notifier) deliver(sub Subscription, note Notification) {
 				return // shutdown cut the backoff; abandon
 			}
 		}
+		attemptStart := time.Now()
 		status, err := n.post(sub, note)
-		if err == nil && status >= 200 && status < 300 {
+		ok := err == nil && status >= 200 && status < 300
+		// Every attempt is a real outbound request: chart it, with its real
+		// duration, whether it succeeded, failed, or will be retried.
+		disp := "failed"
+		if ok {
+			disp = "delivered"
+		}
+		n.timeline.RecordNotify(attemptStart, time.Since(attemptStart), subscriptionHost(sub.URL), status, attempt, ok || attempt == n.attempts, disp)
+		if ok {
 			n.recordDelivered(sub, note, status, time.Since(start))
 			return
 		}
@@ -348,6 +365,16 @@ func (n *Notifier) deliver(sub Subscription, note Notification) {
 		}
 	}
 	n.recordTerminalFailure(sub, note, lastStatus, lastErr, time.Since(start))
+}
+
+// subscriptionHost is the display target for a delivery attempt: the URL's
+// host only — never the full URL, whose path/query is subscriber
+// configuration that could embed credentials.
+func subscriptionHost(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "(invalid url)"
 }
 
 // backoffFor returns the sleep before the given attempt (attempt >= 2); the
