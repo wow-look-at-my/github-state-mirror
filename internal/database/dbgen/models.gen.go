@@ -258,6 +258,8 @@ type PullRequest struct {
 	MergeCommitSha     sql.NullString
 	MergeStaleSha      sql.NullString
 	MergeStaleAt       sql.NullString
+	MergeStaleRef      sql.NullString
+	MergeStaleAfter    sql.NullString
 	TouchedAt          string
 }
 

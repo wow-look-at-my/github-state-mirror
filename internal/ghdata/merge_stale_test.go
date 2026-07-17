@@ -19,9 +19,19 @@ import (
 // webhooks#66 incident: a lagged refetch re-resolved the invalidated sha,
 // and every later read was a hit serving it frozen.
 
+// The tests above the proof section pass after="" to NullPRMergeableByBranch:
+// a marker WITHOUT the push-tip proof columns, which is exactly the old
+// (reject-until-TTL) behavior -- and still a real production shape (a push
+// payload with no usable after). The push-tip proof tests below cover the
+// proof-recorded paths.
 const (
 	staleShaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the pre-push test-merge sha
 	staleShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // GitHub's recomputed sha
+
+	// restPR's defaults are the PRE-push tips: base "2222...", head "1111...".
+	pushedBaseTip  = "3333333333333333333333333333333333333333" // a base push's after tip
+	pushedBaseTip2 = "5555555555555555555555555555555555555555" // a second base push's after
+	pushedHeadTip  = "4444444444444444444444444444444444444444" // a head push's after tip
 )
 
 // restPR builds a REST/webhook-shaped row (node_id present) with a resolved
@@ -76,7 +86,7 @@ func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	now := time.Now()
 	seedResolvedPR(t, s, now)
 
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 	row := getPR(t, s, 7)
 	assert.False(t, row.Mergeable.Valid, "a base push must un-resolve mergeable")
 	assert.False(t, row.MergeCommitSha.Valid, "a base push must null the test-merge sha")
@@ -84,7 +94,7 @@ func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	assert.True(t, row.MergeStaleAt.Valid, "the marker must be stamped")
 
 	// A second push while still unresolved: the remembered sha survives.
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now.Add(time.Minute)))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now.Add(time.Minute)))
 	row = getPR(t, s, 7)
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "a second push must keep the remembered sha")
 }
@@ -99,7 +109,7 @@ func TestAbsorbSinglePull_RejectsReofferedInvalidatedSha(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now)
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 
 	// GitHub re-offers the pre-push answer: rejected, stored unresolved.
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute))
@@ -131,7 +141,7 @@ func TestAbsorbSinglePull_NullShaAnswerKeepsMarker(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now)
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", ""), nil, now.Add(time.Minute))
 	require.NoError(t, err)
@@ -153,7 +163,7 @@ func TestAbsorbSinglePull_ExpiredMarkerAccepts(t *testing.T) {
 	now := time.Now()
 	seedResolvedPR(t, s, now.Add(-2*time.Hour))
 	// The push (and its stamp) happened two hours ago; the window is 1h.
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now.Add(-2*time.Hour)))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now.Add(-2*time.Hour)))
 
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now)
 	require.NoError(t, err)
@@ -174,7 +184,7 @@ func TestAbsorbPullsList_CannotStoreInvalidatedSha(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now)
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 
 	item := restPR(7, "", staleShaA) // list items carry no mergeable
 	require.NoError(t, s.AbsorbPullsList(ctx, "org1", "repo1", []dbgen.PullRequest{item}, nil, false, now, now.Add(time.Minute), time.Hour))
@@ -202,7 +212,7 @@ func TestUpsertPRWithChecks_WebhookCannotResolveFromInvalidatedSha(t *testing.T)
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now)
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute)))
 	row := getPR(t, s, 7)
@@ -230,7 +240,7 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now)
-	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", now))
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now))
 
 	// The periodic sync's snapshot was fetched pre-push: GraphQL-shaped
 	// (node_id null), mergeable resolved.
@@ -299,6 +309,192 @@ func TestNullPRMergeableByRepo(t *testing.T) {
 	row = getPR(t, s, 7)
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
 	assert.Equal(t, staleShaA, row.MergeCommitSha.String)
+}
+
+// ---- The push-tip proof (merge_stale_ref/merge_stale_after) ----
+
+// TestNullPRMergeableByBranch_RecordsPushProof: the push-time un-resolve
+// records WHICH branch moved and its after tip alongside the remembered sha,
+// and a second push OVERWRITES the proof with its own after (an answer must
+// reflect the NEWEST push to be provably post-push) while keeping the
+// remembered sha (merge_commit_sha is already NULL).
+func TestNullPRMergeableByBranch_RecordsPushProof(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	seedResolvedPR(t, s, now)
+
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
+	row := getPR(t, s, 7)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String)
+	assert.Equal(t, "main", row.MergeStaleRef.String, "the pushed branch must be recorded")
+	assert.Equal(t, pushedBaseTip, row.MergeStaleAfter.String, "the push's after tip must be recorded")
+
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip2, now.Add(time.Minute)))
+	row = getPR(t, s, 7)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "a second push must keep the remembered sha")
+	assert.Equal(t, "main", row.MergeStaleRef.String)
+	assert.Equal(t, pushedBaseTip2, row.MergeStaleAfter.String, "a second push must overwrite the proof with ITS after")
+}
+
+// TestNullPRMergeableByBranch_NoProofWithoutUsableAfter: an empty after (an
+// unknowing caller) and git's all-zeros null id (a deleted ref) name no real
+// tip, so the marker is recorded WITHOUT proof columns -- nothing can match
+// them, and only the TTL unwedges (the old bound).
+func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
+	for name, after := range map[string]string{"empty": "", "zeros": zeroSHA} {
+		t.Run(name, func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			now := time.Now()
+			seedResolvedPR(t, s, now)
+
+			require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", after, now))
+			row := getPR(t, s, 7)
+			assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the sha is still remembered")
+			assert.True(t, row.MergeStaleAt.Valid, "the window is still stamped")
+			assert.False(t, row.MergeStaleRef.Valid, "no usable after -> no proof branch")
+			assert.False(t, row.MergeStaleAfter.Valid, "no usable after -> no proof tip")
+		})
+	}
+}
+
+// TestAbsorbSinglePull_WrongMarkHealsOnPushProof locks the wrong-mark race
+// fix. The race: GitHub recomputes mergeability within seconds of a push once
+// a read triggers it, and pr-minder polls the mirror right after pushing --
+// so a poll-driven absorb can land GitHub's POST-push answer (fresh sha, base
+// tip already at the push's after) BEFORE the push delivery reaches the
+// mirror, and the late delivery then stamps that FRESH sha stale. Pre-fix
+// this wedged the row for the whole MergeStaleTTL hour: every refetch
+// re-offered the (correct!) sha, was rejected, and the route served
+// mergeable:null while github.com showed it computed -- pr-minder's
+// conflict-settle burned its full in-run ceiling on every touch of the PR.
+// Now the re-offered answer's base tip equals the push's recorded after:
+// post-push proof, accepted, marker fully cleared -- healed on the very next
+// poll.
+func TestAbsorbSinglePull_WrongMarkHealsOnPushProof(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// The poll-driven absorb lands GitHub's post-push answer first.
+	postPush := restPR(7, "MERGEABLE", staleShaB)
+	postPush.BaseRefOid = sql.NullString{String: pushedBaseTip, Valid: true}
+	stale, err := s.AbsorbSinglePull(ctx, postPush, nil, now)
+	require.NoError(t, err)
+	require.False(t, stale)
+
+	// The LATE push delivery arrives and wrongly marks the fresh sha stale.
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
+	row := getPR(t, s, 7)
+	require.Equal(t, staleShaB, row.MergeStaleSha.String, "the wrong mark: the fresh sha is stamped stale")
+
+	// The next poll re-offers the SAME (correct) answer: its base tip matches
+	// the push's after, so it is provably post-push and must be accepted.
+	stale, err = s.AbsorbSinglePull(ctx, postPush, nil, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, stale, "a post-push-proven answer must not be rejected")
+	row = getPR(t, s, 7)
+	assert.Equal(t, "MERGEABLE", row.Mergeable.String, "the wrongly-marked sha must re-resolve on proof")
+	assert.Equal(t, staleShaB, row.MergeCommitSha.String)
+	assert.False(t, row.MergeStaleSha.Valid, "an accepted answer clears the whole marker")
+	assert.False(t, row.MergeStaleAt.Valid)
+	assert.False(t, row.MergeStaleRef.Valid)
+	assert.False(t, row.MergeStaleAfter.Valid)
+}
+
+// TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof: the head-side variant --
+// the wrong-marking push moved the PR's HEAD branch, so the proof matches on
+// the answer's reported head tip instead.
+func TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	postPush := restPR(7, "MERGEABLE", staleShaB)
+	postPush.HeadRefOid = sql.NullString{String: pushedHeadTip, Valid: true}
+	stale, err := s.AbsorbSinglePull(ctx, postPush, nil, now)
+	require.NoError(t, err)
+	require.False(t, stale)
+
+	// The late delivery of the HEAD push ("feature" is restPR's head branch).
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "feature", pushedHeadTip, now))
+	row := getPR(t, s, 7)
+	require.Equal(t, staleShaB, row.MergeStaleSha.String)
+	require.Equal(t, "feature", row.MergeStaleRef.String)
+
+	stale, err = s.AbsorbSinglePull(ctx, postPush, nil, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, stale, "the head-tip proof must accept the answer")
+	row = getPR(t, s, 7)
+	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
+	assert.Equal(t, staleShaB, row.MergeCommitSha.String)
+	assert.False(t, row.MergeStaleSha.Valid, "the marker clears in full")
+	assert.False(t, row.MergeStaleAt.Valid)
+	assert.False(t, row.MergeStaleRef.Valid)
+	assert.False(t, row.MergeStaleAfter.Valid)
+}
+
+// TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof: recording the
+// proof must not weaken the guard's whole point -- a genuinely PRE-push
+// answer (the invalidated sha with the OLD base tip) demonstrates nothing and
+// is rejected exactly as before, marker and proof kept.
+func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	seedResolvedPR(t, s, now)
+
+	// The push moved the base to pushedBaseTip; the marker carries the proof.
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
+
+	// GitHub's recompute lags: the refetch re-offers the invalidated sha,
+	// still reporting the OLD base tip (restPR's default) -- no proof.
+	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, stale, "a pre-push answer must stay rejected")
+	row := getPR(t, s, 7)
+	assert.False(t, row.Mergeable.Valid, "a pre-push answer must not re-resolve mergeable")
+	assert.False(t, row.MergeCommitSha.Valid)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the marker must survive the rejected absorb")
+	assert.Equal(t, "main", row.MergeStaleRef.String, "and so must the proof")
+	assert.Equal(t, pushedBaseTip, row.MergeStaleAfter.String)
+}
+
+// TestUpsertPRWithChecks_WebhookProofParity: the SQL stale guard (the
+// webhook/list/sync writers' path) shares the tip proof with the Go check --
+// a webhook-shaped upsert offering the marked sha resolves the row and clears
+// the marker iff its reported tip matches the push's after.
+func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// The wrong-mark state: the post-push answer absorbed, then stamped stale
+	// by the late push delivery.
+	postPush := restPR(7, "MERGEABLE", staleShaB)
+	postPush.BaseRefOid = sql.NullString{String: pushedBaseTip, Valid: true}
+	_, err := s.AbsorbSinglePull(ctx, postPush, nil, now)
+	require.NoError(t, err)
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
+
+	// A payload with a NON-matching base tip: the SQL guard still rejects.
+	require.NoError(t, s.UpsertPRWithChecks(ctx, restPR(7, "MERGEABLE", staleShaB), nil, now.Add(time.Minute)))
+	row := getPR(t, s, 7)
+	assert.False(t, row.Mergeable.Valid, "an unproven payload must stay rejected in SQL")
+	assert.False(t, row.MergeCommitSha.Valid)
+	assert.Equal(t, staleShaB, row.MergeStaleSha.String)
+
+	// The matching base tip: the SQL proof resolves the row + clears the
+	// marker -- all four columns.
+	require.NoError(t, s.UpsertPRWithChecks(ctx, postPush, nil, now.Add(2*time.Minute)))
+	row = getPR(t, s, 7)
+	assert.Equal(t, "MERGEABLE", row.Mergeable.String, "the SQL tip proof must accept the payload")
+	assert.Equal(t, staleShaB, row.MergeCommitSha.String)
+	assert.False(t, row.MergeStaleSha.Valid)
+	assert.False(t, row.MergeStaleAt.Valid)
+	assert.False(t, row.MergeStaleRef.Valid)
+	assert.False(t, row.MergeStaleAfter.Valid)
 }
 
 // TestPRMergeShaStale: the hit-gate helper (belt and braces -- the guarded

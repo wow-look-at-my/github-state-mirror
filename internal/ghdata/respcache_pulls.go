@@ -42,13 +42,19 @@ var PRRowTTL = 24 * time.Hour
 // (merge_stale_sha, stamped merge_stale_at by NullPRMergeableByBranch) keeps
 // rejecting re-offered answers as stale. Within the window a refetch offering
 // that exact sha is a pre-push answer (a base/head tip change always changes
-// the test-merge sha) and is stored unresolved; the window exists because the
-// converse can race -- a fetch absorbed AFTER GitHub's recompute but BEFORE
-// the (late) push delivery lands stores the FRESH sha, which the push then
-// wrongly marks stale -- and without expiry that row would reject GitHub's
-// current answer forever (every read a refetch). An hour is orders of
-// magnitude above GitHub's recompute lag under active polling (each rejected
-// miss re-triggers the recompute) while bounding the wrong-mark worst case.
+// the test-merge sha) and is stored unresolved -- UNLESS the answer carries
+// the push-tip proof (pushProvenPostPush: its reported tip for the marked
+// branch equals the push's after sha), which demonstrates the answer
+// post-dates the push. That proof is what heals the wrong-mark race -- a
+// fetch absorbed AFTER GitHub's recompute but BEFORE the (late) push delivery
+// lands stores the FRESH sha, which the push then wrongly marks stale -- on
+// the very next post-push-proven absorb. The TTL is only the OUTER backstop
+// behind it, for a wrong mark whose answers never demonstrate the tip (a
+// marker recorded without a usable push after, or GitHub's reported tip
+// lagging): past the window a re-offered sha is accepted regardless. An hour
+// is orders of magnitude above GitHub's recompute lag under active polling
+// (each rejected miss re-triggers the recompute) while bounding that
+// worst case.
 //
 // This is a const, not a test-settable var, because the SAME window is
 // hardcoded in queries/ghdata.sql as the strftime '-1 hour' cutoffs inside
@@ -84,8 +90,35 @@ func staleShaOffered(existing dbgen.PullRequest, offered sql.NullString, now tim
 // push-invalidated one. The guarded writes never store that state (the sha is
 // nulled instead), so this is belt and braces for the single-PR hit gate: a
 // row that somehow holds the provably-stale sha must miss, never serve it.
+// Deliberately raw equality -- no push-tip proof consulted: a miss here just
+// re-fetches, and the ABSORB paths are where the proof decides.
 func PRMergeShaStale(pr dbgen.PullRequest, now time.Time) bool {
 	return staleShaOffered(pr, pr.MergeCommitSha, now)
+}
+
+// pushProvenPostPush reports whether the incoming doc provably post-dates the
+// push that stamped the existing row's stale marker: the marker remembers
+// WHICH branch that push moved (merge_stale_ref) and its post-push tip
+// (merge_stale_after), so an answer whose reported tip for that branch --
+// base_ref_oid when the marked ref is the base, head_ref_oid when it is the
+// head -- equals the push's after sha reflects the push and cannot be the
+// pre-push answer the marker exists to reject. A marker recorded without the
+// proof columns (no usable push after) proves nothing, as does an answer
+// whose reported tip is anything else (older OR newer -- only an exact match
+// demonstrates; a mismatch keeps the old reject-until-TTL behavior). Mirrors
+// UpsertPullRequest's SQL tip proof; keep the two in sync.
+func pushProvenPostPush(existing, incoming dbgen.PullRequest) bool {
+	if !existing.MergeStaleRef.Valid || existing.MergeStaleRef.String == "" ||
+		!existing.MergeStaleAfter.Valid || existing.MergeStaleAfter.String == "" {
+		return false
+	}
+	ref, after := existing.MergeStaleRef.String, existing.MergeStaleAfter.String
+	if incoming.BaseRefName.Valid && incoming.BaseRefName.String == ref &&
+		incoming.BaseRefOid.Valid && incoming.BaseRefOid.String == after {
+		return true
+	}
+	return incoming.HeadRefName.Valid && incoming.HeadRefName.String == ref &&
+		incoming.HeadRefOid.Valid && incoming.HeadRefOid.String == after
 }
 
 // PRRestComplete reports whether a pull_requests row carries the REST-only
@@ -292,9 +325,16 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // predates the push. Such an answer is stored UNRESOLVED (mergeable NULL,
 // merge_commit_sha NULL, marker kept), so reads keep missing -- each one
 // re-triggering the recompute -- until GitHub serves a NEW sha, which clears
-// the marker. The upsert's SQL guard nulls the columns; the Go check here
-// exists because the authoritative force-set below would otherwise resurrect
-// the rejected value, and so the route can serve the response unresolved too.
+// the marker. EXCEPT when the answer carries the push-tip proof
+// (pushProvenPostPush): its reported tip for the marked branch equals the
+// marking push's after sha, so the answer demonstrably post-dates that push
+// and cannot be pre-push -- it is accepted, sha and all, and the marker
+// cleared. That is what heals a WRONG mark (the race where the fresh
+// post-push answer was absorbed before the late push delivery, which then
+// stamped it stale) on the very next poll instead of after MergeStaleTTL.
+// The upsert's SQL guard nulls the columns; the Go check here exists because
+// the authoritative force-set below would otherwise resurrect the rejected
+// value, and so the route can serve the response unresolved too.
 // staleRejected reports that outcome to the caller.
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -310,7 +350,8 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	staleRejected = err == nil && staleShaOffered(existing, pr.MergeCommitSha, now)
+	staleRejected = err == nil && staleShaOffered(existing, pr.MergeCommitSha, now) &&
+		!pushProvenPostPush(existing, pr)
 
 	if err := upsertPRTx(ctx, q, pr, rfc3339(now)); err != nil {
 		return false, err

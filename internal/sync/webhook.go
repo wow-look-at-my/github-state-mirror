@@ -195,12 +195,14 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	// based on (or heading from) that branch, and no webhook ever carries the
 	// recomputed value -- so un-resolve the cached mergeable (remembering the
 	// invalidated test-merge sha: a refetch re-offering it is stale by
-	// definition) rather than let the single-PR cache keep serving the
-	// pre-push answer. This invalidation runs FIRST, before any other fallible
-	// step, so a transient error elsewhere in the handler can never skip it --
-	// each step logs its own failure and the handler carries on.
+	// definition -- plus the push's after tip, the proof by which an answer
+	// that already reflects this push is recognized and accepted) rather than
+	// let the single-PR cache keep serving the pre-push answer. This
+	// invalidation runs FIRST, before any other fallible step, so a transient
+	// error elsewhere in the handler can never skip it -- each step logs its
+	// own failure and the handler carries on.
 	if branch := payload.Branch(); branch != "" {
-		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, time.Now()); err != nil {
+		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
 		// A push to the DEFAULT branch likewise stales default_branch_status:

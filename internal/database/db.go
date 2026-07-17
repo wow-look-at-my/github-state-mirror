@@ -12,15 +12,22 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 17: pull_requests gains merge_stale_sha/merge_stale_at -- the
-// push-invalidated test-merge sha memory. A base/head push records the sha it
-// nulls; a refetch re-offering that exact sha is stale by definition (a tip
-// change always changes the test-merge sha) and is stored unresolved instead
-// of re-resolving, so the single-PR route keeps missing (each miss
-// re-triggering GitHub's recompute) until GitHub serves a fresh sha. Bumping
-// nukes the DB on deploy; run the consistency check's apply mode (Reconcile)
-// once after deploy to rebuild truth promptly.
-// (16 was respcache round 2: commit_ci_cache gained pagination
+// SchemaVersion 18: pull_requests gains merge_stale_ref/merge_stale_after --
+// the stale marker's push-tip PROOF. A base/head push now records WHICH branch
+// moved and its post-push tip alongside the remembered sha, so an absorbed
+// answer whose reported tip for that branch equals the push's after sha
+// provably post-dates the push and is accepted even when it re-offers the
+// remembered sha -- the wrong-mark race (a fresh post-push answer absorbed
+// before the late push delivery landed, then stamped stale by it) heals on
+// the very next poll instead of wedging the row into missing for the whole
+// MergeStaleTTL window. Bumping nukes the DB on deploy; run the consistency
+// check's apply mode (Reconcile) once after deploy to rebuild truth promptly.
+// (17 added merge_stale_sha/merge_stale_at -- the push-invalidated test-merge
+// sha memory: a refetch re-offering the exact nulled sha is stale by
+// definition (a tip change always changes the test-merge sha) and is stored
+// unresolved instead of re-resolving, so the single-PR route keeps missing
+// until GitHub serves a fresh sha;
+// 16 was respcache round 2: commit_ci_cache gained pagination
 // columns (per_page, page; the unique key is now owner/repo/ref/kind/
 // per_page/page) and a third kind 'statuses_list' (the raw statuses LIST
 // route); compare_cache gains base_ref/head_ref (the basehead's two sides,
@@ -47,7 +54,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 17
+const SchemaVersion = 18
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

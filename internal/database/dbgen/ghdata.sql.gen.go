@@ -287,7 +287,7 @@ func (q *Queries) GetDenyVerdict(ctx context.Context, arg GetDenyVerdictParams) 
 }
 
 const getOpenPullRequestNoCase = `-- name: GetOpenPullRequestNoCase :one
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
 WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN'
 `
 
@@ -333,13 +333,15 @@ func (q *Queries) GetOpenPullRequestNoCase(ctx context.Context, arg GetOpenPullR
 		&i.MergeCommitSha,
 		&i.MergeStaleSha,
 		&i.MergeStaleAt,
+		&i.MergeStaleRef,
+		&i.MergeStaleAfter,
 		&i.TouchedAt,
 	)
 	return i, err
 }
 
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
 `
 
 type GetPullRequestParams struct {
@@ -381,6 +383,8 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 		&i.MergeCommitSha,
 		&i.MergeStaleSha,
 		&i.MergeStaleAt,
+		&i.MergeStaleRef,
+		&i.MergeStaleAfter,
 		&i.TouchedAt,
 	)
 	return i, err
@@ -632,7 +636,7 @@ func (q *Queries) ListOpenPullRequestNumbersByRepo(ctx context.Context, arg List
 }
 
 const listOpenPullRequestsByRepo = `-- name: ListOpenPullRequestsByRepo :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
 WHERE owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number
 `
@@ -681,6 +685,8 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 			&i.MergeCommitSha,
 			&i.MergeStaleSha,
 			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
 			&i.TouchedAt,
 		); err != nil {
 			return nil, err
@@ -697,7 +703,7 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 }
 
 const listOpenPullRequestsByRepoNoCase = `-- name: ListOpenPullRequestsByRepoNoCase :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
 WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
 ORDER BY created_at DESC, number DESC
 `
@@ -748,6 +754,8 @@ func (q *Queries) ListOpenPullRequestsByRepoNoCase(ctx context.Context, arg List
 			&i.MergeCommitSha,
 			&i.MergeStaleSha,
 			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
 			&i.TouchedAt,
 		); err != nil {
 			return nil, err
@@ -990,14 +998,20 @@ UPDATE pull_requests SET
     merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
     merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
                           THEN CAST(?1 AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(?2 AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(?3 AS TEXT) ELSE NULL END,
     mergeable = NULL,
     merge_commit_sha = NULL
-WHERE owner = ?2 AND repo = ?3 AND state = 'OPEN'
-  AND (base_ref_name = ?4 OR head_ref_name = ?5)
+WHERE owner = ?4 AND repo = ?5 AND state = 'OPEN'
+  AND (base_ref_name = ?6 OR head_ref_name = ?7)
 `
 
 type NullPRMergeableByBranchParams struct {
 	StaleAt     string
+	StaleRef    sql.NullString
+	StaleAfter  sql.NullString
 	Owner       string
 	Repo        string
 	BaseRefName sql.NullString
@@ -1010,12 +1024,18 @@ type NullPRMergeableByBranchParams struct {
 // so the last-known value is stale the moment the push lands. The nulled sha
 // is REMEMBERED (merge_stale_sha, stamped merge_stale_at): the pushed branch
 // provably moved, so GitHub re-offering that exact sha is a pre-push answer --
-// UpsertPullRequest's stale guard refuses to re-resolve from it. A second push
-// before re-resolution keeps the remembered sha (merge_commit_sha is already
-// NULL) and re-stamps the window.
+// UpsertPullRequest's stale guard refuses to re-resolve from it. The marker
+// also records the PUSH-TIP PROOF (merge_stale_ref/merge_stale_after: the
+// pushed branch and its after tip; NULL when the caller had no usable after),
+// ALWAYS overwritten with the latest push's values -- an answer must reflect
+// the NEWEST push to be provably post-push. A second push before
+// re-resolution keeps the remembered sha (merge_commit_sha is already NULL)
+// and re-stamps the window (and the proof).
 func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeableByBranchParams) error {
 	_, err := q.db.ExecContext(ctx, nullPRMergeableByBranch,
 		arg.StaleAt,
+		arg.StaleRef,
+		arg.StaleAfter,
 		arg.Owner,
 		arg.Repo,
 		arg.BaseRefName,
@@ -1329,6 +1349,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
              AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
              AND pull_requests.merge_stale_at IS NOT NULL
              AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
             THEN NULL
         WHEN excluded.node_id IS NULL
              AND pull_requests.node_id IS NOT NULL
@@ -1357,6 +1380,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
              AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
              AND pull_requests.merge_stale_at IS NOT NULL
              AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
             THEN NULL
         ELSE excluded.merge_commit_sha
     END,
@@ -1364,7 +1390,10 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
         WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
              AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
                       AND pull_requests.merge_stale_at IS NOT NULL
-                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour'))
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
             THEN NULL
         ELSE pull_requests.merge_stale_sha
     END,
@@ -1372,9 +1401,34 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
         WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
              AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
                       AND pull_requests.merge_stale_at IS NOT NULL
-                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour'))
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
             THEN NULL
         ELSE pull_requests.merge_stale_at
+    END,
+    merge_stale_ref = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+            THEN NULL
+        ELSE pull_requests.merge_stale_ref
+    END,
+    merge_stale_after = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+            THEN NULL
+        ELSE pull_requests.merge_stale_after
     END,
     touched_at = excluded.touched_at
 `
@@ -1436,12 +1490,23 @@ type UpsertPullRequestParams struct {
 // answer -- GitHub's recompute lag -- and must not re-resolve the row:
 // mergeable and merge_commit_sha store NULL instead, the marker stays, and
 // the single-PR route keeps missing (each miss re-triggers the recompute)
-// until a NEW sha arrives, which clears the marker. The marker only rejects
-// within its window (merge_stale_at newer than touched_at minus 1 hour --
-// keep in sync with ghdata.MergeStaleTTL): past it, a re-offered sha is
-// accepted and the marker cleared, so a sha wrongly marked stale (absorbed
-// post-recompute before a late push delivery landed) can never wedge the row
-// into missing forever. A GraphQL-shaped source (node_id NULL) carries no
+// until a NEW sha arrives, which clears the marker. The marker carries its
+// own DISPROOF -- the push-tip PROOF (merge_stale_ref/merge_stale_after: the
+// pushed branch and its post-push tip): a source whose reported tip for that
+// branch (excluded.base_ref_oid / excluded.head_ref_oid, matched by ref
+// name) equals the push's after sha provably post-dates the push, so its
+// answer is NOT pre-push -- it is accepted, and the marker cleared, even
+// when it re-offers the remembered sha. That heals the wrong-mark race (a
+// fresh post-push answer absorbed BEFORE the late push delivery landed,
+// which then stamped the fresh sha stale) on the very next fetch. The marker
+// also only rejects within its window (merge_stale_at newer than touched_at
+// minus 1 hour -- keep in sync with ghdata.MergeStaleTTL): past it, a
+// re-offered sha is accepted and the marker cleared -- the OUTER backstop
+// for a wrong mark whose answers never demonstrate the tip (no usable push
+// after, or GitHub's reported tip lagging). Proof or expiry, "not stale"
+// means the same thing everywhere below: the value is accepted and ALL FOUR
+// marker columns clear together.
+// A GraphQL-shaped source (node_id NULL) carries no
 // sha to vouch for its answer, so it may not set mergeable on a
 // REST-complete row whose stored sha is NULL or the invalidated one -- the
 // sync re-arm leak: resolved-looking rows with a null/stale test-merge sha.
