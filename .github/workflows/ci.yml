@@ -68,10 +68,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1
+      # go-toolchain@v1 no longer uploads a go-build run artifact; hand the
+      # build output to the publish-ghcr job via the actions cache instead.
+      - uses: wow-look-at-my/actions@cache-upload#latest
+        with:
+          name: go-build
+          path: build/
 
   # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Downloads the go-build artifact (server_linux_amd64) the build job
-  # uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
+  # on master. Restores the go-build hand-off (server_linux_amd64) the build job
+  # cache-uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
   publish-ghcr:
     needs: build
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
