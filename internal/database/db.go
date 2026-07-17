@@ -23,10 +23,10 @@ var schemaSQL string
 // MergeStaleTTL window. Bumping nukes the DB on deploy; run the consistency
 // check's apply mode (Reconcile) once after deploy to rebuild truth promptly.
 // (17 added merge_stale_sha/merge_stale_at -- the push-invalidated test-merge
-// sha memory: a refetch re-offering the exact nulled sha is stale by
-// definition (a tip change always changes the test-merge sha) and is stored
-// unresolved instead of re-resolving, so the single-PR route keeps missing
-// until GitHub serves a fresh sha;
+// sha memory: a refetch re-offering the exact nulled sha is presumed pre-push
+// (a tip change always changes the sha of a successful test merge) and is
+// stored unresolved instead of re-resolving, so the single-PR route keeps
+// missing until GitHub serves a fresh sha;
 // 16 was respcache round 2: commit_ci_cache gained pagination
 // columns (per_page, page; the unique key is now owner/repo/ref/kind/
 // per_page/page) and a third kind 'statuses_list' (the raw statuses LIST

@@ -79,26 +79,41 @@ UPDATE repos SET is_archived = ? WHERE owner = ? AND name = ?;
 --
 -- The merge-field STALE GUARD (merge_stale_sha/merge_stale_at, stamped by
 -- NullPRMergeableByBranch when a push un-resolves the row): a base/head tip
--- change ALWAYS changes the test-merge sha, so a REST/webhook-shaped source
--- (node_id present) re-offering the exact invalidated sha is a pre-push
--- answer -- GitHub's recompute lag -- and must not re-resolve the row:
--- mergeable and merge_commit_sha store NULL instead, the marker stays, and
--- the single-PR route keeps missing (each miss re-triggers the recompute)
--- until a NEW sha arrives, which clears the marker. The marker carries its
--- own DISPROOF -- the push-tip PROOF (merge_stale_ref/merge_stale_after: the
--- pushed branch and its post-push tip): a source whose reported tip for that
--- branch (excluded.base_ref_oid / excluded.head_ref_oid, matched by ref
--- name) equals the push's after sha provably post-dates the push, so its
--- answer is NOT pre-push -- it is accepted, and the marker cleared, even
--- when it re-offers the remembered sha. That heals the wrong-mark race (a
--- fresh post-push answer absorbed BEFORE the late push delivery landed,
--- which then stamped the fresh sha stale) on the very next fetch. The marker
--- also only rejects within its window (merge_stale_at newer than touched_at
--- minus 1 hour -- keep in sync with ghdata.MergeStaleTTL): past it, a
--- re-offered sha is accepted and the marker cleared -- the OUTER backstop
--- for a wrong mark whose answers never demonstrate the tip (no usable push
--- after, or GitHub's reported tip lagging). Proof or expiry, "not stale"
--- means the same thing everywhere below: the value is accepted and ALL FOUR
+-- change ALWAYS changes the sha of a SUCCESSFUL test merge, so a
+-- REST/webhook-shaped source (node_id present) re-offering the exact
+-- invalidated sha is presumed a pre-push answer -- GitHub's recompute lag --
+-- and must not re-resolve the row: mergeable and merge_commit_sha store NULL
+-- instead, the marker stays, and the single-PR route keeps missing (each
+-- miss re-triggers the recompute) until a NEW sha arrives, which clears the
+-- marker. TWO exemptions overrule the presumption. (1) The push-tip PROOF
+-- (merge_stale_ref/merge_stale_after: the pushed branch and its post-push
+-- tip): a source whose reported tip for that branch (excluded.base_ref_oid /
+-- excluded.head_ref_oid, matched by ref name) equals the push's after sha
+-- provably post-dates the push, so its answer is NOT pre-push -- it is
+-- accepted, and the marker cleared, even when it re-offers the remembered
+-- sha. That heals the wrong-mark race (a fresh post-push answer absorbed
+-- BEFORE the late push delivery landed, which then stamped the fresh sha
+-- stale) on the very next fetch. (2) The DIRTY-RETAINED exemption: a
+-- conflicted PR gets NO new test merge -- GitHub retains the last-good sha
+-- and re-offers it with mergeable:false (base.sha frozen at the last clean
+-- evaluation, so the tip proof cannot fire) -- so a CONFLICTING same-sha
+-- source is accepted once the marker is at least 30 seconds old
+-- (merge_stale_at at or before touched_at minus 30 seconds -- keep in sync
+-- with ghdata.MergeStaleConflictingWindow; the window covers read-replica
+-- lag, the only other way a CONFLICTING answer re-offers the marked sha).
+-- The COALESCE(excluded.mergeable, '') in that exemption is load-bearing
+-- three-valued-logic hygiene: a bare NULL = 'CONFLICTING' is NULL, and
+-- NOT (NULL AND <old marker>) is NULL -- which would poison the WHOLE
+-- rejection predicate to NULL (falsy) and let a NULL-mergeable same-sha
+-- source (the pulls-LIST absorb) store the stale sha and clear the marker;
+-- coalesced, the exemption is definitely FALSE for unresolved sources and
+-- the rejection stands. The marker also only rejects within its window
+-- (merge_stale_at newer than touched_at minus 1 hour -- keep in sync with
+-- ghdata.MergeStaleTTL): past it, a re-offered sha is accepted and the
+-- marker cleared -- the OUTER backstop for a wrong mark whose answers never
+-- demonstrate the tip (no usable push after, or GitHub's reported tip
+-- lagging). Proof, dirty-retained exemption, or expiry, "not stale" means
+-- the same thing everywhere below: the value is accepted and ALL FOUR
 -- marker columns clear together.
 -- A GraphQL-shaped source (node_id NULL) carries no
 -- sha to vouch for its answer, so it may not set mergeable on a
@@ -128,6 +143,8 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
              AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                       AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
                            OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
             THEN NULL
         WHEN excluded.node_id IS NULL
              AND pull_requests.node_id IS NOT NULL
@@ -159,6 +176,8 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
              AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                       AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
                            OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
             THEN NULL
         ELSE excluded.merge_commit_sha
     END,
@@ -169,7 +188,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
                       AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
                       AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                                AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
-                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
             THEN NULL
         ELSE pull_requests.merge_stale_sha
     END,
@@ -180,7 +201,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
                       AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
                       AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                                AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
-                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
             THEN NULL
         ELSE pull_requests.merge_stale_at
     END,
@@ -191,7 +214,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
                       AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
                       AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                                AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
-                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
             THEN NULL
         ELSE pull_requests.merge_stale_ref
     END,
@@ -202,7 +227,9 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
                       AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
                       AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
                                AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
-                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid))))
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
             THEN NULL
         ELSE pull_requests.merge_stale_after
     END,

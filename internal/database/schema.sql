@@ -128,9 +128,14 @@ CREATE TABLE pull_requests (
     auto_merge_method    TEXT,   -- native auto-merge method when armed (merge|squash|rebase); NULL = not armed
     merge_commit_sha     TEXT,   -- GitHub's test-merge sha; NULL until computed
     merge_stale_sha      TEXT,   -- the test-merge sha a base/head push invalidated. A tip change ALWAYS
-                                 -- changes the test-merge sha (different parents), so a refetch re-offering
-                                 -- THIS sha is a pre-push answer (GitHub's recompute lag) and must not
-                                 -- re-resolve mergeable; cleared when a non-null sha is accepted.
+                                 -- changes the sha of a SUCCESSFUL test merge (different parents), so a
+                                 -- refetch re-offering THIS sha is presumed a pre-push answer (GitHub's
+                                 -- recompute lag) and must not re-resolve mergeable. The exception is a
+                                 -- CONFLICTED (dirty) PR: it gets NO new test merge -- GitHub retains the
+                                 -- last-good sha and re-offers it with mergeable:false -- so a CONFLICTING
+                                 -- same-sha answer is accepted once the marker outlives
+                                 -- ghdata.MergeStaleConflictingWindow (the strftime '-30 seconds' in
+                                 -- UpsertPullRequest). Cleared when an answer is accepted.
     merge_stale_at       TEXT,   -- when the push invalidated it. The marker only rejects within a bounded
                                  -- window (ghdata.MergeStaleTTL == the strftime '-1 hour' in
                                  -- UpsertPullRequest) -- the OUTER backstop, behind the tip proof below,

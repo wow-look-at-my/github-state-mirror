@@ -13,11 +13,13 @@ import (
 
 // These tests lock the merge-field stale guard: a base/head push un-resolves
 // mergeable AND remembers the invalidated test-merge sha (merge_stale_sha),
-// because a tip change always changes the test-merge sha -- so any absorb
-// path re-offering that exact sha within the window is serving a pre-push
-// answer (GitHub's recompute lag) and must not re-resolve the row. The
-// webhooks#66 incident: a lagged refetch re-resolved the invalidated sha,
-// and every later read was a hit serving it frozen.
+// because a tip change always changes the sha of a SUCCESSFUL test merge --
+// so an absorb path re-offering that exact sha within the window is presumed
+// to be serving a pre-push answer (GitHub's recompute lag) and must not
+// re-resolve the row, unless one of the two exemptions (the push-tip proof;
+// the dirty-retained CONFLICTING pattern -- see the sections below) proves
+// otherwise. The webhooks#66 incident: a lagged refetch re-resolved the
+// invalidated sha, and every later read was a hit serving it frozen.
 
 // The tests above the proof section pass after="" to NullPRMergeableByBranch:
 // a marker WITHOUT the push-tip proof columns, which is exactly the old
@@ -491,6 +493,141 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 	row = getPR(t, s, 7)
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String, "the SQL tip proof must accept the payload")
 	assert.Equal(t, staleShaB, row.MergeCommitSha.String)
+	assert.False(t, row.MergeStaleSha.Valid)
+	assert.False(t, row.MergeStaleAt.Valid)
+	assert.False(t, row.MergeStaleRef.Valid)
+	assert.False(t, row.MergeStaleAfter.Valid)
+}
+
+// ---- The dirty-retained CONFLICTING exemption ----
+//
+// The invariant behind the marker holds only for SUCCESSFUL test merges: a
+// conflicted (dirty) PR gets NO new test merge, so GitHub keeps returning the
+// RETAINED last-good merge_commit_sha with a fresh mergeable:false -- and its
+// reported base.sha stays FROZEN at the last clean evaluation, so the
+// push-tip proof cannot rescue it (live evidence 2026-07-17:
+// wow-look-at-my/webhooks#44 and #124, both dirty on GitHub with retained
+// shas and frozen base.sha values while the mirror served mergeable:null on
+// consecutive miss-reads). Without the exemption, every base push over a
+// conflicted PR deterministically wedged it to null for the whole
+// MergeStaleTTL -- the reported pr-minder conflict-settle stall.
+
+// TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow: (the
+// deterministic wedge fix) a CONFLICTING answer re-offering the marker sha is
+// accepted once the marker outlives MergeStaleConflictingWindow -- replica
+// lag can no longer explain the match, so the dirty-retained pattern is the
+// only remaining explanation -- even when the push-tip proof is recorded but
+// does NOT match the doc (the frozen-base.sha live case).
+func TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// The conflicted PR's stored state: CONFLICTING with the RETAINED sha.
+	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now.Add(-2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, stale)
+
+	// A base push 60s ago: marker + proof recorded. The proof will NOT match
+	// the dirty doc -- its base tip is frozen at the last clean evaluation.
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now.Add(-time.Minute)))
+	row := getPR(t, s, 7)
+	require.Equal(t, staleShaA, row.MergeStaleSha.String)
+	require.Equal(t, pushedBaseTip, row.MergeStaleAfter.String)
+
+	// GitHub's post-push answer: still CONFLICTING, same retained sha, frozen
+	// pre-push base tip (restPR's default != pushedBaseTip). Tip proof fails,
+	// but the marker is past the lag window: accepted.
+	stale, err = s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now)
+	require.NoError(t, err)
+	assert.False(t, stale, "a dirty-retained CONFLICTING answer past the lag window must be accepted")
+	row = getPR(t, s, 7)
+	assert.Equal(t, "CONFLICTING", row.Mergeable.String, "the conflicted verdict must resolve the row")
+	assert.Equal(t, staleShaA, row.MergeCommitSha.String, "the retained sha is stored")
+	assert.False(t, row.MergeStaleSha.Valid, "the marker clears in full")
+	assert.False(t, row.MergeStaleAt.Valid)
+	assert.False(t, row.MergeStaleRef.Valid)
+	assert.False(t, row.MergeStaleAfter.Valid)
+}
+
+// TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected: within
+// MergeStaleConflictingWindow a CONFLICTING same-sha answer could still be a
+// genuinely pre-push read served by a lagging replica, so it stays rejected
+// and the marker (proof included) survives.
+func TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now.Add(-2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, stale)
+
+	// The push landed 5s ago: still inside the lag window.
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now.Add(-5*time.Second)))
+
+	stale, err = s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now)
+	require.NoError(t, err)
+	assert.True(t, stale, "inside the lag window the same-sha CONFLICTING answer must stay rejected")
+	row := getPR(t, s, 7)
+	assert.False(t, row.Mergeable.Valid)
+	assert.False(t, row.MergeCommitSha.Valid)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the marker must survive")
+	assert.Equal(t, "main", row.MergeStaleRef.String)
+	assert.Equal(t, pushedBaseTip, row.MergeStaleAfter.String)
+}
+
+// TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL: the exemption is scoped
+// to CONFLICTING only. A successful test merge really does always mint a new
+// sha, so a MERGEABLE answer re-offering the marker sha is pre-push however
+// old the marker is (within MergeStaleTTL) and stays rejected -- lag-window
+// age buys it nothing.
+func TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	seedResolvedPR(t, s, now.Add(-2*time.Minute))
+
+	// The push landed 60s ago: well past the CONFLICTING lag window.
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now.Add(-time.Minute)))
+
+	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now)
+	require.NoError(t, err)
+	assert.True(t, stale, "a MERGEABLE same-sha answer must keep the full MergeStaleTTL rejection")
+	row := getPR(t, s, 7)
+	assert.False(t, row.Mergeable.Valid)
+	assert.False(t, row.MergeCommitSha.Valid)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the marker must survive")
+}
+
+// TestUpsertPRWithChecks_DirtyRetainedParity: the SQL stale guard shares the
+// '-30 seconds' CONFLICTING exemption with the Go check -- through the
+// webhook-shaped upsert path a MERGEABLE same-sha payload stays rejected past
+// the lag window, while a CONFLICTING one resolves the row and clears the
+// whole marker.
+func TestUpsertPRWithChecks_DirtyRetainedParity(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now.Add(-2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, stale)
+	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now.Add(-time.Minute)))
+
+	// A MERGEABLE same-sha payload: still rejected by the SQL guard.
+	require.NoError(t, s.UpsertPRWithChecks(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now))
+	row := getPR(t, s, 7)
+	assert.False(t, row.Mergeable.Valid, "SQL: a MERGEABLE same-sha payload must stay rejected")
+	assert.False(t, row.MergeCommitSha.Valid)
+	assert.Equal(t, staleShaA, row.MergeStaleSha.String)
+
+	// A CONFLICTING same-sha payload past the lag window: accepted by the SQL
+	// exemption, marker cleared -- all four columns.
+	require.NoError(t, s.UpsertPRWithChecks(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now))
+	row = getPR(t, s, 7)
+	assert.Equal(t, "CONFLICTING", row.Mergeable.String, "SQL: the dirty-retained payload must be accepted")
+	assert.Equal(t, staleShaA, row.MergeCommitSha.String)
 	assert.False(t, row.MergeStaleSha.Valid)
 	assert.False(t, row.MergeStaleAt.Valid)
 	assert.False(t, row.MergeStaleRef.Valid)

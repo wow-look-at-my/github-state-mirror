@@ -194,8 +194,8 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	// A branch push makes GitHub recompute mergeability for every open PR
 	// based on (or heading from) that branch, and no webhook ever carries the
 	// recomputed value -- so un-resolve the cached mergeable (remembering the
-	// invalidated test-merge sha: a refetch re-offering it is stale by
-	// definition -- plus the push's after tip, the proof by which an answer
+	// invalidated test-merge sha: a refetch re-offering it is presumed
+	// pre-push -- plus the push's after tip, the proof by which an answer
 	// that already reflects this push is recognized and accepted) rather than
 	// let the single-PR cache keep serving the pre-push answer. This
 	// invalidation runs FIRST, before any other fallible step, so a transient
