@@ -338,6 +338,10 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 	return tx.Commit()
 }
 
+// zeroSHA is git's null object id -- what a push payload's after reads for a
+// deleted ref. It never names a real tip, so it can never prove anything.
+const zeroSHA = "0000000000000000000000000000000000000000"
+
 // NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) on
 // every open PR whose base or head is the pushed branch: GitHub recomputes
 // mergeability when either side moves and never webhooks the result, so the
@@ -346,14 +350,27 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 // instead of serving the pre-push answer). The nulled sha is remembered
 // (merge_stale_sha, stamped at now): the pushed branch provably moved, so a
 // refetch re-offering that exact sha is a pre-push answer and the absorb
-// paths refuse to re-resolve from it (see MergeStaleTTL).
-func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch string, now time.Time) error {
+// paths refuse to re-resolve from it (see MergeStaleTTL). after is the push's
+// post-push tip sha: recorded with the branch (merge_stale_ref/
+// merge_stale_after) it makes the marker VERIFIABLE -- an answer whose
+// reported tip for the branch equals after provably post-dates the push and
+// is accepted even when it re-offers the remembered sha, healing a WRONG mark
+// (the marker stamped over an already-post-push sha by a late push delivery)
+// on the very next poll. An empty or all-zeros after (a deleted ref, or an
+// unknowing caller) records no proof: only the TTL unwedges then.
+func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch, after string, now time.Time) error {
 	if branch == "" {
 		return nil
 	}
+	var staleRef, staleAfter sql.NullString
+	if after != "" && after != zeroSHA {
+		staleRef = sql.NullString{String: branch, Valid: true}
+		staleAfter = sql.NullString{String: after, Valid: true}
+	}
 	return s.q.NullPRMergeableByBranch(ctx, dbgen.NullPRMergeableByBranchParams{
-		StaleAt: rfc3339(now),
-		Owner:   owner, Repo: repo,
+		StaleAt:  rfc3339(now),
+		StaleRef: staleRef, StaleAfter: staleAfter,
+		Owner: owner, Repo: repo,
 		BaseRefName: sql.NullString{String: branch, Valid: true},
 		HeadRefName: sql.NullString{String: branch, Valid: true},
 	})

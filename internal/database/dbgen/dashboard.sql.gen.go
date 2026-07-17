@@ -282,7 +282,7 @@ func (q *Queries) ListAllCommitChecks(ctx context.Context) ([]CommitCheck, error
 }
 
 const listAllOpenPullRequests = `-- name: ListAllOpenPullRequests :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests WHERE state = 'OPEN' ORDER BY owner, repo, number
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests WHERE state = 'OPEN' ORDER BY owner, repo, number
 `
 
 // ListAllOpenPullRequests returns only OPEN PRs. The consistency check compares
@@ -327,6 +327,8 @@ func (q *Queries) ListAllOpenPullRequests(ctx context.Context) ([]PullRequest, e
 			&i.MergeCommitSha,
 			&i.MergeStaleSha,
 			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
 			&i.TouchedAt,
 		); err != nil {
 			return nil, err
@@ -376,7 +378,7 @@ func (q *Queries) ListAllPRLabels(ctx context.Context) ([]PrLabel, error) {
 }
 
 const listAllPullRequests = `-- name: ListAllPullRequests :many
-SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, touched_at FROM pull_requests ORDER BY owner, repo, number
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests ORDER BY owner, repo, number
 `
 
 func (q *Queries) ListAllPullRequests(ctx context.Context) ([]PullRequest, error) {
@@ -418,6 +420,8 @@ func (q *Queries) ListAllPullRequests(ctx context.Context) ([]PullRequest, error
 			&i.MergeCommitSha,
 			&i.MergeStaleSha,
 			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
 			&i.TouchedAt,
 		); err != nil {
 			return nil, err

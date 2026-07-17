@@ -128,14 +128,30 @@ CREATE TABLE pull_requests (
     auto_merge_method    TEXT,   -- native auto-merge method when armed (merge|squash|rebase); NULL = not armed
     merge_commit_sha     TEXT,   -- GitHub's test-merge sha; NULL until computed
     merge_stale_sha      TEXT,   -- the test-merge sha a base/head push invalidated. A tip change ALWAYS
-                                 -- changes the test-merge sha (different parents), so a refetch re-offering
-                                 -- THIS sha is a pre-push answer (GitHub's recompute lag) and must not
-                                 -- re-resolve mergeable; cleared when a non-null sha is accepted.
+                                 -- changes the sha of a SUCCESSFUL test merge (different parents), so a
+                                 -- refetch re-offering THIS sha is presumed a pre-push answer (GitHub's
+                                 -- recompute lag) and must not re-resolve mergeable. The exception is a
+                                 -- CONFLICTED (dirty) PR: it gets NO new test merge -- GitHub retains the
+                                 -- last-good sha and re-offers it with mergeable:false -- so a CONFLICTING
+                                 -- same-sha answer is accepted once the marker outlives
+                                 -- ghdata.MergeStaleConflictingWindow (the strftime '-30 seconds' in
+                                 -- UpsertPullRequest). Cleared when an answer is accepted.
     merge_stale_at       TEXT,   -- when the push invalidated it. The marker only rejects within a bounded
                                  -- window (ghdata.MergeStaleTTL == the strftime '-1 hour' in
-                                 -- UpsertPullRequest) so a sha wrongly marked stale -- absorbed
-                                 -- post-recompute before the late push delivery landed -- cannot wedge the
-                                 -- row into missing forever.
+                                 -- UpsertPullRequest) -- the OUTER backstop, behind the tip proof below,
+                                 -- so a sha wrongly marked stale -- absorbed post-recompute before the
+                                 -- late push delivery landed -- cannot wedge the row into missing forever.
+    merge_stale_ref      TEXT,   -- which branch the marking push moved (the PR's base or head name).
+                                 -- With merge_stale_after it makes the marker VERIFIABLE -- the proof
+                                 -- rule: an absorbed answer whose reported tip for this branch
+                                 -- (base.sha / head.sha) equals merge_stale_after provably reflects the
+                                 -- push, so it is accepted even when it re-offers the remembered sha --
+                                 -- a wrongly-marked fresh sha heals on the very next poll instead of
+                                 -- wedging for the whole window. Overwritten by every marking push
+                                 -- (the newest answer must reflect the newest push).
+    merge_stale_after    TEXT,   -- that push's after tip sha. NULL when the payload carried no usable
+                                 -- after (empty / the all-zeros deleted-ref sha): no proof recorded, so
+                                 -- only the MergeStaleTTL window unwedges a wrong mark (the old bound).
     touched_at           TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner, repo, number)
 );

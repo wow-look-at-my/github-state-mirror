@@ -204,6 +204,61 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 	assertNoURLKeys(t, w5.Body.Bytes())
 }
 
+// TestCachedPull_PostPushProvenAnswerHealsWrongMark is the mirror image of
+// TestCachedPull_StaleShaRefetchNeverReresolves: the wrong-mark race, end to
+// end. GitHub recomputes mergeability within seconds of a push once a read
+// triggers it, and pr-minder polls right after pushing -- so a poll-driven
+// miss absorbs GitHub's POST-push answer (base tip already at the push's
+// after) BEFORE the push delivery reaches the mirror, and the late delivery
+// then stamps that FRESH sha stale. Pre-fix the route served mergeable:null
+// for up to MergeStaleTTL (an hour) while github.com showed the PR computed.
+// Now the marker carries the push's after tip: the next poll's answer
+// demonstrates it post-dates the push (its base tip matches), so it is
+// accepted, served RESOLVED, and the row hits again -- healed on the very
+// next poll.
+func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	target := "/repos/org1/repo1/pulls/7"
+
+	baseTip := shaTip // GitHub's reported base tip: already the push's after
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr["mergeable"] = true
+		pr["merged"] = false
+		pr["merge_commit_sha"] = shaMid
+		pr["base"].(map[string]any)["sha"] = baseTip
+		servePRJSON(w, pr)
+	}
+
+	// The poll-driven miss absorbs GitHub's post-push answer first...
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	require.Equal(t, "miss", w1.Header().Get(cacheHeader))
+
+	// ...then the LATE push delivery lands and wrongly marks the fresh sha
+	// (the push whose after IS the base tip the answer already reported).
+	postWebhook(t, router, "push", fmt.Sprintf(
+		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
+		shaBase, shaTip))
+
+	// The next poll re-offers the SAME sha -- with the base tip equal to the
+	// push's after: post-push proof, accepted, served RESOLVED.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "miss", w2.Header().Get(cacheHeader))
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &body2))
+	assert.Equal(t, true, body2["mergeable"], "a post-push-proven answer must be served resolved")
+	assert.Equal(t, shaMid, body2["merge_commit_sha"], "the wrongly-marked sha serves once proven")
+
+	// And the row re-resolved: the next read is a hit, zero further upstream.
+	w3 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "the healed row must hit again")
+	assert.Equal(t, w2.Body.String(), w3.Body.String())
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
+	assertNoURLKeys(t, w3.Body.Bytes())
+}
+
 // TestCachedPull_GraphQLRowIncompleteMisses: a GraphQL-sourced row -- known
 // mergeable but missing the REST-only fields -- can never be rebuilt, so the
 // single-PR route must miss (fetch + absorb) instead of serving a partial body.
