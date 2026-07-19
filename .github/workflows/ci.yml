@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   sqlc-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install sqlc
@@ -39,7 +39,7 @@ jobs:
   # never committed, or an orphaned .js whose .ts was deleted/renamed — the wipe
   # is what exposes orphans, since a rebuild alone never removes them.
   web-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -64,7 +64,7 @@ jobs:
             }
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
