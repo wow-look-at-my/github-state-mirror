@@ -67,11 +67,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
+      # on every run, and its cache key is once-per-run (NOT job-disambiguated),
+      # so publish-ghcr just cache-downloads it. Do NOT add an explicit
+      # `cache-upload go-build` step here — a second same-run upload of that
+      # name collides on the key and fails.
       - uses: wow-look-at-my/go-toolchain@v1
 
   # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Downloads the go-build artifact (server_linux_amd64) the build job
-  # uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
+  # on master. Restores the go-build hand-off (server_linux_amd64) the build job
+  # cache-uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
   publish-ghcr:
     needs: build
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
