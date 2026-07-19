@@ -237,6 +237,33 @@ func (d *dashboard) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.auth.AuthCodeURL(d.redirectURI(r), state), http.StatusFound)
 }
 
+// signinFailedHTML is the page every callback failure renders. Fixed content
+// only — no user-controlled text ever lands in it (details belong in the logs),
+// so it is injection-proof by construction. The retry link points at /login,
+// which mints a fresh state cookie and restarts the flow cleanly.
+const signinFailedHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
+<h1>Sign-in failed</h1>
+<p>Sign-in could not be completed.</p>
+<p><a href="/login">Try signing in again</a></p>
+</body>
+</html>
+`
+
+// signinFailed answers a callback failure with the retry page at a 4xx status.
+// NEVER a 5xx here: Cloudflare replaces origin 5xx bodies with its own bare
+// error page, which stranded the operator on a context-free "502 Bad Gateway"
+// dead end when a GitHub exchange failed (incident 2026-07-19T02:15Z). The
+// caller logs the actual failure; the browser gets a way to retry.
+func signinFailed(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(signinFailedHTML))
+}
+
 func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if !d.auth.Configured() {
 		http.Error(w, "login is not configured on this server", http.StatusServiceUnavailable)
@@ -253,7 +280,16 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	c, err := r.Cookie(auth.StateCookie)
 	if err != nil || c.Value == "" || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
+		// Name which precondition failed — never the state values themselves.
+		switch {
+		case state == "":
+			slog.Warn("oauth callback rejected: state query param missing")
+		case err != nil || c.Value == "":
+			slog.Warn("oauth callback rejected: state cookie missing or empty")
+		default:
+			slog.Warn("oauth callback rejected: state mismatch")
+		}
+		signinFailed(w)
 		return
 	}
 	// Consume the state cookie.
@@ -261,7 +297,8 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := q.Get("code")
 	if code == "" {
-		http.Error(w, "missing oauth code", http.StatusBadRequest)
+		slog.Warn("oauth callback rejected: code query param missing")
+		signinFailed(w)
 		return
 	}
 
@@ -269,13 +306,13 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := d.auth.Exchange(ctx, code, d.redirectURI(r))
 	if err != nil {
 		slog.Warn("oauth token exchange failed", "error", err)
-		http.Error(w, "could not complete sign-in", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 	login, _, err := d.auth.FetchLogin(ctx, token)
 	if err != nil {
 		slog.Warn("oauth fetch login failed", "error", err)
-		http.Error(w, "could not read GitHub identity", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 
