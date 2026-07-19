@@ -32,8 +32,12 @@ jobs:
 
   # The dashboard front-end is authored in TypeScript (internal/api/web/src/*.ts)
   # and compiled to internal/api/web/assets/*.js, which is committed (a generated
-  # artifact) and embedded into the Go binary. This job fails if the committed JS
-  # is out of date with the TypeScript source.
+  # artifact) and embedded into the Go binary. This job wipes the generated .js
+  # (assets/style.css is hand-written and must survive the wipe), recompiles from
+  # source with the locked toolchain (npm ci pins tsc via package-lock.json), and
+  # fails on ANY divergence from what is committed: stale output, an emitted file
+  # never committed, or an orphaned .js whose .ts was deleted/renamed — the wipe
+  # is what exposes orphans, since a rebuild alone never removes them.
   web-check:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +46,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - name: Wipe generated JS so orphans of deleted/renamed .ts files surface
+        run: find internal/api/web/assets -name '*.js' -delete
       - run: npm run build
       - name: Verify compiled dashboard JS is committed and up to date
         uses: wow-look-at-my/actions@typescript#latest
@@ -49,8 +55,10 @@ jobs:
           script: |
             const res = await exec.getExecOutput("git", ["status", "--porcelain", "--", "internal/api/web/assets"], { silent: true });
             if (res.stdout.trim() !== "") {
+              core.info("Divergent files (M = stale committed JS, ?? = emitted but never committed, D = orphan of a deleted/renamed .ts):");
+              core.info(res.stdout);
               await exec.exec("git", ["--no-pager", "diff", "--", "internal/api/web/assets"]);
-              core.setFailed("Compiled dashboard JS is out of date. Run `npm run build` and commit internal/api/web/assets/.");
+              core.setFailed("Compiled dashboard JS diverges from the TypeScript source. Run `npm run build` and commit internal/api/web/assets/ (git rm any orphaned .js).");
             } else {
               core.info("Dashboard JS is in sync with the TypeScript source.");
             }

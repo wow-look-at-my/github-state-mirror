@@ -45,12 +45,14 @@ import (
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
-	denyKindContents    = "contents"
-	denyKindGitCommit   = "git_commit"
-	denyKindRepoPulls   = "repo_pulls"
-	denyKindPull        = "pull"
-	denyKindRepoCommits = "repo_commits"
-	denyKindCompare     = "compare"
+	denyKindContents     = "contents"
+	denyKindGitCommit    = "git_commit"
+	denyKindRepoPulls    = "repo_pulls"
+	denyKindPull         = "pull"
+	denyKindRepoCommits  = "repo_commits"
+	denyKindCompare      = "compare"
+	denyKindCommitStatus = "commit_status"
+	denyKindCheckRuns    = "check_runs"
 )
 
 // revealOutcome is the reveal decision for one request.

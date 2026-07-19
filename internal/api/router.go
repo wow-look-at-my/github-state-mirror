@@ -230,9 +230,21 @@ func NewRouter(
 
 		// Cached commits LIST (respcache_commits.go): per-page sha snapshots
 		// over the same git_commits_cache rows, flushed by push/repository
-		// webhooks. The single-commit sub-path /commits/{sha} (a different
-		// response shape) is deliberately unregistered and passes through.
+		// webhooks.
 		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
+
+		// The /commits/* subtree dispatcher (respcache_commitci.go): a tail
+		// ending in /status (the combined commit status) or /check-runs is a
+		// cached commit-CI route -- the suffix anchor is what lets the ref
+		// carry slashes, which a single-segment {ref} parameter could never
+		// match. Snapshots are keyed by the VERBATIM ref (branch, sha, or
+		// tag; never resolved) and flushed by status/check_run/check_suite
+		// (CI moved) plus push/repository webhooks. Every other tail -- the
+		// single-commit read /commits/{sha} (a different response shape),
+		// the raw /statuses list, /check-suites, /pulls, /comments, ... --
+		// stays passthrough, now forwarded by the dispatcher instead of
+		// falling to the router's NotFound.
+		r.Get("/repos/{owner}/{repo}/commits/*", h.commitsSubtree)
 
 		// Cached compare (respcache_compare.go): the three-dot base...head
 		// comparison pr-minder's auto_open_pr / close-empty gates run per
