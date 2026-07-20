@@ -15,14 +15,16 @@
 // the canvas never suffers the other tabs' wipe-and-rebuild refresh.
 //
 // The component itself is NOT part of this repo: the browser imports it at
-// RUNTIME from js-snippets' GitHub Pages (live at master head — the org's
-// standard consumption model, never vendored). A failed Pages fetch degrades
+// RUNTIME from js-snippets' buildhost library site (live at master head —
+// republished on every js-snippets master push; replaced the quota-dead
+// GitHub Pages deploy 2026-07-20; the org's standard consumption model,
+// never vendored). A failed component fetch degrades
 // softly and never parks: the element shows "chart loading…" and retries the
 // dynamic import on a FIXED 5s cadence forever (cache-busted ?retry=N, because
 // browsers memoize failed module fetches). Fix component bugs upstream in
 // js-snippets — only adapter logic lives here. Types for the URL import come
 // from src/js-snippets-timeline.d.ts, an interim hand-maintained shim.
-const COMPONENT_URL = "https://wow-look-at-my.github.io/js-snippets/ui/timeline-view.js";
+const COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js";
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const POLL_MS = 5000; // the dashboard's shared refresh cadence (app.ts REFRESH_MS)
 const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
