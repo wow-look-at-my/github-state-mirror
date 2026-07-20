@@ -245,8 +245,9 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	// default_branch gets its own constructor so the entry ALWAYS carries an
 	// explicit github value: GraphQL's defaultBranchRef is null for a repo with
 	// no commits (REST still reports the CONFIGURED default_branch name, which
-	// is what webhook absorbs cache), and the bare add() rendered that as ""
-	// -- dropped from the JSON by omitempty, leaving a one-sided entry.
+	// is what the webhook/REST absorb paths cache), and the bare add() rendered
+	// that as "" -- dropped from the JSON by omitempty, leaving a one-sided
+	// entry.
 	if ns(c.DefaultBranch) != ns(g.DefaultBranch) {
 		d := Discrepancy{
 			Kind: "repo", Repo: repoKey, Issue: "field_mismatch", Field: "default_branch",
