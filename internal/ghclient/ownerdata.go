@@ -47,7 +47,13 @@ const ownerPRFields = `
 // a User), so the App-driven paths -- the periodic fleet refresher and the
 // consistency checker, whose installations can be user accounts -- use it.
 // Selection matches orgDataQuery (same small first: 5 paging, for the same
-// 502-avoidance reason) plus isArchived per repo and the ownerPRFields extras.
+// 502-avoidance reason) plus isArchived and visibility per repo and the
+// ownerPRFields extras. visibility is what lets the fleet refresher's sync
+// STAMP each repo's visibility into truth (UpsertRepo only overwrites with a
+// non-empty value, so the visibility-less org-query path never blanks it);
+// without it every refresher-absorbed row sat at '' = unknown = fail-closed
+// private, and the 2026-07-20 consistency report carried 203 informational
+// visibility_unknown entries -- essentially every fleet-synced owner's repo.
 // orgDataQuery itself stays byte-untouched: it is the identity-locked cached
 // route's contract.
 // It additionally selects the connection's totalCount (another owner-only
@@ -71,6 +77,7 @@ query($owner: String!, $repoCursor: String) {
         url
         isDisabled
         isArchived
+        visibility
         pushedAt
         owner { login avatarUrl url }
         defaultBranchRef {
