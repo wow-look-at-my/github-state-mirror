@@ -301,6 +301,25 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
+	// A non-completed check_suite delivery records NOTHING in truth. GitHub
+	// auto-creates a suite per sha for EVERY app with checks:write, and an app
+	// that runs no checks on the sha leaves its empty suite queued forever --
+	// so the PENDING row a requested/queued delivery would mint is a permanent
+	// ghost no later event clears, pinning the low-water-mark rollup at
+	// PENDING and re-poisoning last_commit_status on every PR upsert after
+	// every heal (the 2026-07-20 report's live-minting rollup cluster).
+	// Nothing real is lost: a genuine suite's pending phase is already carried
+	// by its own check_runs' queued/in_progress events, and GitHub's own
+	// statusCheckRollup ignores suites entirely -- this aligns the mirror's
+	// rollup inputs with GitHub's. Completed suites with real conclusions
+	// keep applying exactly as before (a completed suite whose conclusion
+	// normalizes to PENDING is dropped too: the suite is finished, so that
+	// row would be just as permanent). The response caches already flushed --
+	// handle() invalidates BEFORE the disposition logic, the queued-
+	// workflow_job precedent -- so the sha's commit-CI snapshots still moved.
+	if event.Type == "check_suite" && payload.State == "PENDING" {
+		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
+	}
 	rollup, err := d.store.ApplyCommitStatus(ctx, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
 	if err != nil {
 		slog.Warn("webhook: apply commit status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)

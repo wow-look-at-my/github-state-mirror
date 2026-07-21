@@ -122,7 +122,14 @@ type gqlRepo struct {
 	// IsArchived is selected only by the owner-agnostic query (ownerDataQuery);
 	// the identity-locked orgDataQuery never returns it, leaving it false --
 	// which matches its repositories(isArchived: false) filter anyway.
-	IsArchived bool    `json:"isArchived"`
+	IsArchived bool `json:"isArchived"`
+	// Visibility is likewise selected only by the owner-agnostic query: the
+	// GraphQL enum (PUBLIC/PRIVATE/INTERNAL), left "" by the identity-locked
+	// orgDataQuery -- and UpsertRepo's guard only overwrites the stored column
+	// with a NON-empty value, so an org-query-sourced sync can never blank a
+	// known visibility while an owner-sourced sync (the fleet refresher, the
+	// consistency apply) stamps it.
+	Visibility string  `json:"visibility"`
 	PushedAt   *string `json:"pushedAt"`
 	Owner      struct {
 		Login     string `json:"login"`
@@ -381,9 +388,14 @@ func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 		Url:           gr.URL,
 		IsDisabled:    boolToInt(gr.IsDisabled),
 		IsArchived:    boolToInt(gr.IsArchived),
-		OwnerLogin:    sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
-		OwnerAvatar:   sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
-		OwnerUrl:      sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
+		// Lowercased to the stored/REST form ("public"), matching what the
+		// webhook absorbs and OwnerRepoVisibilities record. Empty (the
+		// identity-locked org query selects no visibility) stays empty and is
+		// never written over a known value (UpsertRepo's guard).
+		Visibility:  strings.ToLower(gr.Visibility),
+		OwnerLogin:  sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
+		OwnerAvatar: sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
+		OwnerUrl:    sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
 	}
 	if gr.PushedAt != nil {
 		r.PushedAt = sql.NullString{String: *gr.PushedAt, Valid: true}

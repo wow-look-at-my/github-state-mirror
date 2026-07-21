@@ -73,6 +73,44 @@ func TestSyncOrgTruth_VisibilityPreserved(t *testing.T) {
 	assert.Equal(t, VisibilityPublic, got.Visibility, "an unknowing sync must not erase known visibility")
 }
 
+// TestSyncOrgTruth_StampsVisibility: a sync whose fetch DID carry visibility
+// (the owner-agnostic query the fleet refresher uses) stamps it into truth --
+// and a later visibility-less sync (the identity-locked org-query path) keeps
+// it. This is the 2026-07-20 fix: the refresher used to sync visibility-less
+// rows, leaving every fleet-synced owner's repo at '' = fail-closed unknown
+// (203 visibility_unknown entries in that day's consistency report).
+func TestSyncOrgTruth_StampsVisibility(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// The owner-sync shape: the repo row carries the fetched visibility.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u", Visibility: VisibilityPrivate},
+	}, nil), "app-installation:1", now, now))
+
+	got, err := s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPrivate, got.Visibility, "an owner sync must stamp the visibility its fetch carried")
+
+	// A later org-query-shaped sync (no visibility) must not blank it.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"},
+	}, nil), "user:1", now, now))
+	got, err = s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPrivate, got.Visibility, "a visibility-less sync must preserve the stamped value")
+
+	// And a fresh owner sync reflecting a real change (privatized -> public)
+	// still overwrites: the guard only blocks EMPTY values.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u", Visibility: VisibilityPublic},
+	}, nil), "app-installation:1", now, now))
+	got, err = s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPublic, got.Visibility, "a knowing sync must apply a changed visibility")
+}
+
 // TestSyncOrgTruth_ReconcilesOpenPRsWithGrace: for repos the fetch RETURNED,
 // its open-PR list is authoritative -- stale open rows are deleted -- except
 // rows touched inside the grace window (a webhook racing the fetch's eventual

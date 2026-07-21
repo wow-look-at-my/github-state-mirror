@@ -228,6 +228,29 @@ func TestGetOwnerData_PageHook(t *testing.T) {
 	assert.Equal(t, [][2]int{{2, 3}, {3, 3}}, calls, "one call per page, cumulative count + connection total")
 }
 
+// TestGetOwnerData_CarriesVisibility: the owner query selects the visibility
+// enum (an owner-only extra the locked org query must never grow) and
+// convertRepo lowercases it into the repo row, so the fleet refresher's
+// SyncOrgTruth stamps it into truth. Without this every refresher-synced row
+// sat at '' = fail-closed unknown (the 2026-07-20 report's 203
+// visibility_unknown entries).
+func TestGetOwnerData_CarriesVisibility(t *testing.T) {
+	assert.Contains(t, ownerDataQuery, "visibility",
+		"the owner query must select visibility so fleet syncs can stamp it")
+
+	node := ownerRepoNode("someuser", "dotfiles", nil)
+	node["visibility"] = "PRIVATE"
+	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ownerPage(false, "", node))
+	})
+
+	data, err := c.GetOwnerData(context.Background(), "someuser")
+	require.NoError(t, err)
+	require.Len(t, data.Repos, 1)
+	assert.Equal(t, "private", data.Repos[0].Visibility,
+		"GraphQL enum lowercased to the stored/REST form")
+}
+
 // TestGetOwnerData_NullOwnerFailsLoudly: repositoryOwner is nullable, so an
 // unknown login answers data.repositoryOwner=null with NO GraphQL error; that
 // must be an error, never an empty (every-repo-is-drift) result.
@@ -317,6 +340,10 @@ func TestOwnerRepoVisibilities_NullOwner(t *testing.T) {
 func TestOrgQueryUntouched(t *testing.T) {
 	assert.NotContains(t, orgDataQuery, "autoMergeRequest")
 	assert.NotContains(t, orgDataQuery, "isArchived\n")
+	// visibility is an owner-query-only extra too: the locked query carries no
+	// visibility selection, which (via UpsertRepo's non-empty guard) is exactly
+	// why an org-query-sourced sync can never blank a stamped value.
+	assert.NotContains(t, orgDataQuery, "visibility")
 	// The repositories-connection totalCount is an owner-query-only extra (the
 	// progress hook's "N of M"); the only totalCount the locked query may carry
 	// is prFields' reviewRequests one.
