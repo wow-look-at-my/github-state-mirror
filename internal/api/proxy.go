@@ -24,7 +24,9 @@ import (
 // GitHub's API and so the contract matches the cached data endpoints, which also
 // require a token. This path deliberately never touches the freshness store, so
 // forwarded responses are never cached.
-func newGitHubProxy(baseURL string, meter *ratemeter.Store) http.Handler {
+// onResponse (nil-safe) observes every proxied upstream response after the
+// rate meter; the router wires the auth-failure mint invalidation there.
+func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*http.Response)) http.Handler {
 	target, err := url.Parse(baseURL)
 	if err != nil {
 		// baseURL is operator-controlled configuration, not caller input, so an
@@ -50,6 +52,9 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store) http.Handler {
 			if resp.Request != nil {
 				who := callerLabel(resp.Request)
 				meter.Observe(who.Key, who.Name, resp)
+			}
+			if onResponse != nil {
+				onResponse(resp)
 			}
 			return stripUpstreamCORS(resp)
 		},

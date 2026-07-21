@@ -364,6 +364,19 @@ func (q *Queries) DeleteInstallTokenCacheByInstallation(ctx context.Context, ins
 	return err
 }
 
+const deleteInstallTokenCacheByToken = `-- name: DeleteInstallTokenCacheByToken :exec
+DELETE FROM install_token_cache WHERE token = ?
+`
+
+// DeleteInstallTokenCacheByToken drops the cached mint(s) that issued one
+// exact token -- the upstream-auth-failure invalidation: a proxied call
+// carrying this token came back 401/403, so the mint behind it must not
+// keep serving (its grants no longer match GitHub's).
+func (q *Queries) DeleteInstallTokenCacheByToken(ctx context.Context, token string) error {
+	_, err := q.db.ExecContext(ctx, deleteInstallTokenCacheByToken, token)
+	return err
+}
+
 const deletePullDiff406CacheByRepo = `-- name: DeletePullDiff406CacheByRepo :exec
 DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ?
 `

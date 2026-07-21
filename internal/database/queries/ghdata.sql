@@ -271,6 +271,28 @@ UPDATE pull_requests SET
 WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo) AND state = 'OPEN'
   AND (base_ref_name = sqlc.arg(base_ref_name) OR head_ref_name = sqlc.arg(head_ref_name));
 
+-- NullPRMergeableForPR is the per-PR analog of NullPRMergeableByBranch, for
+-- tip moves reported by the PR's OWN webhook (synchronize / base retarget):
+-- a fork head emits no push webhook, so the per-branch un-resolve never runs
+-- for it, and the pull_request payload -- which carries RETAINED pre-move
+-- merge fields alongside the new tip -- is the only signal the tip changed.
+-- Same marker semantics: the invalidated sha is remembered with the moved
+-- ref and its new tip as the proof, so the upsert guard's exemptions apply
+-- to this marker exactly as to a push-stamped one.
+-- name: NullPRMergeableForPR :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(sqlc.arg(stale_at) AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(sqlc.narg(stale_ref) AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(sqlc.narg(stale_after) AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND number = sqlc.arg(number) AND state = 'OPEN';
+
 -- NullPRMergeableByRepo is the unparseable-push fallback: the payload proved a
 -- push happened but not WHICH ref moved, so conservatively un-resolve merge
 -- fields on every open PR (a wrongly-nulled row just re-fetches; a
