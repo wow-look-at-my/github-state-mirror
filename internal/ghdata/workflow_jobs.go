@@ -38,15 +38,23 @@ type WorkflowJob struct {
 }
 
 // workflowJobRetention bounds the table's growth: completed jobs older than
-// this are pruned after each upsert (one cheap indexed DELETE — see
-// PruneWorkflowJobs). Jobs still in progress are never pruned. Two weeks keeps
-// enough history to be useful while a CI-heavy org's job volume stays bounded;
-// no config knob on purpose (this is observability, not source-of-truth).
+// this on BOTH clocks — the job's own completed_at AND the row's updated_at
+// (when the last webhook was applied) — are pruned after each upsert (one
+// cheap indexed DELETE — see PruneWorkflowJobs). The updated_at key is what
+// keeps the upsert's out-of-order guard sound: the row is the guard's only
+// memory, so it must survive a full retention window after the last delivery
+// touched it, not merely after the event's own timestamp (a replayed old
+// completed event would otherwise be recorded and pruned by the same call,
+// and a late in_progress would then resurrect the job as a phantom running
+// row). Jobs still in progress are never pruned. Two weeks keeps enough
+// history to be useful while a CI-heavy org's job volume stays bounded; no
+// config knob on purpose (this is observability, not source-of-truth).
 const workflowJobRetention = 14 * 24 * time.Hour
 
 // RecordWorkflowJob upserts a job's state (out-of-order tolerant: a completed
 // event never regresses to in_progress — see the UpsertWorkflowJob query) and
-// prunes completed jobs older than workflowJobRetention.
+// prunes completed jobs whose completed_at and updated_at are both older than
+// workflowJobRetention.
 func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 	now := time.Now().UTC()
 	updatedAt := j.UpdatedAt
@@ -81,7 +89,10 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 		return err
 	}
 	cutoff := now.Add(-workflowJobRetention).Format(time.RFC3339)
-	return s.q.PruneWorkflowJobs(ctx, cutoff)
+	return s.q.PruneWorkflowJobs(ctx, dbgen.PruneWorkflowJobsParams{
+		CompletedAt: cutoff,
+		UpdatedAt:   cutoff,
+	})
 }
 
 // RecentWorkflowJobs returns recent jobs: running first (newest started first),
