@@ -5,8 +5,11 @@ on:
 
 permissions:
   id-token: write
-  contents: read
+  # go-toolchain's dependency-graph submission POSTs a snapshot and fails
+  # without write; its no-all-builds guard scans check runs.
+  contents: write
   actions: read
+  checks: read
   # Required by the publish-ghcr reusable workflow to push the image to GHCR.
   # A reusable workflow cannot exceed the caller's permissions, so it must be
   # declared here.
