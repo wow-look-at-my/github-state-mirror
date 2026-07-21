@@ -3,6 +3,7 @@ package ghdata
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -373,6 +374,50 @@ func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch
 		Owner: owner, Repo: repo,
 		BaseRefName: sql.NullString{String: branch, Valid: true},
 		HeadRefName: sql.NullString{String: branch, Valid: true},
+	})
+}
+
+// NullPRMergeableOnTipMove un-resolves ONE PR's merge fields when the
+// incoming webhook doc reports a moved tip against the stored row: the head
+// sha changed (synchronize -- including fork heads, which emit no push
+// webhook to run the per-branch un-resolve) or the base ref was retargeted.
+// The payload's own moved-side ref+sha become the marker proof, exactly the
+// push-path semantics, so the following upsert's stale guard treats the
+// retained pre-move merge fields the payload carries as stale. Base ref OID
+// drift alone never triggers: a conflicted PR's payload freezes base.sha at
+// the last clean evaluation, so OID comparison would false-positive on every
+// dirty PR. Returns whether it stamped.
+func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.PullRequest, now time.Time) (bool, error) {
+	existing, err := s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
+		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil // first sight: no stored merge fields to protect
+	}
+	if err != nil {
+		return false, err
+	}
+	var ref, after sql.NullString
+	switch {
+	case incoming.HeadRefOid.Valid && incoming.HeadRefOid.String != "" &&
+		existing.HeadRefOid.Valid && existing.HeadRefOid.String != "" &&
+		incoming.HeadRefOid.String != existing.HeadRefOid.String:
+		ref, after = incoming.HeadRefName, incoming.HeadRefOid
+	case incoming.BaseRefName.Valid && incoming.BaseRefName.String != "" &&
+		existing.BaseRefName.Valid && existing.BaseRefName.String != "" &&
+		incoming.BaseRefName.String != existing.BaseRefName.String:
+		ref, after = incoming.BaseRefName, incoming.BaseRefOid
+	default:
+		return false, nil
+	}
+	if !ref.Valid || ref.String == "" || !after.Valid || after.String == "" {
+		// No usable proof tip: stamp the marker without proof columns (the
+		// TTL backstop still bounds it), never a half-filled proof.
+		ref, after = sql.NullString{}, sql.NullString{}
+	}
+	return true, s.q.NullPRMergeableForPR(ctx, dbgen.NullPRMergeableForPRParams{
+		StaleAt: rfc3339(now), StaleRef: ref, StaleAfter: after,
+		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
 	})
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -522,6 +523,7 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	// Passively record the X-RateLimit-* headers on every cached-route miss
 	// fetch, labeled with the same identity the request log records.
 	h.meter.Observe(who.Key, who.Name, resp)
+	invalidateMintOnAuthFailure(r.Context(), h.store, bearerToken(r), resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
 		recordFetch(resp.StatusCode, DispError)
@@ -601,4 +603,38 @@ func marshalTrimmed(v interface{}) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// invalidateMintOnAuthFailure drops the cached installation-token mint that
+// issued the request's bearer when GitHub answered the proxied call 401/403:
+// the token's grants no longer match upstream, and gsm receives no
+// installation webhook for consumer Apps to learn that any other way. The
+// next mint refetches. Installation tokens are ghs_-prefixed -- other
+// bearers can have no cached mint, so they never touch the store.
+// Rate-limit-shaped refusals are excluded: they mean "slow down", not
+// "wrong grants". Best-effort; a failed delete only logs (the serve-until
+// expiry still bounds the stale window).
+func invalidateMintOnAuthFailure(ctx context.Context, store *ghdata.Store, tok string, resp *http.Response) {
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		return
+	}
+	if !strings.HasPrefix(tok, "ghs_") {
+		return
+	}
+	if rateLimitShaped(resp) {
+		return
+	}
+	if err := store.InvalidateInstallTokenByToken(ctx, tok); err != nil {
+		slog.Warn("mint invalidation on upstream auth failure failed", "status", resp.StatusCode, "error", err)
+	}
+}
+
+// rateLimitShaped reports whether a refusal is GitHub's rate limiting
+// (primary: X-RateLimit-Remaining exhausted; secondary: Retry-After) rather
+// than a permission verdict.
+func rateLimitShaped(resp *http.Response) bool {
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return resp.Header.Get("X-Ratelimit-Remaining") == "0"
 }

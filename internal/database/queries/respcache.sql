@@ -230,6 +230,13 @@ ON CONFLICT (actor, installation_id, body_hash) DO UPDATE SET
 -- name: DeleteInstallTokenCacheByInstallation :exec
 DELETE FROM install_token_cache WHERE installation_id = ?;
 
+-- DeleteInstallTokenCacheByToken drops the cached mint(s) that issued one
+-- exact token -- the upstream-auth-failure invalidation: a proxied call
+-- carrying this token came back 401/403, so the mint behind it must not
+-- keep serving (its grants no longer match GitHub's).
+-- name: DeleteInstallTokenCacheByToken :exec
+DELETE FROM install_token_cache WHERE token = ?;
+
 -- name: DeleteExpiredInstallTokenCache :exec
 DELETE FROM install_token_cache WHERE expires_at <= ?;
 

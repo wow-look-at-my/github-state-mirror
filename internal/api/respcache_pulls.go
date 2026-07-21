@@ -227,7 +227,17 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 // newest-created first (GitHub's default sort).
 func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, hit bool) {
 	items := make([]pullListItemJSON, 0, len(rows))
+	now := time.Now()
 	for _, pr := range rows {
+		// The single-PR route's stale-sha belt, applied to the list tier: a
+		// row somehow holding the push-invalidated test-merge sha must not
+		// serve it from ANY rebuild (the guarded writes null it instead, so
+		// this is belt and braces exactly like the single-PR hit gate).
+		// Gate rather than omit: the REST list shape genuinely carries
+		// merge_commit_sha, so the field stays for valid rows.
+		if ghdata.PRMergeShaStale(pr, now) {
+			pr.MergeCommitSha = sql.NullString{}
+		}
 		items = append(items, renderPullListItem(pr, labelsByPR[pr.Number]))
 	}
 	body, err := marshalTrimmed(items)

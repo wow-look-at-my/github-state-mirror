@@ -328,6 +328,18 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 		return applied(fmt.Sprintf("removed closed PR #%d", payload.PR.Number))
 	}
 
+	// A tip move reported by the PR's own payload (synchronize head move,
+	// base retarget) stales the stored merge fields BEFORE the upsert: the
+	// payload carries RETAINED pre-move values, and a fork head gets no push
+	// webhook to un-resolve them. The stamped marker's proof is the
+	// payload's own moved-side ref+sha, so the upsert guard applies its
+	// normal exemptions.
+	if moved, err := d.store.NullPRMergeableOnTipMove(ctx, payload.PR, time.Now()); err != nil {
+		slog.Warn("webhook: tip-move un-resolve failed", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
+	} else if moved {
+		slog.Info("webhook: un-resolved merge fields on tip move", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action)
+	}
+
 	// Open/updated PR -> upsert into global truth (with the CI rollup and the
 	// label replace).
 	if err := d.store.UpsertPRWithChecks(ctx, payload.PR, payload.Labels, time.Now()); err != nil {
