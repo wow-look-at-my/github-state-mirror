@@ -12,27 +12,30 @@
 // used.
 
 import type {
-    Me, Counts, KindFreshness, RecentRefresh, ScopeStats, CacheResponse,
+    Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
     WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
-    Discrepancy, ConsistencyReport, RequestEvent, RequestsResponse,
-    RateLimitResponse, InstallationRateLimit, RateLimitResource,
+    BrowseGrant, GrantsResponse,
+    Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
+    RequestEvent, RequestGroup, RequestsResponse,
+    TimelineResponse, GsmTimelineElement,
+    RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
 } from "./types";
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
 
-// Whether the signed-in user is an admin. Admins get the per-scope Browse /
-// Check actions (the data/check endpoints are admin-only). Set in renderDashboard.
+// Whether the signed-in user is an admin. Admins get the truth Browse / Check
+// actions and per-principal Grants views (admin-only endpoints). Set in
+// renderDashboard.
 let dashIsAdmin = false;
 
 const COUNT_FIELDS: ReadonlyArray<readonly [keyof Counts, string]> = [
     ["repos", "Repos"],
     ["pull_requests", "Pull requests"],
-    ["orgs", "Orgs"],
-    ["users", "Users"],
     ["commit_checks", "Commit checks"],
-    ["pr_files", "PR files"],
-    ["branch_comparisons", "Comparisons"],
+    ["contents", "Contents"],
+    ["git_commits", "Git commits"],
+    ["grants", "Grants"],
 ];
 
 const STATE_ORDER: ReadonlyArray<string> = ["fresh", "stale", "fetching", "error", "unknown"];
@@ -77,6 +80,18 @@ function fmtTime(s?: string): string {
     const d = new Date(s);
     if (isNaN(d.getTime())) return s;
     const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < -5) {
+        // A FUTURE timestamp (e.g. a grant's Expires column) renders as
+        // "in Nm/Nh/Nd" with the same buckets as the past branch. Without
+        // this, every future time fell into `diff < 60` and read "just now".
+        // Tiny negative skew (within 5s) still reads "just now" below.
+        const ahead = -diff;
+        if (ahead < 60) return "in " + Math.floor(ahead) + "s";
+        if (ahead < 3600) return "in " + Math.floor(ahead / 60) + "m";
+        if (ahead < 86400) return "in " + Math.floor(ahead / 3600) + "h";
+        if (ahead < 86400 * 30) return "in " + Math.floor(ahead / 86400) + "d";
+        return d.toISOString().slice(0, 10);
+    }
     if (diff < 60) return "just now";
     if (diff < 3600) return Math.floor(diff / 60) + "m ago";
     if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
@@ -88,17 +103,13 @@ function countOf(c: Counts, k: keyof Counts): number {
     return Number(c[k]) || 0;
 }
 
-function sumCounts(c: Counts): number {
-    return COUNT_FIELDS.reduce((acc, [k]) => acc + countOf(c, k), 0);
-}
-
 interface ApiError extends Error {
     status?: number;
 }
 
-async function api<T>(path: string): Promise<T> {
-    if (DEMO) return demoApi<T>(path);
-    const res = await fetch(path, { headers: { Accept: "application/json" }, credentials: "same-origin" });
+async function api<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
+    if (DEMO) return demoApi<T>(path, method);
+    const res = await fetch(path, { method, headers: { Accept: "application/json" }, credentials: "same-origin" });
     if (!res.ok) {
         const err: ApiError = new Error("HTTP " + res.status);
         err.status = res.status;
@@ -145,7 +156,7 @@ function renderLogin(me: Me): void {
                 ? el("a", { class: "btn btn-primary", href: DEMO ? "javascript:void 0" : "/login", onclick: onLogin }, githubIcon(), "Sign in with GitHub")
                 : el("button", { class: "btn btn-primary", disabled: true }, githubIcon(), "Sign in with GitHub"),
             configured
-                ? el("div", { class: "note", text: "You only ever see cache scopes that your own tokens populated." })
+                ? el("div", { class: "note", text: "There is one global cache; it reveals to you exactly the repos your own GitHub credentials can access." })
                 : el("div", { class: "note", text: "Login is not configured on this server (set GITHUB_OAUTH_CLIENT_ID / _SECRET)." }),
         ),
     );
@@ -175,7 +186,8 @@ async function renderDashboard(me: Me): Promise<void> {
     if (me.is_admin) {
         tabs = el("div", { class: "tabs" },
             el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"),
-            el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "All scopes"),
+            el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"),
+            el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"),
             el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
             el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"),
@@ -188,16 +200,45 @@ async function renderDashboard(me: Me): Promise<void> {
     body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
     main.appendChild(body);
 
-    currentView = "mine";
-    await loadView("mine");
+    // Start on the tab named by the URL hash (#webhooks, #ratelimit, …) so a
+    // refresh or shared link restores it — but only if that tab was actually
+    // rendered for this user. An unknown (or admin-only, for a non-admin) hash
+    // falls back to the default tab and is dropped from the URL.
+    const fromHash = location.hash.slice(1);
+    const initial = hasTab(fromHash) ? fromHash : "mine";
+    if (fromHash && initial !== fromHash) {
+        history.replaceState(null, "", location.pathname + location.search);
+    }
+    markActive(initial);
+    currentView = initial;
+    // Manually editing the hash (or navigating a bookmark) switches tabs too.
+    // switchTab uses replaceState, which never fires hashchange — no loop.
+    onHashChange = (scope) => {
+        if (scope !== currentView && hasTab(scope)) switchTab(scope);
+    };
+    await loadView(initial);
     startAutoRefresh();
 
-    function switchTab(scope: string): void {
+    function hasTab(scope: string): boolean {
+        if (!scope || !tabs) return false;
+        return Array.from(tabs.querySelectorAll("button"))
+            .some((b) => (b as HTMLElement).dataset.scope === scope);
+    }
+
+    function markActive(scope: string): void {
         if (!tabs) return;
         for (const b of Array.from(tabs.querySelectorAll("button"))) {
             b.classList.toggle("active", (b as HTMLElement).dataset.scope === scope);
         }
+    }
+
+    function switchTab(scope: string): void {
+        if (!tabs) return;
+        markActive(scope);
         currentView = scope;
+        // replaceState (not location.hash=) so tab clicks don't pile up history
+        // entries the back button would have to walk through.
+        history.replaceState(null, "", "#" + scope);
         void loadView(scope);
     }
 }
@@ -206,6 +247,7 @@ async function renderDashboard(me: Me): Promise<void> {
 function loadView(scope: string, silent = false): Promise<void> {
     if (scope === "webhooks") return loadWebhooks(silent);
     if (scope === "requests") return loadRequests(silent);
+    if (scope === "timeline") return loadTimeline();
     if (scope === "ratelimit") return loadRateLimits(silent);
     return loadScope(scope, silent);
 }
@@ -218,6 +260,15 @@ const REFRESH_MS = 5000;
 let currentView = "mine";
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let modalOpen = false;
+
+// ---- URL-hash tab sync ----
+// The active tab is mirrored into the URL hash so a refresh or shared link
+// restores it. renderDashboard installs the handler scoped to the tabs it
+// actually rendered; logged-out/error views leave it null (hash ignored).
+let onHashChange: ((scope: string) => void) | null = null;
+if (typeof window !== "undefined") {
+    window.addEventListener("hashchange", () => onHashChange?.(location.hash.slice(1)));
+}
 
 function startAutoRefresh(): void {
     if (DEMO || refreshTimer !== undefined) return;
@@ -245,33 +296,52 @@ async function loadScope(scope: string, silent = false): Promise<void> {
     }
     if (currentView !== scope) return; // user switched tabs while we were fetching
     body.innerHTML = "";
-    const scopes = data.scopes ?? [];
+    const principals = data.principals ?? [];
 
     if (scope === "all") {
-        sub.textContent = data.scope_count + " cache scope" + (data.scope_count === 1 ? "" : "s") + " across all users";
-        body.appendChild(totalsGrid(data.totals, data.scope_count));
-        body.appendChild(adminTable(scopes));
+        sub.textContent = "One global truth store — " + data.principal_count + " principal" +
+            (data.principal_count === 1 ? "" : "s") + " with reveal-layer grants";
+        body.appendChild(totalsGrid(data.totals, data.principal_count));
+        if (dashIsAdmin) body.appendChild(truthActions());
+        body.appendChild(adminTable(principals));
         return;
     }
 
-    sub.textContent = "Everything your tokens have populated" +
-        (data.scope_count ? " (" + data.scope_count + " token scope" + (data.scope_count === 1 ? "" : "s") + ")" : "");
+    sub.textContent = "One global truth store — you see the slice your GitHub credentials can access";
 
-    if (scopes.length === 0) {
+    body.appendChild(totalsGrid(data.totals, data.principal_count));
+    if (principals.length === 0) {
         body.appendChild(el("div", { class: "empty" },
-            el("p", { text: "Nothing cached yet for " + data.login + "." }),
+            el("p", { text: "No principal recorded yet for " + data.login + "." }),
             el("p", { class: "sub", text: "Use a tool that queries this mirror with your GitHub token, then refresh." }),
         ));
         return;
     }
-
-    body.appendChild(totalsGrid(data.totals, data.scope_count));
-    for (const s of scopes) body.appendChild(scopeCard(s, true));
+    for (const s of principals) body.appendChild(principalCard(s, true));
 }
 
-function totalsGrid(totals: Counts, scopeCount: number): HTMLElement {
+// truthActions renders the admin actions on GLOBAL truth: browse the cached
+// rows, run a read-only consistency check against GitHub, or RECONCILE --
+// the apply-mode check that also corrects the drift it finds. All open the
+// same modal.
+function truthActions(): HTMLElement {
+    const reconcile = (): void => {
+        if (!confirm(
+            "Reconcile rewrites global truth from GitHub: absorb missing repos/PRs, " +
+            "delete stale open PRs, and correct visibility / CI rollups / auto-merge " +
+            "state. Run it now?")) return;
+        void openCheck(true);
+    };
+    return el("div", { class: "scope-actions", style: "margin: 0 0 12px" },
+        el("button", { class: "btn btn-sm", onclick: () => void openBrowse() }, "Browse truth"),
+        el("button", { class: "btn btn-sm", onclick: () => void openCheck(false) }, "Run consistency check"),
+        el("button", { class: "btn btn-sm", onclick: reconcile }, "Reconcile"),
+    );
+}
+
+function totalsGrid(totals: Counts, principalCount: number): HTMLElement {
     const grid = el("div", { class: "stat-grid" });
-    grid.appendChild(statCard(scopeCount, scopeCount === 1 ? "Scope" : "Scopes"));
+    grid.appendChild(statCard(principalCount, principalCount === 1 ? "Principal" : "Principals"));
     for (const [k, label] of COUNT_FIELDS) {
         grid.appendChild(statCard(countOf(totals, k), label));
     }
@@ -285,7 +355,7 @@ function statCard(n: number, label: string): HTMLElement {
     );
 }
 
-function scopeCard(s: ScopeStats, detailed: boolean): HTMLElement {
+function principalCard(s: PrincipalStats, detailed: boolean): HTMLElement {
     const head = el("div", { class: "scope-head" });
     const id = el("div", { class: "scope-id" });
     const known = !!s.login && s.login !== "(unknown)";
@@ -295,26 +365,23 @@ function scopeCard(s: ScopeStats, detailed: boolean): HTMLElement {
     head.appendChild(id);
 
     const meta = el("div", { class: "scope-meta" });
-    meta.appendChild(el("div", { class: "fingerprint", text: "scope " + s.actor }));
+    meta.appendChild(el("div", { class: "fingerprint", text: "principal " + s.principal }));
     if (s.last_seen) meta.appendChild(el("div", { text: "last seen " + fmtTime(s.last_seen) }));
-    if (dashIsAdmin && s.actor_id) meta.appendChild(scopeActions(s));
+    if (dashIsAdmin && s.principal_id) meta.appendChild(principalActions(s));
     head.appendChild(meta);
 
     const body = el("div", { class: "scope-body" });
 
     const mini = el("div", { class: "mini-grid" });
-    for (const [k, label] of COUNT_FIELDS) {
-        const n = countOf(s.counts, k);
-        mini.appendChild(el("div", { class: n === 0 ? "mini zero" : "mini" },
-            el("div", { class: "n", text: String(n) }),
-            el("div", { class: "l", text: label }),
-        ));
-    }
+    mini.appendChild(el("div", { class: s.live_grants === 0 ? "mini zero" : "mini" },
+        el("div", { class: "n", text: String(s.live_grants) }),
+        el("div", { class: "l", text: "Live repo grants" }),
+    ));
     body.appendChild(mini);
 
     const kinds = s.kinds ?? [];
     if (kinds.length) {
-        body.appendChild(el("div", { class: "section-label", text: "Freshness by resource" }));
+        body.appendChild(el("div", { class: "section-label", text: "Org sync freshness" }));
         body.appendChild(kindsTable(kinds));
     }
 
@@ -379,11 +446,11 @@ function recentList(recent: RecentRefresh[]): HTMLElement {
     return ul;
 }
 
-function adminTable(scopes: ScopeStats[]): HTMLElement {
-    if (scopes.length === 0) {
-        return el("div", { class: "empty", text: "No cache scopes recorded yet." });
+function adminTable(principals: PrincipalStats[]): HTMLElement {
+    if (principals.length === 0) {
+        return el("div", { class: "empty", text: "No principals recorded yet." });
     }
-    const rows = scopes.map((s) => {
+    const rows = principals.map((s) => {
         const known = !!s.login && s.login !== "(unknown)";
         const loginCell = el("td", null,
             el("div", { class: "login-cell" },
@@ -394,19 +461,17 @@ function adminTable(scopes: ScopeStats[]): HTMLElement {
         );
         return el("tr", null,
             loginCell,
-            el("td", { class: "fingerprint", text: s.actor }),
-            ...COUNT_FIELDS.map(([k]) => el("td", { class: "num", text: String(countOf(s.counts, k)) })),
-            el("td", { class: "num", text: String(sumCounts(s.counts)) }),
+            el("td", { class: "fingerprint", text: s.principal }),
+            el("td", { class: "num", text: String(s.live_grants) }),
             el("td", { text: s.last_seen ? fmtTime(s.last_seen) : "—" }),
-            el("td", { class: "actions-cell" }, s.actor_id ? scopeActions(s) : null),
+            el("td", { class: "actions-cell" }, s.principal_id ? principalActions(s) : null),
         );
     });
     return el("table", { class: "scopes" },
         el("thead", null, el("tr", null,
             el("th", { text: "Login" }),
-            el("th", { text: "Scope" }),
-            ...COUNT_FIELDS.map(([, label]) => el("th", { class: "num", text: label })),
-            el("th", { class: "num", text: "Total" }),
+            el("th", { text: "Principal" }),
+            el("th", { class: "num", text: "Live grants" }),
             el("th", { text: "Last seen" }),
             el("th", { text: "Inspect" }),
         )),
@@ -414,12 +479,11 @@ function adminTable(scopes: ScopeStats[]): HTMLElement {
     );
 }
 
-// scopeActions renders the per-scope admin actions: browse the cached rows, or
-// run a consistency check against GitHub. Both open a modal.
-function scopeActions(s: ScopeStats): HTMLElement {
+// principalActions renders the per-principal admin action: view the grants the
+// reveal layer holds for it (who can see what).
+function principalActions(s: PrincipalStats): HTMLElement {
     return el("div", { class: "scope-actions" },
-        el("button", { class: "btn btn-sm", onclick: () => void openBrowse(s) }, "Browse"),
-        el("button", { class: "btn btn-sm", onclick: () => void openCheck(s) }, "Check"),
+        el("button", { class: "btn btn-sm", onclick: () => void openGrants(s) }, "Grants"),
     );
 }
 
@@ -459,10 +523,9 @@ async function loadWebhooks(silent = false): Promise<void> {
 }
 
 const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
-    ["applied", "data written to the cache"],
-    ["skipped", "no cached scope for the repo"],
+    ["applied", "state written to global truth"],
     ["invalidated", "marked stale; refetched on next read"],
-    ["ignored", "event not tracked"],
+    ["ignored", "event/action not tracked"],
     ["error", "internal error (GitHub retries)"],
 ];
 
@@ -487,7 +550,6 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
             el("td", { class: "wh-event", text: evt }),
             el("td", { class: "wh-repo", text: d.repo || "—" }),
             el("td", { class: "wh-detail", text: d.detail || "" }),
-            el("td", { class: "num", text: String(d.actors) }),
             el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }),
             el("td", { class: "wh-when", text: fmtTime(d.received_at) }),
         );
@@ -498,12 +560,33 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
             el("th", { text: "Event" }),
             el("th", { text: "Repo" }),
             el("th", { text: "Detail" }),
-            el("th", { class: "num", text: "Scopes" }),
             el("th", { text: "Delivery" }),
             el("th", { text: "Received" }),
         )),
         el("tbody", null, rows),
     );
+}
+
+// ---- traffic timeline (admin only) ----
+// A swimlane chart of incoming webhook deliveries (one lane per event type)
+// and outgoing proxied GitHub requests (one lane per route shape), each bar a
+// REAL measured duration — rendered by the <gsm-timeline> element
+// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
+// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
+// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
+// paused while the page is hidden) and merges new events in place. The shared
+// auto-refresh tick just lands here and finds the element already present.
+async function loadTimeline(): Promise<void> {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    sub.textContent = "Every exchange the mirror participates in — webhook deliveries, served requests, upstream calls, its own GitHub traffic, notifications — real measured durations, last 24h (in-memory, resets on restart)";
+    if (body.querySelector("gsm-timeline")) return; // element self-updates; never rebuild it
+    body.innerHTML = "";
+    const tl = el("gsm-timeline") as GsmTimelineElement;
+    // In demo mode route the element's polls through demoApi (canned data for
+    // the backend-free preview); production keeps its bounded default fetcher.
+    if (DEMO) tl.fetcher = (path) => api<TimelineResponse>(path);
+    body.appendChild(tl);
 }
 
 // ---- request activity (admin only) ----
@@ -531,11 +614,24 @@ async function loadRequests(silent = false): Promise<void> {
     body.innerHTML = "";
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
-    sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
-        " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
-        (by.error ? ", error " + by.error : "");
+    const total = data.total || 0;
+    const dbSize = dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes);
+    sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
+        ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
+        ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
+        ", write " + (by.write || 0) + pctLabel(by.write, total) +
+        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "") +
+        (dbSize ? " — " + dbSize : "");
 
     body.appendChild(requestLegend());
+    // Grouped views first (aggregate hot spots), then the flat history below.
+    const groups = data.groups ?? [];
+    if (groups.length > 0) {
+        body.appendChild(topGroupsSection(groups, total));
+        const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
+        if (uncached) body.appendChild(uncached);
+    }
     if (recent.length === 0) {
         body.appendChild(el("div", { class: "empty" },
             el("p", { text: "No data-API requests recorded yet." }),
@@ -546,10 +642,138 @@ async function loadRequests(silent = false): Promise<void> {
     body.appendChild(requestTable(recent));
 }
 
+// A count's share of the total, rendered as a " (88.8%)" suffix — empty when
+// there is no total to take a share of.
+function pctLabel(count: number | undefined, total: number): string {
+    return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
+}
+
+// formatBytes renders a byte count human-readably: KB/MB/GB/TB (1000-based)
+// with one decimal, plain "N B" below 1 KB.
+function formatBytes(n: number): string {
+    if (n < 1000) return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = -1;
+    do { v /= 1000; i++; } while (v >= 1000 && i < units.length - 1);
+    return v.toFixed(1) + " " + units[i];
+}
+
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g.
+// "DB 1.4 GB (+125.8 MB WAL)". The WAL suffix drops when absent/zero; the
+// whole label is empty when the backend omitted the size (file missing).
+function dbSizeLabel(db?: number, wal?: number): string {
+    if (!db) return "";
+    return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
+}
+
+// ---- request groups (aggregate hot spots) ----
+// Two tables over the server's per-route-shape counters (cumulative since
+// restart, like the totals — NOT windowed by the recent ring): the hottest
+// routes overall, and the hottest UNCACHED routes — reads forwarded to
+// GitHub, i.e. caching candidates.
+
+const TOP_GROUPS = 15;
+
+// sharePct renders a count's share of a total as "12.3%" — empty when there
+// is no total to take a share of.
+function sharePct(count: number, total: number): string {
+    return total > 0 ? ((count / total) * 100).toFixed(1) + "%" : "";
+}
+
+// groupCount reads one disposition's count off a group.
+function groupCount(g: RequestGroup, disp: string): number {
+    switch (disp) {
+        case "hit": return g.hit || 0;
+        case "miss": return g.miss || 0;
+        case "passthrough": return g.passthrough || 0;
+        case "write": return g.write || 0;
+        case "error": return g.error || 0;
+        default: return 0;
+    }
+}
+
+// groupBreakdown renders a group's non-zero dispositions as count chips
+// (e.g. "hit 1503  miss 41"), optionally skipping the one already shown in
+// its own column.
+function groupBreakdown(g: RequestGroup, skip?: string): HTMLElement {
+    const cell = el("td", { class: "grp-breakdown" });
+    for (const [disp] of REQUEST_DISPOSITIONS) {
+        if (disp === skip) continue;
+        const n = groupCount(g, disp);
+        if (n === 0) continue;
+        cell.appendChild(el("span", { class: "disp " + reqDispClass(disp), text: disp + " " + n }));
+    }
+    if (!cell.hasChildNodes()) cell.textContent = "—";
+    return cell;
+}
+
+// groupRouteCell shows the group's method + route shape; the tooltip carries
+// one recent concrete path so the shape is identifiable.
+function groupRouteCell(g: RequestGroup): HTMLElement {
+    return el("td", { class: "wh-event grp-route", title: g.sample, text: g.method + " " + g.route });
+}
+
+function groupSection(title: string, caption: string | null, table: HTMLElement): HTMLElement {
+    return el("details", { class: "req-groups", open: true },
+        el("summary", { text: title }),
+        caption ? el("p", { class: "grp-caption", text: caption }) : null,
+        table,
+    );
+}
+
+// topGroupsSection: the most frequent request groups by total volume.
+function topGroupsSection(groups: RequestGroup[], total: number): HTMLElement {
+    const top = [...groups].sort((a, b) => b.total - a.total).slice(0, TOP_GROUPS);
+    const rows = top.map((g) => el("tr", null,
+        groupRouteCell(g),
+        el("td", { class: "num", text: String(g.total) }),
+        el("td", { class: "num", text: sharePct(g.total, total) }),
+        groupBreakdown(g),
+    ));
+    return groupSection("Top requests", null, el("table", { class: "webhooks" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Route" }),
+            el("th", { class: "num", text: "Total" }),
+            el("th", { class: "num", text: "Share" }),
+            el("th", { text: "Breakdown" }),
+        )),
+        el("tbody", null, rows),
+    ));
+}
+
+// uncachedGroupsSection: the groups with passthrough traffic — reads the
+// cache did not handle, ranked by passthrough count. Write-only groups never
+// appear (a mutation is proxied by design, not a caching gap; the
+// passthrough > 0 filter excludes them). Null when nothing qualifies.
+function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number): HTMLElement | null {
+    const uncached = groups.filter((g) => (g.passthrough || 0) > 0)
+        .sort((a, b) => b.passthrough - a.passthrough).slice(0, TOP_GROUPS);
+    if (uncached.length === 0) return null;
+    const rows = uncached.map((g) => el("tr", null,
+        groupRouteCell(g),
+        el("td", { class: "num", text: g.passthrough + pctLabel(g.passthrough, passthroughTotal) }),
+        el("td", { class: "num", text: String(g.total) }),
+        groupBreakdown(g, "passthrough"),
+    ));
+    return groupSection("Top uncached requests",
+        "These reads forward to GitHub uncached — the top caching candidates.",
+        el("table", { class: "webhooks" },
+            el("thead", null, el("tr", null,
+                el("th", { text: "Route" }),
+                el("th", { class: "num", text: "Passthrough" }),
+                el("th", { class: "num", text: "Total" }),
+                el("th", { text: "Other" }),
+            )),
+            el("tbody", null, rows),
+        ));
+}
+
 const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
     ["hit", "served from cache, no GitHub call"],
     ["miss", "cache miss; fetched from GitHub then cached"],
-    ["passthrough", "forwarded to GitHub uncached"],
+    ["passthrough", "read forwarded to GitHub uncached"],
+    ["write", "mutation proxied to GitHub (never cacheable)"],
     ["error", "cache lookup/fetch failed"],
 ];
 
@@ -560,6 +784,7 @@ function reqDispClass(disp: string): string {
         case "hit": return "applied";
         case "miss": return "invalidated";
         case "passthrough": return "ignored";
+        case "write": return "write";
         default: return "error";
     }
 }
@@ -583,7 +808,8 @@ function requestTable(events: RequestEvent[]): HTMLElement {
             el("td", null, statusBadge(e.status)),
             el("td", { class: "wh-event", text: e.method }),
             el("td", { class: "wh-repo", text: e.path }),
-            el("td", { class: "wh-detail", text: e.actor || "" }),
+            // Resolved name when known (full key in the tooltip); bare key otherwise.
+            el("td", { class: "wh-detail", text: e.actor_name || e.actor || "", title: e.actor_name ? e.actor : null }),
             el("td", { class: "wh-when", text: fmtTime(e.at) }),
         );
     });
@@ -609,7 +835,10 @@ function statusBadge(status?: number): Node {
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
 
-// ---- GitHub App rate limit (admin only) ----
+// ---- GitHub rate limit (admin only) ----
+// Two halves: "live" — the mirror's own GitHub App polled per installation —
+// and "observed" — X-RateLimit-* headers passively recorded off every
+// upstream response, covering the callers' credentials too, at zero API cost.
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
 async function loadRateLimits(silent = false): Promise<void> {
@@ -625,27 +854,66 @@ async function loadRateLimits(silent = false): Promise<void> {
     } catch (e) {
         if (silent) return;
         body.innerHTML = "";
-        const msg = (e as Error).message;
-        const hint = (e as { status?: number }).status === 503
-            ? "No GitHub App is configured on this server, so there is no App credential to report a rate limit for."
-            : msg;
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + hint }));
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + (e as Error).message }));
         return;
     }
     if (currentView !== "ratelimit") return;
     body.innerHTML = "";
-    const installs = data.installations ?? [];
-    sub.textContent = "GitHub App rate limit — the credential the background fetches and the consistency check use" +
-        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "");
+    const installs = data.live ?? [];
+    // Zero-usage observations (used <= 0 — nothing consumed in the current
+    // window, e.g. an identity that only ever got 304s) are noise; hide them
+    // client-side. If everything filters out, the section's normal empty
+    // state below renders instead of an empty grid.
+    const observed = (data.observed ?? []).filter((o) => o.used > 0);
+    sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
+        (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
+        ", plus readings observed passively from response headers";
 
-    if (installs.length === 0) {
+    // A missing App / failed poll arrives as a note, not an error: the
+    // observed half below still renders.
+    if (data.note) {
+        body.appendChild(el("div", { class: "notes" }, el("div", { class: "note-line", text: data.note })));
+    }
+
+    if (installs.length) {
+        body.appendChild(el("div", { class: "section-label", text: "Live — GitHub App installations (polled)" }));
+        for (const inst of installs) body.appendChild(rateLimitCard(inst));
+    } else if (!data.note) {
         body.appendChild(el("div", { class: "empty" },
             el("p", { text: "No GitHub App installations found." }),
-            el("p", { class: "sub", text: "If the App is configured, it has no installations; otherwise set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY." }),
+            el("p", { class: "sub", text: "The App is configured but has no installations." }),
         ));
-        return;
     }
-    for (const inst of installs) body.appendChild(rateLimitCard(inst));
+
+    body.appendChild(el("div", { class: "section-label", text: "Observed from response headers" }));
+    if (observed.length) {
+        body.appendChild(observedRateGrid(observed));
+    } else {
+        body.appendChild(el("div", { class: "empty" },
+            el("p", { text: "No rate-limit headers observed yet." }),
+            el("p", { class: "sub", text: "Every upstream GitHub response's X-RateLimit-* headers are recorded here per identity as the mirror serves traffic. In-memory; resets on restart." }),
+        ));
+    }
+}
+
+// observedRateGrid renders one tile per (identity, resource). The backend
+// sorts by identity then resource, so one identity's buckets sit together;
+// each tile is a <rate-meter> plus an "observed …" caption. A resolved
+// display name leads the tile; the bare identity key then moves to the
+// caption so it stays visible (and remains the tile name when unresolved).
+function observedRateGrid(observed: ObservedRateLimit[]): HTMLElement {
+    const grid = el("div", { class: "rate-grid" });
+    for (const o of observed) {
+        grid.appendChild(el("div", { class: "rate-observed" },
+            el("rate-meter", {
+                name: (o.name || o.identity) + " — " + o.resource,
+                limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
+            }),
+            o.name ? el("div", { class: "rate-observed-at fingerprint", text: o.identity }) : null,
+            el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) }),
+        ));
+    }
+    return grid;
 }
 
 function rateLimitCard(inst: InstallationRateLimit): HTMLElement {
@@ -665,47 +933,23 @@ function rateLimitCard(inst: InstallationRateLimit): HTMLElement {
     const names = RATE_RESOURCES.filter((n) => resources[n]).concat(
         Object.keys(resources).filter((n) => !RATE_RESOURCES.includes(n)));
     const grid = el("div", { class: "rate-grid" });
-    for (const name of names) grid.appendChild(rateMeter(name, resources[name]));
+    // Each tile is a <rate-meter> web component (src/rate-meter.ts, loaded by
+    // its own <script> tag in index.html) that owns its markup and styles in
+    // shadow DOM; el() passes these unknown props through as attributes.
+    for (const name of names) {
+        const r = resources[name];
+        grid.appendChild(el("rate-meter", {
+            name, limit: r.limit, remaining: r.remaining, used: r.used, reset: r.reset,
+        }));
+    }
     body.appendChild(grid);
     return el("div", { class: "scope" }, head, body);
 }
 
-function rateMeter(name: string, r: RateLimitResource): HTMLElement {
-    const remaining = Number(r.remaining) || 0;
-    const limit = Number(r.limit) || 0;
-    const used = limit ? limit - remaining : (Number(r.used) || 0);
-    const pct = limit ? Math.max(0, Math.min(100, (remaining / limit) * 100)) : 100;
-    const low = limit > 0 && remaining / limit < 0.15;
-    return el("div", { class: "rate-meter" + (low ? " low" : "") },
-        el("div", { class: "rate-top" },
-            el("span", { class: "rate-name", text: name }),
-            el("span", { class: "rate-nums", text: remaining + " / " + limit + " left" }),
-        ),
-        el("div", { class: "rate-bar" }, el("div", { class: "rate-fill", style: "width:" + pct.toFixed(1) + "%" })),
-        el("div", { class: "rate-foot" },
-            el("span", { text: used + " used" }),
-            el("span", { class: "rate-reset", text: "resets " + fmtUntil(r.reset) }),
-        ),
-    );
-}
-
-// fmtUntil renders the time remaining until a Unix-epoch reset, e.g. "in 42m"
-// or "in 1h 3m"; "now" once the window has passed.
-function fmtUntil(epochSeconds: number): string {
-    const secs = Math.round(Number(epochSeconds) - Date.now() / 1000);
-    if (!isFinite(secs) || secs <= 0) return "now";
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    if (h > 0) return "in " + h + "h " + m + "m";
-    if (m > 0) return "in " + m + "m " + s + "s";
-    return "in " + s + "s";
-}
-
 // ---- admin: browse + consistency check (modal) ----
 
-function scopeLabel(s: ScopeStats): string {
-    return s.login && s.login !== "(unknown)" ? s.login : "scope " + s.actor;
+function principalLabel(s: PrincipalStats): string {
+    return s.login && s.login !== "(unknown)" ? s.login : "principal " + s.principal;
 }
 
 interface Modal { body: HTMLElement; close: () => void; }
@@ -758,14 +1002,12 @@ function jsonBlock(obj: unknown, copyLabel: string): HTMLElement {
     );
 }
 
-async function openBrowse(s: ScopeStats): Promise<void> {
-    const actorId = s.actor_id;
-    if (!actorId) return;
-    const { body } = openModal("Cache contents — " + scopeLabel(s));
+async function openBrowse(): Promise<void> {
+    const { body } = openModal("Global truth — cached rows");
     body.appendChild(el("div", { class: "loading", text: "Loading cached rows…" }));
     let data: BrowseResponse;
     try {
-        data = await api<BrowseResponse>("/api/cache/data?actor=" + encodeURIComponent(actorId));
+        data = await api<BrowseResponse>("/api/cache/data");
     } catch (e) {
         body.innerHTML = "";
         body.appendChild(el("div", { class: "error-banner", text: "Could not load cache contents: " + (e as Error).message }));
@@ -778,8 +1020,11 @@ async function openBrowse(s: ScopeStats): Promise<void> {
 function renderBrowse(d: BrowseResponse): HTMLElement {
     const wrap = el("div", { class: "detail" });
     wrap.appendChild(el("div", { class: "detail-sub", text:
-        "Full fingerprint " + d.actor_id + (d.login ? " · " + d.login : "") }));
-    wrap.appendChild(totalsGrid(d.counts, 1));
+        "The one global truth store — what webhooks and principals' fetches have absorbed" }));
+
+    const grid = el("div", { class: "stat-grid" });
+    for (const [k, label] of COUNT_FIELDS) grid.appendChild(statCard(countOf(d.counts, k), label));
+    wrap.appendChild(grid);
 
     if (d.repos.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Repositories (" + d.repos.length + ")" }));
@@ -789,36 +1034,85 @@ function renderBrowse(d: BrowseResponse): HTMLElement {
         wrap.appendChild(el("div", { class: "section-label", text: "Pull requests (" + d.pull_requests.length + ")" }));
         wrap.appendChild(browsePRTable(d.pull_requests));
     }
-    const extras: Array<[string, number]> = [
-        ["Orgs", d.orgs.length], ["Users", d.users.length],
-        ["Comparisons", d.branch_comparisons.length], ["PR files", d.pr_files.length],
-        ["Commit checks", d.commit_checks.length],
-    ];
-    const present = extras.filter(([, n]) => n > 0);
-    if (present.length) {
+    if (d.commit_checks.length) {
         wrap.appendChild(el("div", { class: "section-label", text: "Also cached" }));
         wrap.appendChild(el("div", { class: "chips" },
-            ...present.map(([label, n]) => el("span", { class: "chip" }, label + " " + n))));
+            el("span", { class: "chip" }, "Commit checks " + d.commit_checks.length)));
     }
 
     const raw = el("details", { class: "raw" },
-        el("summary", { text: "Raw JSON (everything cached for this scope)" }),
+        el("summary", { text: "Raw JSON (every cached truth row)" }),
         jsonBlock(d, "Copy JSON"),
     );
     wrap.appendChild(raw);
     return wrap;
 }
 
+// openGrants shows one principal's reveal-layer grants: exactly which repos
+// the cache will reveal to it, and where each grant came from.
+async function openGrants(s: PrincipalStats): Promise<void> {
+    const principalId = s.principal_id;
+    if (!principalId) return;
+    const { body } = openModal("Access grants — " + principalLabel(s));
+    body.appendChild(el("div", { class: "loading", text: "Loading grants…" }));
+    let data: GrantsResponse;
+    try {
+        data = await api<GrantsResponse>("/api/cache/data?principal=" + encodeURIComponent(principalId));
+    } catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load grants: " + (e as Error).message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderGrants(data));
+}
+
+function renderGrants(d: GrantsResponse): HTMLElement {
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text:
+        "Principal " + d.principal_id + (d.login ? " · " + d.login : "") +
+        " — repos the reveal layer will serve to it (public repos need no grant)" }));
+    const grants = d.grants ?? [];
+    if (grants.length === 0) {
+        wrap.appendChild(el("div", { class: "empty", text: "No live grants. This principal has only public-repo (or no) access so far." }));
+    } else {
+        wrap.appendChild(el("div", { class: "section-label", text: "Grants (" + grants.length + ")" }));
+        wrap.appendChild(grantsTable(grants));
+    }
+    const raw = el("details", { class: "raw" },
+        el("summary", { text: "Raw JSON" }),
+        jsonBlock(d, "Copy JSON"),
+    );
+    wrap.appendChild(raw);
+    return wrap;
+}
+
+function grantsTable(grants: BrowseGrant[]): HTMLElement {
+    const rows = grants.map((g) => el("tr", null,
+        el("td", { class: "wh-repo", text: g.owner + "/" + g.repo }),
+        el("td", null, el("span", { class: "pill fresh", text: g.source })),
+        el("td", { text: fmtTime(g.granted_at) }),
+        el("td", { text: fmtTime(g.expires_at) }),
+    ));
+    return el("table", { class: "kinds detail-table" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Repo" }), el("th", { text: "Source" }),
+            el("th", { text: "Granted" }), el("th", { text: "Expires" }))),
+        el("tbody", null, rows),
+    );
+}
+
 function browseRepoTable(repos: BrowseRepo[]): HTMLElement {
     const rows = repos.map((r) => el("tr", null,
         el("td", null, el("a", { href: r.url, target: "_blank", rel: "noopener", text: r.name_with_owner })),
+        el("td", { text: r.visibility || "unknown" }),
         el("td", { text: r.default_branch || "—" }),
         statusCell(r.default_branch_status),
         el("td", { text: r.is_archived ? "archived" : r.is_disabled ? "disabled" : "active" }),
     ));
     return el("table", { class: "kinds detail-table" },
         el("thead", null, el("tr", null,
-            el("th", { text: "Repo" }), el("th", { text: "Default branch" }),
+            el("th", { text: "Repo" }), el("th", { text: "Visibility" }), el("th", { text: "Default branch" }),
             el("th", { text: "Branch status" }), el("th", { text: "Flags" }))),
         el("tbody", null, rows),
     );
@@ -845,17 +1139,205 @@ function statusCell(status?: string): HTMLElement {
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
 
-async function openCheck(s: ScopeStats): Promise<void> {
-    const actorId = s.actor_id;
-    if (!actorId) return;
-    const { body } = openModal("Consistency check — " + scopeLabel(s));
-    body.appendChild(el("div", { class: "loading", text: "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
+// ---- streaming consistency check / reconcile ----
+//
+// The endpoint's ?stream=1 mode answers NDJSON: one JSON progress line per
+// checker phase (a fleet run takes minutes — per owner: a paginated repo
+// fetch, a visibility fetch, the diff, and in apply mode the corrections),
+// with the full report as the final {"phase":"report"} line. EventSource
+// can't POST (the Reconcile is a POST), so the body stream is read manually.
+
+// splitNdjson consumes the COMPLETE lines in buf, returning them plus the
+// unconsumed remainder (a partial trailing line). Pure — the stream reader
+// feeds it chunk by chunk.
+function splitNdjson(buf: string): { lines: string[]; rest: string } {
+    const parts = buf.split("\n");
+    const rest = parts.pop() ?? "";
+    return { lines: parts.filter((l) => l.trim() !== ""), rest };
+}
+
+// CheckProgressState is what the modal renders while a run streams.
+interface CheckProgressState {
+    ownersTotal: number; // 0 until the start event
+    ownerIndex: number; // 1-based current owner; 0 before the first
+    within: number; // 0..1 progress inside the current owner
+    status: string; // the live status line
+}
+
+// reduceCheckProgress folds one progress event into the render state. Pure,
+// and tolerant of arbitrary event subsets (the demo replay is abbreviated).
+function reduceCheckProgress(p: CheckProgressState, ev: CheckProgressEvent): CheckProgressState {
+    const next = { ...p };
+    const who = ev.owner ?? "";
+    switch (ev.phase) {
+        case "start":
+            next.ownersTotal = ev.owners ?? 0;
+            next.status = next.ownersTotal > 0
+                ? "starting: " + next.ownersTotal + " owner" + (next.ownersTotal === 1 ? "" : "s") + " to check…"
+                : "starting…";
+            break;
+        case "owner":
+            next.ownerIndex = ev.index ?? p.ownerIndex + 1;
+            if (ev.total) next.ownersTotal = ev.total;
+            next.within = 0.05;
+            next.status = who + ": fetching repos…";
+            break;
+        case "fetch": {
+            const n = ev.repos_fetched ?? 0;
+            const total = ev.repos_total ?? 0;
+            // The paginated repo fetch dominates an owner's wall time; scale it
+            // across most of the owner's slice when the total is known.
+            next.within = total > 0 ? 0.05 + 0.75 * Math.min(n / total, 1) : 0.4;
+            next.status = who + ": fetched " + n + (total > 0 ? "/" + total : "") + " repos…";
+            break;
+        }
+        case "visibility":
+            next.within = 0.85;
+            next.status = who + ": fetching repo visibility…";
+            break;
+        case "diffed": {
+            const d = ev.discrepancies ?? 0;
+            next.within = 0.95;
+            next.status = who + ": diffed — " + d + (d === 1 ? " discrepancy" : " discrepancies") + " so far";
+            break;
+        }
+        case "applied":
+            next.within = 1;
+            next.status = who + ": corrections applied";
+            break;
+        case "skip":
+            next.within = 1;
+            next.status = who + ": skipped — " + (ev.reason ?? "");
+            break;
+        case "done":
+            next.ownerIndex = next.ownersTotal;
+            next.within = 1;
+            next.status = "finalizing report…";
+            break;
+    }
+    return next;
+}
+
+// checkProgressFraction maps the state to the bar's 0..1 fill: owners
+// completed plus the within-owner sub-progress. Pure.
+function checkProgressFraction(p: CheckProgressState): number {
+    if (p.ownersTotal <= 0) return 0;
+    const f = (Math.max(p.ownerIndex, 1) - 1 + p.within) / p.ownersTotal;
+    return Math.max(0, Math.min(1, f));
+}
+
+// runCheckStream drives the streaming run, invoking onEvent per progress line
+// and resolving with the final report (rejecting on HTTP or run errors).
+async function runCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) => void): Promise<ConsistencyReport> {
+    if (DEMO) return demoCheckStream(apply, onEvent);
+    const res = await fetch("/api/cache/check?stream=1" + (apply ? "&apply=true" : ""), {
+        method: apply ? "POST" : "GET",
+        headers: { Accept: "application/x-ndjson" },
+        credentials: "same-origin",
+    });
+    if (!res.ok) {
+        const err: ApiError = new Error("HTTP " + res.status);
+        err.status = res.status;
+        throw err;
+    }
+
+    let report: ConsistencyReport | null = null;
+    let runError = "";
+    const handle = (line: string): void => {
+        let ev: CheckProgressEvent;
+        try {
+            ev = JSON.parse(line) as CheckProgressEvent;
+        } catch {
+            return; // tolerate a garbled line; the terminal line decides the outcome
+        }
+        if (ev.phase === "report" && ev.report) report = ev.report;
+        else if (ev.phase === "error") runError = ev.error || "check failed";
+        else onEvent(ev);
+    };
+
+    if (!res.body) {
+        // No ReadableStream support: the whole run arrives as one buffered body.
+        for (const line of splitNdjson((await res.text()) + "\n").lines) handle(line);
+    } else {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (value) buf += decoder.decode(value, { stream: true });
+            if (done) buf += decoder.decode() + "\n"; // flush + terminate the last line
+            const split = splitNdjson(buf);
+            buf = split.rest;
+            for (const line of split.lines) handle(line);
+            if (done) break;
+        }
+    }
+
+    if (runError) throw new Error(runError);
+    if (!report) throw new Error("progress stream ended without a report");
+    return report;
+}
+
+// demoCheckStream replays the canned progress sequence on a timer (the demo
+// mock can't stream), then resolves the canned report — so the preview
+// exercises the live progress UI end to end.
+function demoCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) => void): Promise<ConsistencyReport> {
+    const cfg = DEMO as DemoConfig;
+    const state = cfg.current ?? cfg.initial;
+    const d = cfg.data[state] ?? ({} as DemoStateData);
+    const report = apply ? d.checkApplied : d.check;
+    if (!report) return demoReject(503);
+    const seq = d.checkProgress ?? [];
+    return new Promise((resolve) => {
+        let i = 0;
+        const step = (): void => {
+            if (i < seq.length) {
+                onEvent(seq[i++]);
+                setTimeout(step, 250);
+            } else {
+                resolve(report);
+            }
+        };
+        step();
+    });
+}
+
+async function openCheck(apply: boolean): Promise<void> {
+    const { body } = openModal(apply
+        ? "Reconcile — correct global truth from GitHub"
+        : "Consistency check — global truth vs GitHub");
+
+    // Live progress while the run streams: a bar (owners completed / total,
+    // refined by within-owner repo pages) + one status line. A full fleet run
+    // takes minutes, not seconds.
+    let state: CheckProgressState = {
+        ownersTotal: 0, ownerIndex: 0, within: 0,
+        status: apply
+            ? "Fetching source of truth from GitHub, diffing, and correcting the drift…"
+            : "Fetching source of truth from GitHub and diffing…",
+    };
+    const fill = el("div", { class: "check-progress-fill" });
+    const statusLine = el("div", { class: "check-progress-status", text: state.status });
+    const counter = el("div", { class: "check-progress-count" });
+    body.appendChild(el("div", { class: "check-progress" },
+        el("div", { class: "check-progress-track" }, fill),
+        el("div", { class: "check-progress-meta" }, statusLine, counter),
+    ));
+    const onEvent = (ev: CheckProgressEvent): void => {
+        state = reduceCheckProgress(state, ev);
+        fill.style.width = (checkProgressFraction(state) * 100).toFixed(1) + "%";
+        statusLine.textContent = state.status;
+        counter.textContent = state.ownersTotal > 0
+            ? Math.min(Math.max(state.ownerIndex, 1), state.ownersTotal) + "/" + state.ownersTotal + " owners"
+            : "";
+    };
+
     let report: ConsistencyReport;
     try {
-        report = await api<ConsistencyReport>("/api/cache/check?actor=" + encodeURIComponent(actorId));
+        report = await runCheckStream(apply, onEvent);
     } catch (e) {
         body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Consistency check failed: " + (e as Error).message }));
+        body.appendChild(el("div", { class: "error-banner", text: (apply ? "Reconcile" : "Consistency check") + " failed: " + (e as Error).message }));
         return;
     }
     body.innerHTML = "";
@@ -875,11 +1357,28 @@ function renderCheck(r: ConsistencyReport): HTMLElement {
     const grid = el("div", { class: "stat-grid" });
     grid.appendChild(statCard(sm.discrepancies, "Discrepancies"));
     grid.appendChild(statCard(sm.repos_only_in_cache, "Repos only cached"));
+    grid.appendChild(statCard(sm.repos_only_in_cache_archived ?? 0, "…of those, archived (expected)"));
     grid.appendChild(statCard(sm.repos_only_on_github, "Repos only on GH"));
+    grid.appendChild(statCard(sm.repos_only_on_github_private, "…of those, private (lazy truth)"));
     grid.appendChild(statCard(sm.prs_only_in_cache, "PRs only cached"));
     grid.appendChild(statCard(sm.prs_only_on_github, "PRs only on GH"));
     grid.appendChild(statCard(sm.field_mismatches, "Field mismatches"));
+    grid.appendChild(statCard(sm.visibility_leaks ?? 0, "Visibility leaks"));
     wrap.appendChild(grid);
+
+    const tf = r.truth_freshness ?? {};
+    const owners = Object.keys(tf).sort();
+    if (owners.length) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Truth freshness (most recent org sync per owner)" }));
+        wrap.appendChild(truthFreshnessTable(owners.map((o) => [o, tf[o]] as const)));
+    }
+
+    // The Reconcile tally: what apply mode actually corrected (discrepancies
+    // below show the PRE-apply state).
+    if (r.applied) {
+        wrap.appendChild(el("div", { class: "section-label", text: "Applied corrections" }));
+        wrap.appendChild(appliedGrid(r.applied));
+    }
 
     if (r.discrepancies.length === 0) {
         wrap.appendChild(el("div", { class: "ok-banner", text:
@@ -909,16 +1408,42 @@ function renderCheck(r: ConsistencyReport): HTMLElement {
     return wrap;
 }
 
+// appliedGrid renders the Reconcile tally as stat tiles.
+function appliedGrid(a: AppliedSummary): HTMLElement {
+    const grid = el("div", { class: "stat-grid" });
+    const tiles: ReadonlyArray<readonly [number, string]> = [
+        [a.repos_absorbed, "Repos absorbed"],
+        [a.prs_absorbed, "PRs absorbed"],
+        [a.prs_deleted, "Stale PRs deleted"],
+        [a.visibility_set, "Visibility set"],
+        [a.statuses_corrected, "Statuses corrected"],
+        [a.check_rows_deleted, "Check rows deleted"],
+        [a.default_branch_status_set, "Branch statuses set"],
+        [a.auto_merge_set, "Auto-merge set"],
+    ];
+    for (const [n, label] of tiles) grid.appendChild(statCard(n, label));
+    return grid;
+}
+
 function discrepancyTable(items: Discrepancy[]): HTMLElement {
     const rows = items.map((d) => {
         const where = d.kind === "pr" ? d.repo + " #" + (d.pr ?? "") : d.repo;
+        const noteBits: string[] = [];
+        if (d.title) noteBits.push("“" + d.title + "”");
+        if (d.note) noteBits.push(d.note);
+        if (d.fix) noteBits.push("fix: " + d.fix);
         return el("tr", null,
             el("td", null, el("span", { class: "disp issue-" + d.issue.replace(/_/g, "-"), text: d.issue.replace(/_/g, " ") })),
             el("td", { class: "wh-repo", text: where }),
             el("td", { class: "kind", text: d.field || "—" }),
             el("td", { class: "diff-cached", text: d.cached || "" }),
             el("td", { class: "diff-github", text: d.github || "" }),
-            el("td", { class: "wh-detail", text: d.note || "" }),
+            el("td", { class: "wh-detail" },
+                d.visibility ? el("span", { class: "badge", text: d.visibility }) : null,
+                d.archived ? el("span", { class: "badge", text: "archived" }) : null,
+                d.served_now ? el("span", { class: "badge", text: "served now" }) : null,
+                noteBits.length ? " " + noteBits.join(" — ") : "",
+            ),
         );
     });
     return el("table", { class: "webhooks detail-table" },
@@ -929,8 +1454,27 @@ function discrepancyTable(items: Discrepancy[]): HTMLElement {
     );
 }
 
+function truthFreshnessTable(rows: ReadonlyArray<readonly [string, TruthFreshness]>): HTMLElement {
+    const trs = rows.map(([owner, f]) => el("tr", null,
+        el("td", { class: "kind", text: owner }),
+        el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })),
+        el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }),
+        // Resolved name first, with the key alongside; bare key when unresolved.
+        el("td", { class: "fingerprint", text: f.principal_name ? f.principal_name + " · " + f.principal : (f.principal || "—") }),
+        el("td", { class: "wh-detail", text: f.error || "" }),
+    ));
+    return el("table", { class: "kinds detail-table" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Owner" }), el("th", { text: "State" }),
+            el("th", { text: "Last synced" }), el("th", { text: "By principal" }),
+            el("th", { text: "Error" }))),
+        el("tbody", null, trs),
+    );
+}
+
 // ---- boot ----
 async function boot(): Promise<void> {
+    onHashChange = null; // re-installed by renderDashboard for the tabs it renders
     if (DEMO) renderDemoBanner();
     let me: Me;
     try {
@@ -961,7 +1505,7 @@ function demoReject(status: number): Promise<never> {
     return Promise.reject(err);
 }
 
-function demoApi<T>(path: string): Promise<T> {
+function demoApi<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
     const cfg = DEMO as DemoConfig;
     const state = cfg.current ?? cfg.initial;
     const d = cfg.data[state] ?? ({} as DemoStateData);
@@ -969,12 +1513,19 @@ function demoApi<T>(path: string): Promise<T> {
         return Promise.resolve((d.me ?? { authenticated: false, login_configured: true, is_admin: false }) as unknown as T);
     }
     if (path.startsWith("/api/cache/data")) {
-        const b = d.browse?.[demoQuery(path, "actor")];
-        return b ? Promise.resolve(b as unknown as T) : demoReject(404);
+        const principal = demoQuery(path, "principal");
+        if (principal) {
+            const g = d.grants?.[principal];
+            return g ? Promise.resolve(g as unknown as T) : demoReject(404);
+        }
+        return d.browse ? Promise.resolve(d.browse as unknown as T) : demoReject(404);
     }
     if (path.startsWith("/api/cache/check")) {
-        const r = d.check?.[demoQuery(path, "actor")];
-        return r ? Promise.resolve(r as unknown as T) : demoReject(503);
+        const applied = demoQuery(path, "apply");
+        if ((applied === "true" || applied === "1") && method === "POST") {
+            return d.checkApplied ? Promise.resolve(d.checkApplied as unknown as T) : demoReject(503);
+        }
+        return d.check ? Promise.resolve(d.check as unknown as T) : demoReject(503);
     }
     if (path.startsWith("/api/cache")) {
         const payload = path.includes("scope=all") ? d.all : d.mine;
@@ -997,6 +1548,12 @@ function demoApi<T>(path: string): Promise<T> {
         }
         return Promise.resolve(d.requests as unknown as T);
     }
+    if (path.startsWith("/api/timeline")) {
+        if (!d.timeline) return demoReject(403);
+        // The canned payload is served for every poll; the element merges by
+        // event id, so re-serving the same events is harmless.
+        return Promise.resolve(d.timeline as unknown as T);
+    }
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit) return demoReject(503);
         return Promise.resolve(d.ratelimit as unknown as T);
@@ -1015,6 +1572,12 @@ let demoBannerEl: HTMLElement | null = null;
 function renderDemoBanner(): void {
     const cfg = DEMO as DemoConfig;
     cfg.current = cfg.current ?? cfg.initial;
+    // boot() re-runs on every demo state switch; reuse the banner already in
+    // the DOM instead of stacking another one — only its active button changes.
+    if (demoBannerEl && demoBannerEl.isConnected) {
+        updateDemoBanner();
+        return;
+    }
     demoBannerEl = el("div", { class: "demo-banner" },
         el("span", { html: "<strong>Demo preview</strong> — canned data, no backend. View as:" }),
         el("div", { class: "tabs" },

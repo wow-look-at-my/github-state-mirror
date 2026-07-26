@@ -11,8 +11,8 @@ import (
 
 const insertWebhookDelivery = `-- name: InsertWebhookDelivery :exec
 
-INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail, actors)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertWebhookDeliveryParams struct {
@@ -23,7 +23,6 @@ type InsertWebhookDeliveryParams struct {
 	ReceivedAt  string
 	Disposition string
 	Detail      string
-	Actors      int64
 }
 
 // ============================================================================
@@ -38,13 +37,12 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 		arg.ReceivedAt,
 		arg.Disposition,
 		arg.Detail,
-		arg.Actors,
 	)
 	return err
 }
 
 const listRecentWebhookDeliveries = `-- name: ListRecentWebhookDeliveries :many
-SELECT id, delivery_id, event_type, "action", repo, received_at, disposition, detail, actors FROM webhook_deliveries
+SELECT id, delivery_id, event_type, "action", repo, received_at, disposition, detail FROM webhook_deliveries
 ORDER BY id DESC
 LIMIT ?
 `
@@ -67,7 +65,6 @@ func (q *Queries) ListRecentWebhookDeliveries(ctx context.Context, limit int64) 
 			&i.ReceivedAt,
 			&i.Disposition,
 			&i.Detail,
-			&i.Actors,
 		); err != nil {
 			return nil, err
 		}

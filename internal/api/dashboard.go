@@ -9,28 +9,37 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 // Embedded dashboard assets. Only the files the production page references are
 // embedded; src/*.ts and the preview-only demo-data.js are deliberately left
-// out. assets/app.js is generated from src/app.ts by `npm run build` (tsc).
+// out. assets/*.js is generated from src/*.ts by `npm run build` (tsc). A new
+// asset must also be added to newDashboard's hashed-name rewrite and to the CI
+// preview job's copied-assets list (.github/workflows/ci.yml).
 //
-//go:embed web/index.html web/assets/app.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
 // dashboard serves the login flow, the static page, and the cache-stats API.
 // Its authorization model is by GitHub login (via OAuth session), distinct from
-// the bearer-token + fingerprint model that guards the data API. It never serves
-// one credential's cached rows to another — it only reports counts and freshness
-// metadata, grouped by login for convenience.
+// the bearer-token + per-user partition model that guards the data API. It never
+// serves one scope's cached rows to another user — it only reports counts and
+// freshness metadata, grouped by login for convenience.
 // contentAsset is an embedded asset served at a content-addressed URL — the
 // filename embeds a hash of the content. A new deploy with changed JS/CSS yields
 // a new URL, so browsers and the CDN/proxy fetch the new file immediately
@@ -50,17 +59,33 @@ type dashboard struct {
 	assets  []contentAsset
 	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
+	// meter is the passively observed rate-limit store (X-RateLimit-* headers
+	// recorded off upstream responses) surfaced on the "Rate limit" tab.
+	meter *ratemeter.Store
+	// notifier backs the admin-only GET /api/notifications JSON view
+	// (subscriber-notification activity + all subscriptions). Nil-safe.
+	notifier *notify.Notifier
+	// dbPath is the SQLite database file path (DB_PATH), statted per request
+	// by handleRequests to report the cache's on-disk footprint.
+	dbPath string
+	// timeline is the in-memory timed-traffic ring (webhook deliveries +
+	// proxied requests) behind the admin-only GET /api/timeline. Nil-safe.
+	timeline *reqtimeline.Recorder
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
 		panic("read embedded index.html: " + err.Error())
 	}
 	appJS := mustReadAsset("web/assets/app.js")
+	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
+	timelineJS := mustReadAsset("web/assets/timeline.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
+	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
+	timelineName := hashedAssetName("timeline", "js", timelineJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// Rewrite the served HTML to point at the content-addressed URLs. The
@@ -68,6 +93,8 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	// backend-free CI styling preview still resolves them; only the HTML the Go
 	// server hands out references the hashed URLs.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
+	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
+	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -77,10 +104,16 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		index:   []byte(served),
 		assets: []contentAsset{
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
-		reqlog:  reqlog,
-		checker: checker,
+		reqlog:   reqlog,
+		checker:  checker,
+		meter:    meter,
+		notifier: notifier,
+		dbPath:   dbPath,
+		timeline: timeline,
 	}
 }
 
@@ -121,14 +154,19 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
 	r.Get("/api/webhooks", d.handleWebhooks)
+	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
+	r.Get("/api/timeline", d.handleTimeline)
 
 	// Admin-only: browse the actual cached rows for one scope, run a consistency
-	// check that re-fetches the source of truth from GitHub, and read the GitHub
+	// check that re-fetches the source of truth from GitHub (GET = read-only;
+	// POST ?apply=true additionally reconciles the drift), and read the GitHub
 	// App's rate-limit status.
 	r.Get("/api/cache/data", d.handleCacheData)
 	r.Get("/api/cache/check", d.handleCacheCheck)
+	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
+	r.Get("/api/notifications", d.handleNotifications)
 }
 
 // serveAssets serves the content-addressed asset URLs (immutable cache) and
@@ -199,6 +237,33 @@ func (d *dashboard) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.auth.AuthCodeURL(d.redirectURI(r), state), http.StatusFound)
 }
 
+// signinFailedHTML is the page every callback failure renders. Fixed content
+// only — no user-controlled text ever lands in it (details belong in the logs),
+// so it is injection-proof by construction. The retry link points at /login,
+// which mints a fresh state cookie and restarts the flow cleanly.
+const signinFailedHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
+<h1>Sign-in failed</h1>
+<p>Sign-in could not be completed.</p>
+<p><a href="/login">Try signing in again</a></p>
+</body>
+</html>
+`
+
+// signinFailed answers a callback failure with the retry page at a 4xx status.
+// NEVER a 5xx here: Cloudflare replaces origin 5xx bodies with its own bare
+// error page, which stranded the operator on a context-free "502 Bad Gateway"
+// dead end when a GitHub exchange failed (incident 2026-07-19T02:15Z). The
+// caller logs the actual failure; the browser gets a way to retry.
+func signinFailed(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(signinFailedHTML))
+}
+
 func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if !d.auth.Configured() {
 		http.Error(w, "login is not configured on this server", http.StatusServiceUnavailable)
@@ -215,7 +280,16 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	c, err := r.Cookie(auth.StateCookie)
 	if err != nil || c.Value == "" || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
+		// Name which precondition failed — never the state values themselves.
+		switch {
+		case state == "":
+			slog.Warn("oauth callback rejected: state query param missing")
+		case err != nil || c.Value == "":
+			slog.Warn("oauth callback rejected: state cookie missing or empty")
+		default:
+			slog.Warn("oauth callback rejected: state mismatch")
+		}
+		signinFailed(w)
 		return
 	}
 	// Consume the state cookie.
@@ -223,7 +297,8 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := q.Get("code")
 	if code == "" {
-		http.Error(w, "missing oauth code", http.StatusBadRequest)
+		slog.Warn("oauth callback rejected: code query param missing")
+		signinFailed(w)
 		return
 	}
 
@@ -231,13 +306,13 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := d.auth.Exchange(ctx, code, d.redirectURI(r))
 	if err != nil {
 		slog.Warn("oauth token exchange failed", "error", err)
-		http.Error(w, "could not complete sign-in", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 	login, _, err := d.auth.FetchLogin(ctx, token)
 	if err != nil {
 		slog.Warn("oauth fetch login failed", "error", err)
-		http.Error(w, "could not read GitHub identity", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 
@@ -293,9 +368,51 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, webhooksResponse{Deliveries: deliveries})
 }
 
+type jobsResponse struct {
+	Jobs []ghdata.WorkflowJob `json:"jobs"`
+}
+
+// Bounds for the /api/jobs limit query param.
+const (
+	jobsDefaultLimit = 100
+	jobsMaxLimit     = 500
+)
+
+// handleJobs returns recent GitHub Actions jobs recorded from workflow_job
+// webhooks: running jobs first (newest started first), then completed jobs
+// (newest completed first). Like the webhook log, the job table is global (it
+// spans every repo/tenant), so it is restricted to admins. `limit` caps the
+// row count (default 100, max 500).
+func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAdmin(w, r); !ok {
+		return
+	}
+	limit := int64(jobsDefaultLimit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid 'limit' query parameter", http.StatusBadRequest)
+			return
+		}
+		limit = min(n, jobsMaxLimit)
+	}
+	jobs, err := d.store.RecentWorkflowJobs(r.Context(), limit)
+	if err != nil {
+		slog.Warn("list workflow jobs failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if jobs == nil {
+		jobs = []ghdata.WorkflowJob{}
+	}
+	writeJSON(w, jobsResponse{Jobs: jobs})
+}
+
 // handleRequests returns recent data-API requests and their cache disposition
 // (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
 // so — consistent with the admin-only "all scopes" view — it is admin-only.
+// The payload also carries the SQLite database's on-disk size (statted fresh
+// per request) so the tab's summary shows the cache's real footprint.
 func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	login, ok := d.auth.Session(r)
 	if !ok {
@@ -306,7 +423,27 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden: admin only", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, d.reqlog.snapshot(200))
+	snap := d.reqlog.snapshot(200)
+	snap.DBSizeBytes, snap.DBWALSizeBytes = dbFileSizes(d.dbPath)
+	writeJSON(w, snap)
+}
+
+// dbFileSizes reports the on-disk sizes of the SQLite database file and its
+// -wal sidecar (bytes written ahead of a checkpoint — part of the real
+// footprint). One os.Stat each — cheap enough per request, no caching. A
+// missing file or stat error yields 0 (the field is omitted from the JSON),
+// never a failure: the request log must render regardless.
+func dbFileSizes(path string) (db, wal int64) {
+	if path == "" {
+		return 0, 0
+	}
+	if fi, err := os.Stat(path); err == nil {
+		db = fi.Size()
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil {
+		wal = fi.Size()
+	}
+	return db, wal
 }
 
 type kindFreshness struct {
@@ -329,34 +466,43 @@ type recentRefresh struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type scopeStats struct {
-	Actor    string            `json:"actor"`              // short fingerprint (display)
-	ActorID  string            `json:"actor_id,omitempty"` // full partition key (for admin browse/check)
-	Login    string            `json:"login"`
-	IsSelf   bool              `json:"is_self"`
-	LastSeen string            `json:"last_seen,omitempty"`
-	Counts   ghdata.DataCounts `json:"counts"`
-	Total    int64             `json:"total"`
-	Kinds    []kindFreshness   `json:"kinds"`
-	Recent   []recentRefresh   `json:"recent,omitempty"`
+// principalStats is one principal's reveal-layer standing: who they are, how
+// many repos they hold live grants for, and how fresh their org syncs are.
+type principalStats struct {
+	Principal   string          `json:"principal"`    // short (display)
+	PrincipalID string          `json:"principal_id"` // full key (for admin views)
+	Login       string          `json:"login"`
+	IsSelf      bool            `json:"is_self"`
+	LastSeen    string          `json:"last_seen,omitempty"`
+	LiveGrants  int64           `json:"live_grants"`
+	Kinds       []kindFreshness `json:"kinds"`
+	Recent      []recentRefresh `json:"recent,omitempty"`
 }
 
 type cacheResponse struct {
-	Login      string            `json:"login"`
-	IsAdmin    bool              `json:"is_admin"`
-	Scope      string            `json:"scope"`
-	ScopeCount int               `json:"scope_count"`
-	Totals     ghdata.DataCounts `json:"totals"`
-	Scopes     []scopeStats      `json:"scopes"`
+	Login   string `json:"login"`
+	IsAdmin bool   `json:"is_admin"`
+	Scope   string `json:"scope"`
+	// Totals are the GLOBAL truth store's row counts -- one cache, one truth.
+	Totals ghdata.DataCounts `json:"totals"`
+	// Principals lists reveal-layer principals: the signed-in user's own on
+	// the "mine" view, every known one on the admin "all" view.
+	PrincipalCount int              `json:"principal_count"`
+	Principals     []principalStats `json:"principals"`
+	// Truth is the freshness of shared global truth markers (the 'global'
+	// actor rows, e.g. repo_pulls completeness is tracked elsewhere; this
+	// carries whatever global markers exist).
+	Truth []kindFreshness `json:"truth,omitempty"`
 }
 
 const unknownLogin = "(unknown)"
 
-// scopeInput is one actor to summarize, with its (possibly unknown) identity.
-type scopeInput struct {
-	actor    string
-	login    string
-	lastSeen string
+// principalInput is one principal to summarize, with its (possibly unknown)
+// identity.
+type principalInput struct {
+	principal string
+	login     string
+	lastSeen  string
 }
 
 func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
@@ -377,64 +523,74 @@ func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	totals, err := d.store.GlobalDataCounts(ctx)
+	if err != nil {
+		slog.Warn("global data counts failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	identities, err := d.store.ListActorIdentities(ctx)
 	if err != nil {
-		slog.Warn("list actor identities failed", "error", err)
+		slog.Warn("list principal identities failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	inputs := d.collectInputs(ctx, scope, login, identities)
 
-	resp := cacheResponse{Login: login, IsAdmin: isAdmin, Scope: scope, ScopeCount: len(inputs)}
+	resp := cacheResponse{Login: login, IsAdmin: isAdmin, Scope: scope, Totals: totals, PrincipalCount: len(inputs)}
 	detailed := scope != "all" // recent activity only on the focused (mine) view
 	for _, in := range inputs {
-		s, err := d.buildScope(ctx, in, login, detailed)
+		p, err := d.buildPrincipal(ctx, in, login, detailed)
 		if err != nil {
-			slog.Warn("build scope failed", "error", err)
+			slog.Warn("build principal failed", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		resp.Totals = addCounts(resp.Totals, s.Counts)
-		resp.Scopes = append(resp.Scopes, s)
+		resp.Principals = append(resp.Principals, p)
 	}
-	if resp.Scopes == nil {
-		resp.Scopes = []scopeStats{}
+	if resp.Principals == nil {
+		resp.Principals = []principalStats{}
+	}
+	// Shared global truth markers (fetched-for-everyone resources).
+	if truthFresh, err := d.store.FreshnessByKind(ctx, "global"); err == nil {
+		truthErrs, _ := d.store.ErrorMessagesByKind(ctx, "global")
+		resp.Truth = groupKinds(truthFresh, truthErrs)
 	}
 	writeJSON(w, resp)
 }
 
-// collectInputs returns the actors to summarize for the requested scope, sorted
-// for stable display.
-func (d *dashboard) collectInputs(ctx context.Context, scope, login string, identities []dbgen.ActorIdentity) []scopeInput {
+// collectInputs returns the principals to summarize for the requested scope,
+// sorted for stable display.
+func (d *dashboard) collectInputs(ctx context.Context, scope, login string, identities []dbgen.ActorIdentity) []principalInput {
 	if scope != "all" {
-		var inputs []scopeInput
+		var inputs []principalInput
 		for _, id := range identities {
 			if id.Login == login {
-				inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
+				inputs = append(inputs, principalInput{principal: id.Actor, login: id.Login, lastSeen: id.LastSeen})
 			}
 		}
 		return inputs
 	}
 
-	// Admin "all": every identity, plus any cached actor that lacks an identity
-	// row (e.g. the background token before it is recorded).
+	// Admin "all": every identity, plus any principal with freshness metadata
+	// but no identity row (e.g. the background app-installation sessions).
 	seen := make(map[string]bool, len(identities))
-	inputs := make([]scopeInput, 0, len(identities))
+	inputs := make([]principalInput, 0, len(identities))
 	for _, id := range identities {
-		inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
+		inputs = append(inputs, principalInput{principal: id.Actor, login: id.Login, lastSeen: id.LastSeen})
 		seen[id.Actor] = true
 	}
-	if cached, err := d.store.CachedActors(ctx); err != nil {
-		slog.Warn("list cached actors failed", "error", err)
+	if known, err := d.store.KnownPrincipals(ctx); err != nil {
+		slog.Warn("list known principals failed", "error", err)
 	} else {
-		for _, a := range cached {
+		for _, a := range known {
 			if !seen[a] {
-				inputs = append(inputs, scopeInput{actor: a, login: unknownLogin})
+				inputs = append(inputs, principalInput{principal: a, login: unknownLogin})
 			}
 		}
 	}
-	// Known logins first (case-insensitive), unknowns last, then by actor.
+	// Known logins first (case-insensitive), unknowns last, then by principal.
 	sort.SliceStable(inputs, func(i, j int) bool {
 		ui, uj := inputs[i].login == unknownLogin, inputs[j].login == unknownLogin
 		if ui != uj {
@@ -444,43 +600,42 @@ func (d *dashboard) collectInputs(ctx context.Context, scope, login string, iden
 		if li != lj {
 			return li < lj
 		}
-		return inputs[i].actor < inputs[j].actor
+		return inputs[i].principal < inputs[j].principal
 	})
 	return inputs
 }
 
-func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin string, detailed bool) (scopeStats, error) {
-	counts, err := d.store.DataCounts(ctx, in.actor)
+func (d *dashboard) buildPrincipal(ctx context.Context, in principalInput, selfLogin string, detailed bool) (principalStats, error) {
+	grants, err := d.store.CountLiveGrants(ctx, in.principal, time.Now())
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
-	fresh, err := d.store.FreshnessByKind(ctx, in.actor)
+	fresh, err := d.store.FreshnessByKind(ctx, in.principal)
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
-	errs, err := d.store.ErrorMessagesByKind(ctx, in.actor)
+	errs, err := d.store.ErrorMessagesByKind(ctx, in.principal)
 	if err != nil {
-		return scopeStats{}, err
+		return principalStats{}, err
 	}
 
-	s := scopeStats{
-		Actor:    shortFingerprint(in.actor),
-		ActorID:  in.actor,
-		Login:    in.login,
-		IsSelf:   in.login == selfLogin && in.login != unknownLogin,
-		LastSeen: in.lastSeen,
-		Counts:   counts,
-		Total:    sumCounts(counts),
-		Kinds:    groupKinds(fresh, errs),
+	p := principalStats{
+		Principal:   shortFingerprint(in.principal),
+		PrincipalID: in.principal,
+		Login:       in.login,
+		IsSelf:      in.login == selfLogin && in.login != unknownLogin,
+		LastSeen:    in.lastSeen,
+		LiveGrants:  grants,
+		Kinds:       groupKinds(fresh, errs),
 	}
 	if detailed {
-		logs, err := d.store.RecentRefreshes(ctx, in.actor, 12)
+		logs, err := d.store.RecentRefreshes(ctx, in.principal, 12)
 		if err != nil {
-			return scopeStats{}, err
+			return principalStats{}, err
 		}
-		s.Recent = toRecent(logs)
+		p.Recent = toRecent(logs)
 	}
-	return s, nil
+	return p, nil
 }
 
 // groupKinds folds per-(kind,state) rows into one entry per resource kind, with
@@ -557,25 +712,7 @@ func asTimeString(v interface{}) string {
 	}
 }
 
-func shortFingerprint(fp string) string {
-	if len(fp) > 12 {
-		return fp[:12]
-	}
-	return fp
-}
-
-func sumCounts(c ghdata.DataCounts) int64 {
-	return c.Repos + c.PullRequests + c.Orgs + c.Users + c.CommitChecks + c.PRFiles + c.BranchComparisons
-}
-
-func addCounts(a, b ghdata.DataCounts) ghdata.DataCounts {
-	return ghdata.DataCounts{
-		Repos:             a.Repos + b.Repos,
-		PullRequests:      a.PullRequests + b.PullRequests,
-		Orgs:              a.Orgs + b.Orgs,
-		Users:             a.Users + b.Users,
-		CommitChecks:      a.CommitChecks + b.CommitChecks,
-		PRFiles:           a.PRFiles + b.PRFiles,
-		BranchComparisons: a.BranchComparisons + b.BranchComparisons,
-	}
-}
+// shortFingerprint abbreviates an actor for display: opaque hex token
+// fingerprints shorten to 12 chars, structured actors ("user:<id>",
+// "app:<id>", "app-installation:<id>") are shown whole.
+func shortFingerprint(fp string) string { return actor.Short(fp) }

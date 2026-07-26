@@ -5,149 +5,219 @@
 function ago(seconds) {
     return new Date(Date.now() - seconds * 1000).toISOString();
 }
-function counts(c) {
-    return {
-        repos: 0, pull_requests: 0, orgs: 0, users: 0,
-        commit_checks: 0, pr_files: 0, branch_comparisons: 0, ...c,
-    };
+function inFuture(seconds) {
+    return new Date(Date.now() + seconds * 1000).toISOString();
 }
-function total(c) {
-    return c.repos + c.pull_requests + c.orgs + c.users + c.commit_checks + c.pr_files + c.branch_comparisons;
-}
-// --- octocat: a regular signed-in user with a single token scope ---
-const octocatCounts = counts({ repos: 14, pull_requests: 23, orgs: 2, users: 1, commit_checks: 61, pr_files: 188, branch_comparisons: 4 });
-const octocatScope = {
-    actor: "9f86d081884c",
-    actor_id: "9f86d081884c4d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f0fp01",
+// The one global truth store's row counts (same numbers on every view).
+const globalTotals = {
+    repos: 55, pull_requests: 119, commit_checks: 471, contents: 38, git_commits: 204, grants: 61,
+};
+// --- octocat: a regular signed-in user (one principal) ---
+const octocatPrincipal = {
+    principal: "user:583231",
+    principal_id: "user:583231",
     login: "octocat",
     is_self: true,
     last_seen: ago(120),
-    counts: octocatCounts,
-    total: total(octocatCounts),
+    live_grants: 9,
     kinds: [
-        { kind: "user", states: { fresh: 1 }, last_fetched: ago(120) },
-        { kind: "user_orgs", states: { fresh: 1 }, last_fetched: ago(125) },
         { kind: "org_repos", states: { fresh: 1, stale: 1 }, last_fetched: ago(900) },
-        { kind: "pr_files", states: { fresh: 18, stale: 3, error: 1 }, last_fetched: ago(300) },
-        { kind: "compare", states: { fresh: 3, fetching: 1 }, last_fetched: ago(45) },
     ],
     recent: [
-        { kind: "pr_files", key: "octo-org/api/142", trigger: "lazy", started_at: ago(300), status: "success" },
-        { kind: "compare", key: "octo-org/api/main...release", trigger: "webhook", started_at: ago(640), status: "success" },
-        { kind: "org_repos", key: "octo-org", trigger: "periodic", started_at: ago(3600), status: "success" },
-        { kind: "pr_files", key: "octo-org/web/77", trigger: "lazy", started_at: ago(5400), status: "error", error: "github api GET /repos/octo-org/web/pulls/77/files: 404 Not Found" },
+        { kind: "org_repos", key: "octo-org", trigger: "lazy", started_at: ago(900), status: "success" },
+        { kind: "org_repos", key: "octo-corp", trigger: "periodic", started_at: ago(3600), status: "success" },
+        { kind: "org_repos", key: "octo-org", trigger: "lazy", started_at: ago(5400), status: "error", error: "github api POST /graphql: 502 Bad Gateway" },
     ],
 };
-// --- PazerOP (admin): two of their own token scopes ---
-const pazerCli = counts({ repos: 41, pull_requests: 96, orgs: 5, users: 1, commit_checks: 220, pr_files: 742, branch_comparisons: 18 });
-const pazerCi = counts({ repos: 12, pull_requests: 8, orgs: 1, users: 1, commit_checks: 33, pr_files: 0, branch_comparisons: 2 });
-const pazerScopeCli = {
-    actor: "a3f5c9d20b71",
-    actor_id: "a3f5c9d20b71e6f4c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5ffp02",
+// --- PazerOP (admin) ---
+const pazerPrincipal = {
+    principal: "user:9219827",
+    principal_id: "user:9219827",
     login: "PazerOP",
     is_self: true,
     last_seen: ago(60),
-    counts: pazerCli,
-    total: total(pazerCli),
+    live_grants: 41,
     kinds: [
-        { kind: "user", states: { fresh: 1 }, last_fetched: ago(60) },
-        { kind: "user_orgs", states: { fresh: 1 }, last_fetched: ago(65) },
         { kind: "org_repos", states: { fresh: 4, stale: 1 }, last_fetched: ago(800) },
-        { kind: "pr_files", states: { fresh: 70, stale: 12 }, last_fetched: ago(200) },
-        { kind: "compare", states: { fresh: 15, fetching: 2, error: 1 }, last_fetched: ago(30), error: "github api GET /repos/wow-look-at-my/buildhost/compare/main...feat: 404 Not Found", error_key: "wow-look-at-my/buildhost/main...feat" },
     ],
     recent: [
-        { kind: "compare", key: "wow-look-at-my/buildhost/main...feat", trigger: "lazy", started_at: ago(30), status: "running" },
-        { kind: "pr_files", key: "wow-look-at-my/actions/318", trigger: "webhook", started_at: ago(210), status: "success" },
         { kind: "org_repos", key: "wow-look-at-my", trigger: "periodic", started_at: ago(810), status: "success" },
+        { kind: "org_repos", key: "PazerOP", trigger: "lazy", started_at: ago(2400), status: "success" },
     ],
 };
-const pazerScopeCi = {
-    actor: "c1d2e3f4a5b6",
-    actor_id: "c1d2e3f4a5b6f7081920a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6fp03",
-    login: "PazerOP",
-    is_self: true,
-    last_seen: ago(7200),
-    counts: pazerCi,
-    total: total(pazerCi),
+// --- other principals only the admin sees in the "Principals" view ---
+const prMinderPrincipal = {
+    principal: "app:3433933",
+    principal_id: "app:3433933",
+    login: "pr-minder",
+    is_self: false,
+    last_seen: ago(30),
+    live_grants: 55,
     kinds: [
-        { kind: "org_repos", states: { fresh: 1 }, last_fetched: ago(7200) },
-        { kind: "pr_files", states: { stale: 4 }, last_fetched: ago(9000) },
-    ],
-    recent: [
-        { kind: "org_repos", key: "PazerOP", trigger: "periodic", started_at: ago(7200), status: "success" },
+        { kind: "org_repos", states: { fresh: 6 }, last_fetched: ago(240) },
     ],
 };
-// --- other scopes only the admin sees in the "all" view ---
-const serviceCounts = counts({ repos: 60, pull_requests: 140, orgs: 6, users: 1, commit_checks: 410, pr_files: 0, branch_comparisons: 0 });
-const serviceScope = {
-    actor: "deadbeef0001",
-    actor_id: "app-installation:481",
+const refresherPrincipal = {
+    principal: "app-installation:481",
+    principal_id: "app-installation:481",
     login: "gsm-bot",
     is_self: false,
     last_seen: ago(21600),
-    counts: serviceCounts,
-    total: total(serviceCounts),
+    live_grants: 60,
     kinds: [
         { kind: "org_repos", states: { fresh: 6 }, last_fetched: ago(21600) },
-        { kind: "user_orgs", states: { fresh: 1 }, last_fetched: ago(21600) },
     ],
 };
-const unknownCounts = counts({ repos: 3, pull_requests: 5, orgs: 0, users: 1, commit_checks: 9, pr_files: 22, branch_comparisons: 1 });
-const unknownScope = {
-    actor: "00ff11ee22dd",
-    actor_id: "00ff11ee22dd33cc44bb55aa66990088112233445566778899aabbccddeefp05",
+const unknownPrincipal = {
+    principal: "token:00ff11ee22dd",
+    principal_id: "token:00ff11ee22dd33cc44bb55aa66990088",
     login: "(unknown)",
     is_self: false,
-    counts: unknownCounts,
-    total: total(unknownCounts),
-    kinds: [
-        { kind: "pr_files", states: { stale: 2 }, last_fetched: ago(172800) },
-    ],
+    live_grants: 0,
+    kinds: [],
 };
-function sumScopes(list) {
-    return list.reduce((acc, s) => counts({
-        repos: acc.repos + s.counts.repos,
-        pull_requests: acc.pull_requests + s.counts.pull_requests,
-        orgs: acc.orgs + s.counts.orgs,
-        users: acc.users + s.counts.users,
-        commit_checks: acc.commit_checks + s.counts.commit_checks,
-        pr_files: acc.pr_files + s.counts.pr_files,
-        branch_comparisons: acc.branch_comparisons + s.counts.branch_comparisons,
-    }), counts({}));
-}
 // --- webhook delivery log (admin "Webhooks" tab) ---
+// Under the global model every stateful delivery applies (or invalidates on a
+// structural change) — there is no "skipped": truth is maintained for repos
+// nobody has fetched yet too.
 const demoWebhooks = {
     deliveries: [
-        { delivery_id: "ddfad8a0-6ce9-11f1-9454-861fa0b5e50d", event_type: "pull_request", action: "edited", repo: "wow-look-at-my/buildhost", received_at: ago(5), disposition: "applied", detail: "upserted PR #318", actors: 2 },
-        { delivery_id: "dbf2cd6a-6ce9-11f1-94a4-20dae95361b4", event_type: "status", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(9), disposition: "applied", detail: "status:ci/build=SUCCESS, rollup=SUCCESS", actors: 2 },
-        { delivery_id: "db19f030-6ce9-11f1-9657-775bf60e6774", event_type: "check_run", action: "completed", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "applied", detail: "check_run:test=SUCCESS, rollup=SUCCESS", actors: 2 },
-        { delivery_id: "db1f7e10-6ce9-11f1-830a-4240fdd66fd2", event_type: "workflow_job", action: "completed", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "ignored", detail: "event type not tracked", actors: 0 },
-        { delivery_id: "d8388ac0-6ce9-11f1-8f30-7678518bf7a2", event_type: "pull_request", action: "labeled", repo: "octo-org/api", received_at: ago(11), disposition: "skipped", detail: "no cached scope for octo-org/api", actors: 0 },
-        { delivery_id: "d6f2c450-6ce9-11f1-8f8a-0023eea7e213", event_type: "pull_request", action: "opened", repo: "wow-look-at-my/actions", received_at: ago(18), disposition: "applied", detail: "upserted PR #92", actors: 1 },
-        { delivery_id: "d607e048-6ce9-11f1-9529-df37c1489e44", event_type: "repository", action: "renamed", repo: "wow-look-at-my/old-name", received_at: ago(40), disposition: "invalidated", detail: "structural change; marked org repos stale", actors: 0 },
-        { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at", actors: 2 },
+        { delivery_id: "ddfad8a0-6ce9-11f1-9454-861fa0b5e50d", event_type: "pull_request", action: "edited", repo: "wow-look-at-my/buildhost", received_at: ago(5), disposition: "applied", detail: "upserted PR #318" },
+        { delivery_id: "dbf2cd6a-6ce9-11f1-94a4-20dae95361b4", event_type: "status", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(9), disposition: "applied", detail: "status:ci/build=SUCCESS, rollup=SUCCESS" },
+        { delivery_id: "db19f030-6ce9-11f1-9657-775bf60e6774", event_type: "check_run", action: "completed", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "applied", detail: "check_run:test=SUCCESS, rollup=SUCCESS" },
+        { delivery_id: "db1f7e10-6ce9-11f1-830a-4240fdd66fd2", event_type: "workflow_job", action: "queued", repo: "wow-look-at-my/buildhost", received_at: ago(10), disposition: "ignored", detail: "action queued not tracked" },
+        { delivery_id: "d8388ac0-6ce9-11f1-8f30-7678518bf7a2", event_type: "pull_request", action: "labeled", repo: "octo-org/api", received_at: ago(11), disposition: "applied", detail: "upserted PR #12 (repo absorbed from payload)" },
+        { delivery_id: "d6f2c450-6ce9-11f1-8f8a-0023eea7e213", event_type: "pull_request", action: "opened", repo: "wow-look-at-my/actions", received_at: ago(18), disposition: "applied", detail: "upserted PR #92" },
+        { delivery_id: "d607e048-6ce9-11f1-9529-df37c1489e44", event_type: "repository", action: "renamed", repo: "wow-look-at-my/old-name", received_at: ago(40), disposition: "applied", detail: "renamed to wow-look-at-my/new-name" },
+        { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at; un-resolved mergeable on branch master" },
     ],
 };
 // --- request activity log (admin "Requests" tab) ---
+// The route-shape groups sum exactly to by_disposition (hit 1503, miss 71,
+// passthrough 226, write 38, error 4 -> total 1842), sorted by total desc like
+// the backend, so the preview's share percentages are coherent.
 const demoRequests = {
     total: 1842,
-    by_disposition: { hit: 1503, miss: 71, passthrough: 264, error: 4 },
+    by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
+    // Renders as "DB 1.4 GB (+125.8 MB WAL)" on the tab's summary line.
+    db_size_bytes: 1437204480,
+    db_wal_size_bytes: 125829120,
+    groups: [
+        { key: "POST /graphql", method: "POST", route: "/graphql", total: 1146, hit: 1103, miss: 41, passthrough: 0, write: 0, error: 2, sample: "/graphql", last_seen: ago(2) },
+        { key: "GET /repos/{owner}/{repo}/pulls/{number}", method: "GET", route: "/repos/{owner}/{repo}/pulls/{number}", total: 248, hit: 236, miss: 12, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318", last_seen: ago(3) },
+        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
+        { key: "GET /repos/{owner}/{repo}/commits", method: "GET", route: "/repos/{owner}/{repo}/commits", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, sample: "/repos/wow-look-at-my/actions/commits", last_seen: ago(31) },
+        { key: "GET /search/issues", method: "GET", route: "/search/issues", total: 58, hit: 0, miss: 0, passthrough: 58, write: 0, error: 0, sample: "/search/issues", last_seen: ago(6) },
+        { key: "GET /repos/{owner}/{repo}/commits/{ref}/status", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/status", total: 49, hit: 44, miss: 5, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/master/status", last_seen: ago(12) },
+        { key: "GET /rate_limit", method: "GET", route: "/rate_limit", total: 41, hit: 0, miss: 0, passthrough: 41, write: 0, error: 0, sample: "/rate_limit", last_seen: ago(14) },
+        { key: "GET /repos/{owner}/{repo}/git/refs/heads/…", method: "GET", route: "/repos/{owner}/{repo}/git/refs/heads/…", total: 25, hit: 0, miss: 0, passthrough: 25, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/git/refs/heads/oci-cache", last_seen: ago(65) },
+        { key: "GET /repos/{owner}/{repo}/commits/{ref}/check-runs", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/check-runs", total: 22, hit: 18, miss: 4, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b/check-runs", last_seen: ago(13) },
+        { key: "PATCH /repos/{owner}/{repo}/pulls/{number}", method: "PATCH", route: "/repos/{owner}/{repo}/pulls/{number}", total: 21, hit: 0, miss: 0, passthrough: 0, write: 21, error: 0, sample: "/repos/wow-look-at-my/actions/pulls/92", last_seen: ago(20) },
+        { key: "PUT /repos/{owner}/{repo}/pulls/{number}/update-branch", method: "PUT", route: "/repos/{owner}/{repo}/pulls/{number}/update-branch", total: 17, hit: 0, miss: 0, passthrough: 0, write: 17, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", last_seen: ago(24) },
+    ],
     recent: [
-        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "passthrough", status: 200, at: ago(3) },
-        { actor: "app:3433933", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
-        { actor: "app:3433933", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
-        { actor: "app:3433933", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
-        { actor: "token:9f86d0818", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
-        { actor: "app:3433933", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "passthrough", status: 502, at: ago(20) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
+        { actor: "user:583231", actor_name: "octocat", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
+        // Unresolved caller: a non-user token's fingerprint label has no name,
+        // so the Caller column falls back to the bare key.
+        { actor: "token:00ff11ee22dd", method: "GET", path: "/repos/wow-look-at-my/buildhost/branches", disposition: "passthrough", status: 200, at: ago(17) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
     ],
 };
-// --- GitHub App rate limit (admin "Rate limit" tab) ---
+// --- traffic timeline (admin "Timeline" tab) ---
+// Canned timed events over the last hour, one of every recorded source —
+// webhook deliveries (incl. an unverified rejection), inbound requests (hits
+// included), upstream fetches/probes, the mirror's own ghclient exchanges, a
+// login relay, and notify attempts. The element merges by id, so re-serving
+// this same payload on every demo poll is harmless.
+function demoTimelineEvents() {
+    const events = [];
+    let id = 0;
+    const wh = (secsAgo, durMs, type, action, repo, disposition = "applied") => {
+        events.push({
+            id: ++id, kind: "webhook", lane: "⇐ " + type, start: ago(secsAgo), dur_ms: durMs,
+            event_type: type, action: action || undefined, delivery_id: "demo-" + id, repo, disposition,
+        });
+    };
+    const rq = (secsAgo, durMs, method, route, status, disposition, actorName, actor) => {
+        events.push({
+            id: ++id, kind: "request", lane: method + " " + route, start: ago(secsAgo), dur_ms: durMs,
+            method, route, status, disposition,
+            actor: actor ?? (actorName ? "app:3433933" : "token:00ff11ee22dd"), actor_name: actorName,
+        });
+    };
+    // Webhook pips across three event-type lanes — plus a rejected delivery
+    // on the fixed unverified lane (bad signature; claimed type is untrusted
+    // tooltip detail only).
+    wh(3480, 12, "push", "", "wow-look-at-my/buildhost");
+    wh(3100, 9, "check_run", "completed", "wow-look-at-my/buildhost");
+    wh(2900, 21, "pull_request", "synchronize", "wow-look-at-my/buildhost");
+    wh(2350, 8, "check_run", "created", "wow-look-at-my/actions");
+    wh(1900, 14, "push", "", "wow-look-at-my/actions");
+    wh(1600, 6, "check_run", "completed", "wow-look-at-my/actions", "ignored");
+    wh(1150, 18, "pull_request", "opened", "wow-look-at-my/webhook-runner");
+    wh(700, 11, "push", "", "wow-look-at-my/webhook-runner");
+    wh(240, 7, "check_run", "completed", "wow-look-at-my/webhook-runner");
+    wh(60, 16, "pull_request", "closed", "wow-look-at-my/buildhost");
+    events.push({
+        id: ++id, kind: "webhook", lane: "⇐ (unverified)", start: ago(1450), dur_ms: 2,
+        disposition: "unverified", detail: "claimed event: push",
+    });
+    // Inbound request spans (one failed 502, plus sub-ms cache hits).
+    rq(3300, 640, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
+    rq(2700, 410, "POST", "/graphql", 200, "miss", "pr-minder");
+    rq(2200, 980, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss", "pr-minder");
+    rq(1750, 1450, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 502, "error", "pr-minder");
+    rq(1300, 520, "POST", "/graphql", 200, "miss", "pr-minder");
+    rq(850, 300, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss");
+    rq(400, 720, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
+    rq(120, 260, "POST", "/graphql", 200, "miss", "pr-minder");
+    rq(2150, 0, "GET", "/repos/{owner}/{repo}/pulls", 0, "hit", "pr-minder");
+    rq(640, 1, "GET", "/repos/{owner}/{repo}/pulls", 0, "hit", "pr-minder");
+    // The mirror→GitHub legs: a miss's upstream fetch and a reveal probe.
+    rq(2199, 890, "GET", "/repos/{owner}/{repo}/pulls", 200, "upstream", "pr-minder");
+    rq(2960, 240, "GET", "/repos/{owner}/{repo}", 200, "probe", "octocat", "user:583231");
+    // The mirror's own ghclient exchanges (fleet refresh, identity checks).
+    rq(2500, 830, "POST", "/graphql", 200, "internal", "gsm-bot", "app-installation:481");
+    rq(980, 150, "GET", "/user", 200, "internal", undefined, "token:00ff11ee22dd");
+    rq(310, 4200, "POST", "/graphql", 200, "internal", "gsm-bot", "app-installation:481");
+    // A github.com login relay.
+    rq(1520, 480, "POST", "/login/oauth/access_token", 200, "relay", undefined, "anonymous");
+    // Outbound subscriber-notification attempts: a failed first attempt and
+    // its delivered retry.
+    events.push({
+        id: ++id, kind: "notify", lane: "⇒ notify", start: ago(690), dur_ms: 8010,
+        target: "hooks.pazer.dev", status: 0, attempt: 1, disposition: "failed",
+    });
+    events.push({
+        id: ++id, kind: "notify", lane: "⇒ notify", start: ago(680), dur_ms: 260,
+        target: "hooks.pazer.dev", status: 200, attempt: 2, final: true, disposition: "delivered",
+    });
+    return events;
+}
+const demoTimelineEventList = demoTimelineEvents();
+const demoTimeline = {
+    events: demoTimelineEventList,
+    max_id: demoTimelineEventList.length,
+    retention_start: ago(24 * 3600),
+    now: ago(0),
+};
+// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
+// --- passively observed X-RateLimit-* readings per (identity, resource) ---
 const resetIn = (secs) => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit = {
-    installations: [
+    live: [
         {
+            // A realistic full bucket set — GitHub's /rate_limit returns ~15
+            // resources for an App — including the long names that used to
+            // break the tile layout, plus buckets in the warn (≥70% used,
+            // yellow) and critical (≥90% used, red) bands so the preview
+            // demonstrates every meter state.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
@@ -156,8 +226,17 @@ const demoRateLimit = {
                 // Long resource names (real GitHub /rate_limit fields) that used to
                 // force the "X / Y left" count to wrap word-by-word in the card.
                 code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
-                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3540) },
-                dependency_snapshots: { limit: 100, remaining: 94, used: 6, reset: resetIn(1800) },
+                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3600) },
+                audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
+                audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
+                code_scanning_autofix: { limit: 10, remaining: 1, used: 9, reset: resetIn(48) },
+                code_search: { limit: 10, remaining: 2, used: 8, reset: resetIn(37) },
+                copilot_usage_records: { limit: 1750, remaining: 1750, used: 0, reset: resetIn(3600) },
+                dependency_sbom: { limit: 100, remaining: 96, used: 4, reset: resetIn(1210) },
+                dependency_snapshots: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
+                integration_manifest: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3600) },
+                scim: { limit: 15000, remaining: 15000, used: 0, reset: resetIn(3600) },
+                source_import: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
             },
         },
         {
@@ -168,65 +247,112 @@ const demoRateLimit = {
             },
         },
     ],
+    observed: [
+        // Sorted by identity then resource, matching the backend's snapshot.
+        // Resolved identities carry a display name; the token fingerprint and
+        // app-jwt rows stay nameless to demo the bare-key fallback.
+        { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
+        // Zero-usage reading (nothing consumed this window, e.g. only 304s) —
+        // hidden by the client-side used > 0 filter, so the preview exercises it.
+        { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
+        { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
+        { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
+        { identity: "app:3433933", name: "pr-minder", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
+        { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
+        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an
+        // identity that stopped calling). The server ages these out lazily, so
+        // the live dashboard should never show one; the backend-free preview
+        // keeps it visible to exercise the honest stale rendering
+        // ("reset 23h ago · stale", never "resets now").
+        { identity: "token:44aa55bb66cc", resource: "core", limit: 5000, remaining: 4880, used: 120, reset: resetIn(-82800), observed_at: ago(86100) },
+        { identity: "user:583231", name: "octocat", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
+    ],
 };
-const pazerMine = [pazerScopeCli, pazerScopeCi];
-const allScopes = [serviceScope, octocatScope, pazerScopeCli, pazerScopeCi, unknownScope].map((s) => ({ ...s, is_self: s.login === "PazerOP" }));
-// --- admin: browse + consistency check demo payloads (keyed by actor_id) ---
-function demoOwner(login) {
-    return login === "octocat" ? "octo-org" : "wow-look-at-my";
-}
-function demoBrowse(s) {
-    const owner = demoOwner(s.login);
+const allPrincipals = [prMinderPrincipal, octocatPrincipal, pazerPrincipal, refresherPrincipal, unknownPrincipal].map((s) => ({ ...s, is_self: s.login === "PazerOP" }));
+// --- admin: browse (global truth), grants (per principal), check (global) ---
+const demoBrowse = {
+    counts: globalTotals,
+    repos: [
+        { owner: "wow-look-at-my", name: "buildhost", name_with_owner: "wow-look-at-my/buildhost", url: "https://github.com/wow-look-at-my/buildhost", visibility: "public", is_disabled: false, is_archived: false, pushed_at: ago(300), default_branch: "master", default_branch_status: "SUCCESS" },
+        { owner: "wow-look-at-my", name: "actions", name_with_owner: "wow-look-at-my/actions", url: "https://github.com/wow-look-at-my/actions", visibility: "private", is_disabled: false, is_archived: false, pushed_at: ago(5400), default_branch: "master", default_branch_status: "FAILURE" },
+        { owner: "octo-org", name: "api", name_with_owner: "octo-org/api", url: "https://github.com/octo-org/api", visibility: "", is_disabled: false, is_archived: false, pushed_at: ago(11) },
+    ],
+    pull_requests: [
+        { owner: "wow-look-at-my", repo: "buildhost", number: 318, title: "Add OCI manifest cache", url: "https://github.com/wow-look-at-my/buildhost/pull/318", state: "OPEN", is_draft: false, author_login: "PazerOP", base_ref: "master", head_ref: "oci-cache", head_sha: "9f3c1a2", additions: 220, deletions: 14, mergeable: "MERGEABLE", review_requests: 1, last_commit_status: "SUCCESS", labels: ["enhancement"], created_at: ago(86400), updated_at: ago(5), touched_at: ago(5), rest_complete: true },
+        { owner: "wow-look-at-my", repo: "actions", number: 92, title: "Fix typescript action newline", url: "https://github.com/wow-look-at-my/actions/pull/92", state: "OPEN", is_draft: true, author_login: "dependabot", base_ref: "master", head_ref: "fix-newline", head_sha: "1b2c3d4", additions: 4, deletions: 2, mergeable: "UNKNOWN", review_requests: 0, last_commit_status: "PENDING", labels: ["bug", "ci"], created_at: ago(18000), updated_at: ago(18), touched_at: ago(18), rest_complete: false },
+    ],
+    commit_checks: [{ owner: "wow-look-at-my", repo: "buildhost", sha: "9f3c1a2", context: "ci/build", state: "SUCCESS" }],
+};
+function demoGrants(p) {
     return {
-        actor: s.actor,
-        actor_id: s.actor_id ?? s.actor,
-        login: s.login === "(unknown)" ? undefined : s.login,
-        counts: s.counts,
-        repos: [
-            { owner, name: "buildhost", name_with_owner: owner + "/buildhost", url: "https://github.com/" + owner + "/buildhost", is_disabled: false, is_archived: false, pushed_at: ago(300), default_branch: "master", default_branch_status: "SUCCESS" },
-            { owner, name: "actions", name_with_owner: owner + "/actions", url: "https://github.com/" + owner + "/actions", is_disabled: false, is_archived: false, pushed_at: ago(5400), default_branch: "master", default_branch_status: "FAILURE" },
-        ],
-        pull_requests: [
-            { owner, repo: "buildhost", number: 318, title: "Add OCI manifest cache", url: "https://github.com/" + owner + "/buildhost/pull/318", state: "OPEN", is_draft: false, author_login: "PazerOP", base_ref: "master", head_ref: "oci-cache", head_sha: "9f3c1a2", additions: 220, deletions: 14, mergeable: "MERGEABLE", review_requests: 1, last_commit_status: "SUCCESS", labels: ["enhancement"], created_at: ago(86400), updated_at: ago(5) },
-            { owner, repo: "actions", number: 92, title: "Fix typescript action newline", url: "https://github.com/" + owner + "/actions/pull/92", state: "OPEN", is_draft: true, author_login: "dependabot", base_ref: "master", head_ref: "fix-newline", head_sha: "1b2c3d4", additions: 4, deletions: 2, mergeable: "UNKNOWN", review_requests: 0, last_commit_status: "PENDING", labels: ["bug", "ci"], created_at: ago(18000), updated_at: ago(18) },
-        ],
-        orgs: [{ login: owner, url: "https://github.com/" + owner }],
-        users: [{ login: s.login, url: "https://github.com/" + s.login }],
-        branch_comparisons: [{ owner, repo: "buildhost", base_ref: "master", head_ref: "oci-cache", ahead_by: 3, behind_by: 0 }],
-        pr_files: [{ owner, repo: "buildhost", pr_number: 318, path: "internal/oci/manifest.go", additions: 120, deletions: 4 }],
-        commit_checks: [{ owner, repo: "buildhost", sha: "9f3c1a2", context: "ci/build", state: "SUCCESS" }],
-    };
-}
-function demoCheck(s) {
-    const owner = demoOwner(s.login);
-    return {
-        scope: s.actor,
-        scope_full: s.actor_id ?? s.actor,
-        login: s.login === "(unknown)" ? undefined : s.login,
-        fetched_as: "github-app",
-        generated_at: ago(2),
-        orgs_checked: [owner],
-        orgs_skipped: [{ org: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" }],
-        summary: { orgs_checked: 1, repos_cached: s.counts.repos, open_prs_cached: s.counts.pull_requests, discrepancies: 4, repos_only_in_cache: 1, repos_only_on_github: 0, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2 },
-        discrepancies: [
-            { kind: "pr", repo: owner + "/actions", pr: 92, issue: "field_mismatch", field: "last_commit_status", cached: "PENDING", github: "SUCCESS", note: "webhook-aggregated rollup diverged from GitHub" },
-            { kind: "pr", repo: owner + "/buildhost", pr: 318, issue: "field_mismatch", field: "label:enhancement", cached: "(absent)", github: "a2eeef" },
-            { kind: "pr", repo: owner + "/buildhost", pr: 301, issue: "only_in_cache", note: "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)" },
-            { kind: "repo", repo: owner + "/old-name", issue: "only_in_cache", note: "cached but not among GitHub's non-archived repos (archived, deleted, renamed, or no longer visible)" },
-        ],
-        notes: [
-            "Source of truth was fetched as the mirror's GitHub App, which may not see exactly what the token that populated this scope sees.",
-            "Only OPEN pull requests are compared (the cache only retains open PRs).",
+        principal: p.principal,
+        principal_id: p.principal_id,
+        login: p.login === "(unknown)" ? undefined : p.login,
+        grants: p.live_grants === 0 ? [] : [
+            { owner: "wow-look-at-my", repo: "buildhost", source: "list_sync", granted_at: ago(810), expires_at: inFuture(85590) },
+            { owner: "wow-look-at-my", repo: "actions", source: "list_sync", granted_at: ago(810), expires_at: inFuture(85590) },
+            { owner: "octo-org", repo: "api", source: "probe", granted_at: ago(3600), expires_at: inFuture(82800) },
         ],
     };
 }
-const adminBrowse = {};
-const adminCheck = {};
-for (const s of allScopes) {
-    if (!s.actor_id)
+const demoCheck = {
+    fetched_as: "github-app",
+    generated_at: ago(2),
+    orgs_checked: ["wow-look-at-my"],
+    orgs_skipped: [{ org: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" }],
+    truth_freshness: {
+        "wow-look-at-my": { state: "fresh", last_fetched_at: ago(810), principal: "app:3433933", principal_name: "pr-minder" },
+        "octo-org": { state: "error", last_fetched_at: ago(5400), principal: "user:583231", principal_name: "octocat", error: "github api POST /graphql: 502 Bad Gateway" },
+    },
+    summary: { orgs_checked: 1, repos_cached: 55, open_prs_cached: 119, discrepancies: 6, repos_only_in_cache: 2, repos_only_on_github: 1, repos_only_on_github_private: 1, repos_only_in_cache_archived: 1, prs_only_in_cache: 1, prs_only_on_github: 0, field_mismatches: 2, visibility_leaks: 1 },
+    discrepancies: [
+        { kind: "pr", repo: "wow-look-at-my/actions", pr: 92, issue: "field_mismatch", field: "last_commit_status", cached: "PENDING", github: "SUCCESS", note: "webhook-aggregated rollup diverged from GitHub", fix: "apply mode deletes the contradicted commit_checks rows and sets GitHub's rollup, so the next webhook cannot re-poison it" },
+        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 318, issue: "field_mismatch", field: "label:enhancement", cached: "(absent)", github: "a2eeef", fix: "apply mode overwrites it via the truth sync" },
+        { kind: "pr", repo: "wow-look-at-my/buildhost", pr: 301, issue: "only_in_cache", title: "Retry OCI blob mounts", updated_at: ago(200000), touched_at: ago(190000), served_now: true, note: "cached as open but not in GitHub's open PRs (likely closed/merged; a webhook was missed)", fix: "apply mode deletes the stale open row; a mirrored read of the PR also self-heals it" },
+        { kind: "repo", repo: "wow-look-at-my/old-name", issue: "only_in_cache", archived: true, note: "archived on GitHub; archived repos are excluded from the org data fetch -- expected, not drift", fix: "none needed: archived repos stay cached by design" },
+        { kind: "repo", repo: "wow-look-at-my/lab", issue: "visibility_leak", field: "visibility", cached: "public", github: "private", note: "SECURITY: cached public but private on GitHub -- the reveal fast path is serving this repo's cached state to any authenticated caller", fix: "apply mode sets visibility from GitHub's answer" },
+        { kind: "repo", repo: "wow-look-at-my/secret-lab", issue: "only_on_github", visibility: "private", note: "private repo not yet absorbed: no webhook and no principal's sync has referenced it; expected under lazy truth", fix: "apply mode absorbs it (POST /api/cache/check?apply=true)" },
+    ],
+    notes: [
+        "Source of truth was fetched as the mirror's GitHub App (repositoryOwner query, so User-account installations are checked too). Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
+        "Only OPEN pull requests are compared (the cache only retains open PRs).",
+        "The mergeable field is not compared: the cache deliberately un-resolves it on pushes and the GraphQL/REST readings race GitHub's recomputation.",
+    ],
+};
+// The Reconcile (apply=true) answer: same report shape plus the corrections
+// tally, so the preview exercises the applied grid.
+const demoCheckApplied = {
+    ...demoCheck,
+    applied: {
+        repos_absorbed: 1, prs_absorbed: 2, prs_deleted: 1, visibility_set: 3,
+        statuses_corrected: 1, check_rows_deleted: 4, default_branch_status_set: 2, auto_merge_set: 1,
+    },
+    notes: [
+        ...(demoCheck.notes ?? []),
+        "Apply mode: corrections were written AFTER the diff was taken -- discrepancies show the PRE-apply state, and 'applied' tallies the corrections.",
+    ],
+};
+// A short canned progress sequence (the real endpoint streams these as NDJSON
+// lines) so the preview's check/Reconcile modal exercises the live progress
+// bar before the canned report renders. Replayed on a timer by the app's demo
+// stream shim.
+const demoCheckProgress = [
+    { phase: "start", owners: 2 },
+    { phase: "owner", owner: "wow-look-at-my", index: 1, total: 2 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 5, repos_total: 55 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 25, repos_total: 55 },
+    { phase: "fetch", owner: "wow-look-at-my", repos_fetched: 55, repos_total: 55 },
+    { phase: "visibility", owner: "wow-look-at-my" },
+    { phase: "diffed", owner: "wow-look-at-my", discrepancies: 6 },
+    { phase: "owner", owner: "octo-org", index: 2, total: 2 },
+    { phase: "skip", owner: "octo-org", reason: "no GitHub App installation for this owner (app not installed, or no access)" },
+    { phase: "done" },
+];
+const adminGrants = {};
+for (const s of allPrincipals) {
+    if (!s.principal_id)
         continue;
-    adminBrowse[s.actor_id] = demoBrowse(s);
-    adminCheck[s.actor_id] = demoCheck(s);
+    adminGrants[s.principal_id] = demoGrants(s);
 }
 const config = {
     initial: "admin",
@@ -237,25 +363,29 @@ const config = {
         "user": {
             me: { authenticated: true, login_configured: true, login: "octocat", is_admin: false },
             mine: {
-                login: "octocat", is_admin: false, scope: "mine", scope_count: 1,
-                totals: octocatCounts, scopes: [octocatScope],
+                login: "octocat", is_admin: false, scope: "mine", principal_count: 1,
+                totals: globalTotals, principals: [octocatPrincipal],
             },
         },
         "admin": {
             me: { authenticated: true, login_configured: true, login: "PazerOP", is_admin: true },
             mine: {
-                login: "PazerOP", is_admin: true, scope: "mine", scope_count: pazerMine.length,
-                totals: sumScopes(pazerMine), scopes: pazerMine,
+                login: "PazerOP", is_admin: true, scope: "mine", principal_count: 1,
+                totals: globalTotals, principals: [pazerPrincipal],
             },
             all: {
-                login: "PazerOP", is_admin: true, scope: "all", scope_count: allScopes.length,
-                totals: sumScopes(allScopes), scopes: allScopes,
+                login: "PazerOP", is_admin: true, scope: "all", principal_count: allPrincipals.length,
+                totals: globalTotals, principals: allPrincipals,
             },
             requests: demoRequests,
             webhooks: demoWebhooks,
+            timeline: demoTimeline,
             ratelimit: demoRateLimit,
-            browse: adminBrowse,
-            check: adminCheck,
+            browse: demoBrowse,
+            grants: adminGrants,
+            check: demoCheck,
+            checkApplied: demoCheckApplied,
+            checkProgress: demoCheckProgress,
         },
     },
 };

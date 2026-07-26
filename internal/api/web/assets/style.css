@@ -86,6 +86,23 @@ a:hover { text-decoration: underline; }
 }
 .loading { color: var(--fg-muted); padding: 40px 0; text-align: center; }
 
+/* ---- Live progress (streaming consistency check / Reconcile modal) ---- */
+.check-progress { padding: 32px 4px; }
+.check-progress-track {
+    height: 8px; border-radius: 4px; overflow: hidden;
+    background: var(--bg-elev-2); border: 1px solid var(--border-muted);
+}
+.check-progress-fill {
+    height: 100%; width: 0; border-radius: 4px;
+    background: var(--accent); transition: width 0.3s ease;
+}
+.check-progress-meta {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px; margin-top: 10px; color: var(--fg-muted); font-size: 13px;
+}
+.check-progress-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-progress-count { flex: none; font-variant-numeric: tabular-nums; }
+
 /* ---- Buttons ---- */
 .btn {
     display: inline-flex; align-items: center; gap: 8px;
@@ -219,25 +236,26 @@ table.kinds tr.kind-error-row td.kind-error {
 }
 .kind-error-msg { color: var(--red); font-family: var(--mono); font-size: 12px; word-break: break-word; }
 
-/* ---- GitHub App rate limit ---- */
+/* ---- GitHub App rate limit ----
+   The tiles are <rate-meter> web components (src/rate-meter.ts) that own their
+   markup and styles in shadow DOM (themed via the :root custom properties,
+   which inherit through it). Only the light-DOM grid lives here; its default
+   align-items: stretch is wanted — tiles fill the row and align their bars at
+   the bottom via margin-top: auto inside the component. */
 .rate-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 14px;
 }
-.rate-meter {
-    background: var(--bg); border: 1px solid var(--border-muted);
-    border-radius: 8px; padding: 12px 14px;
+
+/* Observed-rate tiles: a <rate-meter> plus its "observed ..." caption. The
+   wrapper is the grid item, so the meter stretches to keep bars row-aligned. */
+.rate-observed { display: flex; flex-direction: column; gap: 4px; }
+.rate-observed rate-meter { flex: 1; }
+.rate-observed-at {
+    font-size: 11px; color: var(--fg-muted); text-align: right;
+    font-variant-numeric: tabular-nums;
 }
-.rate-meter.low { border-color: rgba(248,81,73,0.5); }
-.rate-top { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.rate-name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-.rate-nums { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.rate-bar { height: 6px; border-radius: 999px; background: var(--border-muted); overflow: hidden; margin: 8px 0 6px; }
-.rate-fill { height: 100%; background: var(--green); border-radius: 999px; transition: width 0.3s; }
-.rate-meter.low .rate-fill { background: var(--red); }
-.rate-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-.rate-reset { color: var(--fg-muted); }
-.rate-meter.low .rate-reset { color: var(--yellow); }
+
 
 /* ---- Upstream status badge (Requests view) ---- */
 .status-code {
@@ -307,7 +325,7 @@ table.scopes .avatar { width: 22px; height: 22px; border-radius: 50%; border: 1p
     font-family: var(--mono); letter-spacing: 0.02em;
 }
 .disp.applied     { color: var(--green);  background: rgba(63,185,80,0.12); }
-.disp.skipped     { color: var(--yellow); background: rgba(210,153,34,0.12); }
+.disp.write       { color: var(--yellow); background: rgba(210,153,34,0.12); }
 .disp.invalidated { color: var(--accent); background: rgba(47,129,247,0.12); }
 .disp.ignored     { color: var(--gray);   background: rgba(110,118,129,0.15); }
 .disp.error       { color: var(--red);    background: rgba(248,81,73,0.12); }
@@ -326,6 +344,18 @@ table.webhooks .wh-repo { color: var(--fg-muted); white-space: nowrap; }
 table.webhooks .wh-detail { color: var(--fg-muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.webhooks .wh-delivery { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 table.webhooks .wh-when { color: var(--fg-muted); white-space: nowrap; }
+
+/* ---- Request groups (Requests tab: Top requests / Top uncached) ---- */
+details.req-groups { margin-bottom: 18px; }
+details.req-groups > summary {
+    cursor: pointer; user-select: none; padding: 4px 0;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--fg-muted);
+}
+details.req-groups .grp-caption { color: var(--fg-muted); font-size: 12px; margin: 4px 0 8px; }
+details.req-groups table.webhooks { margin-top: 6px; }
+table.webhooks th.num { text-align: right; }
+table.webhooks td.grp-breakdown .disp { margin-right: 6px; }
 
 /* ---- Demo banner (styling preview only) ---- */
 .demo-banner {
@@ -422,4 +452,25 @@ details.raw > summary { cursor: pointer; color: var(--fg-muted); font-size: 13px
     .scope-meta .scope-actions { justify-content: flex-start; }
     .page-head { align-items: flex-start; }
     .modal-backdrop { padding: 12px 6px; }
+}
+
+/* ---- Timeline tab (the <gsm-timeline> traffic chart) ---- */
+gsm-timeline { display: block; }
+gsm-timeline .timeline-note { color: var(--fg-muted); padding: 12px 4px; }
+gsm-timeline timeline-view {
+    display: block;
+    height: 460px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-elev);
+    overflow: hidden;
+    /* Theme the js-snippets <timeline-view> to the dashboard palette. */
+    --timeline-bg: var(--bg-elev);
+    --timeline-fg: var(--fg);
+    --timeline-muted: var(--fg-muted);
+    --timeline-grid: var(--border-muted);
+    --timeline-hairline: var(--border);
+    --timeline-now: var(--accent);
+    --timeline-emphasis: var(--red);
+    --timeline-font: var(--sans);
 }

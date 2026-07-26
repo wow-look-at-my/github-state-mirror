@@ -1,5 +1,5 @@
 // Shared DTO types for the dashboard front-end: the shapes returned by the
-// /api/me, /api/cache, /api/webhooks, /api/cache/browse and /api/cache/check
+// /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
 // endpoints, plus the demo-preview config. Single source of truth — both app.ts
 // (the renderer) and demo-data.ts (the preview fixtures) import these, so the
 // two can never drift. Imported with `import type`, so nothing here emits into
@@ -12,14 +12,14 @@ export interface Me {
     is_admin: boolean;
 }
 
+// Counts are the GLOBAL truth store's row counts — one cache, one truth.
 export interface Counts {
     repos: number;
     pull_requests: number;
-    orgs: number;
-    users: number;
     commit_checks: number;
-    pr_files: number;
-    branch_comparisons: number;
+    contents: number;
+    git_commits: number;
+    grants: number;
 }
 
 export interface KindFreshness {
@@ -39,14 +39,15 @@ export interface RecentRefresh {
     error?: string;
 }
 
-export interface ScopeStats {
-    actor: string;
-    actor_id?: string;
+// PrincipalStats is one principal's reveal-layer standing: who they are, how
+// many repos they hold live grants for, and how fresh their org syncs are.
+export interface PrincipalStats {
+    principal: string; // short (display)
+    principal_id: string; // full key (for admin views)
     login: string;
     is_self: boolean;
     last_seen?: string;
-    counts: Counts;
-    total: number;
+    live_grants: number;
     kinds: KindFreshness[] | null;
     recent?: RecentRefresh[];
 }
@@ -55,9 +56,10 @@ export interface CacheResponse {
     login: string;
     is_admin: boolean;
     scope: string;
-    scope_count: number;
     totals: Counts;
-    scopes: ScopeStats[] | null;
+    principal_count: number;
+    principals: PrincipalStats[] | null;
+    truth?: KindFreshness[] | null;
 }
 
 export interface WebhookDelivery {
@@ -68,27 +70,92 @@ export interface WebhookDelivery {
     received_at: string;
     disposition: string;
     detail: string;
-    actors: number;
 }
 
 export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
 }
 
-// ---- request activity (cache hit/miss/passthrough) ----
+// ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
+    // Verified display name for the actor (user login / app slug); absent when
+    // none was proven (e.g. token fingerprints, unverified identity headers).
+    actor_name?: string;
     method: string;
     path: string;
     disposition: string;
-    status?: number; // upstream HTTP status for a passthrough (0/absent otherwise)
+    status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
     at: string;
+}
+
+// One route-shape group: cumulative (since restart) per-disposition counts for
+// every request whose method+normalized route matched, e.g.
+// "GET /repos/{owner}/{repo}/compare/{basehead}".
+export interface RequestGroup {
+    key: string; // method + " " + route
+    method: string;
+    route: string;
+    total: number;
+    hit: number;
+    miss: number;
+    passthrough: number;
+    write: number;
+    error: number;
+    sample: string; // one recent raw path, for identifying the shape
+    last_seen: string; // RFC3339
 }
 
 export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
+    groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
+    db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
+    db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
+}
+
+// ---- traffic timeline (every exchange the mirror participates in) ----
+// One timed event on the Timeline chart. Kind-specific fields are omitted for
+// the other kinds; dur_ms is the REAL measured duration (never fabricated).
+export interface TimelineEvent {
+    id: number;
+    kind: string; // "webhook" | "request" | "notify"
+    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>" | "⇒ notify"
+    start: string; // RFC3339
+    dur_ms: number;
+    disposition?: string;
+    // webhook fields
+    event_type?: string;
+    action?: string;
+    delivery_id?: string;
+    repo?: string;
+    // request/exchange fields
+    method?: string;
+    route?: string;
+    status?: number;
+    actor?: string;
+    actor_name?: string;
+    // free-form tooltip line (e.g. an unverified delivery's claimed type)
+    detail?: string;
+    // notify fields
+    target?: string;
+    attempt?: number;
+    final?: boolean;
+}
+
+export interface TimelineResponse {
+    events: TimelineEvent[] | null;
+    max_id: number; // the next ?since= cursor
+    retention_start: string; // RFC3339 — the 24h window floor
+    now: string; // RFC3339
+}
+
+// The <gsm-timeline> custom element (src/timeline.ts). app.ts creates it on
+// the Timeline tab and, in demo mode, overrides its fetcher so the standalone
+// preview renders canned data.
+export interface GsmTimelineElement extends HTMLElement {
+    fetcher: ((path: string) => Promise<TimelineResponse>) | null;
 }
 
 // ---- GitHub App rate limit ----
@@ -106,16 +173,40 @@ export interface InstallationRateLimit {
     error?: string;
 }
 
-export interface RateLimitResponse {
-    installations: InstallationRateLimit[] | null;
+// One passively observed X-RateLimit-* reading: the latest headers seen on an
+// upstream response for one (identity, resource) pair. In-memory server-side;
+// resets on restart.
+export interface ObservedRateLimit {
+    identity: string;
+    // Verified display name for the identity (user login / app slug /
+    // installation account login); absent when none was observed.
+    name?: string;
+    resource: string;
+    limit: number;
+    remaining: number;
+    used: number;
+    reset: number; // Unix epoch seconds
+    observed_at: string; // RFC3339
 }
 
-// ---- admin cache browse ----
+export interface RateLimitResponse {
+    // live: the GitHub App's per-installation GET /rate_limit poll. Empty when
+    // no App is configured or the poll failed (see note).
+    live: InstallationRateLimit[] | null;
+    // observed: passively recorded X-RateLimit-* readings, sorted by identity
+    // then resource.
+    observed: ObservedRateLimit[] | null;
+    // note explains an empty/failed live poll.
+    note?: string;
+}
+
+// ---- admin cache browse (global truth rows) ----
 export interface BrowseRepo {
     owner: string;
     name: string;
     name_with_owner: string;
     url: string;
+    visibility?: string; // '' / absent = unknown (treated private)
     is_disabled: boolean;
     is_archived: boolean;
     pushed_at?: string;
@@ -143,38 +234,53 @@ export interface BrowsePR {
     labels?: string[];
     created_at?: string;
     updated_at?: string;
+    touched_at?: string;
+    rest_complete?: boolean;
 }
 
-export interface BrowseOrg { login: string; url?: string; }
-export interface BrowseUser { login: string; url?: string; avatar_url?: string; }
-export interface BrowseComparison { owner: string; repo: string; base_ref: string; head_ref: string; ahead_by: number; behind_by: number; }
-export interface BrowsePRFile { owner: string; repo: string; pr_number: number; path: string; additions: number; deletions: number; }
 export interface BrowseCommitCheck { owner: string; repo: string; sha: string; context: string; state: string; }
 
 export interface BrowseResponse {
-    actor: string;
-    actor_id: string;
-    login?: string;
     counts: Counts;
     repos: BrowseRepo[];
     pull_requests: BrowsePR[];
-    orgs: BrowseOrg[];
-    users: BrowseUser[];
-    branch_comparisons: BrowseComparison[];
-    pr_files: BrowsePRFile[];
     commit_checks: BrowseCommitCheck[];
 }
 
-// ---- consistency check ----
+// ---- admin grants view (/api/cache/data?principal=...) ----
+export interface BrowseGrant {
+    owner: string;
+    repo: string;
+    source: string; // list_sync | probe
+    granted_at: string;
+    expires_at: string;
+}
+
+export interface GrantsResponse {
+    principal: string; // short (display)
+    principal_id: string; // full key
+    login?: string;
+    grants: BrowseGrant[] | null;
+}
+
+// ---- consistency check (global truth vs GitHub) ----
 export interface Discrepancy {
     kind: string;
     repo: string;
     pr?: number;
+    // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown
     issue: string;
     field?: string;
     cached?: string;
     github?: string;
+    visibility?: string; // "private"/"internal" on an only_on_github repo never absorbed
+    archived?: boolean; // only_in_cache repo whose absence is explained by archival
+    title?: string; // cached PR detail on pr only_in_cache entries
+    updated_at?: string;
+    touched_at?: string;
+    served_now?: boolean; // a live pulls-list marker is serving the wrong list right now
     note?: string;
+    fix?: string; // short per-class remediation hint
 }
 
 export interface OrgSkip { org: string; reason: string; }
@@ -186,22 +292,67 @@ export interface CheckSummary {
     discrepancies: number;
     repos_only_in_cache: number;
     repos_only_on_github: number;
+    repos_only_on_github_private: number;
+    repos_only_in_cache_archived: number;
     prs_only_in_cache: number;
     prs_only_on_github: number;
     field_mismatches: number;
+    visibility_leaks: number;
+}
+
+// AppliedSummary tallies apply-mode (Reconcile) corrections per action.
+export interface AppliedSummary {
+    repos_absorbed: number;
+    prs_absorbed: number;
+    prs_deleted: number;
+    visibility_set: number;
+    statuses_corrected: number;
+    check_rows_deleted: number;
+    default_branch_status_set: number;
+    auto_merge_set: number;
+}
+
+// TruthFreshness is one owner's most-recent org sync marker (any principal's).
+export interface TruthFreshness {
+    state: string;
+    last_fetched_at?: string;
+    error?: string;
+    principal?: string;
+    // The principal's recorded display name (actor_identities), when known.
+    principal_name?: string;
 }
 
 export interface ConsistencyReport {
-    scope: string;
-    scope_full: string;
-    login?: string;
     fetched_as: string;
     generated_at: string;
     orgs_checked: string[];
     orgs_skipped?: OrgSkip[];
+    truth_freshness?: Record<string, TruthFreshness>;
     summary: CheckSummary;
+    applied?: AppliedSummary; // present only on an apply (Reconcile) run
     discrepancies: Discrepancy[];
     notes?: string[];
+}
+
+// One NDJSON line from the streaming consistency check / reconcile
+// (GET/POST /api/cache/check?stream=1): checker progress events while the run
+// works, then exactly one terminal line — phase "report" carrying the full
+// ConsistencyReport, or phase "error" when the run failed mid-stream.
+export interface CheckProgressEvent {
+    // start | owner | fetch | visibility | diffed | applied | skip | done
+    // | report | error (the last two only as the terminal line)
+    phase: string;
+    owner?: string;
+    index?: number; // this owner's 1-based position (phase=owner)
+    total?: number; // total owners (phase=owner)
+    owners?: number; // total owners the run will visit (phase=start)
+    repos_fetched?: number; // cumulative repos fetched so far (phase=fetch)
+    repos_total?: number; // the owner's repo total when known (phase=fetch)
+    discrepancies?: number; // running total across owners (phase=diffed)
+    applied?: AppliedSummary; // corrections tally so far (phase=applied)
+    reason?: string; // why the owner was skipped (phase=skip)
+    report?: ConsistencyReport; // the final report (phase=report)
+    error?: string; // the run's failure (phase=error)
 }
 
 export interface DemoStateData {
@@ -210,9 +361,15 @@ export interface DemoStateData {
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
+    timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
-    browse?: Record<string, BrowseResponse>; // keyed by actor_id
-    check?: Record<string, ConsistencyReport>; // keyed by actor_id
+    browse?: BrowseResponse; // global truth rows (one cache)
+    grants?: Record<string, GrantsResponse>; // keyed by principal_id
+    check?: ConsistencyReport; // global check (read-only)
+    checkApplied?: ConsistencyReport; // the Reconcile (apply=true) answer
+    // Canned progress events replayed before check/checkApplied resolves (the
+    // demo mock can't stream, so the preview plays these on a timer).
+    checkProgress?: CheckProgressEvent[];
 }
 
 export interface DemoConfig {

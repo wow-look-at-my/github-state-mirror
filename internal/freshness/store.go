@@ -107,6 +107,23 @@ func (s *Store) ListByKind(ctx context.Context, actor, kind string) ([]Metadata,
 	return out, nil
 }
 
+// ListByKindKeyAllActors returns every actor's metadata row for one
+// (kind, key) resource -- e.g. all principals' org-sync markers for an owner.
+func (s *Store) ListByKindKeyAllActors(ctx context.Context, kind, key string) ([]Metadata, error) {
+	rows, err := s.q.ListByKindKey(ctx, dbgen.ListByKindKeyParams{
+		ResourceKind: kind,
+		ResourceKey:  key,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Metadata, len(rows))
+	for i, r := range rows {
+		out[i] = *rowToMetadata(r)
+	}
+	return out, nil
+}
+
 func (s *Store) ListStale(ctx context.Context, actor string, before time.Time) ([]Metadata, error) {
 	rows, err := s.q.ListStale(ctx, dbgen.ListStaleParams{
 		Actor: actor,

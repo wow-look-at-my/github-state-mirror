@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
@@ -113,12 +115,23 @@ type gqlPageInfo struct {
 }
 
 type gqlRepo struct {
-	Name          string  `json:"name"`
-	NameWithOwner string  `json:"nameWithOwner"`
-	URL           string  `json:"url"`
-	IsDisabled    bool    `json:"isDisabled"`
-	PushedAt      *string `json:"pushedAt"`
-	Owner         struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
+	URL           string `json:"url"`
+	IsDisabled    bool   `json:"isDisabled"`
+	// IsArchived is selected only by the owner-agnostic query (ownerDataQuery);
+	// the identity-locked orgDataQuery never returns it, leaving it false --
+	// which matches its repositories(isArchived: false) filter anyway.
+	IsArchived bool `json:"isArchived"`
+	// Visibility is likewise selected only by the owner-agnostic query: the
+	// GraphQL enum (PUBLIC/PRIVATE/INTERNAL), left "" by the identity-locked
+	// orgDataQuery -- and UpsertRepo's guard only overwrites the stored column
+	// with a NON-empty value, so an org-query-sourced sync can never blank a
+	// known visibility while an owner-sourced sync (the fleet refresher, the
+	// consistency apply) stamps it.
+	Visibility string  `json:"visibility"`
+	PushedAt   *string `json:"pushedAt"`
+	Owner      struct {
 		Login     string `json:"login"`
 		AvatarURL string `json:"avatarUrl"`
 		URL       string `json:"url"`
@@ -164,6 +177,14 @@ type gqlPR struct {
 	ReviewRequests struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"reviewRequests"`
+	// AutoMergeRequest is selected only by the owner-agnostic query
+	// (ownerPRFields); the identity-locked prFields never returns it, leaving
+	// it nil. mergeMethod is a GraphQL enum (MERGE/SQUASH/REBASE) -- convertPR
+	// lowercases it to match the REST auto_merge.merge_method values the cache
+	// stores and rebuilds.
+	AutoMergeRequest *struct {
+		MergeMethod string `json:"mergeMethod"`
+	} `json:"autoMergeRequest"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -232,6 +253,9 @@ func (c *Client) GetOrgData(ctx context.Context, orgLogin string) (*OrgData, err
 
 		repos := resp.Data.Organization.Repositories
 		for _, gr := range repos.Nodes {
+			if dropForeignRepoNode(orgLogin, gr.NameWithOwner, gr.Owner.Login) {
+				continue
+			}
 			repo := convertRepo(orgLogin, gr)
 			result.Repos = append(result.Repos, repo)
 
@@ -319,6 +343,43 @@ func addPR(result *OrgData, orgLogin, repoName, repoKey string, gpr gqlPR) {
 	}
 }
 
+// realNodeOwner extracts a fetched repo node's REAL owner login: the
+// nameWithOwner prefix when present, else the node's own owner.login. Every
+// repo-listing selection (org, owner, visibility twin) carries at least one of
+// the two, so a real GitHub response always yields a non-empty answer; ""
+// (possible only for minimal test fixtures) disables the foreign-node guard
+// for that node.
+func realNodeOwner(nameWithOwner, ownerLogin string) string {
+	if prefix, _, ok := strings.Cut(nameWithOwner, "/"); ok && prefix != "" {
+		return prefix
+	}
+	return ownerLogin
+}
+
+// dropForeignRepoNode reports whether a repo node fetched from an owner
+// listing REALLY belongs to a different owner than the queried login
+// (case-insensitive), logging each drop so a transfer or collaborator repo
+// appearing mid-listing is visible. GitHub's repositoryOwner
+// repositories(...) connection defaults ownerAffiliations to
+// [OWNER, COLLABORATOR], so a User's listing includes repos the login merely
+// collaborates on -- under their real owners -- and convertRepo/convertPR key
+// nodes by the QUERY login, which poisoned truth with junk
+// "<queried>/<name>" rows (the collaborator-repo bleed). The owner-agnostic
+// queries now pin ownerAffiliations: OWNER; this is the belt-and-braces
+// response-side guard, and it also covers the identity-locked org query with
+// zero query-text change. Foreign nodes are DROPPED -- with their PRs --
+// never re-keyed: re-keying by nameWithOwner would let one owner's sync
+// absorb truth rows, and mint access grants, across other owners.
+func dropForeignRepoNode(queriedOwner, nameWithOwner, ownerLogin string) bool {
+	real := realNodeOwner(nameWithOwner, ownerLogin)
+	if real == "" || strings.EqualFold(real, queriedOwner) {
+		return false
+	}
+	slog.Warn("dropping foreign-owner repo node from owner listing",
+		"name_with_owner", nameWithOwner, "queried_owner", queriedOwner)
+	return true
+}
+
 func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 	r := dbgen.Repo{
 		Owner:         owner,
@@ -326,9 +387,15 @@ func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 		NameWithOwner: gr.NameWithOwner,
 		Url:           gr.URL,
 		IsDisabled:    boolToInt(gr.IsDisabled),
-		OwnerLogin:    sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
-		OwnerAvatar:   sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
-		OwnerUrl:      sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
+		IsArchived:    boolToInt(gr.IsArchived),
+		// Lowercased to the stored/REST form ("public"), matching what the
+		// webhook absorbs and OwnerRepoVisibilities record. Empty (the
+		// identity-locked org query selects no visibility) stays empty and is
+		// never written over a known value (UpsertRepo's guard).
+		Visibility:  strings.ToLower(gr.Visibility),
+		OwnerLogin:  sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
+		OwnerAvatar: sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
+		OwnerUrl:    sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
 	}
 	if gr.PushedAt != nil {
 		r.PushedAt = sql.NullString{String: *gr.PushedAt, Valid: true}
@@ -368,6 +435,15 @@ func convertPR(owner, repoName string, gpr gqlPR) dbgen.PullRequest {
 		pr.AuthorLogin = sql.NullString{String: gpr.Author.Login, Valid: true}
 		pr.AuthorAvatar = sql.NullString{String: gpr.Author.AvatarURL, Valid: true}
 		pr.AuthorUrl = sql.NullString{String: gpr.Author.URL, Valid: true}
+	}
+	if gpr.AutoMergeRequest != nil && gpr.AutoMergeRequest.MergeMethod != "" {
+		// Lowercased so the value matches the REST auto_merge.merge_method the
+		// webhook payloads store ("squash", not the GraphQL enum "SQUASH").
+		// NOTE: SyncOrgTruth's upsert deliberately does NOT apply this column
+		// from GraphQL-shaped rows (node_id is NULL); it is carried for the
+		// consistency checker's diff, and apply mode writes it via the explicit
+		// SetPRAutoMergeMethod.
+		pr.AutoMergeMethod = sql.NullString{String: strings.ToLower(gpr.AutoMergeRequest.MergeMethod), Valid: true}
 	}
 	if len(gpr.Commits.Nodes) > 0 {
 		commit := gpr.Commits.Nodes[0]

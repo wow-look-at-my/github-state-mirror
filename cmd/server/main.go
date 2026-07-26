@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
@@ -15,22 +16,45 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.WebhookSecret == "" {
 		slog.Warn("WEBHOOK_SECRET not set; the /webhook endpoint will reject all deliveries")
 	}
+
+	// Apply the configured response-cache row ceiling (CACHE_MAX_ROWS) before
+	// anything writes through the store.
+	ghdata.CacheMaxRows = cfg.CacheMaxRows
 
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+
+	// Subscriber-notification config DB: a SEPARATE SQLite file, deliberately
+	// outside the cache DB's SchemaVersion nuke-and-recreate lifecycle —
+	// subscriptions are configuration, not disposable cached state.
+	subsPath := cfg.SubscriptionsDBPath
+	if subsPath == "" {
+		subsPath = notify.DeriveDBPath(cfg.DBPath)
+	}
+	subsStore, err := notify.Open(subsPath)
+	if err != nil {
+		slog.Error("open subscriptions database", "error", err, "path", subsPath)
+		os.Exit(1)
+	}
 
 	// Create components.
 	fStore := freshness.NewStore(db)
@@ -38,31 +62,64 @@ func main() {
 	store := ghdata.NewStore(db)
 	gh := ghclient.New()
 
+	// Passive rate-limit observation: every upstream GitHub response's
+	// X-RateLimit-* headers land in this in-memory meter (the dashboard's
+	// admin "Rate limit" tab). In-memory like the request log — a live view,
+	// not an audit log; it resets on restart. The ghclient hook covers the
+	// client's own calls; the api layer feeds the proxy/fetch/probe paths.
+	meter := ratemeter.New()
+	gh.SetRateObserver(meter.Observe)
+
+	// Timed-traffic timeline: an in-memory 24h ring of EVERY exchange the
+	// mirror participates in — webhook deliveries (any outcome), inbound
+	// data-API requests, upstream fetches/probes, the client's own GitHub
+	// calls, login relays, subscriber-notification attempts — each with its
+	// real measured duration. The dashboard's "Timeline" chart; a gap on it
+	// is a bug. In-memory like the request log and rate meter (a live view,
+	// not an audit log); resets on restart. The transport-level exchange
+	// observer charts every call gh itself makes, one event per real attempt.
+	timeline := reqtimeline.New()
+	gh.SetExchangeObserver(api.TimelineExchangeObserver(timeline))
+
 	// Register all fetchers.
 	syncpkg.RegisterAll(mgr, gh, store)
 
 	// The service's only credential: a GitHub App (there is no static service
 	// token). nil when no app is configured. It signs in for the periodic
-	// background refreshes, lets the webhook dispatcher pull an as-yet-uncached
-	// repo on demand, and is the source-of-truth fetcher for the admin
-	// consistency check. Requests never use it — they carry the caller's own token.
+	// background refreshes and is the source-of-truth fetcher for the admin
+	// consistency check. Requests never use it — they carry the caller's own
+	// token — and the webhook dispatcher never fetches at all (payloads apply
+	// straight to global truth).
 	app := buildAppAuthenticator(cfg, gh)
 
-	// Webhook dispatcher.
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store, app)
+	// Webhook dispatcher: applies every stateful event to global truth.
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
+
+	// Subscriber notifier: after each dispatched delivery it POSTs signed
+	// notifications to matching subscriptions, reveal-gated per principal
+	// (public repo or live grant — fail closed). Deliveries run detached and
+	// are drained at shutdown before the DBs close.
+	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})
 
 	// Periodic refresher. Without an app configured, sessions is nil and periodic
 	// refreshes are disabled; per-request data still works via each caller's
-	// Authorization header.
+	// Authorization header. Each cycle also records the installations'
+	// account logins as the app-installation principals' display names, so
+	// the dashboard resolves them instead of showing "(unknown)".
 	var sessions syncpkg.SessionFunc
 	if app != nil {
-		sessions = syncpkg.AppSessions(app)
+		recordIdentity := func(ctx context.Context, principal, name string) {
+			if err := store.RecordActorIdentity(ctx, principal, name); err != nil {
+				slog.Warn("record app-installation identity failed", "principal", principal, "error", err)
+			}
+		}
+		sessions = syncpkg.AppSessions(app, recordIdentity)
 	}
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
 	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
 	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
-	checker := syncpkg.NewConsistencyChecker(gh, store, app)
+	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, app)
 
 	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
 	authSvc := auth.New(auth.Config{
@@ -75,8 +132,9 @@ func main() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
-	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker)
+	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
+	// all data access goes through the already-open db handle.
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,7 +159,31 @@ func main() {
 	}()
 
 	slog.Info("starting server", "addr", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	err = srv.ListenAndServe()
+
+	// Shutdown ordering: the listener is closed (no new requests), the
+	// periodic refresher's context is canceled, but DETACHED fetches
+	// (freshness.Manager runs each fetch on a cancel-severed context so an
+	// impatient client can't kill shared work) may still be writing. Drain
+	// them BEFORE closing the database, or a late metadata write lands on a
+	// closed handle. Bounded so a wedged upstream cannot hold shutdown hostage
+	// past the fetch safety timeout.
+	if !mgr.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
+	}
+	// Same rule for detached subscriber-notification deliveries: stop retries,
+	// wait out in-flight POSTs and their outcome writes, THEN close the DBs.
+	if !notifier.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight notifications did not drain in time; closing DBs anyway")
+	}
+	if cerr := db.Close(); cerr != nil {
+		slog.Warn("close database", "error", cerr)
+	}
+	if cerr := subsStore.Close(); cerr != nil {
+		slog.Warn("close subscriptions database", "error", cerr)
+	}
+
+	if err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
