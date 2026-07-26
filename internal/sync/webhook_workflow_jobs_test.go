@@ -26,6 +26,18 @@ var (
 // "in_progress" carries null conclusion/completed_at; "completed" fills both.
 func makeWorkflowJobPayload(t *testing.T, action, owner, repo string, jobID int64, name, status, conclusion string) json.RawMessage {
 	t.Helper()
+	completedAt := ""
+	if status == "completed" {
+		completedAt = wfjCompletedAt
+	}
+	return makeWorkflowJobPayloadAt(t, action, owner, repo, jobID, name, status, conclusion, wfjStartedAt, completedAt)
+}
+
+// makeWorkflowJobPayloadAt is makeWorkflowJobPayload with explicit timestamps,
+// for tests that pin event times (e.g. past the retention horizon). An empty
+// completedAt stays JSON null, like a real in_progress payload.
+func makeWorkflowJobPayloadAt(t *testing.T, action, owner, repo string, jobID int64, name, status, conclusion, startedAt, completedAt string) json.RawMessage {
+	t.Helper()
 	job := map[string]interface{}{
 		"id":            jobID,
 		"run_id":        int64(555),
@@ -37,15 +49,15 @@ func makeWorkflowJobPayload(t *testing.T, action, owner, repo string, jobID int6
 		"status":        status,
 		"conclusion":    nil,
 		"name":          name,
-		"started_at":    wfjStartedAt,
+		"started_at":    startedAt,
 		"completed_at":  nil,
 		"runner_name":   "runner-1",
 	}
 	if conclusion != "" {
 		job["conclusion"] = conclusion
 	}
-	if status == "completed" {
-		job["completed_at"] = wfjCompletedAt
+	if completedAt != "" {
+		job["completed_at"] = completedAt
 	}
 	data, err := json.Marshal(map[string]interface{}{
 		"action":       action,
@@ -134,6 +146,39 @@ func TestDispatch_WorkflowJob_LateInProgressDoesNotRegress(t *testing.T) {
 	assert.Equal(t, "completed", jobs[0].Status, "late in_progress must not regress a completed job")
 	assert.Equal(t, "success", jobs[0].Conclusion)
 	assert.Equal(t, wfjCompletedAt, jobs[0].CompletedAt)
+}
+
+// TestDispatch_WorkflowJob_LateInProgressPastRetention is the deterministic
+// reproduction of the 2026-07-17 master incident (run 29575744119, commit
+// 998ee25): the then-hardcoded fixture completed_at aged past the 14-day
+// retention horizon, RecordWorkflowJob's on-write prune deleted the completed
+// row the same call had just written, and the late in_progress then INSERTED
+// a fresh running row -- status regressed to "in_progress", conclusion
+// blanked -- because the upsert's regression guard only fires when the row
+// still exists. The same interleaving is reachable in production via delivery
+// replays of old events (GitHub keeps deliveries 30 days; the org's
+// webhook-runner SDK replays missed windows). Retention now also keys on
+// updated_at (when the mirror last applied a webhook), so a just-recorded row
+// can never be pruned out from under the guard, however old the event's own
+// completed_at is.
+func TestDispatch_WorkflowJob_LateInProgressPastRetention(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	startedAt := time.Now().UTC().Add(-15*24*time.Hour - 5*time.Minute).Truncate(time.Second).Format(time.RFC3339)
+	completedAt := time.Now().UTC().Add(-15 * 24 * time.Hour).Truncate(time.Second).Format(time.RFC3339)
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_job",
+		makeWorkflowJobPayloadAt(t, "completed", "my-org", "my-repo", 9, "lint", "completed", "success", startedAt, completedAt)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_job",
+		makeWorkflowJobPayloadAt(t, "in_progress", "my-org", "my-repo", 9, "lint", "in_progress", "", startedAt, "")))
+
+	jobs, err := store.RecentWorkflowJobs(ctx, 10)
+	require.Nil(t, err)
+	require.Len(t, jobs, 1, "the just-recorded completed row must survive its own call's prune")
+	assert.Equal(t, "completed", jobs[0].Status, "late in_progress must not regress a completed job")
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, completedAt, jobs[0].CompletedAt)
 }
 
 // TestDispatch_WorkflowJob_QueuedIgnored verifies the untracked actions

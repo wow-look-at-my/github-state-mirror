@@ -244,14 +244,14 @@ const demoRateLimit: RateLimitResponse = {
                 // Long resource names (real GitHub /rate_limit fields) that used to
                 // force the "X / Y left" count to wrap word-by-word in the card.
                 code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
-                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3600) },
+                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3540) },
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
                 audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
                 code_scanning_autofix: { limit: 10, remaining: 1, used: 9, reset: resetIn(48) },
                 code_search: { limit: 10, remaining: 2, used: 8, reset: resetIn(37) },
                 copilot_usage_records: { limit: 1750, remaining: 1750, used: 0, reset: resetIn(3600) },
                 dependency_sbom: { limit: 100, remaining: 96, used: 4, reset: resetIn(1210) },
-                dependency_snapshots: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
+                dependency_snapshots: { limit: 100, remaining: 94, used: 6, reset: resetIn(1800) },
                 integration_manifest: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3600) },
                 scim: { limit: 15000, remaining: 15000, used: 0, reset: resetIn(3600) },
                 source_import: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
