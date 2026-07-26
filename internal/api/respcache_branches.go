@@ -91,12 +91,12 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	perPage, page, ok := parseBranchesListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
