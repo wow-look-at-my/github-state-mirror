@@ -519,7 +519,7 @@ async function loadWebhooks(silent = false): Promise<void> {
         return;
     }
     body.appendChild(webhookLegend());
-    body.appendChild(webhookTable(deliveries));
+    body.appendChild(wideWrap(webhookTable(deliveries)));
 }
 
 const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
@@ -541,20 +541,31 @@ function webhookLegend(): HTMLElement {
 }
 
 function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
-    const rows = deliveries.map((d) => {
+    const rows = deliveries.flatMap((d, i) => {
         const disp = d.disposition || "ignored";
         const evt = d.action ? d.event_type + "." + d.action : d.event_type;
         const shortID = d.delivery_id ? d.delivery_id.slice(0, 8) : "—";
-        return el("tr", null,
+        const cells = [
             el("td", null, el("span", { class: "disp " + disp, text: disp })),
             el("td", { class: "wh-event", text: evt }),
             el("td", { class: "wh-repo", text: d.repo || "—" }),
             el("td", { class: "wh-detail", text: d.detail || "" }),
-            el("td", { class: "wh-delivery", title: d.delivery_id || "", text: shortID }),
+            el("td", { class: "wh-delivery", text: shortID }),
             el("td", { class: "wh-when", text: fmtTime(d.received_at) }),
-        );
+        ];
+        // Unlike the requests ring, this log is PERSISTED and spans real time,
+        // so "Received" earns its column and stays. The detail panel carries
+        // the truncated detail text and the full delivery id.
+        return collapsibleRow("webhooks", d.delivery_id || evt + " " + d.received_at + " " + i, cells, () => detailPairs([
+            ["Event", evt],
+            ["Repo", d.repo],
+            ["Result", disp],
+            ["Detail", d.detail],
+            ["Delivery", d.delivery_id],
+            ["Received", fmtAbsolute(d.received_at) + " · " + fmtTime(d.received_at)],
+        ]));
     });
-    return el("table", { class: "webhooks" },
+    return el("table", { class: "webhooks rows-collapsible cols-webhooks" },
         el("thead", null, el("tr", null,
             el("th", { text: "Result" }),
             el("th", { text: "Event" }),
@@ -639,7 +650,7 @@ async function loadRequests(silent = false): Promise<void> {
         ));
         return;
     }
-    body.appendChild(requestTable(recent));
+    body.appendChild(wideWrap(requestTable(recent)));
 }
 
 // A count's share of the total, rendered as a " (88.8%)" suffix — empty when
@@ -714,8 +725,17 @@ function groupRouteCell(g: RequestGroup): HTMLElement {
     return el("td", { class: "wh-event grp-route", title: g.sample, text: g.method + " " + g.route });
 }
 
+// wideWrap puts a flat table in a block that may bleed into the page margins
+// (see .table-wide). It has to be a wrapping DIV rather than the class on the
+// table itself: a table with width:100% resolves that percentage against its
+// containing block, so negative margins only SHIFT it off-centre instead of
+// widening it. A plain block has auto width and grows into both margins.
+function wideWrap(table: HTMLElement): HTMLElement {
+    return el("div", { class: "table-wide" }, table);
+}
+
 function groupSection(title: string, caption: string | null, table: HTMLElement): HTMLElement {
-    return el("details", { class: "req-groups", open: true },
+    return el("details", { class: "req-groups table-wide", open: true },
         el("summary", { text: title }),
         caption ? el("p", { class: "grp-caption", text: caption }) : null,
         table,
@@ -865,6 +885,77 @@ function reqDispClass(disp: string): string {
     }
 }
 
+// ---- collapsible table rows ----
+// The log tables are dense and their cells ellipsize to stay inside the
+// window, so each row can expand to show what was cut off. Rows are keyed and
+// the open set survives the 5s background refresh — without that, an open row
+// would snap shut every few seconds, which is worse than not opening at all.
+const expandedRows: Record<string, Set<string>> = { requests: new Set(), webhooks: new Set() };
+
+// requestRowKey identifies a request row across refreshes. The ring has no ids,
+// so the timestamp + what was requested + by whom is the available identity;
+// the index disambiguates the genuinely identical polls a fleet sweep produces
+// within the same second.
+function requestRowKey(e: RequestEvent, i: number): string {
+    return [e.at, e.method, e.path, e.actor || "", String(i)].join(" ");
+}
+
+// collapsibleRow returns the visible row plus its (initially hidden) detail
+// row. Clicking, or Enter/Space on the focused row, toggles the pair.
+function collapsibleRow(table: string, key: string, cells: HTMLElement[], detail: () => HTMLElement): HTMLElement[] {
+    const openSet = expandedRows[table];
+    const isOpen = openSet.has(key);
+    const detailRow = el("tr", { class: "row-detail" },
+        el("td", { colspan: String(cells.length) }, detail()));
+    const row = el("tr", {
+        class: "row-toggle",
+        tabindex: "0",
+        role: "button",
+        "aria-expanded": isOpen ? "true" : "false",
+    }, ...cells);
+    const apply = (open: boolean) => {
+        row.classList.toggle("open", open);
+        row.setAttribute("aria-expanded", open ? "true" : "false");
+        detailRow.classList.toggle("open", open);
+    };
+    const toggle = () => {
+        const open = !openSet.has(key);
+        if (open) openSet.add(key);
+        else openSet.delete(key);
+        apply(open);
+    };
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (ev) => {
+        const k = (ev as KeyboardEvent).key;
+        if (k === "Enter" || k === " ") {
+            ev.preventDefault();
+            toggle();
+        }
+    });
+    apply(isOpen);
+    return [row, detailRow];
+}
+
+// detailPairs renders a row's expanded content as label/value pairs. A null or
+// empty value drops its pair entirely rather than showing an empty row.
+function detailPairs(pairs: Array<[string, string | null | undefined]>): HTMLElement {
+    const dl = el("dl", { class: "row-detail-grid" });
+    for (const [label, value] of pairs) {
+        if (!value) continue;
+        dl.appendChild(el("dt", { text: label }));
+        dl.appendChild(el("dd", { text: value }));
+    }
+    return dl;
+}
+
+// fmtAbsolute renders the full local timestamp (fmtTime gives the relative
+// "just now" form). Invalid input passes through unchanged.
+function fmtAbsolute(s?: string): string {
+    if (!s) return "";
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : d.toLocaleString();
+}
+
 function requestLegend(): HTMLElement {
     const legend = el("div", { class: "wh-legend" });
     for (const [disp, meaning] of REQUEST_DISPOSITIONS) {
@@ -877,7 +968,7 @@ function requestLegend(): HTMLElement {
 }
 
 function requestTable(events: RequestEvent[]): HTMLElement {
-    const rows = events.map((e) => {
+    const rows = events.flatMap((e, i) => {
         const disp = e.disposition || "passthrough";
         // A passthrough's reason rides on the disposition chip's tooltip: the
         // flat history is dense, and the per-route "Why" column above already
@@ -885,24 +976,37 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         const dispTitle = e.reason
             ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
             : null;
-        return el("tr", null,
+        const cells = [
             el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp, title: dispTitle })),
             el("td", null, statusBadge(e.status)),
             el("td", { class: "wh-event", text: e.method }),
-            el("td", { class: "wh-repo", text: e.path }),
-            // Resolved name when known (full key in the tooltip); bare key otherwise.
-            el("td", { class: "wh-detail", text: e.actor_name || e.actor || "", title: e.actor_name ? e.actor : null }),
-            el("td", { class: "wh-when", text: fmtTime(e.at) }),
-        );
+            el("td", { class: "wh-path", text: e.path }),
+            // Resolved name when known (full key in the detail); bare key otherwise.
+            el("td", { class: "wh-caller", text: e.actor_name || e.actor || "" }),
+        ];
+        // The row is dense and its cells ellipsize; everything cut off — the
+        // full path, the principal key, the exact time the "When" column used
+        // to show — lives one click away in the detail panel.
+        return collapsibleRow("requests", requestRowKey(e, i), cells, () => detailPairs([
+            ["Path", e.path],
+            ["Method", e.method],
+            ["Result", disp],
+            ["Upstream", e.status ? String(e.status) : "— (no upstream call)"],
+            ["Why", e.reason ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "") : null],
+            ["Caller", e.actor_name ? e.actor_name + "  (" + e.actor + ")" : e.actor],
+            ["When", fmtAbsolute(e.at) + " · " + fmtTime(e.at)],
+        ]));
     });
-    return el("table", { class: "webhooks" },
+    // No "When" column: the ring is the LIVE tail of traffic, so on any busy
+    // mirror every row reads "just now" — a whole column of noise. The exact
+    // timestamp is in each row's detail panel, where it is worth reading.
+    return el("table", { class: "webhooks rows-collapsible cols-requests" },
         el("thead", null, el("tr", null,
             el("th", { text: "Result" }),
             el("th", { text: "Upstream" }),
             el("th", { text: "Method" }),
             el("th", { text: "Path" }),
             el("th", { text: "Caller" }),
-            el("th", { text: "When" }),
         )),
         el("tbody", null, rows),
     );
