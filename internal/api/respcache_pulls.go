@@ -154,12 +154,12 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	shape, ok := parsePullsListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
@@ -283,7 +283,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
 	if err != nil || number <= 0 || r.URL.RawQuery != "" {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, err == nil && number > 0))
 		return
 	}
 	if !acceptsDefaultJSON(r) {
@@ -293,7 +293,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 			h.cachedPullDiff(w, r, owner, repo, number, numStr)
 			return
 		}
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 

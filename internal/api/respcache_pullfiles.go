@@ -104,12 +104,12 @@ func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
 	if err != nil || number <= 0 || !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, err == nil && number > 0))
 		return
 	}
 	perPage, page, ok := parsePullFilesShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 

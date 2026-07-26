@@ -742,6 +742,50 @@ function topGroupsSection(groups: RequestGroup[], total: number): HTMLElement {
     ));
 }
 
+// PASSTHROUGH_REASONS documents the server's closed reason vocabulary
+// (requestlog.go): the label shown in the "Why" column and the tooltip
+// explaining what it means for caching. A high-volume uncached route is only a
+// caching CANDIDATE for some of these — "unrouted" means nothing models the
+// path yet, while "unmodeled-query" on a filter that changes which resources
+// the body describes is the model working as designed. An unknown reason from
+// a newer server renders verbatim rather than vanishing.
+const PASSTHROUGH_REASONS: Readonly<Record<string, string>> = {
+    "unmodeled-query": "query parameters this route does not model — check the param names",
+    "unmodeled-accept": "a non-default Accept media type (raw/html/diff/patch)",
+    "unmodeled-path": "a path segment outside the model (short sha, non-numeric id, cross-fork compare)",
+    "unrouted": "no cached route claims this path — a caching candidate",
+    "unrouted-method": "the path is cached, but not for this method",
+    "unverified-identity": "an App-JWT route whose bearer did not verify — not ours to cache",
+    "unmodeled-response": "the request was modeled but the response was not (cost an upstream call)",
+    "graphql-forward": "a GraphQL query other than the locked org-repos one",
+};
+
+// reasonCell renders a group's passthrough reasons, biggest first, plus the
+// sampled query-parameter names when the reason is about the query — the
+// difference between "this route is 82% uncached" and knowing WHICH shape did
+// it, without reading the source of the calling service.
+function reasonCell(g: RequestGroup): HTMLElement {
+    const cell = el("td", { class: "grp-breakdown" });
+    const reasons = Object.entries(g.by_reason || {}).filter(([, n]) => n > 0)
+        .sort((a, b) => b[1] - a[1]);
+    for (const [reason, n] of reasons) {
+        cell.appendChild(el("span", {
+            class: "disp reason",
+            title: PASSTHROUGH_REASONS[reason] || "",
+            text: reason + " " + n,
+        }));
+    }
+    if (g.pass_query) {
+        cell.appendChild(el("span", {
+            class: "disp qshape",
+            title: "query parameter names on a recent passthrough (values are never recorded)",
+            text: "?" + g.pass_query,
+        }));
+    }
+    if (!cell.hasChildNodes()) cell.textContent = "—";
+    return cell;
+}
+
 // uncachedGroupsSection: the groups with passthrough traffic — reads the
 // cache did not handle, ranked by passthrough count. Write-only groups never
 // appear (a mutation is proxied by design, not a caching gap; the
@@ -754,15 +798,17 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
         groupRouteCell(g),
         el("td", { class: "num", text: g.passthrough + pctLabel(g.passthrough, passthroughTotal) }),
         el("td", { class: "num", text: String(g.total) }),
+        reasonCell(g),
         groupBreakdown(g, "passthrough"),
     ));
     return groupSection("Top uncached requests",
-        "These reads forward to GitHub uncached — the top caching candidates.",
+        "These reads forward to GitHub uncached. \"Why\" separates real caching candidates from shapes the cache deliberately refuses — hover a reason for what it means.",
         el("table", { class: "webhooks" },
             el("thead", null, el("tr", null,
                 el("th", { text: "Route" }),
                 el("th", { class: "num", text: "Passthrough" }),
                 el("th", { class: "num", text: "Total" }),
+                el("th", { text: "Why" }),
                 el("th", { text: "Other" }),
             )),
             el("tbody", null, rows),
@@ -803,8 +849,14 @@ function requestLegend(): HTMLElement {
 function requestTable(events: RequestEvent[]): HTMLElement {
     const rows = events.map((e) => {
         const disp = e.disposition || "passthrough";
+        // A passthrough's reason rides on the disposition chip's tooltip: the
+        // flat history is dense, and the per-route "Why" column above already
+        // carries the aggregate story.
+        const dispTitle = e.reason
+            ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
+            : null;
         return el("tr", null,
-            el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })),
+            el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp, title: dispTitle })),
             el("td", null, statusBadge(e.status)),
             el("td", { class: "wh-event", text: e.method }),
             el("td", { class: "wh-repo", text: e.path }),
