@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -56,10 +58,17 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 	// Only the org-repos query shape is served from cache (it names an org and
 	// asks for repositories). Forward anything else straight to GitHub, uncached,
-	// restoring the body we consumed above.
+	// restoring the body we consumed above. A forwarded MUTATION is recorded as
+	// a write (it was proxied because it mutates, not because caching failed);
+	// a forwarded query keeps the passthrough label.
 	if orgLogin == "" || !strings.Contains(req.Query, "repositories") {
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
+		if strings.HasPrefix(strings.TrimSpace(req.Query), "mutation") {
+			r = r.WithContext(withDispositionHint(r.Context(), DispWrite))
+		} else {
+			r = r.WithContext(withDispositionHint(r.Context(), DispPassthrough))
+		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
@@ -68,7 +77,8 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	// (served fresh) or a miss (triggered a fetch) for the dashboard.
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
-		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", ensureErr)
+		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
+			"org", orgLogin, "actor", actor.Short(actor.FromContext(ctx)), "error", ensureErr, principalNameAttr(ctx))
 	}
 	disp := DispHit
 	switch {
@@ -77,10 +87,14 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	case outcome == freshness.OutcomeMiss:
 		disp = DispMiss
 	}
-	h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, disp)
+	h.reqlog.observe(r, disp)
 
-	// Read repos from store.
-	repos, err := h.store.ListReposByOwner(ctx, orgLogin)
+	// Read repos from GLOBAL truth, filtered to what the reveal layer permits
+	// this caller: public repos plus the caller's granted repos. The grant set
+	// was replace-synced by the caller's own fetch (this request's, or an
+	// earlier one within the marker TTL), so the filtered view tracks what
+	// GitHub itself answers this principal -- never the whole truth store.
+	repos, err := h.store.ListVisibleReposByOwner(ctx, orgLogin, actor.FromContext(ctx), time.Now())
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -103,6 +117,16 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			}},
 		})
 		return
+	}
+
+	// Serving stale-on-error: flag it in response HEADERS so clients can tell
+	// (and see how old the data is). Headers only — the body must stay
+	// byte-identical to GitHub's shape (the identity-test contract).
+	if ensureErr != nil {
+		w.Header().Set("X-GSM-Stale", "true")
+		if meta, merr := h.mgr.Metadata(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin}); merr == nil && meta != nil && meta.LastFetchedAt != nil {
+			w.Header().Set("X-GSM-Last-Fetched", meta.LastFetchedAt.UTC().Format(time.RFC3339))
+		}
 	}
 
 	// Build response matching GraphQL shape.

@@ -3,8 +3,8 @@
 -- ============================================================================
 
 -- name: InsertWebhookDelivery :exec
-INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail, actors)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListRecentWebhookDeliveries :many
 SELECT * FROM webhook_deliveries
