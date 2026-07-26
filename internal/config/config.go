@@ -19,6 +19,15 @@ const defaultCacheMaxRows int64 = 1_000_000
 // REFRESH_INTERVAL).
 const defaultRefreshInterval = 6 * time.Hour
 
+// defaultPassthroughDebounce / maxPassthroughDebounce bound the uncacheable-read
+// coalescing window (see PASSTHROUGH_DEBOUNCE). The max must stay in step with
+// internal/api's DebounceMaxWindow, which TestDebounceWindowBoundMatchesAPI
+// pins.
+const (
+	defaultPassthroughDebounce = 5 * time.Second
+	maxPassthroughDebounce     = 30 * time.Second
+)
+
 type Config struct {
 	ListenAddr    string
 	DBPath        string
@@ -31,6 +40,14 @@ type Config struct {
 	SubscriptionsDBPath string
 	AllowedOrigins      []string
 	RefreshInterval     time.Duration
+
+	// PassthroughDebounce is how long an eligible uncacheable (passthrough) READ
+	// is held so identical concurrent requests can share one upstream call
+	// (internal/api/debounce.go). 0 disables coalescing and forwards
+	// immediately. The delay is deliberate on both counts: it collapses the
+	// fleet-sweep polling of unmodelable endpoints into one call per window,
+	// and it prices an uncacheable read into the caller's own latency.
+	PassthroughDebounce time.Duration
 
 	// CacheMaxRows is the per-table row ceiling for the response caches
 	// (cmd/server applies it to ghdata.CacheMaxRows at startup). One knob for
@@ -68,6 +85,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	debounce, err := parsePassthroughDebounce(os.Getenv("PASSTHROUGH_DEBOUNCE"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
 		DBPath:              envOr("DB_PATH", "github-mirror.db"),
@@ -75,6 +96,7 @@ func Load() (Config, error) {
 		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
 		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
 		RefreshInterval:     refreshInterval,
+		PassthroughDebounce: debounce,
 		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
@@ -123,6 +145,29 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: must be positive", s)
+	}
+	return d, nil
+}
+
+// parsePassthroughDebounce parses the PASSTHROUGH_DEBOUNCE override for the
+// uncacheable-read coalescing window. Absent/empty keeps the default; an explicit
+// 0 disables coalescing (reads forward immediately). Unparseable, negative, or
+// implausibly long values are errors the server refuses to start on — the
+// window adds latency to every uncacheable read, so a fat-fingered "5m" must fail
+// loudly at boot instead of wedging the API.
+func parsePassthroughDebounce(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultPassthroughDebounce, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: must not be negative (0 disables)", s)
+	}
+	if d > maxPassthroughDebounce {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: must be <= %s", s, maxPassthroughDebounce)
 	}
 	return d, nil
 }

@@ -69,6 +69,14 @@ header; requests the route cannot model (a non-default `Accept` such as
 `application/vnd.github.raw`, unknown query params, an unexpected body shape)
 pass through verbatim, uncached.
 
+Uncacheable reads are also **debounced**: an eligible passthrough `GET` is held
+for up to `PASSTHROUGH_DEBOUNCE` (default 5s), and every identical request
+arriving in that window shares the one upstream call the batch makes. Batches
+are keyed by the caller's own credential, so a response is never shared across
+tokens. The wait is deliberate — it makes an unmodelable read cost the caller
+latency instead of costing GitHub a round trip per poll (`X-GSM-Debounce`
+reports the hold).
+
 - `GET /repos/{owner}/{repo}/contents/{path}` (incl. `?ref=`) — a `200` file
   (`{type, encoding, size, name, path, content, sha}`), a `200` directory
   listing (entries as `{type, size, name, path, sha}`), **and a `404`**
@@ -398,6 +406,7 @@ The service has **no static service token**. API requests authenticate with the 
 | `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's SchemaVersion nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because the cache reveals data per the caller's proven GitHub access, not origin. |
 | `CACHE_MAX_ROWS` | No | `1000000` | Per-table row ceiling for the response caches (LRU rows beyond it are pruned on every write). One knob for every cache table: all but `git_commits_cache` are TTL-bounded (~24 h backstop or token expiry), so for them the cap is only a runaway safety net; `git_commits_cache` (immutable rows, no TTL) is the one table that actually grows to the ceiling. A value that is unparseable or < 1 fails startup. |
+| `PASSTHROUGH_DEBOUNCE` | No | `5s` | How long an uncacheable (passthrough) read is held so identical concurrent requests share one upstream call. `0` forwards immediately. Deliberately makes uncacheable endpoints slow — the delay is the disincentive. Unparseable, negative, or > 30s fails startup. |
 | `REFRESH_INTERVAL` | No | `6h` | Periodic fleet-refresh cadence (a Go duration string, e.g. `30m`). The first cycle always runs immediately at startup regardless of the interval. A value that is unparseable or not positive fails startup. |
 | `GITHUB_OAUTH_CLIENT_ID` | For dashboard login | — | GitHub OAuth App client ID. Register the app's callback URL as `<BASE_URL>/auth/callback`. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | For dashboard login | — | GitHub OAuth App client secret. |

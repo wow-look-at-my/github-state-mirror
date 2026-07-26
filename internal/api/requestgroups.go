@@ -49,7 +49,15 @@ type routeGroup struct {
 	// its passthroughs looked like — "status,per_page" names the offending
 	// filter outright.
 	passQuery string
-	lastSeen  time.Time
+	// debounced / upstreamSaved measure passthrough coalescing (debounce.go).
+	// TWO counters on purpose: debounced counts inbound requests that were
+	// HELD for the window, upstreamSaved the GitHub calls that never happened
+	// because a batch had more than one member. A route with debounced high
+	// and upstreamSaved at zero is paying the latency and buying nothing —
+	// polls too far apart to coalesce — which one merged counter would hide.
+	debounced     int64
+	upstreamSaved int64
+	lastSeen      time.Time
 }
 
 // requestGroupSnapshot is one group in the /api/requests payload.
@@ -69,8 +77,37 @@ type requestGroupSnapshot struct {
 	// PassQuery is one recent passthrough's query-parameter NAMES (values are
 	// never recorded). Omitted when absent.
 	PassQuery string `json:"pass_query,omitempty"`
-	Sample    string `json:"sample"`
-	LastSeen  string `json:"last_seen"` // RFC3339
+	// Debounced / UpstreamSaved: requests held by the passthrough debouncer,
+	// and the GitHub calls that coalescing avoided. Omitted when unused.
+	Debounced     int64  `json:"debounced,omitempty"`
+	UpstreamSaved int64  `json:"upstream_saved,omitempty"`
+	Sample        string `json:"sample"`
+	LastSeen      string `json:"last_seen"` // RFC3339
+}
+
+// addDebounced records passthrough coalescing against a route group. Called
+// from the debouncer, which sees requests BEFORE the recording wrapper does,
+// so it may open a group the request log has not counted yet; the group's
+// disposition counters stay untouched here and are filled in as usual when the
+// request is recorded. Nil-receiver-safe (a router built without a request
+// log, as some tests do).
+func (l *requestLog) addDebounced(method, route string, served, saved int64) {
+	if l == nil || (served == 0 && saved == 0) {
+		return
+	}
+	key := method + " " + route
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	g := l.groups[key]
+	if g == nil {
+		if len(l.groups) >= requestGroupsCap {
+			return
+		}
+		g = &routeGroup{method: method, route: route, byDisp: make(map[string]int64, 4)}
+		l.groups[key] = g
+	}
+	g.debounced += served
+	g.upstreamSaved += saved
 }
 
 // bumpGroupLocked records one request into its group. reason/queryShape are
@@ -135,19 +172,21 @@ func (l *requestLog) groupSnapshotsLocked(max int) []requestGroupSnapshot {
 			}
 		}
 		gs = append(gs, requestGroupSnapshot{
-			Key:         key,
-			Method:      g.method,
-			Route:       g.route,
-			Total:       g.total,
-			Hit:         g.byDisp[DispHit],
-			Miss:        g.byDisp[DispMiss],
-			Passthrough: g.byDisp[DispPassthrough],
-			Write:       g.byDisp[DispWrite],
-			Error:       g.byDisp[DispError],
-			ByReason:    byReason,
-			PassQuery:   g.passQuery,
-			Sample:      g.sample,
-			LastSeen:    g.lastSeen.Format(time.RFC3339),
+			Key:           key,
+			Method:        g.method,
+			Route:         g.route,
+			Total:         g.total,
+			Hit:           g.byDisp[DispHit],
+			Miss:          g.byDisp[DispMiss],
+			Passthrough:   g.byDisp[DispPassthrough],
+			Write:         g.byDisp[DispWrite],
+			Error:         g.byDisp[DispError],
+			ByReason:      byReason,
+			PassQuery:     g.passQuery,
+			Debounced:     g.debounced,
+			UpstreamSaved: g.upstreamSaved,
+			Sample:        g.sample,
+			LastSeen:      g.lastSeen.Format(time.RFC3339),
 		})
 	}
 	sort.Slice(gs, func(i, j int) bool {
