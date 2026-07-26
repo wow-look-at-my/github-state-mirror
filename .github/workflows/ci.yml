@@ -10,9 +10,6 @@ permissions:
   contents: write
   actions: read
   checks: read
-  # buildhost-publish-site records the archive it uploaded on the org's
-  # linked artifacts page; that recording is part of publishing, not
-  # optional, so the preview job's publish fails without this.
   artifact-metadata: write
   # Required by the publish-ghcr reusable workflow to push the image to GHCR.
   # A reusable workflow cannot exceed the caller's permissions, so it must be
