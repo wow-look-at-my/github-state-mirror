@@ -66,6 +66,17 @@ func upstreamPR(num int64, state, title, headRef, headSHA, createdAt string) map
 	}
 }
 
+// upstreamSinglePR is upstreamPR plus the fields ONLY GitHub's single-PR
+// response carries -- the diff stats. The list fixture deliberately stays
+// without them, exactly like GitHub's list.
+func upstreamSinglePR(num int64, state, title, headRef, headSHA, createdAt string) map[string]any {
+	pr := upstreamPR(num, state, title, headRef, headSHA, createdAt)
+	pr["additions"] = 12
+	pr["deletions"] = 3
+	pr["changed_files"] = 2
+	return pr
+}
+
 // withLabel attaches a GitHub-shaped label object to an upstreamPR map.
 func withLabel(pr map[string]any, name, color string) map[string]any {
 	pr["labels"] = append(pr["labels"].([]any), map[string]any{
@@ -126,7 +137,7 @@ func newPullsCacheUpstream() *pullsCacheUpstream {
 		})
 	}
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = true
 		pr["mergeable_state"] = "clean"
 		pr["merged"] = false
