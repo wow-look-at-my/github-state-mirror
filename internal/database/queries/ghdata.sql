@@ -76,6 +76,52 @@ UPDATE repos SET is_archived = ? WHERE owner = ? AND name = ?;
 -- value); the explicit reset/set queries below express "GitHub is recomputing"
 -- and "a direct read said so". additions/deletions COALESCE because the REST
 -- LIST shape omits them (a NULL there means "not carried", never "zero").
+--
+-- The merge-field STALE GUARD (merge_stale_sha/merge_stale_at, stamped by
+-- NullPRMergeableByBranch when a push un-resolves the row): a base/head tip
+-- change ALWAYS changes the sha of a SUCCESSFUL test merge, so a
+-- REST/webhook-shaped source (node_id present) re-offering the exact
+-- invalidated sha is presumed a pre-push answer -- GitHub's recompute lag --
+-- and must not re-resolve the row: mergeable and merge_commit_sha store NULL
+-- instead, the marker stays, and the single-PR route keeps missing (each
+-- miss re-triggers the recompute) until a NEW sha arrives, which clears the
+-- marker. TWO exemptions overrule the presumption. (1) The push-tip PROOF
+-- (merge_stale_ref/merge_stale_after: the pushed branch and its post-push
+-- tip): a source whose reported tip for that branch (excluded.base_ref_oid /
+-- excluded.head_ref_oid, matched by ref name) equals the push's after sha
+-- provably post-dates the push, so its answer is NOT pre-push -- it is
+-- accepted, and the marker cleared, even when it re-offers the remembered
+-- sha. That heals the wrong-mark race (a fresh post-push answer absorbed
+-- BEFORE the late push delivery landed, which then stamped the fresh sha
+-- stale) on the very next fetch. (2) The DIRTY-RETAINED exemption: a
+-- conflicted PR gets NO new test merge -- GitHub retains the last-good sha
+-- and re-offers it with mergeable:false (base.sha frozen at the last clean
+-- evaluation, so the tip proof cannot fire) -- so a CONFLICTING same-sha
+-- source is accepted once the marker is at least 30 seconds old
+-- (merge_stale_at at or before touched_at minus 30 seconds -- keep in sync
+-- with ghdata.MergeStaleConflictingWindow; the window covers read-replica
+-- lag, the only other way a CONFLICTING answer re-offers the marked sha).
+-- The COALESCE(excluded.mergeable, '') in that exemption is load-bearing
+-- three-valued-logic hygiene: a bare NULL = 'CONFLICTING' is NULL, and
+-- NOT (NULL AND <old marker>) is NULL -- which would poison the WHOLE
+-- rejection predicate to NULL (falsy) and let a NULL-mergeable same-sha
+-- source (the pulls-LIST absorb) store the stale sha and clear the marker;
+-- coalesced, the exemption is definitely FALSE for unresolved sources and
+-- the rejection stands. The marker also only rejects within its window
+-- (merge_stale_at newer than touched_at minus 1 hour -- keep in sync with
+-- ghdata.MergeStaleTTL): past it, a re-offered sha is accepted and the
+-- marker cleared -- the OUTER backstop for a wrong mark whose answers never
+-- demonstrate the tip (no usable push after, or GitHub's reported tip
+-- lagging). Proof, dirty-retained exemption, or expiry, "not stale" means
+-- the same thing everywhere below: the value is accepted and ALL FOUR
+-- marker columns clear together.
+-- A GraphQL-shaped source (node_id NULL) carries no
+-- sha to vouch for its answer, so it may not set mergeable on a
+-- REST-complete row whose stored sha is NULL or the invalidated one -- the
+-- sync re-arm leak: resolved-looking rows with a null/stale test-merge sha.
+-- (Pure GraphQL rows -- existing node_id NULL -- keep the plain COALESCE:
+-- the /graphql tier serves their mergeable and they can never satisfy the
+-- REST route's rest-complete gate.)
 -- name: UpsertPullRequest :exec
 INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -88,7 +134,25 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
     updated_at = excluded.updated_at,
     additions = COALESCE(excluded.additions, pull_requests.additions),
     deletions = COALESCE(excluded.deletions, pull_requests.deletions),
-    mergeable = COALESCE(excluded.mergeable, pull_requests.mergeable),
+    mergeable = CASE
+        WHEN excluded.node_id IS NOT NULL
+             AND excluded.merge_commit_sha IS NOT NULL
+             AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
+             AND pull_requests.merge_stale_at IS NOT NULL
+             AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
+            THEN NULL
+        WHEN excluded.node_id IS NULL
+             AND pull_requests.node_id IS NOT NULL
+             AND (pull_requests.merge_commit_sha IS NULL
+                  OR pull_requests.merge_commit_sha = pull_requests.merge_stale_sha)
+            THEN pull_requests.mergeable
+        ELSE COALESCE(excluded.mergeable, pull_requests.mergeable)
+    END,
     author_login = COALESCE(excluded.author_login, pull_requests.author_login),
     author_avatar = COALESCE(excluded.author_avatar, pull_requests.author_avatar),
     author_url = COALESCE(excluded.author_url, pull_requests.author_url),
@@ -103,7 +167,72 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
     base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
     head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
     auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
-    merge_commit_sha = CASE WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha ELSE excluded.merge_commit_sha END,
+    merge_commit_sha = CASE
+        WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha
+        WHEN excluded.merge_commit_sha IS NOT NULL
+             AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
+             AND pull_requests.merge_stale_at IS NOT NULL
+             AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
+            THEN NULL
+        ELSE excluded.merge_commit_sha
+    END,
+    merge_stale_sha = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_sha
+    END,
+    merge_stale_at = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_at
+    END,
+    merge_stale_ref = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_ref
+    END,
+    merge_stale_after = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_after
+    END,
     touched_at = excluded.touched_at;
 
 -- SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
@@ -118,11 +247,62 @@ WHERE owner = ? AND repo = ? AND number = ?;
 -- NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
 -- every open PR whose base or head is the pushed branch: GitHub recomputes
 -- mergeability after either side moves (and emits NO webhook with the result),
--- so the last-known value is stale the moment the push lands.
+-- so the last-known value is stale the moment the push lands. The nulled sha
+-- is REMEMBERED (merge_stale_sha, stamped merge_stale_at): the pushed branch
+-- provably moved, so GitHub re-offering that exact sha is a pre-push answer --
+-- UpsertPullRequest's stale guard refuses to re-resolve from it. The marker
+-- also records the PUSH-TIP PROOF (merge_stale_ref/merge_stale_after: the
+-- pushed branch and its after tip; NULL when the caller had no usable after),
+-- ALWAYS overwritten with the latest push's values -- an answer must reflect
+-- the NEWEST push to be provably post-push. A second push before
+-- re-resolution keeps the remembered sha (merge_commit_sha is already NULL)
+-- and re-stamps the window (and the proof).
 -- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(sqlc.arg(stale_at) AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(sqlc.narg(stale_ref) AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(sqlc.narg(stale_after) AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo) AND state = 'OPEN'
+  AND (base_ref_name = sqlc.arg(base_ref_name) OR head_ref_name = sqlc.arg(head_ref_name));
+
+-- NullPRMergeableForPR is the per-PR analog of NullPRMergeableByBranch, for
+-- tip moves reported by the PR's OWN webhook (synchronize / base retarget):
+-- a fork head emits no push webhook, so the per-branch un-resolve never runs
+-- for it, and the pull_request payload -- which carries RETAINED pre-move
+-- merge fields alongside the new tip -- is the only signal the tip changed.
+-- Same marker semantics: the invalidated sha is remembered with the moved
+-- ref and its new tip as the proof, so the upsert guard's exemptions apply
+-- to this marker exactly as to a push-stamped one.
+-- name: NullPRMergeableForPR :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(sqlc.arg(stale_at) AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(sqlc.narg(stale_ref) AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(sqlc.narg(stale_after) AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND number = sqlc.arg(number) AND state = 'OPEN';
+
+-- NullPRMergeableByRepo is the unparseable-push fallback: the payload proved a
+-- push happened but not WHICH ref moved, so conservatively un-resolve merge
+-- fields on every open PR (a wrongly-nulled row just re-fetches; a
+-- wrongly-kept one can serve a frozen pre-push answer). It deliberately does
+-- NOT stamp merge_stale_sha: the stale-by-definition invariant holds only for
+-- a branch that provably moved -- an unmoved PR's re-offered sha is VALID, and
+-- marking it stale would wedge that row into missing for the whole window.
+-- name: NullPRMergeableByRepo :exec
 UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
-WHERE owner = ? AND repo = ? AND state = 'OPEN'
-  AND (base_ref_name = ? OR head_ref_name = ?);
+WHERE owner = ? AND repo = ? AND state = 'OPEN';
 
 -- SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
 -- directly fetched answer, INCLUDING null (not armed) -- the SetPRMergeable

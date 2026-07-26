@@ -5,16 +5,39 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
+// defaultCacheMaxRows is the default per-table row ceiling for the response
+// caches (applied to ghdata.CacheMaxRows at startup). Pinned equal to that
+// var's own initializer by TestCacheMaxRowsDefaultMatchesGhdata.
+const defaultCacheMaxRows int64 = 1_000_000
+
+// defaultRefreshInterval is the default periodic fleet-refresh cadence (see
+// REFRESH_INTERVAL).
+const defaultRefreshInterval = 6 * time.Hour
+
 type Config struct {
-	ListenAddr      string
-	DBPath          string
-	WebhookSecret   string
-	AllowedOrigins  []string
-	RefreshInterval time.Duration
+	ListenAddr    string
+	DBPath        string
+	WebhookSecret string
+	// SubscriptionsDBPath is the subscriber-notification config DB — a
+	// SEPARATE SQLite file that survives the cache DB's SchemaVersion nukes.
+	// Empty = derive from DBPath (github-mirror.db ->
+	// github-mirror-subscriptions.db; notify.DeriveDBPath, applied in
+	// cmd/server).
+	SubscriptionsDBPath string
+	AllowedOrigins      []string
+	RefreshInterval     time.Duration
+
+	// CacheMaxRows is the per-table row ceiling for the response caches
+	// (cmd/server applies it to ghdata.CacheMaxRows at startup). One knob for
+	// every cache table: all but git_commits_cache are TTL-bounded, so for
+	// them the cap is only a runaway safety net; git_commits_cache (immutable
+	// rows, no TTL) is the one table that actually grows to the ceiling.
+	CacheMaxRows int64
 
 	// GitHub App credentials for background (periodic) refreshes. The service
 	// holds no static user token: API requests are authenticated by the
@@ -32,13 +55,27 @@ type Config struct {
 	BaseURL           string          // public base URL (for OAuth redirect_uri); derived from request if empty
 }
 
-func Load() Config {
+// Load reads the configuration from the environment. It returns an error only
+// for a value that is present but invalid (a loud misconfiguration the server
+// must refuse to start on) -- an absent optional value always falls back to
+// its default.
+func Load() (Config, error) {
+	cacheMaxRows, err := parseCacheMaxRows(os.Getenv("CACHE_MAX_ROWS"))
+	if err != nil {
+		return Config{}, err
+	}
+	refreshInterval, err := parseRefreshInterval(os.Getenv("REFRESH_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
-		ListenAddr:      envOr("LISTEN_ADDR", ":8080"),
-		DBPath:          envOr("DB_PATH", "github-mirror.db"),
-		WebhookSecret:   os.Getenv("WEBHOOK_SECRET"),
-		AllowedOrigins:  parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval: 6 * time.Hour,
+		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
+		DBPath:              envOr("DB_PATH", "github-mirror.db"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
+		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RefreshInterval:     refreshInterval,
+		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),
@@ -50,7 +87,44 @@ func Load() Config {
 		AdminLogins:       parseAdmins(envOr("ADMIN_LOGINS", "PazerOP")),
 		BaseURL:           os.Getenv("BASE_URL"),
 	}
-	return c
+	return c, nil
+}
+
+// parseCacheMaxRows parses the CACHE_MAX_ROWS override for the response-cache
+// row ceiling. Absent/empty keeps the default; a value that is unparseable or
+// < 1 is an error (the server refuses to start) rather than a silent fallback
+// that would leave the operator running with a cap they didn't set.
+func parseCacheMaxRows(s string) (int64, error) {
+	if s == "" {
+		return defaultCacheMaxRows, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid CACHE_MAX_ROWS %q: %w", s, err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("invalid CACHE_MAX_ROWS %d: must be >= 1", n)
+	}
+	return n, nil
+}
+
+// parseRefreshInterval parses the REFRESH_INTERVAL override for the periodic
+// fleet-refresh cadence (a Go duration string, e.g. "6h" or "30m").
+// Absent/empty keeps the default; a value that is unparseable or not positive
+// is an error (the server refuses to start) rather than a silent fallback
+// that would leave the operator running with a cadence they didn't set.
+func parseRefreshInterval(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultRefreshInterval, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: %w", s, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: must be positive", s)
+	}
+	return d, nil
 }
 
 // GitHubAppConfigured reports whether a GitHub App ID was provided. The private

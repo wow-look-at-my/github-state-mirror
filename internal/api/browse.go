@@ -209,6 +209,9 @@ func (d *dashboard) collectBrowse(ctx context.Context) (browseResponse, error) {
 // auto_merge_method / the commit-check rollup from GitHub's answers) and the
 // response carries an "applied" tally. A GET is always strictly read-only --
 // apply on a GET is rejected so a prefetched/bookmarked URL can never write.
+//
+// With ?stream=1 (on either mode) the response is live NDJSON progress
+// instead of one buffered report -- see checkstream.go.
 func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -223,6 +226,9 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if d.checker == nil || !d.checker.Available() {
 		http.Error(w, "consistency check unavailable: this server has no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)", http.StatusServiceUnavailable)
 		return
+	}
+	if q.Get("stream") == "1" && d.streamCacheCheck(w, r, org, apply) {
+		return // streamed (a non-Flusher writer falls through to the buffered path)
 	}
 
 	run := d.checker.Check
@@ -241,7 +247,10 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 // observedRateLimit is one passively observed X-RateLimit-* reading (the
 // ratemeter store), flattened for JSON.
 type observedRateLimit struct {
-	Identity   string `json:"identity"`
+	Identity string `json:"identity"`
+	// Name is the identity's verified display name (user login / app slug /
+	// installation account login) when one was observed; display-only.
+	Name       string `json:"name,omitempty"`
 	Resource   string `json:"resource"`
 	Limit      int    `json:"limit"`
 	Remaining  int    `json:"remaining"`
@@ -282,6 +291,7 @@ func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	for _, o := range d.meter.Snapshot() {
 		resp.Observed = append(resp.Observed, observedRateLimit{
 			Identity:   o.Identity,
+			Name:       o.Name,
 			Resource:   o.Resource,
 			Limit:      o.Limit,
 			Remaining:  o.Remaining,
@@ -328,6 +338,20 @@ func (d *dashboard) loginForActor(ctx context.Context, principal string) string 
 		}
 	}
 	return ""
+}
+
+// actorNames returns the recorded principal->display-name map, or an empty
+// map when the lookup fails — callers then simply render no names.
+func (d *dashboard) actorNames(ctx context.Context) map[string]string {
+	names := make(map[string]string)
+	identities, err := d.store.ListActorIdentities(ctx)
+	if err != nil {
+		return names
+	}
+	for _, id := range identities {
+		names[id.Actor] = id.Login
+	}
+	return names
 }
 
 // ---- conversion helpers ----

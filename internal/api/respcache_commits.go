@@ -149,7 +149,7 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("commits list absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveCommitsList(w, r, commits, false)
 }
 
@@ -167,7 +167,7 @@ func (h *handlers) serveCommitsList(w http.ResponseWriter, r *http.Request, comm
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }

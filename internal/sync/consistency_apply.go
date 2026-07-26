@@ -202,6 +202,11 @@ func fixHint(d Discrepancy) string {
 		return "apply mode absorbs it; any webhook or mirrored list read for the repo also does"
 	case "visibility_leak", "visibility_unknown":
 		return "apply mode sets visibility from GitHub's answer"
+	case "raced_during_check":
+		if d.Kind == "pr" {
+			return "the PR's head moved while the check ran; re-run to confirm"
+		}
+		return "repo was pushed while the check ran; re-run to confirm"
 	case "field_mismatch":
 		switch d.Field {
 		case "last_commit_status":
