@@ -132,7 +132,7 @@ func main() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
-	// Passthrough debouncer: holds eligible uncached READS briefly so identical
+	// Passthrough debouncer: holds eligible uncacheable READS briefly so identical
 	// concurrent polls share one upstream call. Built here (not inside the
 	// router) because shutdown has to Drain it. A window of 0 returns nil,
 	// which the router treats as "no coalescing".
@@ -140,7 +140,7 @@ func main() {
 	if w := debouncer.Window(); w > 0 {
 		slog.Info("passthrough debouncing enabled", "window", w)
 	} else {
-		slog.Info("passthrough debouncing disabled; uncached reads forward immediately")
+		slog.Info("passthrough debouncing disabled; uncacheable reads forward immediately")
 	}
 
 	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);

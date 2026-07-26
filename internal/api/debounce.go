@@ -18,7 +18,7 @@ import (
 // Passthrough DEBOUNCING — request coalescing for the reads the cache
 // deliberately cannot model (operator directive, 2026-07-26).
 //
-// The uncached routes are uncached for good reasons (see the passthrough
+// These routes are UNCACHEABLE, and for good reasons (see the passthrough
 // reason vocabulary in requestlog.go): a filter like ?status=queued describes
 // a set that churns with every run in the repo, so no snapshot of it is
 // honest. But the callers poll them in tight fleet-wide sweeps, and N
@@ -32,7 +32,7 @@ import (
 // both are intended:
 //
 //  1. Upstream volume collapses to at most one call per (request, window).
-//  2. Uncached endpoints become visibly SLOW. That is a feature, not a
+//  2. Uncacheable endpoints become visibly SLOW. That is a feature, not a
 //     regression — it prices the cost of an unmodelable read into the caller's
 //     own latency and pushes consumers toward the cached shapes. The
 //     X-GSM-Debounce headers make the charge legible rather than mysterious.
@@ -75,7 +75,7 @@ const (
 
 	// debounceHeader reports how long this response was held (e.g. "4998ms"),
 	// and debounceBatchHeader how many requests shared it. Together they make
-	// the cost of an uncached read legible to the caller that paid it.
+	// the cost of an uncacheable read legible to the caller that paid it.
 	debounceHeader      = "X-GSM-Debounce"
 	debounceBatchHeader = "X-GSM-Debounce-Batch"
 )
@@ -83,7 +83,7 @@ const (
 // DebounceMaxWindow is the largest hold internal/config will accept for
 // PASSTHROUGH_DEBOUNCE. Exported so the config parser and this package cannot
 // drift apart on what counts as a plausible window (a fat-fingered "5m" would
-// wedge every uncached read for five minutes).
+// wedge every uncacheable read for five minutes).
 const DebounceMaxWindow = 30 * time.Second
 
 // Debouncer coalesces identical in-flight passthrough reads. The zero value is

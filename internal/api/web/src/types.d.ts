@@ -114,7 +114,7 @@ export interface RequestGroup {
     // pass_query: one recent passthrough's query-parameter NAMES, comma-
     // separated (values are never recorded). Absent when there were none.
     pass_query?: string;
-    // debounced: uncached reads the passthrough debouncer HELD for its window.
+    // debounced: uncacheable reads the passthrough debouncer HELD for its window.
     // upstream_saved: GitHub calls that never happened because a batch had
     // more than one member. Both absent when coalescing never applied.
     debounced?: number;

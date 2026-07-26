@@ -786,7 +786,7 @@ function reasonCell(g: RequestGroup): HTMLElement {
     return cell;
 }
 
-// debounceCell shows what coalescing did for a route: how many uncached reads
+// debounceCell shows what coalescing did for a route: how many uncacheable reads
 // were held for the debounce window, and how many GitHub calls that avoided.
 // Both are shown because they answer different questions — "held" is the
 // latency the callers paid, "saved" is what it bought. Held with nothing saved
@@ -801,7 +801,7 @@ function debounceCell(g: RequestGroup): HTMLElement {
     }
     cell.appendChild(el("span", {
         class: "disp held",
-        title: "uncached reads held for the debounce window before being forwarded",
+        title: "uncacheable reads held for the debounce window before being forwarded",
         text: "held " + held,
     }));
     cell.appendChild(el("span", {

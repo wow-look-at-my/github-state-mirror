@@ -19,9 +19,9 @@ const defaultCacheMaxRows int64 = 1_000_000
 // REFRESH_INTERVAL).
 const defaultRefreshInterval = 6 * time.Hour
 
-// defaultPassthroughDebounce / maxPassthroughDebounce bound the uncached-read
+// defaultPassthroughDebounce / maxPassthroughDebounce bound the uncacheable-read
 // coalescing window (see PASSTHROUGH_DEBOUNCE). The max must stay in step with
-// internal/api's debounceMaxWindow, which TestDebounceWindowBoundMatchesAPI
+// internal/api's DebounceMaxWindow, which TestDebounceWindowBoundMatchesAPI
 // pins.
 const (
 	defaultPassthroughDebounce = 5 * time.Second
@@ -41,7 +41,7 @@ type Config struct {
 	AllowedOrigins      []string
 	RefreshInterval     time.Duration
 
-	// PassthroughDebounce is how long an eligible uncached (passthrough) READ
+	// PassthroughDebounce is how long an eligible uncacheable (passthrough) READ
 	// is held so identical concurrent requests can share one upstream call
 	// (internal/api/debounce.go). 0 disables coalescing and forwards
 	// immediately. The delay is deliberate on both counts: it collapses the
@@ -150,10 +150,10 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 }
 
 // parsePassthroughDebounce parses the PASSTHROUGH_DEBOUNCE override for the
-// uncached-read coalescing window. Absent/empty keeps the default; an explicit
+// uncacheable-read coalescing window. Absent/empty keeps the default; an explicit
 // 0 disables coalescing (reads forward immediately). Unparseable, negative, or
 // implausibly long values are errors the server refuses to start on — the
-// window adds latency to every uncached read, so a fat-fingered "5m" must fail
+// window adds latency to every uncacheable read, so a fat-fingered "5m" must fail
 // loudly at boot instead of wedging the API.
 func parsePassthroughDebounce(s string) (time.Duration, error) {
 	if s == "" {

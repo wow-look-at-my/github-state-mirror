@@ -127,9 +127,9 @@ func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
 	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
 }
 
-// TestParsePassthroughDebounce covers the uncached-read coalescing window: the
+// TestParsePassthroughDebounce covers the uncacheable-read coalescing window: the
 // default when unset, an explicit 0 disabling the feature, and loud startup
-// failures for values that would silently wedge every uncached read.
+// failures for values that would silently wedge every uncacheable read.
 func TestParsePassthroughDebounce(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
