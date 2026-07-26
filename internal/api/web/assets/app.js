@@ -152,13 +152,18 @@ async function renderDashboard(me) {
     dashIsAdmin = me.is_admin;
     const main = byId("main");
     main.innerHTML = "";
+    // Row 1 is title + tabs, row 2 is the per-tab subtitle (`.sub` is full-width
+    // in CSS, so it always wraps onto its own line). The subtitle length varies
+    // wildly per tab; keeping it out of row 1 is what pins the tab bar in place
+    // instead of letting it slide around — or wrap — with the text beside it.
     const head = el("div", { class: "page-head" });
-    head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
+    head.appendChild(el("h1", { text: "Cache state" }));
     let tabs = null;
     if (me.is_admin) {
         tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
         head.appendChild(tabs);
     }
+    head.appendChild(el("div", { class: "sub", id: "scope-sub" }));
     main.appendChild(head);
     const body = el("div", { id: "scope-body" });
     body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
