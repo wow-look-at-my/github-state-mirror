@@ -734,8 +734,13 @@ function wideWrap(table: HTMLElement): HTMLElement {
     return el("div", { class: "table-wide" }, table);
 }
 
-function groupSection(title: string, caption: string | null, table: HTMLElement): HTMLElement {
-    return el("details", { class: "req-groups table-wide", open: true },
+// groupSection wraps a grouped table. `wide` opts into the page-margin bleed
+// (see .table-wide) and is deliberately NOT the default: stretching a table of
+// four narrow columns to the same width as a six-column one just spreads its
+// content across a screen's worth of empty space. Only a table that actually
+// runs out of room asks for it.
+function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {
+    return el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: true },
         el("summary", { text: title }),
         caption ? el("p", { class: "grp-caption", text: caption }) : null,
         table,
@@ -862,7 +867,8 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
                 el("th", { text: "Other" }),
             )),
             el("tbody", null, rows),
-        ));
+        ),
+        true); // six columns of chips — this is the table that needs the room
 }
 
 const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
@@ -897,7 +903,7 @@ const expandedRows: Record<string, Set<string>> = { requests: new Set(), webhook
 // the index disambiguates the genuinely identical polls a fleet sweep produces
 // within the same second.
 function requestRowKey(e: RequestEvent, i: number): string {
-    return [e.at, e.method, e.path, e.actor || "", String(i)].join(" ");
+    return [e.at, e.method, e.path, e.actor || "", String(i)].join("\u0000");
 }
 
 // collapsibleRow returns the visible row plus its (initially hidden) detail

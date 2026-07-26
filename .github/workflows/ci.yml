@@ -75,6 +75,47 @@ jobs:
               core.info("No generated JS is tracked — TypeScript is the only committed source.");
             }
 
+      # A NUL byte reached master once (in a string literal a delimiter was
+      # meant to occupy, #68): harmless at runtime, but it makes the file
+      # "binary" to git, grep, and every review diff, so nobody sees it. The
+      # only way an invisible byte stays out of the tree is a check that goes
+      # red on it.
+      - name: Verify no control characters in tracked source
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            // Tab (09), LF (0A) and CR (0D) are the legitimate control
+            // characters in a text file; every other C0 byte — NUL above all —
+            // is invisible in a diff and almost never deliberate. Binary
+            // formats are exempt by extension.
+            const BINARY = /\.(png|jpe?g|gif|ico|pdf|zip|gz|woff2?|ttf|otf|db|wasm|bin)$/i;
+            const res = await exec.getExecOutput("git", ["ls-files", "-z"], { silent: true });
+            const files = res.stdout.split("\0").filter(Boolean).filter((f) => !BINARY.test(f));
+            const bad = [];
+            for (const f of files) {
+              let buf;
+              try { buf = fs.readFileSync(f); } catch { continue; }
+              for (let i = 0; i < buf.length; i++) {
+                const b = buf[i];
+                if (b === 9 || b === 10 || b === 13) continue;
+                if (b < 32 || b === 127) {
+                  // Report where, in a form a human can act on.
+                  const line = buf.subarray(0, i).toString("utf8").split("\n").length;
+                  bad.push(`${f}:${line}: byte 0x${b.toString(16).padStart(2, "0")} at offset ${i}`);
+                  break; // one report per file is enough to fix it
+                }
+              }
+            }
+            if (bad.length > 0) {
+              core.info(bad.join("\n"));
+              core.setFailed(
+                `${bad.length} tracked file(s) contain control characters. They are ` +
+                "invisible in review and turn the file binary to git/grep. Write the " +
+                "escape (\\u0000, \\t) instead of the raw byte.");
+            } else {
+              core.info(`No control characters in ${files.length} tracked text files.`);
+            }
+
   build:
     runs-on: ubuntu-latest
     steps:
