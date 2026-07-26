@@ -175,13 +175,12 @@ async function renderDashboard(me: Me): Promise<void> {
     const main = byId("main");
     main.innerHTML = "";
 
+    // Row 1 is title + tabs, row 2 is the per-tab subtitle (`.sub` is full-width
+    // in CSS, so it always wraps onto its own line). The subtitle length varies
+    // wildly per tab; keeping it out of row 1 is what pins the tab bar in place
+    // instead of letting it slide around — or wrap — with the text beside it.
     const head = el("div", { class: "page-head" });
-    head.appendChild(
-        el("div", null,
-            el("h1", { text: "Cache state" }),
-            el("div", { class: "sub", id: "scope-sub" }),
-        ),
-    );
+    head.appendChild(el("h1", { text: "Cache state" }));
     let tabs: HTMLElement | null = null;
     if (me.is_admin) {
         tabs = el("div", { class: "tabs" },
@@ -194,6 +193,7 @@ async function renderDashboard(me: Me): Promise<void> {
         );
         head.appendChild(tabs);
     }
+    head.appendChild(el("div", { class: "sub", id: "scope-sub" }));
     main.appendChild(head);
 
     const body = el("div", { id: "scope-body" });
