@@ -90,3 +90,51 @@ func TestModeB_InvalidIdentityRejected(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+// TestModeB_AppIdentityName: a VERIFIED X-Mirror-Identity caller's slug is
+// recorded in actor_identities and rides the request log as actor_name — the
+// dashboard shows "pr-minder" instead of a bare app:<id>.
+func TestModeB_AppIdentityName(t *testing.T) {
+	svc := configuredAuth(t) // admin session support for /api/requests
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "slug": "pr-minder"})
+			return
+		}
+		t.Errorf("unexpected upstream call: %s", r.URL.Path)
+	})
+	router, store, _, _ := newTestStackWithGitHub(t, svc, gh)
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(orgReposQuery))
+	req.Header.Set("Authorization", "Bearer install-token-xyz")
+	req.Header.Set("X-Mirror-Identity", "app-jwt")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// requireAuth recorded the verified slug for the app principal.
+	ids, err := store.ListActorIdentities(context.Background())
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "app:99", ids[0].Actor)
+	assert.Equal(t, "pr-minder", ids[0].Login)
+
+	// ...and the request-log row carries the name next to the key.
+	rl := httptest.NewRequest("GET", "/api/requests", nil)
+	rl.AddCookie(mintSession(t, svc, "PazerOP"))
+	rw := httptest.NewRecorder()
+	router.ServeHTTP(rw, rl)
+	require.Equal(t, http.StatusOK, rw.Code)
+	var snap requestLogSnapshot
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &snap))
+	var found bool
+	for _, e := range snap.Recent {
+		if e.Path == "/graphql" {
+			found = true
+			assert.Equal(t, "app:99", e.Actor)
+			assert.Equal(t, "pr-minder", e.ActorName)
+		}
+	}
+	require.True(t, found, "the graphql request must be in the log")
+}

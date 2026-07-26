@@ -247,7 +247,10 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 // observedRateLimit is one passively observed X-RateLimit-* reading (the
 // ratemeter store), flattened for JSON.
 type observedRateLimit struct {
-	Identity   string `json:"identity"`
+	Identity string `json:"identity"`
+	// Name is the identity's verified display name (user login / app slug /
+	// installation account login) when one was observed; display-only.
+	Name       string `json:"name,omitempty"`
 	Resource   string `json:"resource"`
 	Limit      int    `json:"limit"`
 	Remaining  int    `json:"remaining"`
@@ -288,6 +291,7 @@ func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	for _, o := range d.meter.Snapshot() {
 		resp.Observed = append(resp.Observed, observedRateLimit{
 			Identity:   o.Identity,
+			Name:       o.Name,
 			Resource:   o.Resource,
 			Limit:      o.Limit,
 			Remaining:  o.Remaining,
@@ -334,6 +338,20 @@ func (d *dashboard) loginForActor(ctx context.Context, principal string) string 
 		}
 	}
 	return ""
+}
+
+// actorNames returns the recorded principal->display-name map, or an empty
+// map when the lookup fails — callers then simply render no names.
+func (d *dashboard) actorNames(ctx context.Context) map[string]string {
+	names := make(map[string]string)
+	identities, err := d.store.ListActorIdentities(ctx)
+	if err != nil {
+		return names
+	}
+	for _, id := range identities {
+		names[id.Actor] = id.Login
+	}
+	return names
 }
 
 // ---- conversion helpers ----

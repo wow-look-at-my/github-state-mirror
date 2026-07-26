@@ -19,9 +19,16 @@ import (
 // by the verified app identity because their answers are app-specific.
 
 // CacheMaxRows bounds each cached-route table: after every write the least
-// recently used rows beyond this cap are pruned (along with expired rows). It
-// is a variable only so tests can lower it; production uses the default.
-var CacheMaxRows int64 = 10000
+// recently used rows beyond this cap are pruned (along with expired rows).
+// cmd/server sets it from the CACHE_MAX_ROWS env var at startup (default
+// 1,000,000); tests lower it directly. It is deliberately ONE knob for every
+// table: all but git_commits_cache are TTL-bounded (~24h backstop or token
+// expiry), so for them the cap is only a runaway safety net -- while
+// git_commits_cache (immutable rows, no TTL) is the one table that actually
+// grows to the ceiling, evicting its oldest-accessed row on every absorb once
+// pinned there (and degrading any commits-list snapshot naming the evicted
+// sha into a miss).
+var CacheMaxRows int64 = 1_000_000
 
 // rfc3339 formats a time in the fixed-width UTC RFC3339 form used across the
 // schema. Fixed width means lexicographic comparison in SQL (the expired-row
@@ -107,11 +114,23 @@ func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now tim
 }
 
 // InvalidateContentsCache drops every cached contents row for a repo -- the
-// conservative whole-repo flush a push/repository webhook triggers.
-// owner/repo are normalized here so callers can pass payload casing.
+// conservative whole-repo flush a repository webhook (or a push whose ref /
+// default branch is unknown) triggers. owner/repo are normalized here so
+// callers can pass payload casing.
 func (s *Store) InvalidateContentsCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+}
+
+// InvalidateContentsForRef drops one requested ref spelling's contents rows
+// (ref "" = the default-branch rows) -- the per-ref push flush. A push only
+// moves the pushed ref's answers, so other refs' rows survive. owner/repo
+// are normalized here so callers can pass payload casing; ref is matched
+// verbatim, exactly as rows are keyed.
+func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref string) error {
+	return s.q.DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }
 
@@ -190,12 +209,26 @@ func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit,
 }
 
 func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedGitCommit, now time.Time) error {
-	return q.UpsertGitCommitCache(ctx, dbgen.UpsertGitCommitCacheParams{
+	if err := q.UpsertGitCommitCache(ctx, dbgen.UpsertGitCommitCacheParams{
 		Owner: c.Owner, Repo: c.Repo, Sha: c.SHA, Message: c.Message,
 		AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.AuthorDate,
 		CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.CommitterDate,
 		TreeSha: c.TreeSHA, Parents: joinParents(c.Parents),
 		FetchedAt: rfc3339(now), LastUsedAt: rfc3339(now),
+	}); err != nil {
+		return err
+	}
+	// INVARIANT: upserting a REAL commit must clear any git_commit_miss_cache
+	// marker for its sha, so a sha that was probed before it existed stops
+	// answering 404 the moment the commit materializes. EVERY absorb path --
+	// the single-commit fetch (PutCachedGitCommit), the push-payload absorb
+	// (UpsertGitCommits), and the commits-list/compare absorbs -- funnels
+	// through THIS function, so a new absorber can never skip the un-miss.
+	// The clear runs on q (the caller's transaction when there is one) so a
+	// rolled-back absorb never half-applies. Keys are re-normalized
+	// defensively; callers already pass lowercased owner/repo/sha.
+	return q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
+		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Sha: strings.ToLower(c.SHA),
 	})
 }
 
@@ -269,4 +302,17 @@ func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t Ca
 // InvalidateRepoInstallationCache.)
 func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID string) error {
 	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
+}
+
+// InvalidateInstallTokenByToken drops the cached mint that issued this exact
+// token -- the upstream-auth-failure invalidation. gsm only receives ITS OWN
+// App's installation webhooks, so a CONSUMER App's permission change never
+// reaches InvalidateInstallTokenCache; a 401/403 from GitHub on a call
+// carrying the minted token is the signal that mint's cached grants no
+// longer match, and dropping it makes the caller's next mint refetch.
+func (s *Store) InvalidateInstallTokenByToken(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	return s.q.DeleteInstallTokenCacheByToken(ctx, token)
 }

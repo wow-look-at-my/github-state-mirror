@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +20,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
@@ -29,7 +32,7 @@ import (
 // asset must also be added to newDashboard's hashed-name rewrite and to the CI
 // preview job's copied-assets list (.github/workflows/ci.yml).
 //
-//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
 // dashboard serves the login flow, the static page, and the cache-stats API.
@@ -59,9 +62,18 @@ type dashboard struct {
 	// meter is the passively observed rate-limit store (X-RateLimit-* headers
 	// recorded off upstream responses) surfaced on the "Rate limit" tab.
 	meter *ratemeter.Store
+	// notifier backs the admin-only GET /api/notifications JSON view
+	// (subscriber-notification activity + all subscriptions). Nil-safe.
+	notifier *notify.Notifier
+	// dbPath is the SQLite database file path (DB_PATH), statted per request
+	// by handleRequests to report the cache's on-disk footprint.
+	dbPath string
+	// timeline is the in-memory timed-traffic ring (webhook deliveries +
+	// proxied requests) behind the admin-only GET /api/timeline. Nil-safe.
+	timeline *reqtimeline.Recorder
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -69,9 +81,11 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	}
 	appJS := mustReadAsset("web/assets/app.js")
 	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
+	timelineJS := mustReadAsset("web/assets/timeline.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
 	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
+	timelineName := hashedAssetName("timeline", "js", timelineJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// Rewrite the served HTML to point at the content-addressed URLs. The
@@ -80,6 +94,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	// server hands out references the hashed URLs.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
 	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
+	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -90,11 +105,15 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		assets: []contentAsset{
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
-		reqlog:  reqlog,
-		checker: checker,
-		meter:   meter,
+		reqlog:   reqlog,
+		checker:  checker,
+		meter:    meter,
+		notifier: notifier,
+		dbPath:   dbPath,
+		timeline: timeline,
 	}
 }
 
@@ -137,6 +156,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/webhooks", d.handleWebhooks)
 	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
+	r.Get("/api/timeline", d.handleTimeline)
 
 	// Admin-only: browse the actual cached rows for one scope, run a consistency
 	// check that re-fetches the source of truth from GitHub (GET = read-only;
@@ -146,6 +166,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/cache/check", d.handleCacheCheck)
 	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
+	r.Get("/api/notifications", d.handleNotifications)
 }
 
 // serveAssets serves the content-addressed asset URLs (immutable cache) and
@@ -216,6 +237,33 @@ func (d *dashboard) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.auth.AuthCodeURL(d.redirectURI(r), state), http.StatusFound)
 }
 
+// signinFailedHTML is the page every callback failure renders. Fixed content
+// only — no user-controlled text ever lands in it (details belong in the logs),
+// so it is injection-proof by construction. The retry link points at /login,
+// which mints a fresh state cookie and restarts the flow cleanly.
+const signinFailedHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
+<h1>Sign-in failed</h1>
+<p>Sign-in could not be completed.</p>
+<p><a href="/login">Try signing in again</a></p>
+</body>
+</html>
+`
+
+// signinFailed answers a callback failure with the retry page at a 4xx status.
+// NEVER a 5xx here: Cloudflare replaces origin 5xx bodies with its own bare
+// error page, which stranded the operator on a context-free "502 Bad Gateway"
+// dead end when a GitHub exchange failed (incident 2026-07-19T02:15Z). The
+// caller logs the actual failure; the browser gets a way to retry.
+func signinFailed(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(signinFailedHTML))
+}
+
 func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if !d.auth.Configured() {
 		http.Error(w, "login is not configured on this server", http.StatusServiceUnavailable)
@@ -232,7 +280,16 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	c, err := r.Cookie(auth.StateCookie)
 	if err != nil || c.Value == "" || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
+		// Name which precondition failed — never the state values themselves.
+		switch {
+		case state == "":
+			slog.Warn("oauth callback rejected: state query param missing")
+		case err != nil || c.Value == "":
+			slog.Warn("oauth callback rejected: state cookie missing or empty")
+		default:
+			slog.Warn("oauth callback rejected: state mismatch")
+		}
+		signinFailed(w)
 		return
 	}
 	// Consume the state cookie.
@@ -240,7 +297,8 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := q.Get("code")
 	if code == "" {
-		http.Error(w, "missing oauth code", http.StatusBadRequest)
+		slog.Warn("oauth callback rejected: code query param missing")
+		signinFailed(w)
 		return
 	}
 
@@ -248,13 +306,13 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := d.auth.Exchange(ctx, code, d.redirectURI(r))
 	if err != nil {
 		slog.Warn("oauth token exchange failed", "error", err)
-		http.Error(w, "could not complete sign-in", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 	login, _, err := d.auth.FetchLogin(ctx, token)
 	if err != nil {
 		slog.Warn("oauth fetch login failed", "error", err)
-		http.Error(w, "could not read GitHub identity", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 
@@ -353,6 +411,8 @@ func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
 // handleRequests returns recent data-API requests and their cache disposition
 // (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
 // so — consistent with the admin-only "all scopes" view — it is admin-only.
+// The payload also carries the SQLite database's on-disk size (statted fresh
+// per request) so the tab's summary shows the cache's real footprint.
 func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	login, ok := d.auth.Session(r)
 	if !ok {
@@ -363,7 +423,27 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden: admin only", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, d.reqlog.snapshot(200))
+	snap := d.reqlog.snapshot(200)
+	snap.DBSizeBytes, snap.DBWALSizeBytes = dbFileSizes(d.dbPath)
+	writeJSON(w, snap)
+}
+
+// dbFileSizes reports the on-disk sizes of the SQLite database file and its
+// -wal sidecar (bytes written ahead of a checkpoint — part of the real
+// footprint). One os.Stat each — cheap enough per request, no caching. A
+// missing file or stat error yields 0 (the field is omitted from the JSON),
+// never a failure: the request log must render regardless.
+func dbFileSizes(path string) (db, wal int64) {
+	if path == "" {
+		return 0, 0
+	}
+	if fi, err := os.Stat(path); err == nil {
+		db = fi.Size()
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil {
+		wal = fi.Size()
+	}
+	return db, wal
 }
 
 type kindFreshness struct {

@@ -31,6 +31,12 @@ type Session struct {
 // via the caller's own token.
 type SessionFunc func(ctx context.Context) ([]Session, error)
 
+// IdentityRecorder persists a principal->display-name mapping (the dashboard's
+// actor_identities view). AppSessions calls it so the background refresher's
+// "app-installation:<id>" principals resolve to their installation's account
+// login instead of "(unknown)". Nil disables recording.
+type IdentityRecorder func(ctx context.Context, principal, name string)
+
 // AppSessions returns a SessionFunc that signs in as a GitHub App. On each
 // refresh cycle it enumerates the app's installations and mints a fresh
 // installation access token for each (the tokens are short-lived, so they must
@@ -40,8 +46,11 @@ type SessionFunc func(ctx context.Context) ([]Session, error)
 // not the token fingerprint — so the cache bucket survives hourly token
 // rotation. This key can never collide with a per-user partition (those are
 // 64-char hex SHA-256 token fingerprints), keeping background-refreshed data
-// out of any caller's view.
-func AppSessions(app *ghclient.AppAuthenticator) SessionFunc {
+// out of any caller's view. The installation's account login (already in hand
+// from the installations listing — no extra GitHub call) rides the session
+// context as the principal's display name, and is recorded via record (when
+// non-nil) once per cycle so dashboard views can resolve the key.
+func AppSessions(app *ghclient.AppAuthenticator, record IdentityRecorder) SessionFunc {
 	return func(ctx context.Context) ([]Session, error) {
 		installs, err := app.Installations(ctx)
 		if err != nil {
@@ -55,8 +64,15 @@ func AppSessions(app *ghclient.AppAuthenticator) SessionFunc {
 					"installation", inst.ID, "account", inst.Account.Login, "error", err)
 				continue
 			}
+			principal := AppInstallationActor(inst.ID)
 			sctx := ghclient.WithToken(ctx, token)
-			sctx = actor.WithActor(sctx, AppInstallationActor(inst.ID))
+			sctx = actor.WithActor(sctx, principal)
+			if inst.Account.Login != "" {
+				sctx = actor.WithName(sctx, inst.Account.Login)
+				if record != nil {
+					record(sctx, principal, inst.Account.Login)
+				}
+			}
 			sessions = append(sessions, Session{
 				Ctx:            sctx,
 				Owner:          inst.Account.Login,

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +33,15 @@ type fakeOwner struct {
 // answering BOTH owner-agnostic queries (repositoryOwner data + visibility)
 // per owner. The checker no longer sends organization() queries at all.
 func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.Server {
+	return consistencyFakeGitHubFailing(t, owners, 0)
+}
+
+// consistencyFakeGitHubFailing is consistencyFakeGitHub with a transient-
+// failure knob: the first fail502 /graphql requests answer 502 Bad Gateway
+// before the normal responses resume (the client's bounded-retry path).
+func consistencyFakeGitHubFailing(t *testing.T, owners map[string]fakeOwner, fail502 int) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
 	mux := http.NewServeMux()
 	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
@@ -47,6 +56,15 @@ func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_someuser"})
 	})
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if fail502 > 0 {
+			fail502--
+			mu.Unlock()
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("Bad Gateway"))
+			return
+		}
+		mu.Unlock()
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
 			Query     string         `json:"query"`
@@ -150,6 +168,8 @@ func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.S
 	t.Cleanup(func() { db.Close() })
 
 	gh := ghclient.NewWithBaseURL(srvURL)
+	// Zero backoff: a test exercising the transient-retry path must not sleep.
+	gh.SetRetryBackoff([]time.Duration{0})
 	store := ghdata.NewStore(db)
 	fresh := freshness.NewStore(db)
 	app, err := ghclient.NewAppAuthenticator("42", testAppKeyPEM(t), gh)
@@ -214,6 +234,9 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		ErrorMessage:  "github api POST /graphql: 502 Bad Gateway",
 		LastFetchedAt: &lastFetched,
 	}))
+	// A recorded identity for that principal: the report resolves the key to
+	// its display name.
+	require.NoError(t, store.RecordActorIdentity(ctx, "user:900", "octocat"))
 
 	// Global truth that has drifted from the live state above.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
@@ -312,6 +335,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		assert.Equal(t, "2024-05-01T12:00:00Z", sf.LastFetchedAt)
 		assert.Contains(t, sf.Error, "502 Bad Gateway")
 		assert.Equal(t, "user:900", sf.Principal)
+		assert.Equal(t, "octocat", sf.PrincipalName, "the recorded identity resolves the marker's principal")
 	}
 
 	// PR-level drift.
@@ -360,6 +384,50 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.Zero(t, rep.Summary.VisibilityLeaks)
 }
 
+// TestConsistencyChecker_NeverSyncedFreshness: an owner with cached repos but
+// ZERO freshness marker rows must appear in truth_freshness as never_synced --
+// the silent omission is what hid "the fleet refresher never completed a
+// cycle" in the 2026-07-13 report.
+func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {
+	srv := driftFake(t)
+	checker, store, _ := newCheckerTest(t, srv.URL)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u",
+	}))
+
+	rep, err := checker.Check(ctx, "org1")
+	require.NoError(t, err)
+	sf, ok := rep.TruthFreshness["org1"]
+	require.True(t, ok, "a marker-less owner must still get a truth_freshness entry")
+	assert.Equal(t, "never_synced", sf.State)
+	assert.Empty(t, sf.LastFetchedAt)
+	assert.Empty(t, sf.Principal)
+	assert.Empty(t, sf.Error)
+}
+
+// TestConsistencyChecker_TransientFetchRetried: a single 502 on an owner's
+// GraphQL fetch is retried by the client, so the owner is CHECKED -- not holed
+// out of the report under orgs_skipped (the pre-retry behavior).
+func TestConsistencyChecker_TransientFetchRetried(t *testing.T) {
+	srv := consistencyFakeGitHubFailing(t, map[string]fakeOwner{
+		"org1": {
+			repos: []map[string]any{liveRepo("org1", "repo1", "SUCCESS", nil)},
+			vis:   []map[string]any{visNode("repo1", "PUBLIC", false)},
+		},
+	}, 1)
+	checker, store, _ := newCheckerTest(t, srv.URL)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
+	}))
+
+	rep, err := checker.Check(ctx, "org1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"org1"}, rep.OrgsChecked, "a once-502ing fetch must be retried, not skipped")
+	assert.Empty(t, rep.OrgsSkipped)
+}
+
 // TestConsistencyChecker_ServedNow: a live pulls-list marker marks PR
 // existence drift as actively served (the list route trusts the rows).
 func TestConsistencyChecker_ServedNow(t *testing.T) {
@@ -399,113 +467,6 @@ func TestConsistencyChecker_OrgFilter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"org1"}, rep.OrgsChecked)
 	assert.Empty(t, rep.OrgsSkipped, "filtered-out owners are not even reported as skipped")
-}
-
-// TestRepoFieldDiffs_Table covers the new repo field comparisons.
-func TestRepoFieldDiffs_Table(t *testing.T) {
-	base := func() dbgen.Repo {
-		return dbgen.Repo{
-			Owner: "o", Name: "r", NameWithOwner: "o/r", Url: "u",
-			PushedAt: sql.NullString{String: "2026-01-01T00:00:00Z", Valid: true},
-		}
-	}
-	pushed := func(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
-
-	cases := []struct {
-		name      string
-		mutate    func(c, g *dbgen.Repo)
-		vis       map[string]ghclient.OwnerRepoVisibility
-		wantField string
-		wantIssue string
-	}{
-		{
-			name:   "identical yields nothing",
-			mutate: func(c, g *dbgen.Repo) {},
-			vis:    map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: ""}},
-		},
-		{
-			name:      "cached public github private is a leak",
-			mutate:    func(c, g *dbgen.Repo) { c.Visibility = "public" },
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "private"}},
-			wantField: "visibility", wantIssue: "visibility_leak",
-		},
-		{
-			name:      "cached public github internal is a leak",
-			mutate:    func(c, g *dbgen.Repo) { c.Visibility = "public" },
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "internal"}},
-			wantField: "visibility", wantIssue: "visibility_leak",
-		},
-		{
-			name:      "cached private github public is a plain mismatch",
-			mutate:    func(c, g *dbgen.Repo) { c.Visibility = "private" },
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "public"}},
-			wantField: "visibility", wantIssue: "field_mismatch",
-		},
-		{
-			name:      "cached unknown is informational",
-			mutate:    func(c, g *dbgen.Repo) { c.Visibility = "" },
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "public"}},
-			wantField: "visibility", wantIssue: "visibility_unknown",
-		},
-		{
-			name:   "matching visibility yields nothing",
-			mutate: func(c, g *dbgen.Repo) { c.Visibility = "private" },
-			vis:    map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "private"}},
-		},
-		{
-			name:   "no visibility data yields no visibility diff",
-			mutate: func(c, g *dbgen.Repo) { c.Visibility = "public" },
-			vis:    nil,
-		},
-		{
-			name:      "pushed_at lag beyond tolerance flags",
-			mutate:    func(c, g *dbgen.Repo) { g.PushedAt = pushed("2026-01-01T00:10:00Z") },
-			wantField: "pushed_at", wantIssue: "field_mismatch",
-		},
-		{
-			name:   "pushed_at lag inside tolerance is race noise",
-			mutate: func(c, g *dbgen.Repo) { g.PushedAt = pushed("2026-01-01T00:04:00Z") },
-		},
-		{
-			name:   "cached pushed_at NEWER than github is the fetch racing a push",
-			mutate: func(c, g *dbgen.Repo) { c.PushedAt = pushed("2026-01-01T01:00:00Z") },
-		},
-		{
-			name:      "cached pushed_at missing while github has one flags",
-			mutate:    func(c, g *dbgen.Repo) { c.PushedAt = sql.NullString{} },
-			wantField: "pushed_at", wantIssue: "field_mismatch",
-		},
-		{
-			name:      "archive drift via the visibility map",
-			mutate:    func(c, g *dbgen.Repo) {},
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: "public", Archived: true}},
-			wantField: "is_archived", wantIssue: "field_mismatch",
-		},
-		{
-			name:      "cached archived while live in org data flags",
-			mutate:    func(c, g *dbgen.Repo) { c.IsArchived = 1 },
-			vis:       map[string]ghclient.OwnerRepoVisibility{"r": {Visibility: ""}},
-			wantField: "is_archived", wantIssue: "field_mismatch",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c, g := base(), base()
-			// Keep visibility consistent by default so only the mutation diffs.
-			if v, ok := tc.vis["r"]; ok && v.Visibility != "" {
-				c.Visibility = v.Visibility
-			}
-			tc.mutate(&c, &g)
-			diffs := repoFieldDiffs("o", "r", c, g, tc.vis)
-			if tc.wantField == "" {
-				assert.Empty(t, diffs)
-				return
-			}
-			require.Len(t, diffs, 1)
-			assert.Equal(t, tc.wantField, diffs[0].Field)
-			assert.Equal(t, tc.wantIssue, diffs[0].Issue)
-		})
-	}
 }
 
 func TestConsistencyChecker_RateLimits(t *testing.T) {

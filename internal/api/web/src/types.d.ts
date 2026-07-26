@@ -79,6 +79,9 @@ export interface WebhooksResponse {
 // ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
+    // Verified display name for the actor (user login / app slug); absent when
+    // none was proven (e.g. token fingerprints, unverified identity headers).
+    actor_name?: string;
     method: string;
     path: string;
     disposition: string;
@@ -108,6 +111,51 @@ export interface RequestsResponse {
     by_disposition: Record<string, number>;
     groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
+    db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
+    db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
+}
+
+// ---- traffic timeline (every exchange the mirror participates in) ----
+// One timed event on the Timeline chart. Kind-specific fields are omitted for
+// the other kinds; dur_ms is the REAL measured duration (never fabricated).
+export interface TimelineEvent {
+    id: number;
+    kind: string; // "webhook" | "request" | "notify"
+    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>" | "⇒ notify"
+    start: string; // RFC3339
+    dur_ms: number;
+    disposition?: string;
+    // webhook fields
+    event_type?: string;
+    action?: string;
+    delivery_id?: string;
+    repo?: string;
+    // request/exchange fields
+    method?: string;
+    route?: string;
+    status?: number;
+    actor?: string;
+    actor_name?: string;
+    // free-form tooltip line (e.g. an unverified delivery's claimed type)
+    detail?: string;
+    // notify fields
+    target?: string;
+    attempt?: number;
+    final?: boolean;
+}
+
+export interface TimelineResponse {
+    events: TimelineEvent[] | null;
+    max_id: number; // the next ?since= cursor
+    retention_start: string; // RFC3339 — the 24h window floor
+    now: string; // RFC3339
+}
+
+// The <gsm-timeline> custom element (src/timeline.ts). app.ts creates it on
+// the Timeline tab and, in demo mode, overrides its fetcher so the standalone
+// preview renders canned data.
+export interface GsmTimelineElement extends HTMLElement {
+    fetcher: ((path: string) => Promise<TimelineResponse>) | null;
 }
 
 // ---- GitHub App rate limit ----
@@ -130,6 +178,9 @@ export interface InstallationRateLimit {
 // resets on restart.
 export interface ObservedRateLimit {
     identity: string;
+    // Verified display name for the identity (user login / app slug /
+    // installation account login); absent when none was observed.
+    name?: string;
     resource: string;
     limit: number;
     remaining: number;
@@ -267,6 +318,8 @@ export interface TruthFreshness {
     last_fetched_at?: string;
     error?: string;
     principal?: string;
+    // The principal's recorded display name (actor_identities), when known.
+    principal_name?: string;
 }
 
 export interface ConsistencyReport {
@@ -308,6 +361,7 @@ export interface DemoStateData {
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
+    timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id

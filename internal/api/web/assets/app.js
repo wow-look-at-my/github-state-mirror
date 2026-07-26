@@ -156,7 +156,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -212,6 +212,8 @@ function loadView(scope, silent = false) {
         return loadWebhooks(silent);
     if (scope === "requests")
         return loadRequests(silent);
+    if (scope === "timeline")
+        return loadTimeline();
     if (scope === "ratelimit")
         return loadRateLimits(silent);
     return loadScope(scope, silent);
@@ -439,6 +441,29 @@ function webhookTable(deliveries) {
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
 }
+// ---- traffic timeline (admin only) ----
+// A swimlane chart of incoming webhook deliveries (one lane per event type)
+// and outgoing proxied GitHub requests (one lane per route shape), each bar a
+// REAL measured duration — rendered by the <gsm-timeline> element
+// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
+// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
+// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
+// paused while the page is hidden) and merges new events in place. The shared
+// auto-refresh tick just lands here and finds the element already present.
+async function loadTimeline() {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    sub.textContent = "Every exchange the mirror participates in — webhook deliveries, served requests, upstream calls, its own GitHub traffic, notifications — real measured durations, last 24h (in-memory, resets on restart)";
+    if (body.querySelector("gsm-timeline"))
+        return; // element self-updates; never rebuild it
+    body.innerHTML = "";
+    const tl = el("gsm-timeline");
+    // In demo mode route the element's polls through demoApi (canned data for
+    // the backend-free preview); production keeps its bounded default fetcher.
+    if (DEMO)
+        tl.fetcher = (path) => api(path);
+    body.appendChild(tl);
+}
 // ---- request activity (admin only) ----
 // Shows data-API requests hitting the cache and how each was served: a cache
 // HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
@@ -468,12 +493,14 @@ async function loadRequests(silent = false) {
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
     const total = data.total || 0;
+    const dbSize = dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes);
     sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
         " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
         ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
         ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
         ", write " + (by.write || 0) + pctLabel(by.write, total) +
-        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "");
+        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "") +
+        (dbSize ? " — " + dbSize : "");
     body.appendChild(requestLegend());
     // Grouped views first (aggregate hot spots), then the flat history below.
     const groups = data.groups ?? [];
@@ -493,6 +520,28 @@ async function loadRequests(silent = false) {
 // there is no total to take a share of.
 function pctLabel(count, total) {
     return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
+}
+// formatBytes renders a byte count human-readably: KB/MB/GB/TB (1000-based)
+// with one decimal, plain "N B" below 1 KB.
+function formatBytes(n) {
+    if (n < 1000)
+        return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = -1;
+    do {
+        v /= 1000;
+        i++;
+    } while (v >= 1000 && i < units.length - 1);
+    return v.toFixed(1) + " " + units[i];
+}
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g.
+// "DB 1.4 GB (+125.8 MB WAL)". The WAL suffix drops when absent/zero; the
+// whole label is empty when the backend omitted the size (file missing).
+function dbSizeLabel(db, wal) {
+    if (!db)
+        return "";
+    return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
 }
 // ---- request groups (aggregate hot spots) ----
 // Two tables over the server's per-route-shape counters (cumulative since
@@ -587,7 +636,9 @@ function requestLegend() {
 function requestTable(events) {
     const rows = events.map((e) => {
         const disp = e.disposition || "passthrough";
-        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), el("td", { class: "wh-detail", text: e.actor || "" }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
+        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), 
+        // Resolved name when known (full key in the tooltip); bare key otherwise.
+        el("td", { class: "wh-detail", text: e.actor_name || e.actor || "", title: e.actor_name ? e.actor : null }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Upstream" }), el("th", { text: "Method" }), el("th", { text: "Path" }), el("th", { text: "Caller" }), el("th", { text: "When" }))), el("tbody", null, rows));
 }
@@ -658,14 +709,16 @@ async function loadRateLimits(silent = false) {
 }
 // observedRateGrid renders one tile per (identity, resource). The backend
 // sorts by identity then resource, so one identity's buckets sit together;
-// each tile is a <rate-meter> plus an "observed …" caption.
+// each tile is a <rate-meter> plus an "observed …" caption. A resolved
+// display name leads the tile; the bare identity key then moves to the
+// caption so it stays visible (and remains the tile name when unresolved).
 function observedRateGrid(observed) {
     const grid = el("div", { class: "rate-grid" });
     for (const o of observed) {
         grid.appendChild(el("div", { class: "rate-observed" }, el("rate-meter", {
-            name: o.identity + " — " + o.resource,
+            name: (o.name || o.identity) + " — " + o.resource,
             limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
-        }), el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
+        }), o.name ? el("div", { class: "rate-observed-at fingerprint", text: o.identity }) : null, el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
     }
     return grid;
 }
@@ -1111,7 +1164,9 @@ function discrepancyTable(items) {
     return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
 }
 function truthFreshnessTable(rows) {
-    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), el("td", { class: "fingerprint", text: f.principal || "—" }), el("td", { class: "wh-detail", text: f.error || "" })));
+    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), 
+    // Resolved name first, with the key alongside; bare key when unresolved.
+    el("td", { class: "fingerprint", text: f.principal_name ? f.principal_name + " · " + f.principal : (f.principal || "—") }), el("td", { class: "wh-detail", text: f.error || "" })));
     return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Owner" }), el("th", { text: "State" }), el("th", { text: "Last synced" }), el("th", { text: "By principal" }), el("th", { text: "Error" }))), el("tbody", null, trs));
 }
 // ---- boot ----
@@ -1190,6 +1245,13 @@ function demoApi(path, method = "GET") {
             return Promise.reject(err);
         }
         return Promise.resolve(d.requests);
+    }
+    if (path.startsWith("/api/timeline")) {
+        if (!d.timeline)
+            return demoReject(403);
+        // The canned payload is served for every poll; the element merges by
+        // event id, so re-serving the same events is harmless.
+        return Promise.resolve(d.timeline);
     }
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit)

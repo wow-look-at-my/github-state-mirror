@@ -89,12 +89,12 @@ func TestNormalizeRoute(t *testing.T) {
 // land in one group.
 func TestRequestLog_Groups(t *testing.T) {
 	l := newRequestLog()
-	l.record("a", "GET", "/repos/o/r/compare/a...b", DispHit)
-	l.record("a", "GET", "/repos/o/r2/compare/x...y", DispMiss)
-	l.recordStatus("a", "GET", "/repos/o/r3/compare/p...q", DispPassthrough, 200)
-	l.record("a", "POST", "/graphql", DispHit)
-	l.recordStatus("a", "PATCH", "/repos/o/r/pulls/9", DispWrite, 200)
-	l.record("a", "GET", "/repos/o/r/pulls/9", DispError)
+	l.record(callerIdent{Key: "a"}, "GET", "/repos/o/r/compare/a...b", DispHit)
+	l.record(callerIdent{Key: "a"}, "GET", "/repos/o/r2/compare/x...y", DispMiss)
+	l.recordStatus(callerIdent{Key: "a"}, "GET", "/repos/o/r3/compare/p...q", DispPassthrough, 200)
+	l.record(callerIdent{Key: "a"}, "POST", "/graphql", DispHit)
+	l.recordStatus(callerIdent{Key: "a"}, "PATCH", "/repos/o/r/pulls/9", DispWrite, 200)
+	l.record(callerIdent{Key: "a"}, "GET", "/repos/o/r/pulls/9", DispError)
 
 	snap := l.snapshot(10)
 	require.Len(t, snap.Groups, 4)
@@ -132,14 +132,14 @@ func TestRequestLog_GroupsBound(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestGroupsCap+50; i++ {
 		// Two-segment literal paths each normalize to a distinct shape.
-		l.record("a", "GET", fmt.Sprintf("/bucket%d/leaf", i), DispPassthrough)
+		l.record(callerIdent{Key: "a"}, "GET", fmt.Sprintf("/bucket%d/leaf", i), DispPassthrough)
 	}
 	l.mu.Lock()
 	assert.Len(t, l.groups, requestGroupsCap, "group map is capped")
 	l.mu.Unlock()
 
 	// An existing group still counts after the cap is hit.
-	l.record("a", "GET", "/bucket0/leaf", DispPassthrough)
+	l.record(callerIdent{Key: "a"}, "GET", "/bucket0/leaf", DispPassthrough)
 	l.mu.Lock()
 	g := l.groups["GET /bucket0/leaf"]
 	l.mu.Unlock()
@@ -156,11 +156,11 @@ func TestRequestLog_GroupSnapshotSortedAndCapped(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestGroupsSnapshotCap+20; i++ {
 		path := fmt.Sprintf("/tie%03d/leaf", i)
-		l.record("a", "GET", path, DispHit) // 120 groups with total 1 each
+		l.record(callerIdent{Key: "a"}, "GET", path, DispHit) // 120 groups with total 1 each
 	}
 	// One hot group that must sort first.
 	for i := 0; i < 5; i++ {
-		l.record("a", "POST", "/graphql", DispMiss)
+		l.record(callerIdent{Key: "a"}, "POST", "/graphql", DispMiss)
 	}
 
 	snap := l.snapshot(0)
