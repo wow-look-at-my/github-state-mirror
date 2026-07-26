@@ -68,6 +68,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(withDispositionHint(r.Context(), DispWrite))
 		} else {
 			r = r.WithContext(withDispositionHint(r.Context(), DispPassthrough))
+			r = r.WithContext(withPassthroughReason(r.Context(), PassGraphQL))
 		}
 		h.ghProxy.ServeHTTP(w, r)
 		return

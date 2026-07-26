@@ -49,7 +49,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 		// Not a verifiable App JWT: not ours to cache. Forward unchanged and
 		// let GitHub decide (it will reject a bad credential itself).
 		restoreBody()
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassIdentity)
 		return
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
