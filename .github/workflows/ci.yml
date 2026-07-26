@@ -10,16 +10,15 @@ permissions:
   contents: write
   actions: read
   checks: read
-  artifact-metadata: write
-  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
-  # A reusable workflow cannot exceed the caller's permissions, so it must be
-  # declared here.
-  packages: write
   # buildhost#193 made recording an upload on the org's linked artifacts page
   # part of publishing rather than a separate best-effort step, so both
   # publishing paths here -- go-toolchain's release upload in `build` and
   # buildhost-publish-site in `preview` -- now fail the job without it.
   artifact-metadata: write
+  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
+  # A reusable workflow cannot exceed the caller's permissions, so it must be
+  # declared here.
+  packages: write
 
 jobs:
   sqlc-check:
