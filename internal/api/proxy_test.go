@@ -75,8 +75,15 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
 	assert.Equal(t, "*", acao[0])
-	// GitHub's Expose-Headers must survive so clients can read X-RateLimit-* etc.
-	assert.Equal(t, "X-RateLimit-Remaining, Link", w.Header().Get("Access-Control-Expose-Headers"))
+	// Expose-Headers is the one CORS header the proxy deliberately does NOT
+	// strip, so a passthrough exposes the UNION of GitHub's list and the
+	// mirror's own (repeated list-valued header fields combine, per RFC 9110 --
+	// so `Link` stays readable and the mirror's X-GSM-* join it). Only the
+	// Allow-* headers must be singular, since a browser rejects a duplicated
+	// Allow-Origin outright.
+	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ", ")
+	assert.Contains(t, exposed, "Link", "GitHub's own Expose-Headers must survive")
+	assert.Contains(t, exposed, cacheHeader, "the mirror's own headers must be exposed too")
 }
 
 // TestProxy_RequiresToken verifies the passthrough is not an open relay: a

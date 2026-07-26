@@ -61,3 +61,34 @@ func TestCORS_Allowlist(t *testing.T) {
 	handler.ServeHTTP(wu, unknown)
 	assert.Equal(t, "", wu.Header().Get("Access-Control-Allow-Origin"))
 }
+
+// TestCORS_ExposeHeaders verifies a browser can read the mirror's own response
+// headers cross-origin. Rebuilt (cached) responses are written by the mirror
+// alone -- nothing upstream contributes an Expose-Headers list to inherit --
+// so without this the cache-status and rate-limit headers were invisible to a
+// cross-origin app on every hit.
+func TestCORS_ExposeHeaders(t *testing.T) {
+	mw := corsMiddleware(nil)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(cacheHeader, "hit")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/o/r/pulls/1", nil)
+	req.Header.Set("Origin", "https://wow-look-at-my.github.io")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	exposed := w.Header().Get("Access-Control-Expose-Headers")
+	for _, name := range []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", cacheHeader} {
+		assert.Contains(t, exposed, name)
+	}
+
+	// Preflight carries it too, and never reaches the wrapped handler.
+	pre := httptest.NewRequest(http.MethodOptions, "/repos/o/r/pulls/1", nil)
+	pre.Header.Set("Origin", "https://wow-look-at-my.github.io")
+	pw := httptest.NewRecorder()
+	handler.ServeHTTP(pw, pre)
+	assert.Equal(t, http.StatusNoContent, pw.Code)
+	assert.Contains(t, pw.Header().Get("Access-Control-Expose-Headers"), cacheHeader)
+}

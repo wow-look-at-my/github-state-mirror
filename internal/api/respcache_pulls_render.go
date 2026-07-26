@@ -221,10 +221,39 @@ type pullListItemJSON struct {
 	Base           pullBaseJSON       `json:"base"`
 }
 
+// pullSingleJSON adds the fields only GitHub's SINGLE-PR response carries.
+// The diff stats ride here and NOT on the list item because GitHub's list
+// omits them -- emitting them on a rebuilt list would invent numbers no
+// upstream answer ever supplied. They are nullable-but-always-keyed like
+// mergeable: a row that has never been absorbed from a single-PR answer has
+// no stats to serve, and a fabricated 0 would read as "empty PR".
 type pullSingleJSON struct {
 	pullListItemJSON
-	Merged    bool  `json:"merged"`
-	Mergeable *bool `json:"mergeable"`
+	Merged    bool   `json:"merged"`
+	Mergeable *bool  `json:"mergeable"`
+	Additions *int64 `json:"additions"`
+	Deletions *int64 `json:"deletions"`
+}
+
+// applySinglePullFields fills the single-PR-only members from the row:
+// mergeable's tri-state mapping and the diff stats (absent stays null).
+func applySinglePullFields(out *pullSingleJSON, pr dbgen.PullRequest) {
+	switch pr.Mergeable.String {
+	case "MERGEABLE":
+		v := true
+		out.Mergeable = &v
+	case "CONFLICTING":
+		v := false
+		out.Mergeable = &v
+	}
+	if pr.Additions.Valid {
+		v := pr.Additions.Int64
+		out.Additions = &v
+	}
+	if pr.Deletions.Valid {
+		v := pr.Deletions.Int64
+		out.Deletions = &v
+	}
 }
 
 func renderPullListItem(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullListItemJSON {
@@ -263,14 +292,7 @@ func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJS
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels)}
 	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate), so merged is
 	// false by definition.
-	switch pr.Mergeable.String {
-	case "MERGEABLE":
-		v := true
-		out.Mergeable = &v
-	case "CONFLICTING":
-		v := false
-		out.Mergeable = &v
-	}
+	applySinglePullFields(&out, pr)
 	return out
 }
 
@@ -282,13 +304,6 @@ func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJS
 // renderSinglePull's (typically null for a closed PR).
 func renderClosedPull(pr dbgen.PullRequest, labels []dbgen.PrLabel, merged bool) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels), Merged: merged}
-	switch pr.Mergeable.String {
-	case "MERGEABLE":
-		v := true
-		out.Mergeable = &v
-	case "CONFLICTING":
-		v := false
-		out.Mergeable = &v
-	}
+	applySinglePullFields(&out, pr)
 	return out
 }
