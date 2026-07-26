@@ -10,6 +10,7 @@ permissions:
   contents: write
   actions: read
   checks: read
+  artifact-metadata: write
   # Required by the publish-ghcr reusable workflow to push the image to GHCR.
   # A reusable workflow cannot exceed the caller's permissions, so it must be
   # declared here.
