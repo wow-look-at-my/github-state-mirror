@@ -15,6 +15,7 @@ permissions:
   # publishing paths here -- go-toolchain's release upload in `build` and
   # buildhost-publish-site in `preview` -- now fail the job without it.
   artifact-metadata: write
+  deployments: write
   # Required by the publish-ghcr reusable workflow to push the image to GHCR.
   # A reusable workflow cannot exceed the caller's permissions, so it must be
   # declared here.
