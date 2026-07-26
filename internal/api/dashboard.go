@@ -28,9 +28,12 @@ import (
 
 // Embedded dashboard assets. Only the files the production page references are
 // embedded; src/*.ts and the preview-only demo-data.js are deliberately left
-// out. assets/*.js is generated from src/*.ts by `npm run build` (tsc). A new
-// asset must also be added to newDashboard's hashed-name rewrite and to the CI
-// preview job's copied-assets list (.github/workflows/ci.yml).
+// out. assets/*.js is a BUILD OUTPUT — `npm run build` (tsc) emits it from
+// src/*.ts and it is gitignored, so run that before building this package or
+// the embed below fails to resolve (CI builds it in the same job, ahead of the
+// Go build). A new asset must also be added to newDashboard's hashed-name
+// rewrite and to the CI preview job's copied-assets list
+// (.github/workflows/ci.yml).
 //
 //go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS

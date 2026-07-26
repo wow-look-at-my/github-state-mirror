@@ -135,17 +135,28 @@ a:hover { text-decoration: underline; }
 .hero .note { margin-top: 22px; font-size: 13px; color: var(--fg-muted); }
 
 /* ---- Section headings & tabs ---- */
+/* Row 1: title (left) + tabs (right). Row 2: the per-tab subtitle, forced
+   full-width so its length can never push the tab bar sideways or wrap it. */
 .page-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
+    display: flex; align-items: center;
+    gap: 6px 16px; flex-wrap: wrap; margin-bottom: 20px;
 }
-.page-head h1 { font-size: 22px; margin: 0; }
-.page-head .sub { color: var(--fg-muted); font-size: 13px; margin-top: 2px; }
+.page-head h1 { font-size: 22px; margin: 0; margin-right: auto; }
+.page-head .tabs { flex: none; }
+.page-head .sub {
+    flex: 1 0 100%; min-width: 0;
+    color: var(--fg-muted); font-size: 13px;
+}
 
-.tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.tabs {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 8px;
+    /* Narrow viewports scroll the bar instead of squashing or overflowing it. */
+    max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
 .tabs button {
     background: var(--bg-elev); color: var(--fg-muted); border: none;
     padding: 7px 16px; font-size: 14px; cursor: pointer; font-weight: 500;
+    flex: none; white-space: nowrap;
 }
 .tabs button + button { border-left: 1px solid var(--border); }
 .tabs button.active { background: var(--accent); color: var(--accent-fg); }
