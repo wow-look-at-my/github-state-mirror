@@ -311,7 +311,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	// that sha instead of storing it), and recently touched.
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
-	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) &&
+	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && diffStatsKnown(pr) &&
 		!ghdata.PRMergeShaStale(pr, time.Now()) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
 		return
@@ -411,6 +411,16 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 func mergeableKnown(pr dbgen.PullRequest) bool {
 	return pr.Mergeable.Valid &&
 		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING")
+}
+
+// diffStatsKnown reports whether the row carries the additions/deletions only
+// a SINGLE-PR answer supplies. A row built from the /pulls LIST (or a webhook,
+// or a GraphQL sync) has none, and its mergeable can still be resolved
+// independently -- so without this gate such a row would hit and serve
+// `"additions": null` forever, with nothing to heal it short of a push. One
+// miss re-absorbs the stats from GitHub and every later read hits.
+func diffStatsKnown(pr dbgen.PullRequest) bool {
+	return pr.Additions.Valid && pr.Deletions.Valid
 }
 
 // ---- small helpers ----
