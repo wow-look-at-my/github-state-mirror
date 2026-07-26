@@ -44,7 +44,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if r.URL.RawQuery != "" || !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, true))
 		return
 	}
 

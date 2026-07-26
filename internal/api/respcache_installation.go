@@ -26,16 +26,16 @@ const repoInstallationCacheTTL = 24 * time.Hour
 func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request) {
 	jwt := bearerToken(r)
 	if jwt == "" {
-		h.ghProxy.ServeHTTP(w, r) // the proxy 401s tokenless requests
+		h.passthrough(w, r, PassIdentity) // the proxy 401s tokenless requests
 		return
 	}
 	ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
 	if err != nil {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassIdentity)
 		return
 	}
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, true))
 		return
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)

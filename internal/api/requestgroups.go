@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -30,12 +31,25 @@ const (
 
 // routeGroup is the cumulative tally for one (method, route shape).
 type routeGroup struct {
-	method   string
-	route    string
-	total    int64
-	byDisp   map[string]int64
+	method string
+	route  string
+	total  int64
+	byDisp map[string]int64
+	// byReason splits this group's PASSTHROUGH count by why each request was
+	// forwarded uncached (the closed Pass* vocabulary in requestlog.go). It is
+	// what turns "this route is 82% uncached" into an actionable verdict:
+	// unmodeled-query on a filter nobody should cache is the model working,
+	// while unrouted or a paging shape is a gap. Bounded by the vocabulary.
+	byReason map[string]int64
 	sample   string // one recent raw path, for identifying the shape
-	lastSeen time.Time
+	// passQuery is the QUERY SHAPE of one recent passthrough: the sorted
+	// parameter NAMES, never their values (a value can carry a credential; a
+	// name cannot, and the name set is what the shape guards actually reject).
+	// Kept separately from sample so a route that mostly hits still shows what
+	// its passthroughs looked like — "status,per_page" names the offending
+	// filter outright.
+	passQuery string
+	lastSeen  time.Time
 }
 
 // requestGroupSnapshot is one group in the /api/requests payload.
@@ -49,12 +63,20 @@ type requestGroupSnapshot struct {
 	Passthrough int64  `json:"passthrough"`
 	Write       int64  `json:"write"`
 	Error       int64  `json:"error"`
-	Sample      string `json:"sample"`
-	LastSeen    string `json:"last_seen"` // RFC3339
+	// ByReason splits Passthrough by why (the Pass* vocabulary); omitted when
+	// the group never passed through.
+	ByReason map[string]int64 `json:"by_reason,omitempty"`
+	// PassQuery is one recent passthrough's query-parameter NAMES (values are
+	// never recorded). Omitted when absent.
+	PassQuery string `json:"pass_query,omitempty"`
+	Sample    string `json:"sample"`
+	LastSeen  string `json:"last_seen"` // RFC3339
 }
 
-// bumpGroupLocked records one request into its group. Caller holds l.mu.
-func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition string, now time.Time) {
+// bumpGroupLocked records one request into its group. reason/queryShape are
+// set only for passthroughs (recordFull clears them otherwise). Caller holds
+// l.mu.
+func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition, reason, queryShape string, now time.Time) {
 	key := method + " " + route
 	g := l.groups[key]
 	if g == nil {
@@ -66,8 +88,38 @@ func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition string,
 	}
 	g.total++
 	g.byDisp[disposition]++
+	if reason != "" {
+		if g.byReason == nil {
+			g.byReason = make(map[string]int64, 2)
+		}
+		g.byReason[reason]++
+	}
+	if disposition == DispPassthrough {
+		// Only overwrite on a passthrough, and keep a NON-empty shape in
+		// preference to an empty one: the bare-path passthroughs of a route
+		// whose gap is a query filter would otherwise erase the evidence.
+		if queryShape != "" || g.passQuery == "" {
+			g.passQuery = queryShape
+		}
+	}
 	g.sample = rawPath
 	g.lastSeen = now
+}
+
+// queryShape renders a request's query as its sorted parameter NAMES joined by
+// commas — "page,per_page,status". Values are deliberately never included: a
+// value can carry a credential and is unbounded, while the name set is both
+// safe and exactly what the routes' shape guards test. Clamped like a route.
+func queryShape(q url.Values) string {
+	if len(q) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(q))
+	for name := range q {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return clampRoute(strings.Join(names, ","))
 }
 
 // groupSnapshotsLocked returns the groups sorted by total desc (key asc on
@@ -75,6 +127,13 @@ func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition string,
 func (l *requestLog) groupSnapshotsLocked(max int) []requestGroupSnapshot {
 	gs := make([]requestGroupSnapshot, 0, len(l.groups))
 	for key, g := range l.groups {
+		var byReason map[string]int64
+		if len(g.byReason) > 0 {
+			byReason = make(map[string]int64, len(g.byReason))
+			for k, v := range g.byReason {
+				byReason[k] = v
+			}
+		}
 		gs = append(gs, requestGroupSnapshot{
 			Key:         key,
 			Method:      g.method,
@@ -85,6 +144,8 @@ func (l *requestLog) groupSnapshotsLocked(max int) []requestGroupSnapshot {
 			Passthrough: g.byDisp[DispPassthrough],
 			Write:       g.byDisp[DispWrite],
 			Error:       g.byDisp[DispError],
+			ByReason:    byReason,
+			PassQuery:   g.passQuery,
 			Sample:      g.sample,
 			LastSeen:    g.lastSeen.Format(time.RFC3339),
 		})
