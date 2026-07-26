@@ -175,6 +175,7 @@ func NewRouter(
 	notifier *notify.Notifier,
 	dbPath string,
 	timeline *reqtimeline.Recorder,
+	debouncer *Debouncer,
 ) http.Handler {
 	r := chi.NewRouter()
 	// First: stamp every request's receipt time, so any record site can put a
@@ -198,14 +199,21 @@ func NewRouter(
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
 	// proxied request is recorded as a passthrough — and timed into the
 	// timeline ring for the dashboard's "Timeline" chart.
-	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter, func(resp *http.Response) {
+	//
+	// The debouncer sits BETWEEN the recorder and the proxy: every inbound
+	// request is still recorded and timed individually (a waiter's duration
+	// honestly includes the hold), while the coalesced batch makes at most one
+	// call through the proxy itself. Nil (window <= 0) leaves the chain
+	// untouched.
+	debouncer.attach(reqlog, timeline)
+	ghProxy := recordPassthrough(debouncer.Wrap(newGitHubProxy(gh.BaseURL(), meter, func(resp *http.Response) {
 		// A 401/403 on a passthrough call carrying a minted installation
 		// token invalidates that mint (see invalidateMintOnAuthFailure).
 		// resp.Request is the outbound clone carrying the inbound headers.
 		if resp.Request != nil {
 			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
 		}
-	}), reqlog)
+	})), reqlog)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every

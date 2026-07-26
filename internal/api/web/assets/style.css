@@ -353,10 +353,82 @@ table.webhooks td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.webhooks .wh-event { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 table.webhooks .wh-repo { color: var(--fg-muted); white-space: nowrap; }
 table.webhooks .wh-detail { color: var(--fg-muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The log tables must never push the page sideways: the long cells ELLIPSIZE
+   instead (the full value is one click away in the row's detail panel).
+   table-layout: fixed makes the widths below authoritative, which is what lets
+   a cell actually shrink — under auto layout a long unbroken path wins the
+   negotiation and drags the table off-screen. */
+table.webhooks.rows-collapsible { table-layout: fixed; }
+table.webhooks .wh-path {
+    font-family: var(--mono); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+table.webhooks .wh-caller { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.webhooks .wh-delivery { overflow: hidden; text-overflow: ellipsis; }
+/* Fixed layout needs explicit widths; the one column left unsized absorbs all
+   remaining space, so each table gives its slack to the field worth reading in
+   full (Path / Detail). Widths are per table — the two shapes differ. */
+table.cols-requests th:nth-child(1) { width: 132px; } /* Result   */
+table.cols-requests th:nth-child(2) { width: 92px; }  /* Upstream */
+table.cols-requests th:nth-child(3) { width: 74px; }  /* Method   */
+table.cols-requests th:nth-child(4) { width: 220px; } /* Caller   */
+/* Path is column 5 and deliberately unsized: last, and takes all the slack. */
+table.cols-webhooks th:nth-child(1) { width: 132px; } /* Result   */
+table.cols-webhooks th:nth-child(2) { width: 190px; } /* Event    */
+table.cols-webhooks th:nth-child(3) { width: 200px; } /* Repo     */
+table.cols-webhooks th:nth-child(5) { width: 100px; } /* Delivery */
+table.cols-webhooks th:nth-child(6) { width: 116px; } /* Received */
 table.webhooks .wh-delivery { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
 table.webhooks .wh-when { color: var(--fg-muted); white-space: nowrap; }
 
 /* ---- Request groups (Requests tab: Top requests / Top uncached) ---- */
+/* ---- Wide log tables ---- */
+/* The log tables carry more columns than the 1100px reading column comfortably
+   holds. Rather than scroll (a table you have to drag sideways is a table you
+   don't read), they widen SYMMETRICALLY into the page margins — equal on both
+   sides, so the table stays centred in the window at every size — and only
+   ellipsize once even that is not enough. The negative margins are dropped
+   below the width where they would reach the window edge, so the page body
+   never scrolls horizontally. --table-bleed is half the extra width. */
+:root { --table-bleed: 200px; }
+.table-wide { margin-left: calc(-1 * var(--table-bleed)); margin-right: calc(-1 * var(--table-bleed)); }
+@media (max-width: 1560px) { :root { --table-bleed: 0px; } }
+
+/* ---- Collapsible log rows ---- */
+/* A caret in the first cell is the affordance; no extra column for it. */
+table.webhooks tr.row-toggle { cursor: pointer; }
+table.webhooks tr.row-toggle:hover > td { background: var(--bg-elev-2); }
+table.webhooks tr.row-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The caret and the chip must stay on ONE line — the Result column is narrow
+   and a long disposition ("passthrough") would otherwise push the caret onto a
+   line of its own above it. */
+table.webhooks tr.row-toggle > td:first-child { white-space: nowrap; }
+table.webhooks tr.row-toggle > td:first-child::before {
+    content: "▸";
+    display: inline-block; width: 12px; margin-right: 4px;
+    color: var(--fg-muted); font-size: 10px;
+    transition: transform 0.12s ease;
+}
+table.webhooks tr.row-toggle.open > td:first-child::before { transform: rotate(90deg); }
+table.webhooks tr.row-toggle.open > td { background: var(--bg-elev-2); border-bottom-color: transparent; }
+
+/* The detail row is present but collapsed until its row is opened. */
+table.webhooks tr.row-detail { display: none; }
+table.webhooks tr.row-detail.open { display: table-row; }
+table.webhooks tr.row-detail > td { background: var(--bg-elev-2); padding: 4px 14px 12px; }
+
+.row-detail-grid {
+    display: grid; grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 14px; margin: 0; font-size: 12px;
+}
+.row-detail-grid dt { color: var(--fg-muted); }
+.row-detail-grid dd {
+    margin: 0; font-family: var(--mono);
+    /* The whole point of expanding is seeing the value in full. */
+    overflow-wrap: anywhere; white-space: pre-wrap;
+}
+
 details.req-groups { margin-bottom: 18px; }
 details.req-groups > summary {
     cursor: pointer; user-select: none; padding: 4px 0;
@@ -372,6 +444,18 @@ table.webhooks td.grp-breakdown .disp { margin-right: 6px; }
    (not a pass/fail verdict — some reasons are the cache working as designed),
    and the sampled query-parameter names are monospaced like a path. */
 .disp.reason { color: var(--gray); background: rgba(110,118,129,0.15); }
+/* The reason vocabulary and the sampled query shape are LITERAL values, so the
+   .disp capitalize must not touch them: `unmodeled-query` is the exact string
+   the server records, and query parameter names are case-SENSITIVE — rendering
+   `?author,since` as "?Author,Since" would name parameters that do not exist. */
+.disp.reason, .disp.qshape { text-transform: none; }
+
+/* Debounce chips: "held" is a cost (neutral/warning), "saved" a benefit —
+   greyed out when a route is paying the hold without coalescing anything. */
+.disp.held       { color: var(--yellow); background: rgba(210,153,34,0.12); }
+.disp.saved      { color: var(--green);  background: rgba(63,185,80,0.12); }
+.disp.saved-none { color: var(--gray);   background: rgba(110,118,129,0.15); }
+
 .disp.qshape {
     color: var(--accent); background: rgba(47,129,247,0.10);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

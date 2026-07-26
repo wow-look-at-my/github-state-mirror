@@ -87,9 +87,20 @@ type testStack struct {
 	ghURL    string
 	notifier *notify.Notifier
 	timeline *reqtimeline.Recorder
+	// debouncer is nil unless the test asked for passthrough coalescing via
+	// newFullTestStackDebounced. Nil is the right default: a real hold window
+	// would add its full delay to every passthrough in every other test.
+	debouncer *Debouncer
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
+	return newFullTestStackDebounced(t, authSvc, ghHandler, 0)
+}
+
+// newFullTestStackDebounced builds the stack with the passthrough debouncer
+// holding eligible reads for window (0 = disabled, the default everywhere
+// else).
+func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler http.Handler, window time.Duration) testStack {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -135,8 +146,10 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	// Wire the client's exchange observer like cmd/server does, so tests see
 	// the ghclient calls (e.g. requireAuth's /user resolution) on the chart.
 	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline)
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline}
+	debouncer := NewDebouncer(window)
+	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer}
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
