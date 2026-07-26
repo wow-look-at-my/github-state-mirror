@@ -202,6 +202,7 @@ func TestDispatch_PushAndRepositoryFlushCompareCache(t *testing.T) {
 		t.Helper()
 		require.NoError(t, store.PutCachedCompare(ctx, ghdata.CachedCompare{
 			Owner: "org1", Repo: "repo1", Basehead: basehead,
+			BaseRef: "main", HeadRef: "claude/dev", Status: 200,
 			Doc: `{"status":"ahead","ahead_by":1,"behind_by":0,"total_commits":1,"commits":[],"files":[]}`,
 		}, []ghdata.CachedGitCommit{commit}, now, time.Hour))
 		_, ok, err := store.GetCachedCompare(ctx, "org1", "repo1", basehead, now)

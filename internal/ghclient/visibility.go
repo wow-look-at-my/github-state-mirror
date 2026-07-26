@@ -18,12 +18,16 @@ import (
 // classifiable (a cached repo missing from the org data can then be
 // positively identified as archived rather than deleted/renamed). The
 // response is tiny, so it pages big (100 per page).
+// ownerAffiliations: OWNER pins the listing to repos the login actually owns
+// (the default [OWNER, COLLABORATOR] also returned a User's collaborator
+// repos -- the collaborator-repo bleed), and nameWithOwner is selected so the
+// response-side guard can verify each node's real owner.
 const ownerRepoVisibilityQuery = `
 query($owner: String!, $repoCursor: String) {
   repositoryOwner(login: $owner) {
-    repositories(first: 100, after: $repoCursor) {
+    repositories(first: 100, after: $repoCursor, ownerAffiliations: OWNER) {
       pageInfo { hasNextPage endCursor }
-      nodes { name visibility isArchived }
+      nodes { name nameWithOwner visibility isArchived }
     }
   }
 }
@@ -36,9 +40,10 @@ type gqlOwnerVisibilityResponse struct {
 			Repositories struct {
 				PageInfo gqlPageInfo `json:"pageInfo"`
 				Nodes    []struct {
-					Name       string `json:"name"`
-					Visibility string `json:"visibility"`
-					IsArchived bool   `json:"isArchived"`
+					Name          string `json:"name"`
+					NameWithOwner string `json:"nameWithOwner"`
+					Visibility    string `json:"visibility"`
+					IsArchived    bool   `json:"isArchived"`
 				} `json:"nodes"`
 			} `json:"repositories"`
 		} `json:"repositoryOwner"`
@@ -90,6 +95,15 @@ func (c *Client) OwnerRepoVisibilities(ctx context.Context, ownerLogin string) (
 
 		repos := resp.Data.RepositoryOwner.Repositories
 		for _, n := range repos.Nodes {
+			// The map is keyed by BARE repo name, so a foreign (collaborator)
+			// node could otherwise collide with -- and clobber -- a same-named
+			// OWNED repo's entry (last write wins), stamping the wrong repo's
+			// visibility onto an owned row, including flipping a private repo
+			// public. The guard kills that hazard: only nodes really owned by
+			// the queried login ever reach the map.
+			if dropForeignRepoNode(ownerLogin, n.NameWithOwner, "") {
+				continue
+			}
 			out[n.Name] = OwnerRepoVisibility{
 				Visibility: strings.ToLower(n.Visibility),
 				Archived:   n.IsArchived,

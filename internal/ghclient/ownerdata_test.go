@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -184,6 +185,72 @@ func TestGetOwnerData_PRPagination(t *testing.T) {
 	assert.Equal(t, "merge", prs[1].AutoMergeMethod.String)
 }
 
+// TestGetOwnerData_PageHook: the optional per-page callback reports the
+// cumulative repos fetched plus the connection's totalCount after EVERY page
+// (the owner query selects totalCount, so "N of M" is known from page one).
+func TestGetOwnerData_PageHook(t *testing.T) {
+	assert.Contains(t, ownerDataQuery, "totalCount", "the owner query must select the connection total for progress reporting")
+
+	pageBody := func(total int, hasNext bool, cursor string, nodes ...map[string]any) map[string]any {
+		return map[string]any{
+			"data": map[string]any{
+				"repositoryOwner": map[string]any{
+					"repositories": map[string]any{
+						"totalCount": total,
+						"pageInfo":   map[string]any{"hasNextPage": hasNext, "endCursor": cursor},
+						"nodes":      nodes,
+					},
+				},
+			},
+		}
+	}
+	page := 0
+	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		page++
+		switch page {
+		case 1:
+			_ = json.NewEncoder(w).Encode(pageBody(3, true, "C1",
+				ownerRepoNode("org1", "repo-a", nil), ownerRepoNode("org1", "repo-b", nil)))
+		case 2:
+			_ = json.NewEncoder(w).Encode(pageBody(3, false, "",
+				ownerRepoNode("org1", "repo-c", nil)))
+		default:
+			t.Fatalf("unexpected page %d", page)
+		}
+	})
+
+	var calls [][2]int
+	data, err := c.GetOwnerDataWithProgress(context.Background(), "org1", func(fetched, total int) {
+		calls = append(calls, [2]int{fetched, total})
+	})
+	require.NoError(t, err)
+	require.Len(t, data.Repos, 3)
+	assert.Equal(t, [][2]int{{2, 3}, {3, 3}}, calls, "one call per page, cumulative count + connection total")
+}
+
+// TestGetOwnerData_CarriesVisibility: the owner query selects the visibility
+// enum (an owner-only extra the locked org query must never grow) and
+// convertRepo lowercases it into the repo row, so the fleet refresher's
+// SyncOrgTruth stamps it into truth. Without this every refresher-synced row
+// sat at '' = fail-closed unknown (the 2026-07-20 report's 203
+// visibility_unknown entries).
+func TestGetOwnerData_CarriesVisibility(t *testing.T) {
+	assert.Contains(t, ownerDataQuery, "visibility",
+		"the owner query must select visibility so fleet syncs can stamp it")
+
+	node := ownerRepoNode("someuser", "dotfiles", nil)
+	node["visibility"] = "PRIVATE"
+	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ownerPage(false, "", node))
+	})
+
+	data, err := c.GetOwnerData(context.Background(), "someuser")
+	require.NoError(t, err)
+	require.Len(t, data.Repos, 1)
+	assert.Equal(t, "private", data.Repos[0].Visibility,
+		"GraphQL enum lowercased to the stored/REST form")
+}
+
 // TestGetOwnerData_NullOwnerFailsLoudly: repositoryOwner is nullable, so an
 // unknown login answers data.repositoryOwner=null with NO GraphQL error; that
 // must be an error, never an empty (every-repo-is-drift) result.
@@ -194,6 +261,25 @@ func TestGetOwnerData_NullOwnerFailsLoudly(t *testing.T) {
 	_, err := c.GetOwnerData(context.Background(), "ghost")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolved to null")
+}
+
+// TestGetOwnerData_GraphQLErrorsNotRetried: GraphQL-level errors[] arrive as
+// HTTP 200 semantic answers, not transport blips -- they must fail fast on the
+// first attempt (only 502/503/504/429 and network errors are retried).
+func TestGetOwnerData_GraphQLErrorsNotRetried(t *testing.T) {
+	calls := 0
+	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errors": []map[string]string{{"message": "Something went wrong"}},
+		})
+	})
+	c.SetRetryBackoff([]time.Duration{0})
+
+	_, err := c.GetOwnerData(context.Background(), "org1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "graphql errors")
+	assert.Equal(t, 1, calls)
 }
 
 // TestOwnerRepoVisibilities: the checker-private visibility twin resolves any
@@ -254,6 +340,14 @@ func TestOwnerRepoVisibilities_NullOwner(t *testing.T) {
 func TestOrgQueryUntouched(t *testing.T) {
 	assert.NotContains(t, orgDataQuery, "autoMergeRequest")
 	assert.NotContains(t, orgDataQuery, "isArchived\n")
+	// visibility is an owner-query-only extra too: the locked query carries no
+	// visibility selection, which (via UpsertRepo's non-empty guard) is exactly
+	// why an org-query-sourced sync can never blank a stamped value.
+	assert.NotContains(t, orgDataQuery, "visibility")
+	// The repositories-connection totalCount is an owner-query-only extra (the
+	// progress hook's "N of M"); the only totalCount the locked query may carry
+	// is prFields' reviewRequests one.
+	assert.NotContains(t, orgDataQuery, "totalCount\n")
 	assert.Contains(t, orgDataQuery, "labels(first: 10)")
 	assert.Contains(t, prFields, "labels(first: 10)")
 	assert.NotContains(t, prFields, "autoMergeRequest")

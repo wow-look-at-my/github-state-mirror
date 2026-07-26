@@ -79,6 +79,9 @@ export interface WebhooksResponse {
 // ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
+    // Verified display name for the actor (user login / app slug); absent when
+    // none was proven (e.g. token fingerprints, unverified identity headers).
+    actor_name?: string;
     method: string;
     path: string;
     disposition: string;
@@ -86,10 +89,73 @@ export interface RequestEvent {
     at: string;
 }
 
+// One route-shape group: cumulative (since restart) per-disposition counts for
+// every request whose method+normalized route matched, e.g.
+// "GET /repos/{owner}/{repo}/compare/{basehead}".
+export interface RequestGroup {
+    key: string; // method + " " + route
+    method: string;
+    route: string;
+    total: number;
+    hit: number;
+    miss: number;
+    passthrough: number;
+    write: number;
+    error: number;
+    sample: string; // one recent raw path, for identifying the shape
+    last_seen: string; // RFC3339
+}
+
 export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
+    groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
+    db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
+    db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
+}
+
+// ---- traffic timeline (every exchange the mirror participates in) ----
+// One timed event on the Timeline chart. Kind-specific fields are omitted for
+// the other kinds; dur_ms is the REAL measured duration (never fabricated).
+export interface TimelineEvent {
+    id: number;
+    kind: string; // "webhook" | "request" | "notify"
+    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>" | "⇒ notify"
+    start: string; // RFC3339
+    dur_ms: number;
+    disposition?: string;
+    // webhook fields
+    event_type?: string;
+    action?: string;
+    delivery_id?: string;
+    repo?: string;
+    // request/exchange fields
+    method?: string;
+    route?: string;
+    status?: number;
+    actor?: string;
+    actor_name?: string;
+    // free-form tooltip line (e.g. an unverified delivery's claimed type)
+    detail?: string;
+    // notify fields
+    target?: string;
+    attempt?: number;
+    final?: boolean;
+}
+
+export interface TimelineResponse {
+    events: TimelineEvent[] | null;
+    max_id: number; // the next ?since= cursor
+    retention_start: string; // RFC3339 — the 24h window floor
+    now: string; // RFC3339
+}
+
+// The <gsm-timeline> custom element (src/timeline.ts). app.ts creates it on
+// the Timeline tab and, in demo mode, overrides its fetcher so the standalone
+// preview renders canned data.
+export interface GsmTimelineElement extends HTMLElement {
+    fetcher: ((path: string) => Promise<TimelineResponse>) | null;
 }
 
 // ---- GitHub App rate limit ----
@@ -112,6 +178,9 @@ export interface InstallationRateLimit {
 // resets on restart.
 export interface ObservedRateLimit {
     identity: string;
+    // Verified display name for the identity (user login / app slug /
+    // installation account login); absent when none was observed.
+    name?: string;
     resource: string;
     limit: number;
     remaining: number;
@@ -249,6 +318,8 @@ export interface TruthFreshness {
     last_fetched_at?: string;
     error?: string;
     principal?: string;
+    // The principal's recorded display name (actor_identities), when known.
+    principal_name?: string;
 }
 
 export interface ConsistencyReport {
@@ -263,17 +334,42 @@ export interface ConsistencyReport {
     notes?: string[];
 }
 
+// One NDJSON line from the streaming consistency check / reconcile
+// (GET/POST /api/cache/check?stream=1): checker progress events while the run
+// works, then exactly one terminal line — phase "report" carrying the full
+// ConsistencyReport, or phase "error" when the run failed mid-stream.
+export interface CheckProgressEvent {
+    // start | owner | fetch | visibility | diffed | applied | skip | done
+    // | report | error (the last two only as the terminal line)
+    phase: string;
+    owner?: string;
+    index?: number; // this owner's 1-based position (phase=owner)
+    total?: number; // total owners (phase=owner)
+    owners?: number; // total owners the run will visit (phase=start)
+    repos_fetched?: number; // cumulative repos fetched so far (phase=fetch)
+    repos_total?: number; // the owner's repo total when known (phase=fetch)
+    discrepancies?: number; // running total across owners (phase=diffed)
+    applied?: AppliedSummary; // corrections tally so far (phase=applied)
+    reason?: string; // why the owner was skipped (phase=skip)
+    report?: ConsistencyReport; // the final report (phase=report)
+    error?: string; // the run's failure (phase=error)
+}
+
 export interface DemoStateData {
     me: Me;
     mine?: CacheResponse;
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
+    timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
     check?: ConsistencyReport; // global check (read-only)
     checkApplied?: ConsistencyReport; // the Reconcile (apply=true) answer
+    // Canned progress events replayed before check/checkApplied resolves (the
+    // demo mock can't stream, so the preview plays these on a timer).
+    checkProgress?: CheckProgressEvent[];
 }
 
 export interface DemoConfig {

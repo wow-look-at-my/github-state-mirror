@@ -1,6 +1,7 @@
 package ghclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
@@ -53,19 +56,92 @@ type Client struct {
 	identityCache    sync.Map // token -> TokenIdentity (incl. the definitive not-a-user verdict)
 	appIdentityCache sync.Map // app JWT -> AppIdentity
 	rateObserver     RateObserver
+	// retryBackoff overrides the transient-retry backoff schedule (nil = the
+	// defaults). See SetRetryBackoff.
+	retryBackoff []time.Duration
 }
 
 // RateObserver receives every GitHub API response this client sees, so the
 // server can passively record the X-RateLimit-* headers GitHub attaches (see
 // internal/ratemeter). identity is the principal from the request context
 // when one is set, else a label derived from the credential's shape — never
-// the raw token value.
-type RateObserver func(identity string, resp *http.Response)
+// the raw token value. name is the principal's verified display name from
+// the same context ("" when none).
+type RateObserver func(identity, name string, resp *http.Response)
 
 // SetRateObserver installs the rate observer. Call it once during startup
 // wiring, before the client serves requests: the field is read without
 // synchronization on the hot path.
 func (c *Client) SetRateObserver(obs RateObserver) { c.rateObserver = obs }
+
+// ExchangeObserver receives every HTTP exchange this client performs against
+// GitHub — identity resolution (/user), app verification (/app), token mints,
+// GraphQL syncs, the consistency checker's fetches, rate-limit polls — with
+// its REAL measured duration (request sent → response headers received).
+// Each retry attempt is a separate real request and is observed separately.
+// identity/name follow the RateObserver convention: the ctx principal when
+// set, else a credential-shape label ("app-jwt", "token:<fp12>",
+// "anonymous") — never a raw token. status is 0 when the exchange failed
+// before a response arrived.
+type ExchangeObserver func(identity, name, method, path string, status int, start time.Time, duration time.Duration)
+
+// SetExchangeObserver installs the exchange observer by wrapping the client's
+// transport, so EVERY request the client makes — through any helper, present
+// or future — is timed at one choke point. Call it once during startup
+// wiring, before the client serves requests.
+func (c *Client) SetExchangeObserver(obs ExchangeObserver) {
+	if obs == nil {
+		return
+	}
+	base := c.httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.httpClient.Transport = &timingTransport{base: base, observe: obs}
+}
+
+// timingTransport times each RoundTrip and reports it to the exchange
+// observer. It never alters the request or response.
+type timingTransport struct {
+	base    http.RoundTripper
+	observe ExchangeObserver
+}
+
+func (t *timingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.base.RoundTrip(req)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	credential := strings.TrimSpace(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer"))
+	identity, name := exchangeIdentity(req.Context(), credential)
+	t.observe(identity, name, req.Method, req.URL.Path, status, start, time.Since(start))
+	return resp, err
+}
+
+// exchangeIdentity labels a call for the observers: the ctx principal (with
+// its verified name) when one is set, else a label derived from the
+// credential's shape — never the raw token value.
+func exchangeIdentity(ctx context.Context, credential string) (identity, name string) {
+	identity = actor.FromContext(ctx)
+	if identity != "" {
+		// Only pair a name with a ctx-resolved principal: names are set
+		// alongside the actor, so a credential-shape fallback identity must
+		// never borrow one.
+		return identity, actor.NameFromContext(ctx)
+	}
+	switch {
+	case credential == "":
+		return "anonymous", ""
+	case strings.Count(credential, ".") == 2:
+		// A JWT (dot-separated structure — GitHub tokens never contain dots)
+		// is the app's own credential.
+		return "app-jwt", ""
+	default:
+		return "token:" + Fingerprint(credential)[:12], ""
+	}
+}
 
 // observeRate reports a response to the rate observer (if any). The identity
 // is the principal in ctx when set (requireAuth / the background app
@@ -77,18 +153,8 @@ func (c *Client) observeRate(ctx context.Context, credential string, resp *http.
 	if c.rateObserver == nil || resp == nil {
 		return
 	}
-	identity := actor.FromContext(ctx)
-	if identity == "" {
-		switch {
-		case credential == "":
-			identity = "anonymous"
-		case strings.Count(credential, ".") == 2:
-			identity = "app-jwt"
-		default:
-			identity = "token:" + Fingerprint(credential)[:12]
-		}
-	}
-	c.rateObserver(identity, resp)
+	identity, name := exchangeIdentity(ctx, credential)
+	c.rateObserver(identity, name, resp)
 }
 
 // New creates a Client targeting the public GitHub API. The client carries no
@@ -283,31 +349,154 @@ func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity
 	return id, nil
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
-	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
+// Transient-retry tuning for doJSON. GitHub (and the CDN in front of it)
+// intermittently answers 502/503/504 on otherwise-fine requests -- the very
+// reason the GraphQL fetches page at 5 repos each -- and a single blip used to
+// fail a whole multi-page owner fetch. Authoritative statuses (401/403/404/...)
+// are never retried: the reveal layer and deny-cache semantics depend on them.
+// GraphQL-level errors[] bodies arrive as HTTP 200 and stay fail-fast too (the
+// callers inspect them after doJSON returns).
+const doJSONAttempts = 3
 
+// retryAfterCap bounds how long a parseable Retry-After header can stretch one
+// backoff, so a huge value can't wedge a deadline-bounded fetch.
+const retryAfterCap = 10 * time.Second
+
+// defaultRetryBackoff is the sleep before attempts 2, 3, ... (the last entry
+// repeats).
+var defaultRetryBackoff = []time.Duration{500 * time.Millisecond, 2 * time.Second}
+
+// SetRetryBackoff overrides doJSON's transient-retry backoff schedule (tests
+// use zero delays so retries don't really sleep). The i-th entry is the sleep
+// before attempt i+2; the last entry repeats. Call it during wiring, like
+// SetRateObserver: the field is read without synchronization.
+func (c *Client) SetRetryBackoff(delays []time.Duration) { c.retryBackoff = delays }
+
+// retryableStatus reports whether an HTTP status is a transient upstream
+// failure worth retrying (never an authoritative 4xx answer).
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return false
+}
+
+// retryDelay returns the sleep before the given attempt (attempt >= 2): the
+// configured backoff, raised to a retryable response's parseable Retry-After
+// (capped at retryAfterCap).
+func (c *Client) retryDelay(attempt int, resp *http.Response) time.Duration {
+	backoff := c.retryBackoff
+	if len(backoff) == 0 {
+		backoff = defaultRetryBackoff
+	}
+	i := attempt - 2
+	if i >= len(backoff) {
+		i = len(backoff) - 1
+	}
+	d := backoff[i]
+	if ra := retryAfterDelay(resp); ra > d {
+		d = ra
+	}
+	return d
+}
+
+// retryAfterDelay parses a response's Retry-After header (seconds form; zero
+// when absent/unparseable), capped at retryAfterCap.
+func retryAfterDelay(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	secs, err := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	if d := time.Duration(secs) * time.Second; d < retryAfterCap {
+		return d
+	}
+	return retryAfterCap
+}
+
+// sleepBeforeRetry sleeps the backoff before the given attempt, cut short by
+// ctx cancellation (false = don't retry).
+func (c *Client) sleepBeforeRetry(ctx context.Context, attempt int, resp *http.Response) bool {
+	d := c.retryDelay(attempt, resp)
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
+	// Buffer the body once so every retry attempt can resend it from the
+	// start (an io.Reader is consumed by the first attempt).
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return err
+		}
+	}
+	url := c.baseURL + path
 	// Authenticate with the token carried in the context (caller's bearer token
 	// or a GitHub App installation token). Requests without one are sent
 	// unauthenticated and will be rejected by GitHub.
 	token := tokenFromContext(ctx)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		var reqBody io.Reader
+		if bodyBytes != nil {
+			reqBody = bytes.NewReader(bodyBytes)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			// Network errors are transient EXCEPT the caller's own
+			// cancellation/deadline -- retrying those only delays the exit.
+			if attempt >= doJSONAttempts || ctx.Err() != nil ||
+				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			if !c.sleepBeforeRetry(ctx, attempt+1, nil) {
+				return err
+			}
+			continue
+		}
+		c.observeRate(ctx, token, resp)
+
+		if attempt < doJSONAttempts && retryableStatus(resp.StatusCode) {
+			// Drain a little and close so the connection is reusable, then
+			// back off (honoring a capped Retry-After) and resend.
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+			resp.Body.Close()
+			if !c.sleepBeforeRetry(ctx, attempt+1, resp) {
+				return fmt.Errorf("github api %s %s: %d (retry canceled: %w)", method, path, resp.StatusCode, ctx.Err())
+			}
+			continue
+		}
+		break
 	}
 	defer resp.Body.Close()
-	c.observeRate(ctx, token, resp)
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)

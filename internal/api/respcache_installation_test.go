@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -57,4 +58,23 @@ func TestCachedRepoInstallation_HitAndFlush(t *testing.T) {
 		assert.Empty(t, w.Header().Get(cacheHeader))
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.installHits))
 	}
+}
+
+// TestCachedRepoInstallation_RecordsAppIdentity: this route self-verifies its
+// App JWT outside requireAuth, so it must record the verified app:<id> ->
+// slug mapping itself — otherwise the principal never reaches
+// actor_identities and the dashboard shows "(unknown)".
+func TestCachedRepoInstallation_RecordsAppIdentity(t *testing.T) {
+	router, store, _, _ := pullsCacheStack(t)
+
+	req := httptest.NewRequest("GET", "/repos/org1/repo1/installation", nil)
+	req.Header.Set("Authorization", "Bearer "+goodAppJWT)
+	w := do(t, router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	ids, err := store.ListActorIdentities(context.Background())
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "app:777", ids[0].Actor)
+	assert.Equal(t, "testapp", ids[0].Login)
 }
