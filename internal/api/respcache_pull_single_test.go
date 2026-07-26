@@ -29,7 +29,7 @@ func TestCachedPull_MergeableGate(t *testing.T) {
 
 	mergeable := "null"
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		switch mergeable {
 		case "true":
 			pr["mergeable"] = true
@@ -106,7 +106,7 @@ func TestCachedPull_WebhookNullMergeableKeepsGateHonest(t *testing.T) {
 	pr9["mergeable"] = nil
 	postWebhook(t, router, "pull_request", prEvent("opened", pr9))
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		p := upstreamPR(9, "open", "Third PR", "hotfix", shaTree1, "2026-07-03T10:00:00Z")
+		p := upstreamSinglePR(9, "open", "Third PR", "hotfix", shaTree1, "2026-07-03T10:00:00Z")
 		p["mergeable"] = true
 		servePRJSON(w, p)
 	}
@@ -154,7 +154,7 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 
 	offeredSha := shaMid // the pre-push test-merge sha (upstreamPR's default)
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = true
 		pr["merged"] = false
 		pr["merge_commit_sha"] = offeredSha
@@ -222,7 +222,7 @@ func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 
 	baseTip := shaTip // GitHub's reported base tip: already the push's after
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = true
 		pr["merged"] = false
 		pr["merge_commit_sha"] = shaMid
@@ -297,7 +297,7 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 			_, _ = w.Write([]byte(rawDiff))
 			return
 		}
-		servePRJSON(w, upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
+		servePRJSON(w, upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
 	}
 
 	for i := 1; i <= 2; i++ {
@@ -334,7 +334,7 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 				`"documentation_url":"https://docs.github.com/rest/pulls/pulls"}`))
 			return
 		}
-		servePRJSON(w, upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
+		servePRJSON(w, upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
 	}
 	diffReq := func() *http.Request {
 		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
@@ -446,7 +446,7 @@ func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 
 	// It closes upstream.
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = nil
 		pr["merged"] = true
 		servePRJSON(w, pr)
@@ -493,7 +493,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 
 	// A merged-closed PR: absorbed as a rendered doc on the first read.
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = nil
 		pr["merged"] = true
 		servePRJSON(w, pr)
@@ -520,7 +520,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	// payload also re-seeds the open row -- with an unresolved mergeable, so
 	// the read still reaches GitHub.)
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		pr := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = true
 		pr["merged"] = false
 		servePRJSON(w, pr)
@@ -545,4 +545,73 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	_, ok, err := store.GetCachedClosedPull(seedCtx(), "org1", "repo1", 7, time.Now())
 	require.NoError(t, err)
 	assert.False(t, ok, "the open absorb must drop the stale closed doc")
+}
+
+// TestCachedPull_DiffStats: the single-PR rebuild serves the additions and
+// deletions the absorb has always stored (repo-nightmare renders them as each
+// PR's diff size, and read them as `undefined` while the rebuild dropped
+// them), and a row that has NEVER seen a single-PR answer -- absorbed from
+// the LIST, which carries no stats, with mergeable resolved independently by
+// a webhook -- misses rather than serving `"additions": null` forever.
+func TestCachedPull_DiffStats(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	target := "/repos/org1/repo1/pulls/7"
+
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		pr["mergeable"] = true
+		pr["merged"] = false
+		servePRJSON(w, pr)
+	}
+
+	// Miss: fetched, absorbed, and the stats ride the rebuild.
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	require.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assertNoURLKeys(t, w1.Body.Bytes())
+	var missed map[string]any
+	require.NoError(t, json.Unmarshal(w1.Body.Bytes(), &missed))
+	assert.Equal(t, float64(12), missed["additions"])
+	assert.Equal(t, float64(3), missed["deletions"])
+
+	// Hit: served from the row, byte-identical stats.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
+	assert.JSONEq(t, w1.Body.String(), w2.Body.String(), "hit and miss must rebuild identically")
+
+	// A different PR reaches the row space only through the LIST (no stats)
+	// plus a webhook that resolves mergeable. Rest-complete and
+	// mergeable-known, but with nothing to answer additions with -- so the
+	// single-PR read must MISS, and one fetch heals it into a hit.
+	list := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?state=open&per_page=100", nil))
+	require.Equal(t, http.StatusOK, list.Code)
+	var listed []map[string]any
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &listed))
+	require.NotEmpty(t, listed)
+	_, hasStats := listed[0]["additions"]
+	assert.False(t, hasStats, "a rebuilt LIST must never invent stats GitHub's list does not send")
+
+	pr8 := upstreamPR(8, "open", "Second PR", "other-branch", shaTip, "2026-07-02T10:00:00Z")
+	pr8["mergeable"] = true
+	postWebhook(t, router, "pull_request", prEvent("synchronize", pr8))
+
+	u.single = func(w http.ResponseWriter, r *http.Request) {
+		pr := upstreamSinglePR(8, "open", "Second PR", "other-branch", shaTip, "2026-07-02T10:00:00Z")
+		pr["mergeable"] = true
+		pr["merged"] = false
+		servePRJSON(w, pr)
+	}
+	before := atomic.LoadInt32(&u.singleHits)
+	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/8", nil))
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a statless row must not hit and serve null stats")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.singleHits))
+
+	w4 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/8", nil))
+	assert.Equal(t, "hit", w4.Header().Get(cacheHeader), "the absorbed stats must heal the row into a hit")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.singleHits))
+	var healed map[string]any
+	require.NoError(t, json.Unmarshal(w4.Body.Bytes(), &healed))
+	assert.Equal(t, float64(12), healed["additions"])
+	assert.Equal(t, float64(3), healed["deletions"])
 }
