@@ -177,20 +177,32 @@ func (d *WebhookDispatcher) onWorkflowJob(ctx context.Context, event webhook.Eve
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParsePushPayload(event.Raw)
 	if err != nil {
+		// Even an unparseable push proves something moved in this repo, and a
+		// moved branch stales every affected PR's merge fields. The targeted
+		// per-branch un-resolve below needs the parsed ref, so conservatively
+		// un-resolve merge fields on ALL the repo's open PRs first (a
+		// wrongly-nulled row just re-fetches; a wrongly-kept one can serve a
+		// frozen pre-push answer) -- then fall back to the generic staleness
+		// marking.
+		if owner, name := event.RepoOwner(), event.RepoName(); owner != "" && name != "" {
+			if nerr := d.store.NullPRMergeableByRepo(ctx, owner, name); nerr != nil {
+				slog.Warn("webhook: repo-wide un-resolve PR mergeable failed", "repo", owner+"/"+name, "error", nerr)
+			}
+		}
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
-	}
-	d.absorbPushCommits(ctx, payload)
-	if err := d.store.SetRepoPushedAt(ctx, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
-		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("apply push failed")
 	}
 	// A branch push makes GitHub recompute mergeability for every open PR
 	// based on (or heading from) that branch, and no webhook ever carries the
-	// recomputed value -- so un-resolve the cached mergeable rather than let
-	// the single-PR cache keep serving the pre-push answer. Best-effort and
-	// disposition-neutral, like the commit absorption above.
+	// recomputed value -- so un-resolve the cached mergeable (remembering the
+	// invalidated test-merge sha: a refetch re-offering it is presumed
+	// pre-push -- plus the push's after tip, the proof by which an answer
+	// that already reflects this push is recognized and accepted) rather than
+	// let the single-PR cache keep serving the pre-push answer. This
+	// invalidation runs FIRST, before any other fallible step, so a transient
+	// error elsewhere in the handler can never skip it -- each step logs its
+	// own failure and the handler carries on.
 	if branch := payload.Branch(); branch != "" {
-		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch); err != nil {
+		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
 		// A push to the DEFAULT branch likewise stales default_branch_status:
@@ -204,6 +216,11 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 			}
 		}
+	}
+	d.absorbPushCommits(ctx, payload)
+	if err := d.store.SetRepoPushedAt(ctx, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
+		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		return errored("apply push failed")
 	}
 	return applied("updated pushed_at")
 }
@@ -279,107 +296,29 @@ func fullHexSHA(s string) bool {
 	return true
 }
 
-// invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
-// stale. push/repository events flush the repo's contents rows -- the
-// conservative whole-repo flush; the payload's modified-paths refinement can
-// come later -- AND its commits-list snapshots (a push moves every
-// ref-relative listing; the absorbed git-commit rows are immutable and stay)
-// AND its compare docs (a push to either side of any basehead changes the
-// comparison; whole-repo is the correct coarse grain since a payload can't
-// resolve which baseheads a moved ref appears in). repository events
-// (rename/delete/visibility) additionally flush the repo's "open-PR list
-// complete" marker; pull_request events deliberately do NOT -- they maintain
-// the PR rows, which is what the marker asserts. installation events flush
-// the installation's cached token mints AND cached repo-installation answers
-// (a suspended/deleted/re-scoped installation must not keep serving either).
-// Git-commit rows are immutable and are deliberately never invalidated.
-func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
-	switch event.Type {
-	case "push", "repository":
-		owner, repo := event.RepoOwner(), event.RepoName()
-		if owner == "" || repo == "" {
-			return
-		}
-		if err := d.store.InvalidateContentsCache(ctx, owner, repo); err != nil {
-			slog.Warn("webhook: invalidate contents cache failed", "repo", owner+"/"+repo, "error", err)
-		}
-		if err := d.store.InvalidateCommitsListCache(ctx, owner, repo); err != nil {
-			slog.Warn("webhook: invalidate commits list cache failed", "repo", owner+"/"+repo, "error", err)
-		}
-		if err := d.store.InvalidateCompareCache(ctx, owner, repo); err != nil {
-			slog.Warn("webhook: invalidate compare cache failed", "repo", owner+"/"+repo, "error", err)
-		}
-		if event.Type == "repository" {
-			if err := d.store.InvalidatePullsListMarkers(ctx, owner, repo); err != nil {
-				slog.Warn("webhook: invalidate pulls list markers failed", "repo", owner+"/"+repo, "error", err)
-			}
-		}
-	case "installation", "installation_repositories":
-		if event.InstallationID == 0 {
-			return
-		}
-		id := fmt.Sprintf("%d", event.InstallationID)
-		if err := d.store.InvalidateInstallTokenCache(ctx, id); err != nil {
-			slog.Warn("webhook: invalidate install token cache failed", "installation", id, "error", err)
-		}
-		if err := d.store.InvalidateRepoInstallationCache(ctx, event.InstallationID); err != nil {
-			slog.Warn("webhook: invalidate repo installation cache failed", "installation", id, "error", err)
-		}
-	}
-}
-
-func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {
-	return d.applyPRPayload(ctx, event)
-}
-
-// applyPRPayload parses full PR data from the webhook and writes it directly
-// into global truth.
-func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Event) outcome {
-	payload, err := webhook.ParsePRPayload(event.Raw)
-	if err != nil {
-		slog.Warn("webhook: failed to parse PR payload, falling back to invalidation", "error", err)
-		return d.invalidateRepoOrg(ctx, event, "unparseable PR payload")
-	}
-
-	owner, repo := payload.PR.Owner, payload.PR.Repo
-	if owner == "" || repo == "" {
-		return d.invalidateRepoOrg(ctx, event, "PR payload missing owner/repo")
-	}
-
-	// PR closed/merged -> delete (we only cache open PRs).
-	if payload.PR.State == "CLOSED" {
-		if err := d.store.DeletePR(ctx, owner, repo, payload.PR.Number); err != nil {
-			slog.Warn("webhook: failed to delete PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-			return errored("delete closed PR failed")
-		}
-		// Drop the commit-check rows for the (now irrelevant) head commit.
-		if err := d.store.DeleteCommitChecks(ctx, owner, repo, payload.PR.HeadRefOid.String); err != nil {
-			slog.Warn("webhook: failed to delete commit checks for closed PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		}
-		slog.Info("webhook: deleted closed PR from cache", "pr", prRef(owner, repo, payload.PR.Number))
-		return applied(fmt.Sprintf("removed closed PR #%d", payload.PR.Number))
-	}
-
-	// Open/updated PR -> upsert into global truth (with the CI rollup and the
-	// label replace).
-	if err := d.store.UpsertPRWithChecks(ctx, payload.PR, payload.Labels, time.Now()); err != nil {
-		slog.Warn("webhook: failed to upsert PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		return errored("upsert PR failed")
-	}
-	slog.Info("webhook: applied PR data from webhook payload", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action)
-	return applied(fmt.Sprintf("upserted PR #%d", payload.PR.Number))
-}
-
-func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) outcome {
-	// The review payload embeds the full pull_request, so apply it like a
-	// pull_request event.
-	return d.applyPRPayload(ctx, event)
-}
-
 func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParseCheckPayload(event.Type, event.Raw)
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
+	}
+	// A non-completed check_suite delivery records NOTHING in truth. GitHub
+	// auto-creates a suite per sha for EVERY app with checks:write, and an app
+	// that runs no checks on the sha leaves its empty suite queued forever --
+	// so the PENDING row a requested/queued delivery would mint is a permanent
+	// ghost no later event clears, pinning the low-water-mark rollup at
+	// PENDING and re-poisoning last_commit_status on every PR upsert after
+	// every heal (the 2026-07-20 report's live-minting rollup cluster).
+	// Nothing real is lost: a genuine suite's pending phase is already carried
+	// by its own check_runs' queued/in_progress events, and GitHub's own
+	// statusCheckRollup ignores suites entirely -- this aligns the mirror's
+	// rollup inputs with GitHub's. Completed suites with real conclusions
+	// keep applying exactly as before (a completed suite whose conclusion
+	// normalizes to PENDING is dropped too: the suite is finished, so that
+	// row would be just as permanent). The response caches already flushed --
+	// handle() invalidates BEFORE the disposition logic, the queued-
+	// workflow_job precedent -- so the sha's commit-CI snapshots still moved.
+	if event.Type == "check_suite" && payload.State == "PENDING" {
+		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
 	}
 	rollup, err := d.store.ApplyCommitStatus(ctx, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
 	if err != nil {

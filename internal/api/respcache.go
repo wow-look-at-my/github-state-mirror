@@ -2,8 +2,6 @@ package api
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,13 +29,23 @@ import (
 // Cached routes:
 //
 //   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404)
-//   - GET /repos/{owner}/{repo}/git/commits/{sha}   (200 only; immutable)
+//   - GET /repos/{owner}/{repo}/git/commits/{sha}   (respcache_gitcommits.go;
+//     200 immutable + expiring 404 miss markers)
 //   - POST /app/installations/{id}/access_tokens    (201; App-JWT verified)
 //   - GET /repos/{owner}/{repo}/pulls               (respcache_pulls.go)
-//   - GET /repos/{owner}/{repo}/pulls/{number}      (respcache_pulls.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}      (respcache_pulls.go; the
+//     diff-Accept read's 406 verdicts in respcache_pulldiff.go)
 //   - GET /repos/{owner}/{repo}/installation        (respcache_pulls.go)
 //   - GET /repos/{owner}/{repo}/commits             (respcache_commits.go)
 //   - GET /repos/{owner}/{repo}/compare/{basehead}  (respcache_compare.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/status      (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/commits/{ref}/statuses    (respcache_commitci.go)
+//   - GET /repos/{owner}/{repo}/statuses/{ref}      (its legacy alias, same file)
+//   - GET /repos/{owner}/{repo}/actions/runs        (respcache_actionsruns.go)
+//   - GET /repos/{owner}/{repo}                     (respcache_repo.go)
+//   - GET /repos/{owner}/{repo}/branches            (respcache_branches.go)
+//   - GET /repos/{owner}/{repo}/pulls/{number}/files (respcache_pullfiles.go)
 //
 // The single-PR route was once deliberately passthrough because its body
 // carries the lazily-computed `mergeable` field that pr-minder polls for; it
@@ -137,7 +145,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	// grant so steady consumers never age out mid-use. (A 404 is not proof
 	// either way; the reveal layer already vouched for this read.)
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveContents(w, r, c, false)
 }
 
@@ -150,7 +158,7 @@ func (h *handlers) serveContents(w http.ResponseWriter, r *http.Request, c ghdat
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, status, body, hit)
 }
@@ -274,321 +282,6 @@ func renderContents(c ghdata.CachedContents) (int, []byte, error) {
 	}
 }
 
-// ---- GET /repos/{owner}/{repo}/git/commits/{sha} ----
-
-// cachedGitCommit serves a git commit from absorbed state. Commits are
-// immutable, so cached rows never expire and no webhook invalidates them —
-// only LRU pruning bounds the table. Rows are also absorbed from push webhook
-// payloads (internal/sync/webhook.go), so the common post-push read can hit
-// without any GitHub fetch ever having happened.
-func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
-	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
-	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	sha := strings.ToLower(chi.URLParam(r, "sha"))
-
-	// Only full hex object ids are cache keys (a short sha is ambiguous over
-	// time); the endpoint takes no query params. Anything else — passthrough.
-	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !isFullHexSHA(sha) {
-		h.ghProxy.ServeHTTP(w, r)
-		return
-	}
-
-	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindGitCommit, owner+"/"+repo+"@"+sha); outcome {
-	case revealDenied:
-		h.serveDenyVerdict(w, r, verdict, cached)
-		return
-	case revealError:
-		h.revealFailed(w, r)
-		return
-	}
-
-	now := time.Now()
-	if c, ok, err := h.store.GetCachedGitCommit(r.Context(), owner, repo, sha, now); err == nil && ok {
-		h.serveGitCommit(w, r, c, true)
-		return
-	} else if err != nil {
-		slog.Warn("git commit cache read failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
-	}
-
-	resp, body, overflow, err := h.fetchUpstream(r, nil)
-	if err != nil {
-		h.upstreamError(w, r, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	c, absorbed := absorbGitCommit(owner, repo, sha, resp.StatusCode, body)
-	if overflow || !absorbed {
-		// Includes 404s: a sha not found now may be pushed later, so a 404 is
-		// never cached for this immutable-content route.
-		h.replayUnstored(w, r, resp, body)
-		return
-	}
-	if err := h.store.PutCachedGitCommit(r.Context(), c, now); err != nil {
-		slog.Warn("git commit cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
-	}
-	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
-	h.serveGitCommit(w, r, c, false)
-}
-
-func (h *handlers) serveGitCommit(w http.ResponseWriter, r *http.Request, c ghdata.CachedGitCommit, hit bool) {
-	body, err := marshalTrimmed(renderGitCommit(c))
-	if err != nil {
-		slog.Warn("git commit cache render failed", "sha", c.SHA, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
-	}
-	writeRebuilt(w, http.StatusOK, body, hit)
-}
-
-// gitPersonJSON is a commit author/committer identity.
-type gitPersonJSON struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Date  string `json:"date"`
-}
-
-// gitSHAJSON is a bare object reference ({"sha": ...}).
-type gitSHAJSON struct {
-	SHA string `json:"sha"`
-}
-
-// gitCommitJSON is the trimmed rebuild of a git commit: one consistent shape
-// regardless of source (upstream fetch or push webhook). Fields GitHub has
-// that we drop — node_id, verification, url/html_url and the tree/parent
-// urls — stay dropped.
-type gitCommitJSON struct {
-	SHA       string        `json:"sha"`
-	Author    gitPersonJSON `json:"author"`
-	Committer gitPersonJSON `json:"committer"`
-	Message   string        `json:"message"`
-	Tree      gitSHAJSON    `json:"tree"`
-	Parents   []gitSHAJSON  `json:"parents"`
-}
-
-func renderGitCommit(c ghdata.CachedGitCommit) gitCommitJSON {
-	parents := make([]gitSHAJSON, 0, len(c.Parents))
-	for _, p := range c.Parents {
-		parents = append(parents, gitSHAJSON{SHA: p})
-	}
-	return gitCommitJSON{
-		SHA:       c.SHA,
-		Author:    gitPersonJSON{Name: c.AuthorName, Email: c.AuthorEmail, Date: c.AuthorDate},
-		Committer: gitPersonJSON{Name: c.CommitterName, Email: c.CommitterEmail, Date: c.CommitterDate},
-		Message:   c.Message,
-		Tree:      gitSHAJSON{SHA: c.TreeSHA},
-		Parents:   parents,
-	}
-}
-
-// absorbGitCommit parses an upstream git-commit response into cacheable state.
-// Only a well-formed 200 is absorbed.
-func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.CachedGitCommit, bool) {
-	if status != http.StatusOK {
-		return ghdata.CachedGitCommit{}, false
-	}
-	var g struct {
-		SHA     string `json:"sha"`
-		Message string `json:"message"`
-		Author  struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
-			Date  string `json:"date"`
-		} `json:"author"`
-		Committer struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
-			Date  string `json:"date"`
-		} `json:"committer"`
-		Tree struct {
-			SHA string `json:"sha"`
-		} `json:"tree"`
-		Parents []struct {
-			SHA string `json:"sha"`
-		} `json:"parents"`
-	}
-	if err := json.Unmarshal(body, &g); err != nil || g.SHA == "" || g.Tree.SHA == "" {
-		return ghdata.CachedGitCommit{}, false
-	}
-	parents := make([]string, 0, len(g.Parents))
-	for _, p := range g.Parents {
-		parents = append(parents, p.SHA)
-	}
-	return ghdata.CachedGitCommit{
-		Owner: owner, Repo: repo, SHA: sha, Message: g.Message,
-		AuthorName: g.Author.Name, AuthorEmail: g.Author.Email, AuthorDate: g.Author.Date,
-		CommitterName: g.Committer.Name, CommitterEmail: g.Committer.Email, CommitterDate: g.Committer.Date,
-		TreeSHA: g.Tree.SHA, Parents: parents,
-	}, true
-}
-
-// isFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex
-// object id.
-func isFullHexSHA(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// ---- POST /app/installations/{id}/access_tokens ----
-
-// cachedInstallationToken caches installation-token mints. The route sits
-// OUTSIDE requireAuth: its Authorization bearer is a GitHub App JWT (which
-// cannot resolve GET /user), so the handler verifies it itself via
-// VerifyAppIdentity — the same unforgeable check the X-Mirror-Identity header
-// uses — and partitions by the verified app id. Cache key: (app id,
-// installation id, SHA-256 of the canonicalized request body) — an empty body
-// and a permissions/repositories subset mint DIFFERENT tokens. A caller whose
-// JWT does not verify is forwarded to GitHub unchanged, uncached.
-func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Request) {
-	jwt := bearerToken(r)
-	if jwt == "" {
-		http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
-		return
-	}
-	reqBody, err := io.ReadAll(io.LimitReader(r.Body, maxMintBodyBytes+1))
-	if err != nil || len(reqBody) > maxMintBodyBytes {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	restoreBody := func() {
-		r.Body = io.NopCloser(bytes.NewReader(reqBody))
-		r.ContentLength = int64(len(reqBody))
-	}
-
-	ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
-	if err != nil {
-		// Not a verifiable App JWT: not ours to cache. Forward unchanged and
-		// let GitHub decide (it will reject a bad credential itself).
-		restoreBody()
-		h.ghProxy.ServeHTTP(w, r)
-		return
-	}
-	actorKey := fmt.Sprintf("app:%d", ident.ID)
-	ctx := actor.WithActor(r.Context(), actorKey)
-	installID := chi.URLParam(r, "id")
-	bodyHash := canonicalBodyHash(reqBody)
-
-	now := time.Now()
-	if t, ok, err := h.store.GetCachedInstallToken(ctx, actorKey, installID, bodyHash, now); err == nil && ok {
-		h.reqlog.record(actorKey, r.Method, r.URL.Path, DispHit)
-		h.serveInstallToken(w, t, true)
-		return
-	} else if err != nil {
-		slog.Warn("install token cache read failed", "installation", installID, "error", err)
-	}
-
-	resp, respBody, overflow, err := h.fetchUpstream(r, reqBody)
-	if err != nil {
-		h.upstreamError(w, r, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	t, serveUntil, absorbed := absorbInstallToken(installID, bodyHash, resp.StatusCode, respBody, now)
-	if overflow || !absorbed {
-		h.replayUnstored(w, r, resp, respBody)
-		return
-	}
-	if err := h.store.PutCachedInstallToken(ctx, actorKey, t, now, serveUntil); err != nil {
-		slog.Warn("install token cache write failed", "installation", installID, "error", err)
-	}
-	h.reqlog.recordStatus(actorKey, r.Method, r.URL.Path, DispMiss, resp.StatusCode)
-	h.serveInstallToken(w, t, false)
-}
-
-// mintTokenJSON is the trimmed rebuild of a token-mint 201. GitHub's response
-// has no URL fields, but it can carry a huge `repositories` array (full repo
-// objects, urls and all) — dropped; output is exactly these state fields.
-type mintTokenJSON struct {
-	Token               string          `json:"token"`
-	ExpiresAt           string          `json:"expires_at"`
-	Permissions         json.RawMessage `json:"permissions,omitempty"`
-	RepositorySelection string          `json:"repository_selection,omitempty"`
-}
-
-func (h *handlers) serveInstallToken(w http.ResponseWriter, t ghdata.CachedInstallToken, hit bool) {
-	out := mintTokenJSON{Token: t.Token, ExpiresAt: t.TokenExpiresAt, RepositorySelection: t.RepositorySelection}
-	if t.Permissions != "" {
-		out.Permissions = json.RawMessage(t.Permissions)
-	}
-	body, err := marshalTrimmed(out)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeRebuilt(w, http.StatusCreated, body, hit)
-}
-
-// absorbInstallToken parses a mint response into cacheable state. Only a 201
-// whose expires_at parses AND leaves usable lifetime past the safety buffer
-// is absorbed — a token about to expire is served but never stored, so a
-// cached mint always has at least mintExpiryBuffer of validity left.
-func absorbInstallToken(installID, bodyHash string, status int, body []byte, now time.Time) (ghdata.CachedInstallToken, time.Time, bool) {
-	if status != http.StatusCreated {
-		return ghdata.CachedInstallToken{}, time.Time{}, false
-	}
-	var m struct {
-		Token               string          `json:"token"`
-		ExpiresAt           string          `json:"expires_at"`
-		Permissions         json.RawMessage `json:"permissions"`
-		RepositorySelection string          `json:"repository_selection"`
-	}
-	if err := json.Unmarshal(body, &m); err != nil || m.Token == "" || m.ExpiresAt == "" {
-		return ghdata.CachedInstallToken{}, time.Time{}, false
-	}
-	exp, err := time.Parse(time.RFC3339, m.ExpiresAt)
-	if err != nil {
-		return ghdata.CachedInstallToken{}, time.Time{}, false
-	}
-	serveUntil := exp.Add(-mintExpiryBuffer)
-	if !serveUntil.After(now) {
-		return ghdata.CachedInstallToken{}, time.Time{}, false
-	}
-	return ghdata.CachedInstallToken{
-		InstallationID: installID, BodyHash: bodyHash,
-		Token: m.Token, TokenExpiresAt: m.ExpiresAt,
-		Permissions: string(m.Permissions), RepositorySelection: m.RepositorySelection,
-	}, serveUntil, true
-}
-
-// canonicalBodyHash hashes a mint request body into its cache-key form. The
-// body is canonicalized first — whitespace-insensitive, and JSON objects are
-// re-marshaled with sorted keys — so equivalent bodies share a key while any
-// semantic difference (a permissions subset, a repositories list) gets its
-// own. An empty body hashes as the empty string.
-func canonicalBodyHash(body []byte) string {
-	canon := bytes.TrimSpace(body)
-	if len(canon) > 0 {
-		var v interface{}
-		if err := json.Unmarshal(canon, &v); err == nil {
-			if remarshaled, err := json.Marshal(v); err == nil {
-				canon = remarshaled
-			}
-		}
-	}
-	sum := sha256.Sum256(canon)
-	return hex.EncodeToString(sum[:])
-}
-
-// ---- shared plumbing ----
-
-// contentsResourceKey is the deny-cache resource key for one contents read.
-func contentsResourceKey(owner, repo, path, ref string) string {
-	return owner + "/" + repo + "/" + path + "?ref=" + ref
-}
-
 // refreshGrantOn2xx renews the caller's grant after a successful repo-scoped
 // fetch with their own token: GitHub just re-proved their access. Best-effort.
 func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status int) {
@@ -600,7 +293,7 @@ func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status
 		return
 	}
 	if err := h.store.RecordGrant(r.Context(), principal, owner, repo, ghdata.GrantSourceProbe, time.Now()); err != nil {
-		slog.Warn("refresh grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+		slog.Warn("refresh grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(r.Context()))
 	}
 }
 
@@ -651,18 +344,32 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	}
 	copyForwardHeaders(req.Header, r.Header)
 
+	// Time the real mirror→GitHub leg (headers through buffered body) into
+	// the timeline ring as its own "upstream" event, distinct from the
+	// inbound miss the route records end-to-end via observeStatus: both
+	// exchanges are real, so both are on the chart.
+	who := callerLabel(r)
+	start := time.Now()
+	recordFetch := func(status int, disp string) {
+		h.timeline.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), status, disp, who.Key, who.Name)
+	}
+
 	resp, err := h.upstream.Do(req)
 	if err != nil {
+		recordFetch(0, DispError)
 		return nil, nil, false, err
 	}
 	// Passively record the X-RateLimit-* headers on every cached-route miss
 	// fetch, labeled with the same identity the request log records.
-	h.meter.Observe(callerLabel(r), resp)
+	h.meter.Observe(who.Key, who.Name, resp)
+	invalidateMintOnAuthFailure(r.Context(), h.store, bearerToken(r), resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
+		recordFetch(resp.StatusCode, DispError)
 		resp.Body.Close()
 		return nil, nil, false, err
 	}
+	recordFetch(resp.StatusCode, dispUpstream)
 	overflow := false
 	if len(buf) > maxAbsorbBodyBytes {
 		overflow = true
@@ -701,14 +408,14 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	_, _ = w.Write(body)
 	// A response larger than the absorb buffer streams its tail through.
 	_, _ = io.Copy(w, resp.Body)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispPassthrough, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispPassthrough, resp.StatusCode)
 }
 
 // upstreamError reports a failed upstream fetch, mirroring the passthrough
 // proxy's error handling.
 func (h *handlers) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Warn("cached route upstream fetch failed", "method", r.Method, "path", r.URL.Path, "error", err)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispError, http.StatusBadGateway)
+	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway", http.StatusBadGateway)
 }
 

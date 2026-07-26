@@ -45,12 +45,19 @@ import (
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
-	denyKindContents    = "contents"
-	denyKindGitCommit   = "git_commit"
-	denyKindRepoPulls   = "repo_pulls"
-	denyKindPull        = "pull"
-	denyKindRepoCommits = "repo_commits"
-	denyKindCompare     = "compare"
+	denyKindContents     = "contents"
+	denyKindGitCommit    = "git_commit"
+	denyKindRepoPulls    = "repo_pulls"
+	denyKindPull         = "pull"
+	denyKindRepoCommits  = "repo_commits"
+	denyKindCompare      = "compare"
+	denyKindCommitStatus = "commit_status"
+	denyKindCheckRuns    = "check_runs"
+	denyKindPullFiles    = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
+	denyKindBranches     = "branches"      // GET /repos/{owner}/{repo}/branches
+	denyKindRepo         = "repo"          // GET /repos/{owner}/{repo}
+	denyKindStatusesList = "statuses_list" // the raw statuses LIST (both path spellings)
+	denyKindWorkflowRuns = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
 )
 
 // revealOutcome is the reveal decision for one request.
@@ -88,7 +95,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 	if principal != "" {
 		ok, err := h.store.HasGrant(ctx, principal, owner, repo, now)
 		if err != nil {
-			slog.Warn("reveal: grant lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+			slog.Warn("reveal: grant lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			return revealError, ghdata.DenyVerdict{}, false
 		}
 		if ok {
@@ -98,7 +105,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		// 3. Cached deny verdict for this exact resource.
 		v, ok, err := h.store.GetDenyVerdict(ctx, principal, kind, resourceKey, now)
 		if err != nil {
-			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			return revealError, ghdata.DenyVerdict{}, false
 		}
 		if ok {
@@ -123,14 +130,20 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		req.Header.Set("Authorization", auth)
 	}
 
+	// The probe is a real mirror→GitHub exchange: time it onto the chart
+	// (disposition "probe"; a transport failure records as an error).
+	who := callerLabel(r)
+	start := time.Now()
 	resp, err := h.upstream.Do(req)
 	if err != nil {
+		h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), 0, DispError, who.Key, who.Name)
 		slog.Warn("reveal probe failed", "repo", owner+"/"+repo, "error", err)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
+	h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), resp.StatusCode, dispProbe, who.Key, who.Name)
 	defer resp.Body.Close()
 	// Passively record the X-RateLimit-* headers the probe response carries.
-	h.meter.Observe(callerLabel(r), resp)
+	h.meter.Observe(who.Key, who.Name, resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes))
 	if err != nil {
 		return revealError, ghdata.DenyVerdict{}, false
@@ -149,7 +162,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		}
 		if principal != "" {
 			if err := h.store.RecordGrant(ctx, principal, owner, repo, ghdata.GrantSourceProbe, now); err != nil {
-				slog.Warn("reveal probe: record grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+				slog.Warn("reveal probe: record grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 				return revealError, ghdata.DenyVerdict{}, false
 			}
 		}
@@ -164,13 +177,13 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
 			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
-				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			}
 			if resp.StatusCode == http.StatusForbidden {
 				// A 403 is unambiguous about repo access; a stale grant (if
 				// any survived) must go.
 				if err := h.store.RevokeGrant(ctx, principal, owner, repo); err != nil {
-					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err)
+					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 				}
 			}
 		}
@@ -193,9 +206,9 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 		return
 	}
 	if cached {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispHit, v.Status)
+		h.reqlog.observeStatus(r, DispHit, v.Status)
 	} else {
-		h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, v.Status)
+		h.reqlog.observeStatus(r, DispMiss, v.Status)
 	}
 	writeRebuilt(w, v.Status, body, cached)
 }
@@ -204,7 +217,7 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 // the mirror cannot decide access right now, so the request fails without
 // caching anything. 502 mirrors the cached routes' upstream-error handling.
 func (h *handlers) revealFailed(w http.ResponseWriter, r *http.Request) {
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispError, http.StatusBadGateway)
+	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway: could not verify repository access with GitHub", http.StatusBadGateway)
 }
 

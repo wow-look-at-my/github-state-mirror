@@ -355,6 +355,124 @@ func TestDashboard_Callback_BadState(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+	// An expired/foreign state gets the retry page, not a bare text dead end.
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), `href="/login"`, "failure page must link the login start")
+}
+
+// brokenAuth returns an auth.Service whose stub GitHub fails the requested leg
+// of the callback flow — the code-for-token exchange ("token") or the identity
+// read ("user") — while the other leg succeeds, so the failure lands exactly on
+// the branch under test.
+func brokenAuth(t *testing.T, failing string) *auth.Service {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		if failing == "token" {
+			http.Error(w, "upstream down", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "gho_x"})
+	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, _ *http.Request) {
+		if failing == "user" {
+			http.Error(w, "upstream down", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"login": "PazerOP", "avatar_url": "a"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return auth.New(auth.Config{
+		ClientID:     "id",
+		ClientSecret: "secret",
+		SessionKey:   []byte("test-session-key"),
+		TokenURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL,
+	})
+}
+
+// callbackWithFreshState runs /login to mint a state + its cookie, then hits
+// /auth/callback with the matching pair, returning the callback's recorder.
+func callbackWithFreshState(t *testing.T, router http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	loginReq := httptest.NewRequest("GET", "/login", nil)
+	loginW := httptest.NewRecorder()
+	router.ServeHTTP(loginW, loginReq)
+	require.Equal(t, http.StatusFound, loginW.Code)
+	u, err := url.Parse(loginW.Header().Get("Location"))
+	require.NoError(t, err)
+	state := u.Query().Get("state")
+	var stateCookie *http.Cookie
+	for _, c := range loginW.Result().Cookies() {
+		if c.Name == auth.StateCookie {
+			stateCookie = c
+		}
+	}
+	require.NotNil(t, stateCookie)
+
+	cbReq := httptest.NewRequest("GET", "/auth/callback?code=good&state="+state, nil)
+	cbReq.AddCookie(stateCookie)
+	cbW := httptest.NewRecorder()
+	router.ServeHTTP(cbW, cbReq)
+	return cbW
+}
+
+// TestDashboard_Callback_ExchangeFailure pins the 2026-07-19 incident fix: a
+// failed code-for-token exchange must answer a 4xx retry page, never a 5xx —
+// Cloudflare replaces origin 5xx bodies with its own bare error page, stranding
+// the user with zero context and no way to retry.
+func TestDashboard_Callback_ExchangeFailure(t *testing.T) {
+	router, _, _ := newTestStack(t, brokenAuth(t, "token"))
+	w := callbackWithFreshState(t, router)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), `href="/login"`, "failure page must link the login start")
+	for _, c := range w.Result().Cookies() {
+		assert.NotEqual(t, auth.SessionCookie, c.Name, "a failed callback must not set a session")
+	}
+}
+
+// TestDashboard_Callback_UserFetchFailure is the same pin for the follow-up
+// GET /user leg: identity-read failures render the 4xx retry page too.
+func TestDashboard_Callback_UserFetchFailure(t *testing.T) {
+	router, _, _ := newTestStack(t, brokenAuth(t, "user"))
+	w := callbackWithFreshState(t, router)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), `href="/login"`, "failure page must link the login start")
+	for _, c := range w.Result().Cookies() {
+		assert.NotEqual(t, auth.SessionCookie, c.Name, "a failed callback must not set a session")
+	}
+}
+
+// TestDashboard_Callback_MissingCode: a stateful callback without a code is
+// logged and gets the same retry page.
+func TestDashboard_Callback_MissingCode(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+
+	loginReq := httptest.NewRequest("GET", "/login", nil)
+	loginW := httptest.NewRecorder()
+	router.ServeHTTP(loginW, loginReq)
+	require.Equal(t, http.StatusFound, loginW.Code)
+	u, err := url.Parse(loginW.Header().Get("Location"))
+	require.NoError(t, err)
+	state := u.Query().Get("state")
+	var stateCookie *http.Cookie
+	for _, c := range loginW.Result().Cookies() {
+		if c.Name == auth.StateCookie {
+			stateCookie = c
+		}
+	}
+	require.NotNil(t, stateCookie)
+
+	req := httptest.NewRequest("GET", "/auth/callback?state="+state, nil)
+	req.AddCookie(stateCookie)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), `href="/login"`, "failure page must link the login start")
 }
 
 func TestDashboard_ServeIndex(t *testing.T) {
@@ -499,12 +617,20 @@ func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusi
 	}))
 }
 
+// jobTime renders a fixture timestamp N hours in the past — RELATIVE to now,
+// because workflow jobs completed more than workflowJobRetention (14d) ago are
+// pruned on write: hardcoded dates rotted out of the window and started
+// failing these tests on 2026-07-15.
+func jobTime(hoursAgo int) string {
+	return time.Now().Add(-time.Duration(hoursAgo) * time.Hour).UTC().Format(time.RFC3339)
+}
+
 func TestDashboard_Jobs_Admin(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, _ := newTestStack(t, svc)
-	seedJob(t, store, 1, "done-old", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
-	seedJob(t, store, 2, "done-new", "completed", "failure", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
-	seedJob(t, store, 3, "running", "in_progress", "", "2026-07-03T10:00:00Z", "")
+	seedJob(t, store, 1, "done-old", "completed", "success", jobTime(73), jobTime(72))
+	seedJob(t, store, 2, "done-new", "completed", "failure", jobTime(49), jobTime(48))
+	seedJob(t, store, 3, "running", "in_progress", "", jobTime(24), "")
 
 	req := httptest.NewRequest("GET", "/api/jobs", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -528,9 +654,9 @@ func TestDashboard_Jobs_Admin(t *testing.T) {
 func TestDashboard_Jobs_Limit(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store, _ := newTestStack(t, svc)
-	seedJob(t, store, 1, "a", "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:05:00Z")
-	seedJob(t, store, 2, "b", "completed", "success", "2026-07-02T10:00:00Z", "2026-07-02T10:05:00Z")
-	seedJob(t, store, 3, "c", "in_progress", "", "2026-07-03T10:00:00Z", "")
+	seedJob(t, store, 1, "a", "completed", "success", jobTime(73), jobTime(72))
+	seedJob(t, store, 2, "b", "completed", "success", jobTime(49), jobTime(48))
+	seedJob(t, store, 3, "c", "in_progress", "", jobTime(24), "")
 
 	// limit honored.
 	req := httptest.NewRequest("GET", "/api/jobs?limit=1", nil)

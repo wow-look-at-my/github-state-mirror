@@ -24,6 +24,18 @@ type ActorIdentity struct {
 	LastSeen  string
 }
 
+type BranchesListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CacheMetadatum struct {
 	Actor         string
 	ResourceKind  string
@@ -50,12 +62,37 @@ type CacheRefreshLog struct {
 	ErrorMessage   sql.NullString
 }
 
+type ClosedPullCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CommitCheck struct {
 	Owner   string
 	Repo    string
 	Sha     string
 	Context string
 	State   string
+}
+
+type CommitCiCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Ref        string
+	Kind       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type CommitsListCache struct {
@@ -76,6 +113,9 @@ type CompareCache struct {
 	Owner      string
 	Repo       string
 	Basehead   string
+	BaseRef    string
+	HeadRef    string
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -111,6 +151,17 @@ type DenyCache struct {
 	Message      string
 	DeniedAt     string
 	ExpiresAt    string
+}
+
+type GitCommitMissCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Sha        string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type GitCommitsCache struct {
@@ -153,6 +204,30 @@ type PrLabel struct {
 	Color    string
 }
 
+type PullDiff406Cache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type PullFilesCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type PullRequest struct {
 	Owner              string
 	Repo               string
@@ -181,6 +256,10 @@ type PullRequest struct {
 	HeadRepoFullName   sql.NullString
 	AutoMergeMethod    sql.NullString
 	MergeCommitSha     sql.NullString
+	MergeStaleSha      sql.NullString
+	MergeStaleAt       sql.NullString
+	MergeStaleRef      sql.NullString
+	MergeStaleAfter    sql.NullString
 	TouchedAt          string
 }
 
@@ -258,4 +337,17 @@ type WorkflowJob struct {
 	CompletedAt  string
 	RunnerName   string
 	UpdatedAt    string
+}
+
+type WorkflowRunsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	HeadSha    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }

@@ -156,7 +156,7 @@ async function renderDashboard(me) {
     head.appendChild(el("div", null, el("h1", { text: "Cache state" }), el("div", { class: "sub", id: "scope-sub" })));
     let tabs = null;
     if (me.is_admin) {
-        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
+        tabs = el("div", { class: "tabs" }, el("button", { class: "active", "data-scope": "mine", onclick: () => switchTab("mine") }, "My cache"), el("button", { "data-scope": "all", onclick: () => switchTab("all") }, "Principals"), el("button", { "data-scope": "timeline", onclick: () => switchTab("timeline") }, "Timeline"), el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"), el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"), el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"));
         head.appendChild(tabs);
     }
     main.appendChild(head);
@@ -212,6 +212,8 @@ function loadView(scope, silent = false) {
         return loadWebhooks(silent);
     if (scope === "requests")
         return loadRequests(silent);
+    if (scope === "timeline")
+        return loadTimeline();
     if (scope === "ratelimit")
         return loadRateLimits(silent);
     return loadScope(scope, silent);
@@ -439,6 +441,29 @@ function webhookTable(deliveries) {
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Event" }), el("th", { text: "Repo" }), el("th", { text: "Detail" }), el("th", { text: "Delivery" }), el("th", { text: "Received" }))), el("tbody", null, rows));
 }
+// ---- traffic timeline (admin only) ----
+// A swimlane chart of incoming webhook deliveries (one lane per event type)
+// and outgoing proxied GitHub requests (one lane per route shape), each bar a
+// REAL measured duration — rendered by the <gsm-timeline> element
+// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
+// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
+// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
+// paused while the page is hidden) and merges new events in place. The shared
+// auto-refresh tick just lands here and finds the element already present.
+async function loadTimeline() {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    sub.textContent = "Every exchange the mirror participates in — webhook deliveries, served requests, upstream calls, its own GitHub traffic, notifications — real measured durations, last 24h (in-memory, resets on restart)";
+    if (body.querySelector("gsm-timeline"))
+        return; // element self-updates; never rebuild it
+    body.innerHTML = "";
+    const tl = el("gsm-timeline");
+    // In demo mode route the element's polls through demoApi (canned data for
+    // the backend-free preview); production keeps its bounded default fetcher.
+    if (DEMO)
+        tl.fetcher = (path) => api(path);
+    body.appendChild(tl);
+}
 // ---- request activity (admin only) ----
 // Shows data-API requests hitting the cache and how each was served: a cache
 // HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
@@ -467,16 +492,121 @@ async function loadRequests(silent = false) {
     body.innerHTML = "";
     const recent = data.recent ?? [];
     const by = data.by_disposition ?? {};
-    sub.textContent = (data.total || 0) + " request" + (data.total === 1 ? "" : "s") + " since restart" +
-        " — hit " + (by.hit || 0) + ", miss " + (by.miss || 0) + ", passthrough " + (by.passthrough || 0) +
-        ", write " + (by.write || 0) +
-        (by.error ? ", error " + by.error : "");
+    const total = data.total || 0;
+    const dbSize = dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes);
+    sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
+        ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
+        ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
+        ", write " + (by.write || 0) + pctLabel(by.write, total) +
+        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "") +
+        (dbSize ? " — " + dbSize : "");
     body.appendChild(requestLegend());
+    // Grouped views first (aggregate hot spots), then the flat history below.
+    const groups = data.groups ?? [];
+    if (groups.length > 0) {
+        body.appendChild(topGroupsSection(groups, total));
+        const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
+        if (uncached)
+            body.appendChild(uncached);
+    }
     if (recent.length === 0) {
         body.appendChild(el("div", { class: "empty" }, el("p", { text: "No data-API requests recorded yet." }), el("p", { class: "sub", text: "Requests appear here live as clients call the mirror — cache hits, misses, and passthroughs to GitHub." })));
         return;
     }
     body.appendChild(requestTable(recent));
+}
+// A count's share of the total, rendered as a " (88.8%)" suffix — empty when
+// there is no total to take a share of.
+function pctLabel(count, total) {
+    return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
+}
+// formatBytes renders a byte count human-readably: KB/MB/GB/TB (1000-based)
+// with one decimal, plain "N B" below 1 KB.
+function formatBytes(n) {
+    if (n < 1000)
+        return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = -1;
+    do {
+        v /= 1000;
+        i++;
+    } while (v >= 1000 && i < units.length - 1);
+    return v.toFixed(1) + " " + units[i];
+}
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g.
+// "DB 1.4 GB (+125.8 MB WAL)". The WAL suffix drops when absent/zero; the
+// whole label is empty when the backend omitted the size (file missing).
+function dbSizeLabel(db, wal) {
+    if (!db)
+        return "";
+    return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
+}
+// ---- request groups (aggregate hot spots) ----
+// Two tables over the server's per-route-shape counters (cumulative since
+// restart, like the totals — NOT windowed by the recent ring): the hottest
+// routes overall, and the hottest UNCACHED routes — reads forwarded to
+// GitHub, i.e. caching candidates.
+const TOP_GROUPS = 15;
+// sharePct renders a count's share of a total as "12.3%" — empty when there
+// is no total to take a share of.
+function sharePct(count, total) {
+    return total > 0 ? ((count / total) * 100).toFixed(1) + "%" : "";
+}
+// groupCount reads one disposition's count off a group.
+function groupCount(g, disp) {
+    switch (disp) {
+        case "hit": return g.hit || 0;
+        case "miss": return g.miss || 0;
+        case "passthrough": return g.passthrough || 0;
+        case "write": return g.write || 0;
+        case "error": return g.error || 0;
+        default: return 0;
+    }
+}
+// groupBreakdown renders a group's non-zero dispositions as count chips
+// (e.g. "hit 1503  miss 41"), optionally skipping the one already shown in
+// its own column.
+function groupBreakdown(g, skip) {
+    const cell = el("td", { class: "grp-breakdown" });
+    for (const [disp] of REQUEST_DISPOSITIONS) {
+        if (disp === skip)
+            continue;
+        const n = groupCount(g, disp);
+        if (n === 0)
+            continue;
+        cell.appendChild(el("span", { class: "disp " + reqDispClass(disp), text: disp + " " + n }));
+    }
+    if (!cell.hasChildNodes())
+        cell.textContent = "—";
+    return cell;
+}
+// groupRouteCell shows the group's method + route shape; the tooltip carries
+// one recent concrete path so the shape is identifiable.
+function groupRouteCell(g) {
+    return el("td", { class: "wh-event grp-route", title: g.sample, text: g.method + " " + g.route });
+}
+function groupSection(title, caption, table) {
+    return el("details", { class: "req-groups", open: true }, el("summary", { text: title }), caption ? el("p", { class: "grp-caption", text: caption }) : null, table);
+}
+// topGroupsSection: the most frequent request groups by total volume.
+function topGroupsSection(groups, total) {
+    const top = [...groups].sort((a, b) => b.total - a.total).slice(0, TOP_GROUPS);
+    const rows = top.map((g) => el("tr", null, groupRouteCell(g), el("td", { class: "num", text: String(g.total) }), el("td", { class: "num", text: sharePct(g.total, total) }), groupBreakdown(g)));
+    return groupSection("Top requests", null, el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Route" }), el("th", { class: "num", text: "Total" }), el("th", { class: "num", text: "Share" }), el("th", { text: "Breakdown" }))), el("tbody", null, rows)));
+}
+// uncachedGroupsSection: the groups with passthrough traffic — reads the
+// cache did not handle, ranked by passthrough count. Write-only groups never
+// appear (a mutation is proxied by design, not a caching gap; the
+// passthrough > 0 filter excludes them). Null when nothing qualifies.
+function uncachedGroupsSection(groups, passthroughTotal) {
+    const uncached = groups.filter((g) => (g.passthrough || 0) > 0)
+        .sort((a, b) => b.passthrough - a.passthrough).slice(0, TOP_GROUPS);
+    if (uncached.length === 0)
+        return null;
+    const rows = uncached.map((g) => el("tr", null, groupRouteCell(g), el("td", { class: "num", text: g.passthrough + pctLabel(g.passthrough, passthroughTotal) }), el("td", { class: "num", text: String(g.total) }), groupBreakdown(g, "passthrough")));
+    return groupSection("Top uncached requests", "These reads forward to GitHub uncached — the top caching candidates.", el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Route" }), el("th", { class: "num", text: "Passthrough" }), el("th", { class: "num", text: "Total" }), el("th", { text: "Other" }))), el("tbody", null, rows)));
 }
 const REQUEST_DISPOSITIONS = [
     ["hit", "served from cache, no GitHub call"],
@@ -506,7 +636,9 @@ function requestLegend() {
 function requestTable(events) {
     const rows = events.map((e) => {
         const disp = e.disposition || "passthrough";
-        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), el("td", { class: "wh-detail", text: e.actor || "" }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
+        return el("tr", null, el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp })), el("td", null, statusBadge(e.status)), el("td", { class: "wh-event", text: e.method }), el("td", { class: "wh-repo", text: e.path }), 
+        // Resolved name when known (full key in the tooltip); bare key otherwise.
+        el("td", { class: "wh-detail", text: e.actor_name || e.actor || "", title: e.actor_name ? e.actor : null }), el("td", { class: "wh-when", text: fmtTime(e.at) }));
     });
     return el("table", { class: "webhooks" }, el("thead", null, el("tr", null, el("th", { text: "Result" }), el("th", { text: "Upstream" }), el("th", { text: "Method" }), el("th", { text: "Path" }), el("th", { text: "Caller" }), el("th", { text: "When" }))), el("tbody", null, rows));
 }
@@ -577,14 +709,16 @@ async function loadRateLimits(silent = false) {
 }
 // observedRateGrid renders one tile per (identity, resource). The backend
 // sorts by identity then resource, so one identity's buckets sit together;
-// each tile is a <rate-meter> plus an "observed …" caption.
+// each tile is a <rate-meter> plus an "observed …" caption. A resolved
+// display name leads the tile; the bare identity key then moves to the
+// caption so it stays visible (and remains the tile name when unresolved).
 function observedRateGrid(observed) {
     const grid = el("div", { class: "rate-grid" });
     for (const o of observed) {
         grid.appendChild(el("div", { class: "rate-observed" }, el("rate-meter", {
-            name: o.identity + " — " + o.resource,
+            name: (o.name || o.identity) + " — " + o.resource,
             limit: o.limit, remaining: o.remaining, used: o.used, reset: o.reset,
-        }), el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
+        }), o.name ? el("div", { class: "rate-observed-at fingerprint", text: o.identity }) : null, el("div", { class: "rate-observed-at", text: "observed " + fmtTime(o.observed_at) })));
     }
     return grid;
 }
@@ -745,18 +879,197 @@ function statusCell(status) {
         return el("td", { text: "—" });
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
+// ---- streaming consistency check / reconcile ----
+//
+// The endpoint's ?stream=1 mode answers NDJSON: one JSON progress line per
+// checker phase (a fleet run takes minutes — per owner: a paginated repo
+// fetch, a visibility fetch, the diff, and in apply mode the corrections),
+// with the full report as the final {"phase":"report"} line. EventSource
+// can't POST (the Reconcile is a POST), so the body stream is read manually.
+// splitNdjson consumes the COMPLETE lines in buf, returning them plus the
+// unconsumed remainder (a partial trailing line). Pure — the stream reader
+// feeds it chunk by chunk.
+function splitNdjson(buf) {
+    const parts = buf.split("\n");
+    const rest = parts.pop() ?? "";
+    return { lines: parts.filter((l) => l.trim() !== ""), rest };
+}
+// reduceCheckProgress folds one progress event into the render state. Pure,
+// and tolerant of arbitrary event subsets (the demo replay is abbreviated).
+function reduceCheckProgress(p, ev) {
+    const next = { ...p };
+    const who = ev.owner ?? "";
+    switch (ev.phase) {
+        case "start":
+            next.ownersTotal = ev.owners ?? 0;
+            next.status = next.ownersTotal > 0
+                ? "starting: " + next.ownersTotal + " owner" + (next.ownersTotal === 1 ? "" : "s") + " to check…"
+                : "starting…";
+            break;
+        case "owner":
+            next.ownerIndex = ev.index ?? p.ownerIndex + 1;
+            if (ev.total)
+                next.ownersTotal = ev.total;
+            next.within = 0.05;
+            next.status = who + ": fetching repos…";
+            break;
+        case "fetch": {
+            const n = ev.repos_fetched ?? 0;
+            const total = ev.repos_total ?? 0;
+            // The paginated repo fetch dominates an owner's wall time; scale it
+            // across most of the owner's slice when the total is known.
+            next.within = total > 0 ? 0.05 + 0.75 * Math.min(n / total, 1) : 0.4;
+            next.status = who + ": fetched " + n + (total > 0 ? "/" + total : "") + " repos…";
+            break;
+        }
+        case "visibility":
+            next.within = 0.85;
+            next.status = who + ": fetching repo visibility…";
+            break;
+        case "diffed": {
+            const d = ev.discrepancies ?? 0;
+            next.within = 0.95;
+            next.status = who + ": diffed — " + d + (d === 1 ? " discrepancy" : " discrepancies") + " so far";
+            break;
+        }
+        case "applied":
+            next.within = 1;
+            next.status = who + ": corrections applied";
+            break;
+        case "skip":
+            next.within = 1;
+            next.status = who + ": skipped — " + (ev.reason ?? "");
+            break;
+        case "done":
+            next.ownerIndex = next.ownersTotal;
+            next.within = 1;
+            next.status = "finalizing report…";
+            break;
+    }
+    return next;
+}
+// checkProgressFraction maps the state to the bar's 0..1 fill: owners
+// completed plus the within-owner sub-progress. Pure.
+function checkProgressFraction(p) {
+    if (p.ownersTotal <= 0)
+        return 0;
+    const f = (Math.max(p.ownerIndex, 1) - 1 + p.within) / p.ownersTotal;
+    return Math.max(0, Math.min(1, f));
+}
+// runCheckStream drives the streaming run, invoking onEvent per progress line
+// and resolving with the final report (rejecting on HTTP or run errors).
+async function runCheckStream(apply, onEvent) {
+    if (DEMO)
+        return demoCheckStream(apply, onEvent);
+    const res = await fetch("/api/cache/check?stream=1" + (apply ? "&apply=true" : ""), {
+        method: apply ? "POST" : "GET",
+        headers: { Accept: "application/x-ndjson" },
+        credentials: "same-origin",
+    });
+    if (!res.ok) {
+        const err = new Error("HTTP " + res.status);
+        err.status = res.status;
+        throw err;
+    }
+    let report = null;
+    let runError = "";
+    const handle = (line) => {
+        let ev;
+        try {
+            ev = JSON.parse(line);
+        }
+        catch {
+            return; // tolerate a garbled line; the terminal line decides the outcome
+        }
+        if (ev.phase === "report" && ev.report)
+            report = ev.report;
+        else if (ev.phase === "error")
+            runError = ev.error || "check failed";
+        else
+            onEvent(ev);
+    };
+    if (!res.body) {
+        // No ReadableStream support: the whole run arrives as one buffered body.
+        for (const line of splitNdjson((await res.text()) + "\n").lines)
+            handle(line);
+    }
+    else {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (value)
+                buf += decoder.decode(value, { stream: true });
+            if (done)
+                buf += decoder.decode() + "\n"; // flush + terminate the last line
+            const split = splitNdjson(buf);
+            buf = split.rest;
+            for (const line of split.lines)
+                handle(line);
+            if (done)
+                break;
+        }
+    }
+    if (runError)
+        throw new Error(runError);
+    if (!report)
+        throw new Error("progress stream ended without a report");
+    return report;
+}
+// demoCheckStream replays the canned progress sequence on a timer (the demo
+// mock can't stream), then resolves the canned report — so the preview
+// exercises the live progress UI end to end.
+function demoCheckStream(apply, onEvent) {
+    const cfg = DEMO;
+    const state = cfg.current ?? cfg.initial;
+    const d = cfg.data[state] ?? {};
+    const report = apply ? d.checkApplied : d.check;
+    if (!report)
+        return demoReject(503);
+    const seq = d.checkProgress ?? [];
+    return new Promise((resolve) => {
+        let i = 0;
+        const step = () => {
+            if (i < seq.length) {
+                onEvent(seq[i++]);
+                setTimeout(step, 250);
+            }
+            else {
+                resolve(report);
+            }
+        };
+        step();
+    });
+}
 async function openCheck(apply) {
     const { body } = openModal(apply
         ? "Reconcile — correct global truth from GitHub"
         : "Consistency check — global truth vs GitHub");
-    body.appendChild(el("div", { class: "loading", text: apply
-            ? "Fetching source of truth from GitHub, diffing, and correcting the drift… this can take a few seconds."
-            : "Fetching source of truth from GitHub and diffing… this can take a few seconds." }));
+    // Live progress while the run streams: a bar (owners completed / total,
+    // refined by within-owner repo pages) + one status line. A full fleet run
+    // takes minutes, not seconds.
+    let state = {
+        ownersTotal: 0, ownerIndex: 0, within: 0,
+        status: apply
+            ? "Fetching source of truth from GitHub, diffing, and correcting the drift…"
+            : "Fetching source of truth from GitHub and diffing…",
+    };
+    const fill = el("div", { class: "check-progress-fill" });
+    const statusLine = el("div", { class: "check-progress-status", text: state.status });
+    const counter = el("div", { class: "check-progress-count" });
+    body.appendChild(el("div", { class: "check-progress" }, el("div", { class: "check-progress-track" }, fill), el("div", { class: "check-progress-meta" }, statusLine, counter)));
+    const onEvent = (ev) => {
+        state = reduceCheckProgress(state, ev);
+        fill.style.width = (checkProgressFraction(state) * 100).toFixed(1) + "%";
+        statusLine.textContent = state.status;
+        counter.textContent = state.ownersTotal > 0
+            ? Math.min(Math.max(state.ownerIndex, 1), state.ownersTotal) + "/" + state.ownersTotal + " owners"
+            : "";
+    };
     let report;
     try {
-        report = apply
-            ? await api("/api/cache/check?apply=true", "POST")
-            : await api("/api/cache/check");
+        report = await runCheckStream(apply, onEvent);
     }
     catch (e) {
         body.innerHTML = "";
@@ -851,7 +1164,9 @@ function discrepancyTable(items) {
     return el("table", { class: "webhooks detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Issue" }), el("th", { text: "Where" }), el("th", { text: "Field" }), el("th", { text: "Cached" }), el("th", { text: "GitHub" }), el("th", { text: "Note" }))), el("tbody", null, rows));
 }
 function truthFreshnessTable(rows) {
-    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), el("td", { class: "fingerprint", text: f.principal || "—" }), el("td", { class: "wh-detail", text: f.error || "" })));
+    const trs = rows.map(([owner, f]) => el("tr", null, el("td", { class: "kind", text: owner }), el("td", null, el("span", { class: "pill " + (f.state || "unknown"), text: f.state || "unknown" })), el("td", { text: f.last_fetched_at ? fmtTime(f.last_fetched_at) : "—" }), 
+    // Resolved name first, with the key alongside; bare key when unresolved.
+    el("td", { class: "fingerprint", text: f.principal_name ? f.principal_name + " · " + f.principal : (f.principal || "—") }), el("td", { class: "wh-detail", text: f.error || "" })));
     return el("table", { class: "kinds detail-table" }, el("thead", null, el("tr", null, el("th", { text: "Owner" }), el("th", { text: "State" }), el("th", { text: "Last synced" }), el("th", { text: "By principal" }), el("th", { text: "Error" }))), el("tbody", null, trs));
 }
 // ---- boot ----
@@ -930,6 +1245,13 @@ function demoApi(path, method = "GET") {
             return Promise.reject(err);
         }
         return Promise.resolve(d.requests);
+    }
+    if (path.startsWith("/api/timeline")) {
+        if (!d.timeline)
+            return demoReject(403);
+        // The canned payload is served for every poll; the element merges by
+        // event id, so re-serving the same events is harmless.
+        return Promise.resolve(d.timeline);
     }
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit)

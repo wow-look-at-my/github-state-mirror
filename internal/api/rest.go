@@ -9,6 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
 type handlers struct {
@@ -33,6 +34,14 @@ type handlers struct {
 	// (miss fetches, reveal probes) for the dashboard's "Rate limit" tab.
 	// Nil-safe: a nil meter records nothing.
 	meter *ratemeter.Store
+	// recordIdentity persists a principal->display-name mapping (the shared,
+	// debounced identityRecorder requireAuth uses). The self-verifying app-JWT
+	// routes (token mint, repo installation) call it so app:<id> principals
+	// resolve to their slug on the dashboard too. Nil-safe: nil records nothing.
+	recordIdentity identityRecorder
+	// timeline records each cached-route miss's timed upstream fetch for the
+	// dashboard's "Timeline" chart (fetchUpstream in respcache.go). Nil-safe.
+	timeline *reqtimeline.Recorder
 }
 
 // NOTE: the mirror once served /user, /user/orgs, /compare, and /pulls/{n}/files
