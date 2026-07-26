@@ -976,13 +976,17 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         const dispTitle = e.reason
             ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
             : null;
+        // Path goes LAST: it is far and away the widest field, so trailing it
+        // keeps the fixed-width columns packed together on the left instead of
+        // separated by a column of mostly-empty space, and puts the ragged
+        // (ellipsized) edge where nothing has to line up after it.
         const cells = [
             el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp, title: dispTitle })),
             el("td", null, statusBadge(e.status)),
             el("td", { class: "wh-event", text: e.method }),
-            el("td", { class: "wh-path", text: e.path }),
             // Resolved name when known (full key in the detail); bare key otherwise.
             el("td", { class: "wh-caller", text: e.actor_name || e.actor || "" }),
+            el("td", { class: "wh-path", text: e.path }),
         ];
         // The row is dense and its cells ellipsize; everything cut off — the
         // full path, the principal key, the exact time the "When" column used
@@ -1005,8 +1009,8 @@ function requestTable(events: RequestEvent[]): HTMLElement {
             el("th", { text: "Result" }),
             el("th", { text: "Upstream" }),
             el("th", { text: "Method" }),
-            el("th", { text: "Path" }),
             el("th", { text: "Caller" }),
+            el("th", { text: "Path" }),
         )),
         el("tbody", null, rows),
     );
