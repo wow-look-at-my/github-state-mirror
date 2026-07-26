@@ -408,19 +408,20 @@ The service has **no static service token**. API requests authenticate with the 
 ## Building
 
 ```sh
+npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
 go-toolchain
 ```
 
 Binary is output to `build/server_linux_amd64`.
 
-The dashboard front-end is authored in TypeScript under `internal/api/web/src/` and compiled to `internal/api/web/assets/*.js`, which is **committed** (a generated artifact) and embedded into the binary via `//go:embed`. After editing the `.ts` sources, regenerate the JS:
+The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 
 ```sh
 npm ci        # first time only
-npm run build # tsc: src/*.ts -> assets/*.js
+npm run build # tsc: src/*.ts -> assets/*.js (required before go-toolchain)
 ```
 
-CI's `web-check` job fails if the committed JS is out of date with the TypeScript source (run `npm run build` and commit). A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.
+CI builds the JS itself in every job that needs it, and `web-check` fails if any generated `.js` is ever committed. A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.
 
 Each `src/*.ts` file emits its own standalone ES module loaded by its own `<script type="module">` tag (`rate-meter.ts` self-registers the `<rate-meter>` web component behind the rate-limit tiles; `timeline.ts` self-registers the `<gsm-timeline>` element behind the admin Timeline tab). A new asset file must also be added to the `//go:embed` + hashed-URL wiring in `internal/api/dashboard.go` and the `preview` job's copied-assets list in `.github/workflows/ci.yml`.
 
@@ -464,7 +465,7 @@ internal/
   sync/          Fetchers, periodic refresh, webhook dispatch
   webhook/       HTTP handler, event parsing, HMAC verification
   api/           chi router, REST handlers, GraphQL assembler, web dashboard
-  api/web/       Dashboard front-end (TypeScript src/ -> embedded assets/)
+  api/web/       Dashboard front-end (TypeScript src/ -> built, embedded assets/)
 ```
 
 The key design constraints: `internal/freshness/` is a generic cache-coherence engine that knows nothing about GitHub. The `internal/sync/` package bridges the freshness framework with GitHub-specific data. Cached data is ONE global truth store; cross-user leakage is prevented by the reveal layer, which serves a repo's data only to principals whose own GitHub access has been proven (public repo, live grant, or live probe — see **One global truth, revealed by permission** above).
