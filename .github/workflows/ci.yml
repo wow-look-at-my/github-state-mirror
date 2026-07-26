@@ -33,14 +33,14 @@ jobs:
             exit 1
           fi
 
-  # The dashboard front-end is authored in TypeScript (internal/api/web/src/*.ts)
-  # and compiled to internal/api/web/assets/*.js, which is committed (a generated
-  # artifact) and embedded into the Go binary. This job wipes the generated .js
-  # (assets/style.css is hand-written and must survive the wipe), recompiles from
-  # source with the locked toolchain (npm ci pins tsc via package-lock.json), and
-  # fails on ANY divergence from what is committed: stale output, an emitted file
-  # never committed, or an orphaned .js whose .ts was deleted/renamed — the wipe
-  # is what exposes orphans, since a rebuild alone never removes them.
+  # The dashboard front-end has exactly ONE source: TypeScript, in
+  # internal/api/web/src/*.ts. `npm run build` (tsc) emits
+  # internal/api/web/assets/*.js as a BUILD OUTPUT — it is gitignored, never
+  # committed, and every job that needs it compiles it (the build job does so
+  # before the Go build embeds it). This job is the type-check gate (tsc exits
+  # non-zero on any error) and it enforces the no-committed-JS rule, so a
+  # generated file can never creep back into the tree as a second source of
+  # truth that could then go stale.
   web-check:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
@@ -49,27 +49,39 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - name: Wipe generated JS so orphans of deleted/renamed .ts files surface
-        run: find internal/api/web/assets -name '*.js' -delete
       - run: npm run build
-      - name: Verify compiled dashboard JS is committed and up to date
+      - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const res = await exec.getExecOutput("git", ["status", "--porcelain", "--", "internal/api/web/assets"], { silent: true });
-            if (res.stdout.trim() !== "") {
-              core.info("Divergent files (M = stale committed JS, ?? = emitted but never committed, D = orphan of a deleted/renamed .ts):");
-              core.info(res.stdout);
-              await exec.exec("git", ["--no-pager", "diff", "--", "internal/api/web/assets"]);
-              core.setFailed("Compiled dashboard JS diverges from the TypeScript source. Run `npm run build` and commit internal/api/web/assets/ (git rm any orphaned .js).");
+            // Ask git what is TRACKED (not what is on disk) — the build step
+            // above just wrote the ignored .js files into the working tree.
+            const res = await exec.getExecOutput(
+              "git", ["ls-files", "--", "internal/api/web/assets/*.js"], { silent: true });
+            const tracked = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+            if (tracked.length > 0) {
+              core.info(tracked.join("\n"));
+              core.setFailed(
+                "Generated dashboard JS is committed. The TypeScript in " +
+                "internal/api/web/src/ is the only source; CI builds the JS. " +
+                "Run `git rm --cached internal/api/web/assets/*.js` and commit.");
             } else {
-              core.info("Dashboard JS is in sync with the TypeScript source.");
+              core.info("No generated JS is tracked — TypeScript is the only committed source.");
             }
 
   build:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      # The dashboard JS is not committed, so compile it from the TypeScript
+      # BEFORE the Go build: internal/api/dashboard.go names each assets/*.js
+      # file in its //go:embed line, and a missing embed target is a compile
+      # error, not a runtime 404.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
       # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
       # on every run, and its cache key is once-per-run (NOT job-disambiguated),
       # so publish-ghcr just cache-downloads it. Do NOT add an explicit
