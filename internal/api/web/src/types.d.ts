@@ -86,6 +86,9 @@ export interface RequestEvent {
     path: string;
     disposition: string;
     status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
+    // Why this read was forwarded uncached; passthroughs only, absent
+    // otherwise. Same closed vocabulary as RequestGroup.by_reason's keys.
+    reason?: string;
     at: string;
 }
 
@@ -102,6 +105,15 @@ export interface RequestGroup {
     passthrough: number;
     write: number;
     error: number;
+    // by_reason splits `passthrough` by WHY the read was forwarded uncached
+    // (a closed server-side vocabulary: unmodeled-query, unmodeled-accept,
+    // unmodeled-path, unrouted, unrouted-method, unverified-identity,
+    // unmodeled-response, graphql-forward). Absent when the group never
+    // passed through.
+    by_reason?: Record<string, number> | null;
+    // pass_query: one recent passthrough's query-parameter NAMES, comma-
+    // separated (values are never recorded). Absent when there were none.
+    pass_query?: string;
     sample: string; // one recent raw path, for identifying the shape
     last_seen: string; // RFC3339
 }

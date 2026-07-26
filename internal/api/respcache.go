@@ -94,7 +94,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	// Only the plain JSON representation is absorbed. Other Accept media types
 	// (raw/html/object) change the response shape entirely — passthrough.
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	// The contents endpoint takes exactly one query param, ref. Anything else
@@ -103,7 +103,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	ref := q.Get("ref")
 	delete(q, "ref")
 	if len(q) > 0 {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
@@ -408,7 +408,10 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	_, _ = w.Write(body)
 	// A response larger than the absorb buffer streams its tail through.
 	_, _ = io.Copy(w, resp.Body)
-	h.reqlog.observeStatus(r, DispPassthrough, resp.StatusCode)
+	// The REQUEST was modeled; the RESPONSE was not (an unexpected status, an
+	// oversized body, a symlink/submodule object). Unlike every shape-guard
+	// passthrough this one already cost an upstream round trip.
+	h.reqlog.observeStatus(r.WithContext(withPassthroughReason(r.Context(), PassResponse)), DispPassthrough, resp.StatusCode)
 }
 
 // upstreamError reports a failed upstream fetch, mirroring the passthrough

@@ -76,7 +76,7 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	// consumers (pr-minder + the reconcile hook) send exactly this bare
 	// shape.
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !compareBaseheadCacheable(basehead) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, compareBaseheadCacheable(basehead)))
 		return
 	}
 
