@@ -104,12 +104,12 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	shape, ok := parseCommitsListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 

@@ -122,7 +122,7 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
 		return
 	}
-	h.ghProxy.ServeHTTP(w, r)
+	h.passthrough(w, r, PassPath)
 }
 
 // statusesAlias serves GET /repos/{owner}/{repo}/statuses/{ref} -- the LEGACY
@@ -136,7 +136,7 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) statusesAlias(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "*")
 	if ref == "" {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassPath)
 		return
 	}
 	h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
@@ -155,12 +155,12 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	// change the body's contents entirely and pass through, as does anything
 	// else parseCommitCIShape rejects.
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	perPage, page, ok := parseCommitCIShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 

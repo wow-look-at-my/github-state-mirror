@@ -48,7 +48,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 	// Only full hex object ids are cache keys (a short sha is ambiguous over
 	// time); the endpoint takes no query params. Anything else — passthrough.
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !isFullHexSHA(sha) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, isFullHexSHA(sha)))
 		return
 	}
 

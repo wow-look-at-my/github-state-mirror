@@ -368,8 +368,11 @@ func NewRouter(
 	// these, so forwarded responses carry CORS headers and preflight is handled.
 	// MethodNotAllowed covers a known path hit with an unregistered method; the
 	// proxy itself enforces the bearer-token requirement.
-	r.NotFound(ghProxy.ServeHTTP)
-	r.MethodNotAllowed(ghProxy.ServeHTTP)
+	// Both fallbacks tag WHY they forwarded, so the dashboard separates "no
+	// cached route claims this path" (every new caching candidate starts here)
+	// from a cached route declining a shape it does model the path for.
+	r.NotFound(taggedProxy(ghProxy, PassUnrouted))
+	r.MethodNotAllowed(taggedProxy(ghProxy, PassMethod))
 
 	return r
 }
