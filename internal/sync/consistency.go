@@ -96,10 +96,14 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 // ConsistencyReport is the full drift report for the global truth store,
 // designed to be copy-pasted back for analysis.
 type ConsistencyReport struct {
-	FetchedAs   string    `json:"fetched_as"`   // identity used to read GitHub (the truth source)
-	GeneratedAt string    `json:"generated_at"` // RFC3339
-	OrgsChecked []string  `json:"orgs_checked"` // owners actually re-fetched and diffed
-	OrgsSkipped []OrgSkip `json:"orgs_skipped,omitempty"`
+	FetchedAs   string `json:"fetched_as"`   // identity used to read GitHub (the truth source)
+	GeneratedAt string `json:"generated_at"` // RFC3339
+	// CheckStartedAt is when the run began, captured BEFORE any GitHub fetch:
+	// a GitHub-side timestamp at or after it proves the resource moved while
+	// the check ran (the raced_during_check classification's anchor).
+	CheckStartedAt string    `json:"check_started_at"`
+	OrgsChecked    []string  `json:"orgs_checked"` // owners actually re-fetched and diffed
+	OrgsSkipped    []OrgSkip `json:"orgs_skipped,omitempty"`
 	// TruthFreshness is, per owner, the most recent org list-sync any
 	// principal ran (the fetch that refreshes global truth), so drift can be
 	// read against how stale truth actually is.
@@ -153,6 +157,11 @@ type CheckSummary struct {
 	// private/internal -- the dangerous direction: the reveal fast path is
 	// serving them to any authenticated caller.
 	VisibilityLeaks int `json:"visibility_leaks"`
+	// RacedDuringCheck counts informational raced_during_check entries: the
+	// GitHub-side value moved at/after the check's start (a push or head move
+	// landing WHILE the check ran), so the difference is race, not drift.
+	// Deliberately NOT counted into FieldMismatches.
+	RacedDuringCheck int `json:"raced_during_check"`
 }
 
 // AppliedSummary tallies what apply mode (POST /api/cache/check?apply=true)
@@ -175,7 +184,7 @@ type Discrepancy struct {
 	Kind  string `json:"kind"`         // "repo" | "pr"
 	Repo  string `json:"repo"`         // "owner/name"
 	PR    int64  `json:"pr,omitempty"` // PR number when kind=="pr"
-	Issue string `json:"issue"`        // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown
+	Issue string `json:"issue"`        // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown | raced_during_check
 	Field string `json:"field,omitempty"`
 	// Which field differs (issue==field_mismatch / visibility_*)
 	Cached string `json:"cached,omitempty"`
@@ -220,17 +229,24 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		return nil, fmt.Errorf("consistency check unavailable: no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY)")
 	}
 
+	// checkStart anchors the raced_during_check classification; captured
+	// BEFORE any GitHub fetch so "GitHub's timestamp >= checkStart" can only
+	// mean the resource moved while the check was in progress.
+	checkStart := time.Now().UTC()
+
 	report := &ConsistencyReport{
-		FetchedAs:     "github-app",
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		OrgsChecked:   []string{},
-		Discrepancies: []Discrepancy{},
+		FetchedAs:      "github-app",
+		GeneratedAt:    checkStart.Format(time.RFC3339),
+		CheckStartedAt: checkStart.Format(time.RFC3339),
+		OrgsChecked:    []string{},
+		Discrepancies:  []Discrepancy{},
 		Notes: []string{
 			"Source of truth was fetched as the mirror's GitHub App (repositoryOwner query, so User-account installations are checked too). Owners the app is not installed on are skipped (listed under orgs_skipped), not reported as missing.",
 			"Only OPEN pull requests are compared (the cache only retains open PRs). A PR shown as only_in_cache is cached as open but is not in GitHub's current open set, i.e. it was likely closed/merged and a webhook was missed.",
 			"A repo reported only_on_github with a private/internal visibility has simply never been absorbed (no webhook and no principal's sync has touched it) -- truth is lazy, so this is expected until something references the repo. Such repos are tallied separately in repos_only_on_github_private.",
 			"The mergeable field is not compared: the cache deliberately un-resolves it on pushes and the GraphQL/REST readings race GitHub's recomputation.",
 			"pushed_at is compared with a " + pushedAtTolerance.String() + " tolerance: only a cached value lagging GitHub by more than that is drift (it implies missed push webhooks, and therefore possibly stale contents_cache rows).",
+			"raced_during_check entries are informational, not drift: the GitHub-side timestamp (the repo's pushed_at, or the PR's updated_at for head_ref_oid) is at or after check_started_at, so the resource moved WHILE the check ran and the cache could not have caught up. Re-run to confirm; apply mode still corrects them from the fetched snapshot.",
 		},
 	}
 	if apply {
@@ -335,7 +351,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		}
 
 		report.OrgsChecked = append(report.OrgsChecked, owner)
-		c.diffOwner(ctx, report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility)
+		c.diffOwner(ctx, report, owner, reposByOwner[owner], prsByOwnerRepo, labelsByRepoPR, data, visibility, checkStart)
 		progress.emit(ProgressEvent{Phase: "diffed", Owner: owner, Discrepancies: len(report.Discrepancies)})
 
 		if apply {
@@ -382,6 +398,8 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		case "visibility_leak":
 			report.Summary.VisibilityLeaks++
 			report.Summary.FieldMismatches++
+		case "raced_during_check":
+			report.Summary.RacedDuringCheck++
 		}
 	}
 	report.Summary.Discrepancies = len(report.Discrepancies)

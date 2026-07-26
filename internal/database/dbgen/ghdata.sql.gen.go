@@ -1066,6 +1066,50 @@ func (q *Queries) NullPRMergeableByRepo(ctx context.Context, arg NullPRMergeable
 	return err
 }
 
+const nullPRMergeableForPR = `-- name: NullPRMergeableForPR :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(?1 AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(?2 AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(?3 AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = ?4 AND repo = ?5
+  AND number = ?6 AND state = 'OPEN'
+`
+
+type NullPRMergeableForPRParams struct {
+	StaleAt    string
+	StaleRef   sql.NullString
+	StaleAfter sql.NullString
+	Owner      string
+	Repo       string
+	Number     int64
+}
+
+// NullPRMergeableForPR is the per-PR analog of NullPRMergeableByBranch, for
+// tip moves reported by the PR's OWN webhook (synchronize / base retarget):
+// a fork head emits no push webhook, so the per-branch un-resolve never runs
+// for it, and the pull_request payload -- which carries RETAINED pre-move
+// merge fields alongside the new tip -- is the only signal the tip changed.
+// Same marker semantics: the invalidated sha is remembered with the moved
+// ref and its new tip as the proof, so the upsert guard's exemptions apply
+// to this marker exactly as to a push-stamped one.
+func (q *Queries) NullPRMergeableForPR(ctx context.Context, arg NullPRMergeableForPRParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableForPR,
+		arg.StaleAt,
+		arg.StaleRef,
+		arg.StaleAfter,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	return err
+}
+
 const setPRAutoMergeMethod = `-- name: SetPRAutoMergeMethod :exec
 UPDATE pull_requests SET auto_merge_method = ?
 WHERE owner = ? AND repo = ? AND number = ?

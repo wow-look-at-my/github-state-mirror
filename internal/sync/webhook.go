@@ -296,58 +296,29 @@ func fullHexSHA(s string) bool {
 	return true
 }
 
-func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {
-	return d.applyPRPayload(ctx, event)
-}
-
-// applyPRPayload parses full PR data from the webhook and writes it directly
-// into global truth.
-func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Event) outcome {
-	payload, err := webhook.ParsePRPayload(event.Raw)
-	if err != nil {
-		slog.Warn("webhook: failed to parse PR payload, falling back to invalidation", "error", err)
-		return d.invalidateRepoOrg(ctx, event, "unparseable PR payload")
-	}
-
-	owner, repo := payload.PR.Owner, payload.PR.Repo
-	if owner == "" || repo == "" {
-		return d.invalidateRepoOrg(ctx, event, "PR payload missing owner/repo")
-	}
-
-	// PR closed/merged -> delete (we only cache open PRs).
-	if payload.PR.State == "CLOSED" {
-		if err := d.store.DeletePR(ctx, owner, repo, payload.PR.Number); err != nil {
-			slog.Warn("webhook: failed to delete PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-			return errored("delete closed PR failed")
-		}
-		// Drop the commit-check rows for the (now irrelevant) head commit.
-		if err := d.store.DeleteCommitChecks(ctx, owner, repo, payload.PR.HeadRefOid.String); err != nil {
-			slog.Warn("webhook: failed to delete commit checks for closed PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		}
-		slog.Info("webhook: deleted closed PR from cache", "pr", prRef(owner, repo, payload.PR.Number))
-		return applied(fmt.Sprintf("removed closed PR #%d", payload.PR.Number))
-	}
-
-	// Open/updated PR -> upsert into global truth (with the CI rollup and the
-	// label replace).
-	if err := d.store.UpsertPRWithChecks(ctx, payload.PR, payload.Labels, time.Now()); err != nil {
-		slog.Warn("webhook: failed to upsert PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		return errored("upsert PR failed")
-	}
-	slog.Info("webhook: applied PR data from webhook payload", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action)
-	return applied(fmt.Sprintf("upserted PR #%d", payload.PR.Number))
-}
-
-func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) outcome {
-	// The review payload embeds the full pull_request, so apply it like a
-	// pull_request event.
-	return d.applyPRPayload(ctx, event)
-}
-
 func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParseCheckPayload(event.Type, event.Raw)
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
+	}
+	// A non-completed check_suite delivery records NOTHING in truth. GitHub
+	// auto-creates a suite per sha for EVERY app with checks:write, and an app
+	// that runs no checks on the sha leaves its empty suite queued forever --
+	// so the PENDING row a requested/queued delivery would mint is a permanent
+	// ghost no later event clears, pinning the low-water-mark rollup at
+	// PENDING and re-poisoning last_commit_status on every PR upsert after
+	// every heal (the 2026-07-20 report's live-minting rollup cluster).
+	// Nothing real is lost: a genuine suite's pending phase is already carried
+	// by its own check_runs' queued/in_progress events, and GitHub's own
+	// statusCheckRollup ignores suites entirely -- this aligns the mirror's
+	// rollup inputs with GitHub's. Completed suites with real conclusions
+	// keep applying exactly as before (a completed suite whose conclusion
+	// normalizes to PENDING is dropped too: the suite is finished, so that
+	// row would be just as permanent). The response caches already flushed --
+	// handle() invalidates BEFORE the disposition logic, the queued-
+	// workflow_job precedent -- so the sha's commit-CI snapshots still moved.
+	if event.Type == "check_suite" && payload.State == "PENDING" {
+		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
 	}
 	rollup, err := d.store.ApplyCommitStatus(ctx, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
 	if err != nil {

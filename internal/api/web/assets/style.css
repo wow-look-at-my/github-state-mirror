@@ -256,6 +256,7 @@ table.kinds tr.kind-error-row td.kind-error {
     font-variant-numeric: tabular-nums;
 }
 
+
 /* ---- Upstream status badge (Requests view) ---- */
 .status-code {
     display: inline-block; font-size: 11px; font-weight: 600;

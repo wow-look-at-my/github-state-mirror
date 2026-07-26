@@ -198,7 +198,14 @@ func NewRouter(
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
 	// proxied request is recorded as a passthrough — and timed into the
 	// timeline ring for the dashboard's "Timeline" chart.
-	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
+	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter, func(resp *http.Response) {
+		// A 401/403 on a passthrough call carrying a minted installation
+		// token invalidates that mint (see invalidateMintOnAuthFailure).
+		// resp.Request is the outbound clone carrying the inbound headers.
+		if resp.Request != nil {
+			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
+		}
+	}), reqlog)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every

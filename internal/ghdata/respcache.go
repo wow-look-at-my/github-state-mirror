@@ -303,3 +303,16 @@ func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t Ca
 func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID string) error {
 	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
 }
+
+// InvalidateInstallTokenByToken drops the cached mint that issued this exact
+// token -- the upstream-auth-failure invalidation. gsm only receives ITS OWN
+// App's installation webhooks, so a CONSUMER App's permission change never
+// reaches InvalidateInstallTokenCache; a 401/403 from GitHub on a call
+// carrying the minted token is the signal that mint's cached grants no
+// longer match, and dropping it makes the caller's next mint refetch.
+func (s *Store) InvalidateInstallTokenByToken(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	return s.q.DeleteInstallTokenCacheByToken(ctx, token)
+}
