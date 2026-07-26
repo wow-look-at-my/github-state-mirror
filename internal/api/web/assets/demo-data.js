@@ -223,6 +223,9 @@ const demoRateLimit = {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
                 graphql: { limit: 5000, remaining: 392, used: 4608, reset: resetIn(540) },
                 search: { limit: 30, remaining: 30, used: 0, reset: resetIn(60) },
+                // Long resource names (real GitHub /rate_limit fields) that used to
+                // force the "X / Y left" count to wrap word-by-word in the card.
+                code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
                 actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3600) },
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
                 audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
