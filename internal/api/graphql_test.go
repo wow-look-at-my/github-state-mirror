@@ -19,7 +19,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
-	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -81,15 +80,15 @@ func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
 	h := &handlers{mgr: mgr, store: store, reqlog: newRequestLog()}
 
 	ctx := seedCtx()
-	// Repos cached by an earlier successful fetch...
-	require.NoError(t, store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
+	// Repos cached (and the test user granted) by an earlier successful sync...
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u1"},
-	}))
+	}, nil)
 	// ...whose freshness row has expired, so the handler re-fetches (and fails).
 	lastFetched := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
 	expired := time.Now().Add(-1 * time.Hour)
 	require.NoError(t, fStore.Upsert(context.Background(), &freshness.Metadata{
-		ResourceID:    freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: "my-org", Actor: ghclient.Fingerprint(testToken)},
+		ResourceID:    freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: "my-org", Actor: testUserActor},
 		State:         freshness.StateFresh,
 		LastFetchedAt: &lastFetched,
 		ExpiresAt:     &expired,
@@ -115,9 +114,9 @@ func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
 // error-path-only — a normally served response must not carry them.
 func TestGraphQL_FreshResponseHasNoStaleHeaders(t *testing.T) {
 	router, store := setupTestRouter(t)
-	require.NoError(t, store.SetOrgRepos(seedCtx(), "my-org", []dbgen.Repo{
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u1"},
-	}))
+	}, nil)
 
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -132,44 +131,48 @@ func TestGraphQL_FreshResponseHasNoStaleHeaders(t *testing.T) {
 
 func TestGraphQL_BasicQuery(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := seedCtx()
 
-	// Seed repo data.
-	store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
-		{
-			Owner:         "my-org",
-			Name:          "repo1",
-			NameWithOwner: "my-org/repo1",
-			Url:           "https://github.com/my-org/repo1",
-			DefaultBranch: sql.NullString{String: "main", Valid: true},
-			OwnerLogin:    sql.NullString{String: "my-org", Valid: true},
-			OwnerAvatar:   sql.NullString{String: "https://avatar", Valid: true},
-			OwnerUrl:      sql.NullString{String: "https://github.com/my-org", Valid: true},
+	// Seed repo + PR data as the test user's org sync would.
+	data := ghdata.OrgSyncData{
+		Repos: []dbgen.Repo{
+			{
+				Owner:         "my-org",
+				Name:          "repo1",
+				NameWithOwner: "my-org/repo1",
+				Url:           "https://github.com/my-org/repo1",
+				DefaultBranch: sql.NullString{String: "main", Valid: true},
+				OwnerLogin:    sql.NullString{String: "my-org", Valid: true},
+				OwnerAvatar:   sql.NullString{String: "https://avatar", Valid: true},
+				OwnerUrl:      sql.NullString{String: "https://github.com/my-org", Valid: true},
+			},
 		},
-	})
-
-	// Seed PRs with labels.
-	store.SetRepoPRs(ctx, "my-org", "repo1", []dbgen.PullRequest{
-		{
-			Owner:            "my-org",
-			Repo:             "repo1",
-			Number:           1,
-			Title:            "Test PR",
-			Url:              "https://github.com/my-org/repo1/pull/1",
-			State:            "OPEN",
-			CreatedAt:        "2024-01-01",
-			UpdatedAt:        "2024-01-02",
-			AuthorLogin:      sql.NullString{String: "dev", Valid: true},
-			AuthorAvatar:     sql.NullString{String: "https://avatar/dev", Valid: true},
-			AuthorUrl:        sql.NullString{String: "https://github.com/dev", Valid: true},
-			HeadRefName:      sql.NullString{String: "feature", Valid: true},
-			BaseRefName:      sql.NullString{String: "main", Valid: true},
-			HeadRefOid:       sql.NullString{String: "abc123", Valid: true},
-			LastCommitStatus: sql.NullString{String: "SUCCESS", Valid: true},
+		PRsByRepo: map[string][]dbgen.PullRequest{
+			"my-org/repo1": {
+				{
+					Owner:            "my-org",
+					Repo:             "repo1",
+					Number:           1,
+					Title:            "Test PR",
+					Url:              "https://github.com/my-org/repo1/pull/1",
+					State:            "OPEN",
+					CreatedAt:        "2024-01-01",
+					UpdatedAt:        "2024-01-02",
+					AuthorLogin:      sql.NullString{String: "dev", Valid: true},
+					AuthorAvatar:     sql.NullString{String: "https://avatar/dev", Valid: true},
+					AuthorUrl:        sql.NullString{String: "https://github.com/dev", Valid: true},
+					HeadRefName:      sql.NullString{String: "feature", Valid: true},
+					BaseRefName:      sql.NullString{String: "main", Valid: true},
+					HeadRefOid:       sql.NullString{String: "abc123", Valid: true},
+					LastCommitStatus: sql.NullString{String: "SUCCESS", Valid: true},
+				},
+			},
 		},
-	}, map[int64][]dbgen.PrLabel{
-		1: {{Owner: "my-org", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "d73a4a"}},
-	})
+		LabelsByPR: map[string]map[int64][]dbgen.PrLabel{
+			"my-org/repo1": {1: {{Owner: "my-org", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "d73a4a"}}},
+		},
+	}
+	now := time.Now()
+	require.NoError(t, store.SyncOrgTruth(context.Background(), "my-org", data, testUserActor, now, now))
 
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -183,8 +186,8 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	data := resp["data"].(map[string]interface{})
-	org := data["organization"].(map[string]interface{})
+	respData := resp["data"].(map[string]interface{})
+	org := respData["organization"].(map[string]interface{})
 	repos := org["repositories"].(map[string]interface{})
 
 	// pageInfo must be present — clients read pageInfo.hasNextPage unconditionally.
@@ -230,24 +233,24 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 // so a null commits would crash them.
 func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := seedCtx()
 
-	store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u1"},
-	})
-	store.SetRepoPRs(ctx, "my-org", "repo1", []dbgen.PullRequest{
-		{
-			Owner:     "my-org",
-			Repo:      "repo1",
-			Number:    1,
-			Title:     "No status PR",
-			Url:       "https://github.com/my-org/repo1/pull/1",
-			State:     "OPEN",
-			CreatedAt: "2024-01-01",
-			UpdatedAt: "2024-01-02",
-			// LastCommitStatus intentionally left invalid (no CI status recorded).
+	}, map[string][]dbgen.PullRequest{
+		"my-org/repo1": {
+			{
+				Owner:     "my-org",
+				Repo:      "repo1",
+				Number:    1,
+				Title:     "No status PR",
+				Url:       "https://github.com/my-org/repo1/pull/1",
+				State:     "OPEN",
+				CreatedAt: "2024-01-01",
+				UpdatedAt: "2024-01-02",
+				// LastCommitStatus intentionally left invalid (no CI status recorded).
+			},
 		},
-	}, map[int64][]dbgen.PrLabel{})
+	})
 
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -260,8 +263,8 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	data := resp["data"].(map[string]interface{})
-	org := data["organization"].(map[string]interface{})
+	respData := resp["data"].(map[string]interface{})
+	org := respData["organization"].(map[string]interface{})
 	repos := org["repositories"].(map[string]interface{})
 	nodes := repos["nodes"].([]interface{})
 	require.Equal(t, 1, len(nodes))
@@ -282,11 +285,10 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 
 func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := seedCtx()
 
-	store.SetOrgRepos(ctx, "fallback-org", []dbgen.Repo{
+	seedOrgTruth(t, store, testUserActor, "fallback-org", []dbgen.Repo{
 		{Owner: "fallback-org", Name: "repo1", NameWithOwner: "fallback-org/repo1", Url: "u1"},
-	})
+	}, nil)
 
 	// No "org" in variables — should extract from query string.
 	body := `{"query":"{ organization(login: \"fallback-org\") { repositories { nodes { name } } } }","variables":{}}`
@@ -301,8 +303,8 @@ func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	data := resp["data"].(map[string]interface{})
-	org := data["organization"].(map[string]interface{})
+	respData := resp["data"].(map[string]interface{})
+	org := respData["organization"].(map[string]interface{})
 	repos := org["repositories"].(map[string]interface{})
 	nodes := repos["nodes"].([]interface{})
 	assert.Equal(t, 1, len(nodes))
@@ -315,8 +317,8 @@ func TestGraphQL_OrgFromQueryFallback(t *testing.T) {
 func TestGraphQL_NonCachedQueryForwarded(t *testing.T) {
 	var gotPath, gotAuth, gotBody string
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user" { // requireAuth's token validation
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		if r.URL.Path == "/user" { // requireAuth's identity resolution
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			return
 		}
 		gotPath = r.URL.Path
@@ -373,8 +375,8 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	data := resp["data"].(map[string]interface{})
-	org := data["organization"].(map[string]interface{})
+	respData := resp["data"].(map[string]interface{})
+	org := respData["organization"].(map[string]interface{})
 	repos := org["repositories"].(map[string]interface{})
 	nodes := repos["nodes"].([]interface{})
 	assert.Equal(t, 0, len(nodes))

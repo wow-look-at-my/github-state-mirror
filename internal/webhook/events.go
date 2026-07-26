@@ -104,38 +104,176 @@ func ParseEvent(eventType string, payload []byte) Event {
 	return e
 }
 
+// repositoryObject is the payload's embedded repository object, carrying the
+// fields global truth keeps. Webhook payloads (unlike the identity-locked
+// GraphQL org query) DO carry visibility, so this is the reveal layer's main
+// source of public/private truth.
+type repositoryObject struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	Private  *bool  `json:"private"`
+	// Visibility is "public" / "private" / "internal"; older payloads may omit
+	// it, in which case Private decides.
+	Visibility    string  `json:"visibility"`
+	HTMLURL       string  `json:"html_url"`
+	DefaultBranch string  `json:"default_branch"`
+	PushedAt      any     `json:"pushed_at"` // RFC3339 string, or unix seconds on some events
+	Archived      bool    `json:"archived"`
+	Disabled      bool    `json:"disabled"`
+	Fork          bool    `json:"fork"`
+	Description   *string `json:"description"`
+	Owner         struct {
+		Login     string `json:"login"`
+		AvatarURL string `json:"avatar_url"`
+		HTMLURL   string `json:"html_url"`
+	} `json:"owner"`
+}
+
+// toRepo converts the payload object into a truth row. Fields the payload does
+// not state stay NULL/'' so the store's COALESCE upsert preserves anything
+// already known.
+func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
+	if r == nil || r.Name == "" || r.Owner.Login == "" {
+		return dbgen.Repo{}, false
+	}
+	out := dbgen.Repo{
+		Owner:         r.Owner.Login,
+		Name:          r.Name,
+		NameWithOwner: r.FullName,
+		Url:           r.HTMLURL,
+		IsArchived:    boolToInt(r.Archived),
+		IsDisabled:    boolToInt(r.Disabled),
+		Visibility:    repoVisibility(r.Visibility, r.Private),
+		OwnerLogin:    nullStr(r.Owner.Login),
+		OwnerAvatar:   nullStr(r.Owner.AvatarURL),
+		OwnerUrl:      nullStr(r.Owner.HTMLURL),
+	}
+	if out.NameWithOwner == "" {
+		out.NameWithOwner = r.Owner.Login + "/" + r.Name
+	}
+	if r.DefaultBranch != "" {
+		out.DefaultBranch = nullStr(r.DefaultBranch)
+	}
+	if ts := timestampString(r.PushedAt); ts != "" {
+		out.PushedAt = nullStr(ts)
+	}
+	return out, true
+}
+
+// repoVisibility folds the payload's visibility/private pair into the stored
+// value: the explicit visibility field wins ("internal" is kept as-is and is
+// NOT public for the reveal fast path); absent both, unknown.
+func repoVisibility(visibility string, private *bool) string {
+	if visibility != "" {
+		return visibility
+	}
+	if private == nil {
+		return ""
+	}
+	if *private {
+		return "private"
+	}
+	return "public"
+}
+
+// timestampString renders a payload timestamp that may be an RFC3339 string or
+// a unix-seconds number (push events use the latter for repository.pushed_at).
+func timestampString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return normaliseTime(t)
+	case float64:
+		if t <= 0 {
+			return ""
+		}
+		return time.Unix(int64(t), 0).UTC().Format(time.RFC3339)
+	default:
+		return ""
+	}
+}
+
+// ParseRepositoryPayload extracts the payload's embedded repository object as
+// a truth row, reporting false when the payload has none (or it is degenerate).
+func ParseRepositoryPayload(raw json.RawMessage) (dbgen.Repo, bool) {
+	var body struct {
+		Repository *repositoryObject `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Repository == nil {
+		return dbgen.Repo{}, false
+	}
+	return body.Repository.toRepo()
+}
+
+// ParseRepositoryObject parses a BARE repository object (e.g. the body of
+// GET /repos/{owner}/{repo} -- the reveal probe's answer) into a truth row.
+func ParseRepositoryObject(raw []byte) (dbgen.Repo, bool) {
+	var obj repositoryObject
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return dbgen.Repo{}, false
+	}
+	return obj.toRepo()
+}
+
+// ParseRenameFrom returns changes.repository.name.from for a repository
+// renamed event ("" when absent).
+func ParseRenameFrom(raw json.RawMessage) string {
+	var body struct {
+		Changes *struct {
+			Repository *struct {
+				Name *struct {
+					From string `json:"from"`
+				} `json:"name"`
+			} `json:"repository"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Changes == nil ||
+		body.Changes.Repository == nil || body.Changes.Repository.Name == nil {
+		return ""
+	}
+	return body.Changes.Repository.Name.From
+}
+
 // PRPayload holds the full PR data and labels parsed from a webhook payload.
 type PRPayload struct {
 	PR     dbgen.PullRequest
 	Labels []dbgen.PrLabel
 }
 
-// ParsePRPayload extracts a full PR and its labels from a pull_request webhook's
-// raw JSON. The Actor field is left empty — callers fill it per-actor.
+// ParsePRPayload extracts a full PR and its labels from a pull_request
+// webhook's raw JSON (the embedded pull_request is a full REST-shaped PR
+// object, so webhook-maintained rows stay rest-complete for the cached
+// /pulls routes).
 func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	var body struct {
 		PullRequest *struct {
-			Number    int    `json:"number"`
-			Title     string `json:"title"`
-			HTMLURL   string `json:"html_url"`
-			Draft     bool   `json:"draft"`
-			State     string `json:"state"`
-			CreatedAt string `json:"created_at"`
-			UpdatedAt string `json:"updated_at"`
-			Additions *int   `json:"additions"`
-			Deletions *int   `json:"deletions"`
-			Mergeable *bool  `json:"mergeable"`
+			Number    int     `json:"number"`
+			NodeID    string  `json:"node_id"`
+			Title     string  `json:"title"`
+			Body      *string `json:"body"`
+			HTMLURL   string  `json:"html_url"`
+			Draft     bool    `json:"draft"`
+			State     string  `json:"state"`
+			CreatedAt string  `json:"created_at"`
+			UpdatedAt string  `json:"updated_at"`
+			Additions *int    `json:"additions"`
+			Deletions *int    `json:"deletions"`
+			Mergeable *bool   `json:"mergeable"`
 			User      *struct {
 				Login     string `json:"login"`
+				Type      string `json:"type"`
 				AvatarURL string `json:"avatar_url"`
 				HTMLURL   string `json:"html_url"`
 			} `json:"user"`
 			Head struct {
-				Ref string `json:"ref"`
-				SHA string `json:"sha"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo *struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
 				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
 				Repo *struct {
 					Name  string `json:"name"`
 					Owner struct {
@@ -143,7 +281,11 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 					} `json:"owner"`
 				} `json:"repo"`
 			} `json:"base"`
-			Labels []struct {
+			AutoMerge *struct {
+				MergeMethod string `json:"merge_method"`
+			} `json:"auto_merge"`
+			MergeCommitSHA *string `json:"merge_commit_sha"`
+			Labels         []struct {
 				Name  string `json:"name"`
 				Color string `json:"color"`
 			} `json:"labels"`
@@ -193,6 +335,23 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		HeadRefName: nullStr(gpr.Head.Ref),
 		BaseRefName: nullStr(gpr.Base.Ref),
 		HeadRefOid:  nullStr(gpr.Head.SHA),
+		// REST-only fields (absent from the GraphQL org-repos selection set)
+		// that the cached /pulls routes rebuild from. Webhook payloads carry
+		// them all, so webhook-maintained rows stay rebuild-complete.
+		NodeID:     nullStr(gpr.NodeID),
+		BaseRefOid: nullStr(gpr.Base.SHA),
+	}
+	if gpr.Body != nil {
+		pr.Body = sql.NullString{String: *gpr.Body, Valid: true}
+	}
+	if gpr.Head.Repo != nil {
+		pr.HeadRepoFullName = nullStr(gpr.Head.Repo.FullName)
+	}
+	if gpr.AutoMerge != nil {
+		pr.AutoMergeMethod = nullStr(gpr.AutoMerge.MergeMethod)
+	}
+	if gpr.MergeCommitSHA != nil {
+		pr.MergeCommitSha = nullStr(*gpr.MergeCommitSHA)
 	}
 
 	if gpr.Additions != nil {
@@ -214,6 +373,7 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		pr.AuthorLogin = nullStr(gpr.User.Login)
 		pr.AuthorAvatar = nullStr(gpr.User.AvatarURL)
 		pr.AuthorUrl = nullStr(gpr.User.HTMLURL)
+		pr.AuthorType = nullStr(gpr.User.Type)
 	}
 
 	reviewCount := len(gpr.RequestedReviewers) + len(gpr.RequestedTeams)
@@ -236,12 +396,21 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 // CheckPayload is a single commit-check state parsed from a status/check_run/
 // check_suite webhook. Context is a stable dedup key (latest state wins).
 type CheckPayload struct {
-	Owner           string
-	Repo            string
-	SHA             string
-	Context         string
-	State           string // normalized: SUCCESS / FAILURE / ERROR / PENDING
-	OnDefaultBranch bool   // the check ran on the repo's default branch
+	Owner   string
+	Repo    string
+	SHA     string
+	Context string
+	State   string // normalized: SUCCESS / FAILURE / ERROR / PENDING
+	// Branches is every branch name the payload associates with the commit
+	// (empty names dropped): for a `status` event each branches[].name; for
+	// check_run/check_suite the suite's head_branch when non-empty. Together
+	// with SHA these are the ref SPELLINGS whose cached CI answers the event
+	// moved (commit_ci_cache keys the verbatim requested ref). NOTE: GitHub
+	// caps the status payload's branches array (~10 entries), so a commit on
+	// many branches can be under-reported -- acceptable, because branch-form
+	// CI rows are bounded by the 24h TTL and current consumers poll by sha.
+	Branches        []string
+	OnDefaultBranch bool // the check ran on the repo's default branch
 }
 
 // ParseCheckPayload extracts a commit-check state from a status, check_run, or
@@ -292,14 +461,19 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		defaultBranch = body.Repository.DefaultBranch
 	}
 
-	var branches []string
+	// p.Branches collects only NON-EMPTY names; the OnDefaultBranch check
+	// below reads the same list, which is behavior-identical to the old
+	// unfiltered local slice (an empty name can never equal a non-empty
+	// default branch).
 	switch eventType {
 	case "status":
 		p.SHA = body.SHA
 		p.Context = "status:" + body.Context
 		p.State = normalizeStatusState(body.State)
 		for _, b := range body.Branches {
-			branches = append(branches, b.Name)
+			if b.Name != "" {
+				p.Branches = append(p.Branches, b.Name)
+			}
 		}
 	case "check_run":
 		if body.CheckRun == nil {
@@ -308,8 +482,8 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		p.SHA = body.CheckRun.HeadSHA
 		p.Context = "check_run:" + body.CheckRun.Name
 		p.State = normalizeCheckState(body.CheckRun.Status, body.CheckRun.Conclusion)
-		if body.CheckRun.CheckSuite != nil {
-			branches = append(branches, body.CheckRun.CheckSuite.HeadBranch)
+		if body.CheckRun.CheckSuite != nil && body.CheckRun.CheckSuite.HeadBranch != "" {
+			p.Branches = append(p.Branches, body.CheckRun.CheckSuite.HeadBranch)
 		}
 	case "check_suite":
 		if body.CheckSuite == nil {
@@ -322,13 +496,15 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		}
 		p.Context = "check_suite:" + slug
 		p.State = normalizeCheckState(body.CheckSuite.Status, body.CheckSuite.Conclusion)
-		branches = append(branches, body.CheckSuite.HeadBranch)
+		if body.CheckSuite.HeadBranch != "" {
+			p.Branches = append(p.Branches, body.CheckSuite.HeadBranch)
+		}
 	default:
 		return CheckPayload{}, fmt.Errorf("unsupported check event type: %s", eventType)
 	}
 
 	if defaultBranch != "" {
-		for _, b := range branches {
+		for _, b := range p.Branches {
 			if b == defaultBranch {
 				p.OnDefaultBranch = true
 				break
@@ -367,66 +543,6 @@ func normalizeCheckState(status, conclusion string) string {
 		return "FAILURE"
 	}
 	return "PENDING"
-}
-
-// PushPayload is the minimal info applied directly from a push webhook.
-type PushPayload struct {
-	Owner          string
-	Repo           string
-	PushedAt       string // RFC3339
-	ChangedPaths   []string
-	HasChangedList bool
-}
-
-// ParsePushPayload extracts owner/repo and a best-effort pushed_at timestamp.
-func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
-	var body struct {
-		Repository *struct {
-			Name  string `json:"name"`
-			Owner struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		} `json:"repository"`
-		HeadCommit *struct {
-			Timestamp string `json:"timestamp"`
-		} `json:"head_commit"`
-		Commits []struct {
-			Added    []string `json:"added"`
-			Modified []string `json:"modified"`
-			Removed  []string `json:"removed"`
-		} `json:"commits"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return PushPayload{}, fmt.Errorf("parse push payload: %w", err)
-	}
-	if body.Repository == nil {
-		return PushPayload{}, fmt.Errorf("parse push payload: no repository field")
-	}
-	p := PushPayload{
-		Owner: body.Repository.Owner.Login,
-		Repo:  body.Repository.Name,
-	}
-	if body.HeadCommit != nil && body.HeadCommit.Timestamp != "" {
-		p.PushedAt = normaliseTime(body.HeadCommit.Timestamp)
-	} else {
-		p.PushedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if len(body.Commits) > 0 {
-		p.HasChangedList = true
-		seen := make(map[string]bool)
-		for _, c := range body.Commits {
-			for _, path := range append(append(c.Added, c.Modified...), c.Removed...) {
-				if path != "" && !seen[path] {
-					seen[path] = true
-					p.ChangedPaths = append(p.ChangedPaths, path)
-				}
-			}
-		}
-	}
-	if p.Owner == "" || p.Repo == "" {
-		return PushPayload{}, fmt.Errorf("parse push payload: missing owner/repo")
-	}
-	return p, nil
 }
 
 // LabelPayload is a repo label change parsed from a label webhook.
@@ -479,6 +595,114 @@ func ParseLabelPayload(raw json.RawMessage) (LabelPayload, error) {
 		return LabelPayload{}, fmt.Errorf("parse label payload: missing owner/repo")
 	}
 	return p, nil
+}
+
+// WorkflowJobPayload is a GitHub Actions job's state parsed from a
+// workflow_job webhook. Only the in_progress and completed actions are
+// tracked (the dispatcher drops queued/waiting churn); this struct carries just
+// what the global workflow_jobs table stores. Empty string means the payload
+// didn't report the field (e.g. Conclusion until completed, RunnerName until a
+// runner is assigned).
+type WorkflowJobPayload struct {
+	Owner        string
+	Repo         string
+	JobID        int64
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	WorkflowName string
+	Status       string // in_progress | completed
+	Conclusion   string // success | failure | cancelled | ... (completed only)
+	HeadSHA      string
+	HeadBranch   string
+	HTMLURL      string
+	StartedAt    string // RFC3339
+	CompletedAt  string // RFC3339
+	RunnerName   string
+}
+
+// ParseWorkflowJobPayload extracts a job's state from a workflow_job webhook.
+func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
+	var body struct {
+		WorkflowJob *struct {
+			ID           int64   `json:"id"`
+			RunID        int64   `json:"run_id"`
+			RunAttempt   int64   `json:"run_attempt"`
+			Name         string  `json:"name"`
+			WorkflowName *string `json:"workflow_name"`
+			Status       string  `json:"status"`
+			Conclusion   *string `json:"conclusion"`
+			HeadSHA      string  `json:"head_sha"`
+			HeadBranch   *string `json:"head_branch"`
+			HTMLURL      string  `json:"html_url"`
+			StartedAt    *string `json:"started_at"`
+			CompletedAt  *string `json:"completed_at"`
+			RunnerName   *string `json:"runner_name"`
+		} `json:"workflow_job"`
+		Repository *struct {
+			Name  string `json:"name"`
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: %w", err)
+	}
+	if body.WorkflowJob == nil || body.Repository == nil {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: missing workflow_job/repository")
+	}
+	j := body.WorkflowJob
+	p := WorkflowJobPayload{
+		Owner:        body.Repository.Owner.Login,
+		Repo:         body.Repository.Name,
+		JobID:        j.ID,
+		RunID:        j.RunID,
+		RunAttempt:   j.RunAttempt,
+		Name:         j.Name,
+		WorkflowName: strOrEmpty(j.WorkflowName),
+		Status:       j.Status,
+		Conclusion:   strOrEmpty(j.Conclusion),
+		HeadSHA:      j.HeadSHA,
+		HeadBranch:   strOrEmpty(j.HeadBranch),
+		HTMLURL:      j.HTMLURL,
+		RunnerName:   strOrEmpty(j.RunnerName),
+	}
+	if ts := strOrEmpty(j.StartedAt); ts != "" {
+		p.StartedAt = normaliseTime(ts)
+	}
+	if ts := strOrEmpty(j.CompletedAt); ts != "" {
+		p.CompletedAt = normaliseTime(ts)
+	}
+	if p.Owner == "" || p.Repo == "" || p.JobID == 0 {
+		return WorkflowJobPayload{}, fmt.Errorf("parse workflow_job payload: missing owner/repo/job id")
+	}
+	return p, nil
+}
+
+// ParseWorkflowRunHeadSHA extracts workflow_run.head_sha from a workflow_run
+// webhook payload ("" when absent or unparseable). Deliberately minimal: the
+// dispatcher's only use for the event is flushing that sha's cached
+// workflow-runs pages -- a startup_failure run creates no jobs, check runs,
+// or statuses, so this delivery is the sole signal the cached listing moved
+// -- and nothing else reads the payload.
+func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
+	var body struct {
+		WorkflowRun *struct {
+			HeadSHA string `json:"head_sha"`
+		} `json:"workflow_run"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.WorkflowRun == nil {
+		return ""
+	}
+	return body.WorkflowRun.HeadSHA
+}
+
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func boolToInt(b bool) int64 {

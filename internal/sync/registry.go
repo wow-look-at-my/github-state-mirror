@@ -10,63 +10,19 @@ import (
 
 // Resource kind constants used in cache_metadata.
 const (
-	KindUser           = "user"
-	KindUserOrgs       = "user_orgs"
-	KindOrgRepos       = "org_repos"
-	KindPullRequestRaw = "pull_request_raw"
-	KindRepoPullList   = "repo_pull_list"
-	KindRepoContents   = "repo_contents"
-	KindPRFiles        = "pr_files"
-	KindCompare        = "compare"
+	// KindOrgRepos is a PRINCIPAL's org list-sync marker (actor = principal,
+	// key = org login): freshness of that principal's grant set for the owner.
+	// The fetch refreshes global truth as a side effect. (The /pulls list's
+	// completeness marker lives in its own table, pulls_list_cache -- that
+	// route absorbs the caller's own request rather than running a fetcher.)
+	KindOrgRepos = "org_repos"
 )
 
 // RegisterAll wires all fetchers into the freshness.Manager.
 func RegisterAll(mgr *freshness.Manager, gh *ghclient.Client, store *ghdata.Store) {
 	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindUser,
-		DefaultTTL:    6 * time.Hour,
-		ErrorRetryMin: 1 * time.Minute,
-	}, &UserFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindUserOrgs,
-		DefaultTTL:    6 * time.Hour,
-		ErrorRetryMin: 1 * time.Minute,
-	}, &UserOrgsFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
 		Kind:          KindOrgRepos,
 		DefaultTTL:    6 * time.Hour,
 		ErrorRetryMin: 1 * time.Minute,
 	}, &OrgReposFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindPullRequestRaw,
-		DefaultTTL:    30 * time.Minute,
-		ErrorRetryMin: 30 * time.Second,
-	}, &PullRequestRawFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindRepoContents,
-		DefaultTTL:    30 * time.Minute,
-		ErrorRetryMin: 30 * time.Second,
-	}, &RepoContentsFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindRepoPullList,
-		DefaultTTL:    30 * time.Minute,
-		ErrorRetryMin: 30 * time.Second,
-	}, &RepoPullListFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindPRFiles,
-		DefaultTTL:    1 * time.Hour,
-		ErrorRetryMin: 30 * time.Second,
-	}, &PRFilesFetcher{gh: gh, store: store})
-
-	mgr.RegisterFetcher(freshness.Policy{
-		Kind:          KindCompare,
-		DefaultTTL:    30 * time.Minute,
-		ErrorRetryMin: 30 * time.Second,
-	}, &CompareFetcher{gh: gh, store: store})
 }

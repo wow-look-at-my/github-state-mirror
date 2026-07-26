@@ -7,13 +7,17 @@
 //   <rate-meter name="core" limit="15000" remaining="14231" used="769"
 //               reset="1767225600"></rate-meter>
 //
-// reset is Unix epoch seconds. The component reflects a computed `low`
-// attribute on itself when remaining/limit < 15% (styled via :host([low]);
-// `low` is deliberately NOT observed, so setting it can't recurse into
+// reset is Unix epoch seconds. The bar fills with USAGE (used/limit): a fresh
+// bucket is empty, a nearly-exhausted one is full. The component reflects a
+// computed `level` attribute on itself — "warn" at ≥ 70% used, "critical" at
+// ≥ 90% used, absent below (styled via :host([level=…]); `level` is
+// deliberately NOT observed, so reflecting it can't recurse into
 // attributeChangedCallback). While connected, a 1s interval keeps the
 // "resets in …" countdown ticking between the dashboard's 5s refetches (and in
 // the static preview, which never refetches); the tab rebuild replaces these
 // elements every 5s, so disconnectedCallback must — and does — clear the timer.
+// A reset already in the past renders honestly as "reset …h ago · stale"
+// (never "resets now"), and a zero/absent reset as "reset unknown".
 //
 // Layout notes (the fixes over the old light-DOM .rate-meter tile): the host is
 // a flex column with min-width:0 so it can shrink inside the .rate-grid; the
@@ -33,7 +37,7 @@ const STYLE = `
     border-radius: 8px;
     padding: 12px 14px;
 }
-:host([low]) { border-color: rgba(248, 81, 73, 0.5); }
+:host([level="critical"]) { border-color: rgba(248, 81, 73, 0.5); }
 .top {
     display: flex;
     align-items: baseline;
@@ -68,7 +72,8 @@ const STYLE = `
     border-radius: 999px;
     transition: width 0.3s;
 }
-:host([low]) .fill { background: var(--red); }
+:host([level="warn"]) .fill { background: var(--yellow); }
+:host([level="critical"]) .fill { background: var(--red); }
 .foot {
     display: flex;
     justify-content: space-between;
@@ -78,25 +83,39 @@ const STYLE = `
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
 }
-:host([low]) .reset { color: var(--yellow); }
+:host([level="critical"]) .reset { color: var(--yellow); }
 `;
 
-// fmtUntil renders the time remaining until a Unix-epoch reset, e.g. "in 42m"
-// or "in 1h 3m"; "now" once the window has passed.
-function fmtUntil(epochSeconds: number): string {
-    const secs = Math.round(Number(epochSeconds) - Date.now() / 1000);
-    if (!isFinite(secs) || secs <= 0) return "now";
-    const h = Math.floor(secs / 3600);
+// fmtSpan renders a positive duration in the countdown's units: "2d 3h",
+// "1h 3m", "42m 10s", "5s".
+function fmtSpan(secs: number): string {
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
     const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
-    if (h > 0) return "in " + h + "h " + m + "m";
-    if (m > 0) return "in " + m + "m " + s + "s";
-    return "in " + s + "s";
+    if (d > 0) return d + "d " + h + "h";
+    if (h > 0) return h + "h " + m + "m";
+    if (m > 0) return m + "m " + s + "s";
+    return s + "s";
+}
+
+// fmtReset renders the whole reset label from a Unix-epoch reset. A future
+// reset keeps the countdown wording ("resets in 42m 10s"). A PAST reset must
+// read as what it is — "reset 23h ago · stale" — never "resets now": the
+// server ages dead observations out, but one can still be rendered briefly
+// (refresh races, client clock skew), and an entry that old is stale data,
+// not a window about to roll over. A zero/absent reset is unknown, not a
+// countdown.
+function fmtReset(epochSeconds: number): string {
+    if (!isFinite(epochSeconds) || epochSeconds <= 0) return "reset unknown";
+    const secs = Math.round(epochSeconds - Date.now() / 1000);
+    if (secs > 0) return "resets in " + fmtSpan(secs);
+    return "reset " + fmtSpan(-secs) + " ago · stale";
 }
 
 class RateMeterElement extends HTMLElement {
-    // `low` is computed and reflected by render(); observing it would make
-    // toggleAttribute("low") re-enter attributeChangedCallback.
+    // `level` is computed and reflected by render(); observing it would make
+    // the reflection re-enter attributeChangedCallback.
     static readonly observedAttributes = ["name", "limit", "remaining", "used", "reset"] as const;
 
     private readonly nameEl: HTMLSpanElement;
@@ -146,8 +165,10 @@ class RateMeterElement extends HTMLElement {
         const remaining = this.attrNum("remaining");
         const limit = this.attrNum("limit");
         const used = limit ? limit - remaining : this.attrNum("used");
-        const pct = limit ? Math.max(0, Math.min(100, (remaining / limit) * 100)) : 100;
-        const low = limit > 0 && remaining / limit < 0.15;
+        // The bar fills with usage, so a bucket nearing exhaustion reads as
+        // full. No limit → no usage to show (empty bar, no level).
+        const pct = limit ? Math.max(0, Math.min(100, (used / limit) * 100)) : 0;
+        const level = pct >= 90 ? "critical" : pct >= 70 ? "warn" : null;
 
         this.nameEl.textContent = name;
         // The name wraps when narrow; a hover tooltip carries the full name.
@@ -156,13 +177,14 @@ class RateMeterElement extends HTMLElement {
         this.fillEl.style.width = pct.toFixed(1) + "%";
         this.usedEl.textContent = used + " used";
         this.tick();
-        this.toggleAttribute("low", low);
+        if (level) this.setAttribute("level", level);
+        else this.removeAttribute("level");
     }
 
     // tick refreshes only the countdown text; the 1s interval keeps it live
     // between data refreshes.
     private tick(): void {
-        this.resetEl.textContent = "resets " + fmtUntil(this.attrNum("reset"));
+        this.resetEl.textContent = fmtReset(this.attrNum("reset"));
     }
 
     connectedCallback(): void {

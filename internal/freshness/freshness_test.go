@@ -203,7 +203,7 @@ func TestManager_InvalidateAndRefresh(t *testing.T) {
 	assert.Equal(t, 1, fetchCount)
 
 	// InvalidateAndRefresh should re-fetch immediately.
-	require.NoError(t, mgr.InvalidateAndRefresh(ctx, id, TriggerWebhook))
+	require.NoError(t, mgr.InvalidateAndRefresh(ctx, id, TriggerManual))
 	assert.Equal(t, 2, fetchCount)
 
 	// Should be fresh now.
@@ -357,26 +357,59 @@ func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
 	assert.Equal(t, StateFresh, meta.State, "the result must be stored even though the requester is gone")
 }
 
-// TestManager_FetchKeepsCallerDeadline: severing cancellation must not unbound
-// bounded callers — an explicit deadline (e.g. the webhook dispatch timeout)
-// still applies to the fetch context.
-func TestManager_FetchKeepsCallerDeadline(t *testing.T) {
+// TestManager_FetchIgnoresCallerDeadline: a caller's own (possibly very short)
+// deadline must NOT bound the detached fetch -- shared work is not killed by
+// one impatient caller (a short caller deadline once starved every fetch a
+// webhook path triggered). The fetch context instead carries only the
+// manager's own generous safety timeout.
+func TestManager_FetchIgnoresCallerDeadline(t *testing.T) {
 	s := testStore(t)
 	mgr := NewManager(s)
 
+	var fetchDeadline time.Time
 	var hadDeadline bool
 	mgr.RegisterFetcher(Policy{
 		Kind:       "test",
 		DefaultTTL: 1 * time.Hour,
 	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
-		_, hadDeadline = ctx.Deadline()
+		fetchDeadline, hadDeadline = ctx.Deadline()
 		return RefreshResult{}, nil
 	}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	callerDeadline := time.Now().Add(10 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
 	defer cancel()
 	require.NoError(t, mgr.EnsureFresh(ctx, ResourceID{Kind: "test", Key: "key1"}))
-	assert.True(t, hadDeadline, "the caller's deadline must be preserved on the fetch context")
+	require.True(t, hadDeadline, "the safety timeout gives the fetch context a deadline")
+	assert.True(t, fetchDeadline.After(callerDeadline.Add(time.Minute)),
+		"the fetch deadline must be the manager's safety timeout, not the caller's short deadline")
+}
+
+// TestManager_DrainWaitsForInflightFetches: shutdown must be able to wait for
+// detached fetches (and their metadata writes) before the DB closes.
+func TestManager_DrainWaitsForInflightFetches(t *testing.T) {
+	s := testStore(t)
+	mgr := NewManager(s)
+
+	fetchStarted := make(chan struct{})
+	proceed := make(chan struct{})
+	mgr.RegisterFetcher(Policy{
+		Kind:       "test",
+		DefaultTTL: 1 * time.Hour,
+	}, FetcherFunc(func(ctx context.Context, key string, etag string) (RefreshResult, error) {
+		close(fetchStarted)
+		<-proceed
+		return RefreshResult{RecordsChanged: 1}, nil
+	}))
+
+	done := make(chan error, 1)
+	go func() { done <- mgr.EnsureFresh(context.Background(), ResourceID{Kind: "test", Key: "key1"}) }()
+	<-fetchStarted
+
+	assert.False(t, mgr.Drain(20*time.Millisecond), "Drain must time out while a fetch is in flight")
+	close(proceed)
+	require.NoError(t, <-done)
+	assert.True(t, mgr.Drain(time.Second), "Drain must succeed once fetches finish")
 }
 
 // TestManager_ErrorBackoffSkipsRefetch: an error-state row still inside its

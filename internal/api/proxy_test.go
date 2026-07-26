@@ -380,13 +380,16 @@ func TestProxy_UserEndpointsPassThrough(t *testing.T) {
 }
 
 // TestProxy_FormerlyCachedNowForwarded verifies the endpoints the mirror used to
-// cache with TRIMMED shapes (/user, /compare, /pulls/{n}/files) now pass through
-// to GitHub uncached, with URL fields stripped from JSON responses.
+// cache with TRIMMED shapes (/user) now pass through to GitHub verbatim, so
+// callers get GitHub's full response — not a subset. This is the
+// "identical-or-passthrough" rule: not served from cache => served as-is.
+// (/compare and /pulls/{n}/files, both once on this list for trims that broke
+// or would break consumers, are cached again as tier-2 routes whose rebuilds
+// preserve the consumer-read fields exactly — see respcache_compare_test.go
+// and respcache_pullfiles_test.go.)
 func TestProxy_FormerlyCachedNowForwarded(t *testing.T) {
 	cases := []struct{ name, path, body string }{
 		{"user", "/user", `{"login":"octocat","id":1,"node_id":"MDQ6VXNlcjE=","type":"User","site_admin":false}`},
-		{"compare", "/repos/o/r/compare/main...feat", `{"ahead_by":2,"behind_by":0,"total_commits":2,"files":[{"filename":"a.go","patch":"@@ -1 +1 @@"}]}`},
-		{"pr-files", "/repos/o/r/pulls/5/files", `[{"filename":"a.go","status":"modified","additions":1,"deletions":0,"patch":"@@ -1 +1 @@"}]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

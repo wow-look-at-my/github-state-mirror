@@ -10,285 +10,300 @@ import (
 	"database/sql"
 )
 
-const deleteBranchComparison = `-- name: DeleteBranchComparison :exec
-DELETE FROM branch_comparisons
-WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
+const countGrantsByPrincipal = `-- name: CountGrantsByPrincipal :one
+SELECT COUNT(*) FROM access_grants WHERE principal = ? AND expires_at > ?
 `
 
-type DeleteBranchComparisonParams struct {
-	Actor   string
-	Owner   string
-	Repo    string
-	BaseRef string
-	HeadRef string
+type CountGrantsByPrincipalParams struct {
+	Principal string
+	ExpiresAt string
 }
 
-func (q *Queries) DeleteBranchComparison(ctx context.Context, arg DeleteBranchComparisonParams) error {
-	_, err := q.db.ExecContext(ctx, deleteBranchComparison,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.BaseRef,
-		arg.HeadRef,
-	)
+func (q *Queries) CountGrantsByPrincipal(ctx context.Context, arg CountGrantsByPrincipalParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countGrantsByPrincipal, arg.Principal, arg.ExpiresAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteAccessGrant = `-- name: DeleteAccessGrant :exec
+DELETE FROM access_grants WHERE principal = ? AND owner = ? AND repo = ?
+`
+
+type DeleteAccessGrantParams struct {
+	Principal string
+	Owner     string
+	Repo      string
+}
+
+func (q *Queries) DeleteAccessGrant(ctx context.Context, arg DeleteAccessGrantParams) error {
+	_, err := q.db.ExecContext(ctx, deleteAccessGrant, arg.Principal, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteCommitChecksByRepo = `-- name: DeleteCommitChecksByRepo :exec
+DELETE FROM commit_checks WHERE owner = ? AND repo = ?
+`
+
+type DeleteCommitChecksByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteCommitChecksByRepo(ctx context.Context, arg DeleteCommitChecksByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitChecksByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
 const deleteCommitChecksBySha = `-- name: DeleteCommitChecksBySha :exec
-DELETE FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+DELETE FROM commit_checks WHERE owner = ? AND repo = ? AND sha = ?
 `
 
 type DeleteCommitChecksByShaParams struct {
-	Actor string
 	Owner string
 	Repo  string
 	Sha   string
 }
 
 func (q *Queries) DeleteCommitChecksBySha(ctx context.Context, arg DeleteCommitChecksByShaParams) error {
-	_, err := q.db.ExecContext(ctx, deleteCommitChecksBySha,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Sha,
-	)
+	_, err := q.db.ExecContext(ctx, deleteCommitChecksBySha, arg.Owner, arg.Repo, arg.Sha)
 	return err
 }
 
-const deletePRFiles = `-- name: DeletePRFiles :exec
-DELETE FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
+const deleteDenialsByPrincipalOwner = `-- name: DeleteDenialsByPrincipalOwner :exec
+DELETE FROM deny_cache WHERE principal = ? AND owner = ?
 `
 
-type DeletePRFilesParams struct {
-	Actor    string
-	Owner    string
-	Repo     string
-	PrNumber int64
+type DeleteDenialsByPrincipalOwnerParams struct {
+	Principal string
+	Owner     string
 }
 
-func (q *Queries) DeletePRFiles(ctx context.Context, arg DeletePRFilesParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRFiles,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.PrNumber,
-	)
+func (q *Queries) DeleteDenialsByPrincipalOwner(ctx context.Context, arg DeleteDenialsByPrincipalOwnerParams) error {
+	_, err := q.db.ExecContext(ctx, deleteDenialsByPrincipalOwner, arg.Principal, arg.Owner)
+	return err
+}
+
+const deleteDenialsByPrincipalRepo = `-- name: DeleteDenialsByPrincipalRepo :exec
+DELETE FROM deny_cache WHERE principal = ? AND owner = ? AND repo = ?
+`
+
+type DeleteDenialsByPrincipalRepoParams struct {
+	Principal string
+	Owner     string
+	Repo      string
+}
+
+func (q *Queries) DeleteDenialsByPrincipalRepo(ctx context.Context, arg DeleteDenialsByPrincipalRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteDenialsByPrincipalRepo, arg.Principal, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteExpiredDenials = `-- name: DeleteExpiredDenials :exec
+DELETE FROM deny_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredDenials(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredDenials, expiresAt)
+	return err
+}
+
+const deleteExpiredGrants = `-- name: DeleteExpiredGrants :exec
+DELETE FROM access_grants WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredGrants(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredGrants, expiresAt)
+	return err
+}
+
+const deleteGrantsByRepo = `-- name: DeleteGrantsByRepo :exec
+DELETE FROM access_grants WHERE owner = ? AND repo = ?
+`
+
+type DeleteGrantsByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteGrantsByRepo(ctx context.Context, arg DeleteGrantsByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteGrantsByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteListSyncGrants = `-- name: DeleteListSyncGrants :exec
+DELETE FROM access_grants WHERE principal = ? AND owner = ? AND source = 'list_sync'
+`
+
+type DeleteListSyncGrantsParams struct {
+	Principal string
+	Owner     string
+}
+
+// DeleteListSyncGrants clears one principal's list_sync grants for an owner
+// ahead of a replace-sync. Probe-sourced grants survive (an accessible repo --
+// e.g. an archived one -- may legitimately be absent from the org list).
+func (q *Queries) DeleteListSyncGrants(ctx context.Context, arg DeleteListSyncGrantsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteListSyncGrants, arg.Principal, arg.Owner)
 	return err
 }
 
 const deletePRLabels = `-- name: DeletePRLabels :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
+DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?
 `
 
 type DeletePRLabelsParams struct {
-	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) DeletePRLabels(ctx context.Context, arg DeletePRLabelsParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRLabels,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.PrNumber,
-	)
+	_, err := q.db.ExecContext(ctx, deletePRLabels, arg.Owner, arg.Repo, arg.PrNumber)
 	return err
 }
 
 const deletePRLabelsByName = `-- name: DeletePRLabelsByName :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND name = ?
+DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND name = ?
 `
 
 type DeletePRLabelsByNameParams struct {
-	Actor string
 	Owner string
 	Repo  string
 	Name  string
 }
 
 func (q *Queries) DeletePRLabelsByName(ctx context.Context, arg DeletePRLabelsByNameParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRLabelsByName,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Name,
-	)
+	_, err := q.db.ExecContext(ctx, deletePRLabelsByName, arg.Owner, arg.Repo, arg.Name)
 	return err
 }
 
 const deletePRLabelsByRepo = `-- name: DeletePRLabelsByRepo :exec
-DELETE FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ?
+DELETE FROM pr_labels WHERE owner = ? AND repo = ?
 `
 
 type DeletePRLabelsByRepoParams struct {
-	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) DeletePRLabelsByRepo(ctx context.Context, arg DeletePRLabelsByRepoParams) error {
-	_, err := q.db.ExecContext(ctx, deletePRLabelsByRepo, arg.Actor, arg.Owner, arg.Repo)
+	_, err := q.db.ExecContext(ctx, deletePRLabelsByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
 const deletePullRequest = `-- name: DeletePullRequest :exec
-DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
+DELETE FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
 `
 
 type DeletePullRequestParams struct {
-	Actor  string
 	Owner  string
 	Repo   string
 	Number int64
 }
 
 func (q *Queries) DeletePullRequest(ctx context.Context, arg DeletePullRequestParams) error {
-	_, err := q.db.ExecContext(ctx, deletePullRequest,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Number,
-	)
+	_, err := q.db.ExecContext(ctx, deletePullRequest, arg.Owner, arg.Repo, arg.Number)
 	return err
 }
 
 const deletePullRequestsByRepo = `-- name: DeletePullRequestsByRepo :exec
-DELETE FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ?
+DELETE FROM pull_requests WHERE owner = ? AND repo = ?
 `
 
 type DeletePullRequestsByRepoParams struct {
-	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) DeletePullRequestsByRepo(ctx context.Context, arg DeletePullRequestsByRepoParams) error {
-	_, err := q.db.ExecContext(ctx, deletePullRequestsByRepo, arg.Actor, arg.Owner, arg.Repo)
+	_, err := q.db.ExecContext(ctx, deletePullRequestsByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
-const deleteReposByOwner = `-- name: DeleteReposByOwner :exec
-DELETE FROM repos WHERE actor = ? AND owner = ?
+const deleteRepo = `-- name: DeleteRepo :exec
+DELETE FROM repos WHERE owner = ? AND name = ?
 `
 
-type DeleteReposByOwnerParams struct {
-	Actor string
+type DeleteRepoParams struct {
 	Owner string
+	Name  string
 }
 
-func (q *Queries) DeleteReposByOwner(ctx context.Context, arg DeleteReposByOwnerParams) error {
-	_, err := q.db.ExecContext(ctx, deleteReposByOwner, arg.Actor, arg.Owner)
+func (q *Queries) DeleteRepo(ctx context.Context, arg DeleteRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteRepo, arg.Owner, arg.Name)
 	return err
 }
 
-const deleteUserOrgMemberships = `-- name: DeleteUserOrgMemberships :exec
-DELETE FROM user_org_memberships WHERE actor = ? AND user_login = ?
+const getAccessGrant = `-- name: GetAccessGrant :one
+SELECT principal, owner, repo, granted_at, expires_at, source FROM access_grants WHERE principal = ? AND owner = ? AND repo = ?
 `
 
-type DeleteUserOrgMembershipsParams struct {
-	Actor     string
-	UserLogin string
+type GetAccessGrantParams struct {
+	Principal string
+	Owner     string
+	Repo      string
 }
 
-func (q *Queries) DeleteUserOrgMemberships(ctx context.Context, arg DeleteUserOrgMembershipsParams) error {
-	_, err := q.db.ExecContext(ctx, deleteUserOrgMemberships, arg.Actor, arg.UserLogin)
-	return err
-}
-
-const getBranchComparison = `-- name: GetBranchComparison :one
-SELECT actor, owner, repo, base_ref, head_ref, ahead_by, behind_by FROM branch_comparisons
-WHERE actor = ? AND owner = ? AND repo = ? AND base_ref = ? AND head_ref = ?
-`
-
-type GetBranchComparisonParams struct {
-	Actor   string
-	Owner   string
-	Repo    string
-	BaseRef string
-	HeadRef string
-}
-
-func (q *Queries) GetBranchComparison(ctx context.Context, arg GetBranchComparisonParams) (BranchComparison, error) {
-	row := q.db.QueryRowContext(ctx, getBranchComparison,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.BaseRef,
-		arg.HeadRef,
-	)
-	var i BranchComparison
+func (q *Queries) GetAccessGrant(ctx context.Context, arg GetAccessGrantParams) (AccessGrant, error) {
+	row := q.db.QueryRowContext(ctx, getAccessGrant, arg.Principal, arg.Owner, arg.Repo)
+	var i AccessGrant
 	err := row.Scan(
-		&i.Actor,
+		&i.Principal,
 		&i.Owner,
 		&i.Repo,
-		&i.BaseRef,
-		&i.HeadRef,
-		&i.AheadBy,
-		&i.BehindBy,
+		&i.GrantedAt,
+		&i.ExpiresAt,
+		&i.Source,
 	)
 	return i, err
 }
 
-const getFirstUser = `-- name: GetFirstUser :one
-SELECT actor, login, avatar_url, url FROM users WHERE actor = ? LIMIT 1
+const getDenyVerdict = `-- name: GetDenyVerdict :one
+SELECT principal, resource_kind, resource_key, owner, repo, status, message, denied_at, expires_at FROM deny_cache WHERE principal = ? AND resource_kind = ? AND resource_key = ?
 `
 
-func (q *Queries) GetFirstUser(ctx context.Context, actor string) (User, error) {
-	row := q.db.QueryRowContext(ctx, getFirstUser, actor)
-	var i User
+type GetDenyVerdictParams struct {
+	Principal    string
+	ResourceKind string
+	ResourceKey  string
+}
+
+func (q *Queries) GetDenyVerdict(ctx context.Context, arg GetDenyVerdictParams) (DenyCache, error) {
+	row := q.db.QueryRowContext(ctx, getDenyVerdict, arg.Principal, arg.ResourceKind, arg.ResourceKey)
+	var i DenyCache
 	err := row.Scan(
-		&i.Actor,
-		&i.Login,
-		&i.AvatarUrl,
-		&i.Url,
+		&i.Principal,
+		&i.ResourceKind,
+		&i.ResourceKey,
+		&i.Owner,
+		&i.Repo,
+		&i.Status,
+		&i.Message,
+		&i.DeniedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
-const getOrg = `-- name: GetOrg :one
-SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? AND login = ?
+const getOpenPullRequestNoCase = `-- name: GetOpenPullRequestNoCase :one
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ? AND state = 'OPEN'
 `
 
-type GetOrgParams struct {
-	Actor string
-	Login string
-}
-
-func (q *Queries) GetOrg(ctx context.Context, arg GetOrgParams) (Org, error) {
-	row := q.db.QueryRowContext(ctx, getOrg, arg.Actor, arg.Login)
-	var i Org
-	err := row.Scan(
-		&i.Actor,
-		&i.Login,
-		&i.AvatarUrl,
-		&i.Url,
-	)
-	return i, err
-}
-
-const getPullRequest = `-- name: GetPullRequest :one
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests WHERE actor = ? AND owner = ? AND repo = ? AND number = ?
-`
-
-type GetPullRequestParams struct {
-	Actor  string
+type GetOpenPullRequestNoCaseParams struct {
 	Owner  string
 	Repo   string
 	Number int64
 }
 
-func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) (PullRequest, error) {
-	row := q.db.QueryRowContext(ctx, getPullRequest,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Number,
-	)
+// GetOpenPullRequestNoCase is the cached single-PR route's read: owner/repo
+// matched case-insensitively (rows carry GitHub's canonical casing; the
+// request URL may not), open PRs only (the cache never retains closed ones).
+func (q *Queries) GetOpenPullRequestNoCase(ctx context.Context, arg GetOpenPullRequestNoCaseParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, getOpenPullRequestNoCase, arg.Owner, arg.Repo, arg.Number)
 	var i PullRequest
 	err := row.Scan(
-		&i.Actor,
 		&i.Owner,
 		&i.Repo,
 		&i.Number,
@@ -309,31 +324,92 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 		&i.HeadRefOid,
 		&i.ReviewRequestCount,
 		&i.LastCommitStatus,
+		&i.NodeID,
+		&i.Body,
+		&i.AuthorType,
+		&i.BaseRefOid,
+		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
+		&i.MergeStaleSha,
+		&i.MergeStaleAt,
+		&i.MergeStaleRef,
+		&i.MergeStaleAfter,
+		&i.TouchedAt,
+	)
+	return i, err
+}
+
+const getPullRequest = `-- name: GetPullRequest :one
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type GetPullRequestParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, getPullRequest, arg.Owner, arg.Repo, arg.Number)
+	var i PullRequest
+	err := row.Scan(
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.Title,
+		&i.Url,
+		&i.IsDraft,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Additions,
+		&i.Deletions,
+		&i.Mergeable,
+		&i.AuthorLogin,
+		&i.AuthorAvatar,
+		&i.AuthorUrl,
+		&i.HeadRefName,
+		&i.BaseRefName,
+		&i.HeadRefOid,
+		&i.ReviewRequestCount,
+		&i.LastCommitStatus,
+		&i.NodeID,
+		&i.Body,
+		&i.AuthorType,
+		&i.BaseRefOid,
+		&i.HeadRepoFullName,
+		&i.AutoMergeMethod,
+		&i.MergeCommitSha,
+		&i.MergeStaleSha,
+		&i.MergeStaleAt,
+		&i.MergeStaleRef,
+		&i.MergeStaleAfter,
+		&i.TouchedAt,
 	)
 	return i, err
 }
 
 const getRepo = `-- name: GetRepo :one
-SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? AND owner = ? AND name = ?
+SELECT owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? AND name = ?
 `
 
 type GetRepoParams struct {
-	Actor string
 	Owner string
 	Name  string
 }
 
 func (q *Queries) GetRepo(ctx context.Context, arg GetRepoParams) (Repo, error) {
-	row := q.db.QueryRowContext(ctx, getRepo, arg.Actor, arg.Owner, arg.Name)
+	row := q.db.QueryRowContext(ctx, getRepo, arg.Owner, arg.Name)
 	var i Repo
 	err := row.Scan(
-		&i.Actor,
 		&i.Owner,
 		&i.Name,
 		&i.NameWithOwner,
 		&i.Url,
 		&i.IsDisabled,
 		&i.IsArchived,
+		&i.Visibility,
 		&i.PushedAt,
 		&i.DefaultBranch,
 		&i.DefaultBranchStatus,
@@ -344,72 +420,48 @@ func (q *Queries) GetRepo(ctx context.Context, arg GetRepoParams) (Repo, error) 
 	return i, err
 }
 
-const getUser = `-- name: GetUser :one
-SELECT actor, login, avatar_url, url FROM users WHERE actor = ? AND login = ?
+const getRepoInsensitive = `-- name: GetRepoInsensitive :one
+SELECT owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? COLLATE NOCASE AND name = ? COLLATE NOCASE
 `
 
-type GetUserParams struct {
-	Actor string
-	Login string
+type GetRepoInsensitiveParams struct {
+	Owner string
+	Name  string
 }
 
-func (q *Queries) GetUser(ctx context.Context, arg GetUserParams) (User, error) {
-	row := q.db.QueryRowContext(ctx, getUser, arg.Actor, arg.Login)
-	var i User
+// GetRepoInsensitive looks a repo up by URL-supplied casing. GitHub treats
+// owner/repo case-insensitively in URLs while truth rows keep GitHub's
+// canonical casing, so API-route lookups must fold case.
+func (q *Queries) GetRepoInsensitive(ctx context.Context, arg GetRepoInsensitiveParams) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, getRepoInsensitive, arg.Owner, arg.Name)
+	var i Repo
 	err := row.Scan(
-		&i.Actor,
-		&i.Login,
-		&i.AvatarUrl,
+		&i.Owner,
+		&i.Name,
+		&i.NameWithOwner,
 		&i.Url,
+		&i.IsDisabled,
+		&i.IsArchived,
+		&i.Visibility,
+		&i.PushedAt,
+		&i.DefaultBranch,
+		&i.DefaultBranchStatus,
+		&i.OwnerLogin,
+		&i.OwnerAvatar,
+		&i.OwnerUrl,
 	)
 	return i, err
 }
 
-const insertPRFile = `-- name: InsertPRFile :exec
-
-INSERT INTO pr_files (actor, owner, repo, pr_number, path, additions, deletions)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, pr_number, path) DO UPDATE SET
-    additions = excluded.additions,
-    deletions = excluded.deletions
-`
-
-type InsertPRFileParams struct {
-	Actor     string
-	Owner     string
-	Repo      string
-	PrNumber  int64
-	Path      string
-	Additions int64
-	Deletions int64
-}
-
-// ============================================================================
-// PR Files
-// ============================================================================
-func (q *Queries) InsertPRFile(ctx context.Context, arg InsertPRFileParams) error {
-	_, err := q.db.ExecContext(ctx, insertPRFile,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.PrNumber,
-		arg.Path,
-		arg.Additions,
-		arg.Deletions,
-	)
-	return err
-}
-
 const insertPRLabel = `-- name: InsertPRLabel :exec
 
-INSERT INTO pr_labels (actor, owner, repo, pr_number, name, color)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, pr_number, name) DO UPDATE SET
+INSERT INTO pr_labels (owner, repo, pr_number, name, color)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, pr_number, name) DO UPDATE SET
     color = excluded.color
 `
 
 type InsertPRLabelParams struct {
-	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
@@ -418,11 +470,10 @@ type InsertPRLabelParams struct {
 }
 
 // ============================================================================
-// PR Labels
+// PR Labels (global truth)
 // ============================================================================
 func (q *Queries) InsertPRLabel(ctx context.Context, arg InsertPRLabelParams) error {
 	_, err := q.db.ExecContext(ctx, insertPRLabel,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.PrNumber,
@@ -432,56 +483,18 @@ func (q *Queries) InsertPRLabel(ctx context.Context, arg InsertPRLabelParams) er
 	return err
 }
 
-const listActorsForRepo = `-- name: ListActorsForRepo :many
-SELECT DISTINCT actor FROM repos WHERE owner = ? AND name = ?
-`
-
-type ListActorsForRepoParams struct {
-	Owner string
-	Name  string
-}
-
-func (q *Queries) ListActorsForRepo(ctx context.Context, arg ListActorsForRepoParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listActorsForRepo, arg.Owner, arg.Name)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var actor string
-		if err := rows.Scan(&actor); err != nil {
-			return nil, err
-		}
-		items = append(items, actor)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listCommitCheckStates = `-- name: ListCommitCheckStates :many
-SELECT state FROM commit_checks WHERE actor = ? AND owner = ? AND repo = ? AND sha = ?
+SELECT state FROM commit_checks WHERE owner = ? AND repo = ? AND sha = ?
 `
 
 type ListCommitCheckStatesParams struct {
-	Actor string
 	Owner string
 	Repo  string
 	Sha   string
 }
 
 func (q *Queries) ListCommitCheckStates(ctx context.Context, arg ListCommitCheckStatesParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listCommitCheckStates,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.Sha,
-	)
+	rows, err := q.db.QueryContext(ctx, listCommitCheckStates, arg.Owner, arg.Repo, arg.Sha)
 	if err != nil {
 		return nil, err
 	}
@@ -503,49 +516,112 @@ func (q *Queries) ListCommitCheckStates(ctx context.Context, arg ListCommitCheck
 	return items, nil
 }
 
-const listOpenPullRequestsByOwner = `-- name: ListOpenPullRequestsByOwner :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
-WHERE actor = ? AND owner = ? AND state = 'OPEN'
-ORDER BY repo, number
+const listGrantPrincipals = `-- name: ListGrantPrincipals :many
+SELECT principal, COUNT(*) AS grants, MAX(granted_at) AS last_granted
+FROM access_grants WHERE expires_at > ?
+GROUP BY principal ORDER BY principal
 `
 
-type ListOpenPullRequestsByOwnerParams struct {
-	Actor string
-	Owner string
+type ListGrantPrincipalsRow struct {
+	Principal   string
+	Grants      int64
+	LastGranted interface{}
 }
 
-func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, arg ListOpenPullRequestsByOwnerParams) ([]PullRequest, error) {
-	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByOwner, arg.Actor, arg.Owner)
+func (q *Queries) ListGrantPrincipals(ctx context.Context, expiresAt string) ([]ListGrantPrincipalsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listGrantPrincipals, expiresAt)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []PullRequest
+	var items []ListGrantPrincipalsRow
 	for rows.Next() {
-		var i PullRequest
+		var i ListGrantPrincipalsRow
+		if err := rows.Scan(&i.Principal, &i.Grants, &i.LastGranted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGrantsByPrincipal = `-- name: ListGrantsByPrincipal :many
+SELECT principal, owner, repo, granted_at, expires_at, source FROM access_grants WHERE principal = ? AND expires_at > ? ORDER BY owner, repo
+`
+
+type ListGrantsByPrincipalParams struct {
+	Principal string
+	ExpiresAt string
+}
+
+// ListGrantsByPrincipal returns only unexpired grants (the caller passes now):
+// the grants views report LIVE access, matching CountGrantsByPrincipal and
+// ListGrantPrincipals. Expired rows awaiting the opportunistic prune are not
+// someone's access.
+func (q *Queries) ListGrantsByPrincipal(ctx context.Context, arg ListGrantsByPrincipalParams) ([]AccessGrant, error) {
+	rows, err := q.db.QueryContext(ctx, listGrantsByPrincipal, arg.Principal, arg.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AccessGrant
+	for rows.Next() {
+		var i AccessGrant
 		if err := rows.Scan(
-			&i.Actor,
+			&i.Principal,
 			&i.Owner,
 			&i.Repo,
-			&i.Number,
-			&i.Title,
-			&i.Url,
-			&i.IsDraft,
-			&i.State,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Additions,
-			&i.Deletions,
-			&i.Mergeable,
-			&i.AuthorLogin,
-			&i.AuthorAvatar,
-			&i.AuthorUrl,
-			&i.HeadRefName,
-			&i.BaseRefName,
-			&i.HeadRefOid,
-			&i.ReviewRequestCount,
-			&i.LastCommitStatus,
+			&i.GrantedAt,
+			&i.ExpiresAt,
+			&i.Source,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenPullRequestNumbersByRepo = `-- name: ListOpenPullRequestNumbersByRepo :many
+SELECT number, touched_at FROM pull_requests
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
+ORDER BY number
+`
+
+type ListOpenPullRequestNumbersByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+type ListOpenPullRequestNumbersByRepoRow struct {
+	Number    int64
+	TouchedAt string
+}
+
+// ListOpenPullRequestNumbersByRepo feeds the fetch-reconcile: the numbers
+// currently cached open for a repo, with when each row was last touched.
+func (q *Queries) ListOpenPullRequestNumbersByRepo(ctx context.Context, arg ListOpenPullRequestNumbersByRepoParams) ([]ListOpenPullRequestNumbersByRepoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestNumbersByRepo, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenPullRequestNumbersByRepoRow
+	for rows.Next() {
+		var i ListOpenPullRequestNumbersByRepoRow
+		if err := rows.Scan(&i.Number, &i.TouchedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -560,19 +636,18 @@ func (q *Queries) ListOpenPullRequestsByOwner(ctx context.Context, arg ListOpenP
 }
 
 const listOpenPullRequestsByRepo = `-- name: ListOpenPullRequestsByRepo :many
-SELECT actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status FROM pull_requests
-WHERE actor = ? AND owner = ? AND repo = ? AND state = 'OPEN'
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
 ORDER BY number
 `
 
 type ListOpenPullRequestsByRepoParams struct {
-	Actor string
 	Owner string
 	Repo  string
 }
 
 func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPullRequestsByRepoParams) ([]PullRequest, error) {
-	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepo, arg.Actor, arg.Owner, arg.Repo)
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepo, arg.Owner, arg.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +656,6 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 	for rows.Next() {
 		var i PullRequest
 		if err := rows.Scan(
-			&i.Actor,
 			&i.Owner,
 			&i.Repo,
 			&i.Number,
@@ -602,6 +676,18 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 			&i.HeadRefOid,
 			&i.ReviewRequestCount,
 			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
+			&i.MergeStaleSha,
+			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
+			&i.TouchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -616,71 +702,61 @@ func (q *Queries) ListOpenPullRequestsByRepo(ctx context.Context, arg ListOpenPu
 	return items, nil
 }
 
-const listOrgs = `-- name: ListOrgs :many
-SELECT actor, login, avatar_url, url FROM orgs WHERE actor = ? ORDER BY login
+const listOpenPullRequestsByRepoNoCase = `-- name: ListOpenPullRequestsByRepoNoCase :many
+SELECT owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, merge_stale_sha, merge_stale_at, merge_stale_ref, merge_stale_after, touched_at FROM pull_requests
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND state = 'OPEN'
+ORDER BY created_at DESC, number DESC
 `
 
-func (q *Queries) ListOrgs(ctx context.Context, actor string) ([]Org, error) {
-	rows, err := q.db.QueryContext(ctx, listOrgs, actor)
+type ListOpenPullRequestsByRepoNoCaseParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListOpenPullRequestsByRepoNoCase is the cached list route's read. Ordered
+// newest-created first to match GitHub's default list-pulls sort.
+func (q *Queries) ListOpenPullRequestsByRepoNoCase(ctx context.Context, arg ListOpenPullRequestsByRepoNoCaseParams) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenPullRequestsByRepoNoCase, arg.Owner, arg.Repo)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Org
+	var items []PullRequest
 	for rows.Next() {
-		var i Org
+		var i PullRequest
 		if err := rows.Scan(
-			&i.Actor,
-			&i.Login,
-			&i.AvatarUrl,
-			&i.Url,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPRFiles = `-- name: ListPRFiles :many
-SELECT actor, owner, repo, pr_number, path, additions, deletions FROM pr_files WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
-`
-
-type ListPRFilesParams struct {
-	Actor    string
-	Owner    string
-	Repo     string
-	PrNumber int64
-}
-
-func (q *Queries) ListPRFiles(ctx context.Context, arg ListPRFilesParams) ([]PrFile, error) {
-	rows, err := q.db.QueryContext(ctx, listPRFiles,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.PrNumber,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []PrFile
-	for rows.Next() {
-		var i PrFile
-		if err := rows.Scan(
-			&i.Actor,
 			&i.Owner,
 			&i.Repo,
-			&i.PrNumber,
-			&i.Path,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.IsDraft,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 			&i.Additions,
 			&i.Deletions,
+			&i.Mergeable,
+			&i.AuthorLogin,
+			&i.AuthorAvatar,
+			&i.AuthorUrl,
+			&i.HeadRefName,
+			&i.BaseRefName,
+			&i.HeadRefOid,
+			&i.ReviewRequestCount,
+			&i.LastCommitStatus,
+			&i.NodeID,
+			&i.Body,
+			&i.AuthorType,
+			&i.BaseRefOid,
+			&i.HeadRepoFullName,
+			&i.AutoMergeMethod,
+			&i.MergeCommitSha,
+			&i.MergeStaleSha,
+			&i.MergeStaleAt,
+			&i.MergeStaleRef,
+			&i.MergeStaleAfter,
+			&i.TouchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -696,23 +772,17 @@ func (q *Queries) ListPRFiles(ctx context.Context, arg ListPRFilesParams) ([]PrF
 }
 
 const listPRLabels = `-- name: ListPRLabels :many
-SELECT actor, owner, repo, pr_number, name, color FROM pr_labels WHERE actor = ? AND owner = ? AND repo = ? AND pr_number = ?
+SELECT owner, repo, pr_number, name, color FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?
 `
 
 type ListPRLabelsParams struct {
-	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
 }
 
 func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]PrLabel, error) {
-	rows, err := q.db.QueryContext(ctx, listPRLabels,
-		arg.Actor,
-		arg.Owner,
-		arg.Repo,
-		arg.PrNumber,
-	)
+	rows, err := q.db.QueryContext(ctx, listPRLabels, arg.Owner, arg.Repo, arg.PrNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -721,7 +791,90 @@ func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]P
 	for rows.Next() {
 		var i PrLabel
 		if err := rows.Scan(
-			&i.Actor,
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsByRepoNoCase = `-- name: ListPRLabelsByRepoNoCase :many
+SELECT owner, repo, pr_number, name, color FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE
+ORDER BY pr_number, name
+`
+
+type ListPRLabelsByRepoNoCaseParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListPRLabelsByRepoNoCase feeds the cached /pulls list rebuild: all of a
+// repo's PR labels in one query (grouped by pr_number in Go), owner/repo
+// matched case-insensitively like the row reads.
+func (q *Queries) ListPRLabelsByRepoNoCase(ctx context.Context, arg ListPRLabelsByRepoNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsByRepoNoCase, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.PrNumber,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPRLabelsNoCase = `-- name: ListPRLabelsNoCase :many
+SELECT owner, repo, pr_number, name, color FROM pr_labels
+WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND pr_number = ?
+ORDER BY name
+`
+
+type ListPRLabelsNoCaseParams struct {
+	Owner    string
+	Repo     string
+	PrNumber int64
+}
+
+func (q *Queries) ListPRLabelsNoCase(ctx context.Context, arg ListPRLabelsNoCaseParams) ([]PrLabel, error) {
+	rows, err := q.db.QueryContext(ctx, listPRLabelsNoCase, arg.Owner, arg.Repo, arg.PrNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrLabel
+	for rows.Next() {
+		var i PrLabel
+		if err := rows.Scan(
 			&i.Owner,
 			&i.Repo,
 			&i.PrNumber,
@@ -742,16 +895,11 @@ func (q *Queries) ListPRLabels(ctx context.Context, arg ListPRLabelsParams) ([]P
 }
 
 const listReposByOwner = `-- name: ListReposByOwner :many
-SELECT actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE actor = ? AND owner = ? ORDER BY name
+SELECT owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos WHERE owner = ? ORDER BY name
 `
 
-type ListReposByOwnerParams struct {
-	Actor string
-	Owner string
-}
-
-func (q *Queries) ListReposByOwner(ctx context.Context, arg ListReposByOwnerParams) ([]Repo, error) {
-	rows, err := q.db.QueryContext(ctx, listReposByOwner, arg.Actor, arg.Owner)
+func (q *Queries) ListReposByOwner(ctx context.Context, owner string) ([]Repo, error) {
+	rows, err := q.db.QueryContext(ctx, listReposByOwner, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -760,13 +908,13 @@ func (q *Queries) ListReposByOwner(ctx context.Context, arg ListReposByOwnerPara
 	for rows.Next() {
 		var i Repo
 		if err := rows.Scan(
-			&i.Actor,
 			&i.Owner,
 			&i.Name,
 			&i.NameWithOwner,
 			&i.Url,
 			&i.IsDisabled,
 			&i.IsArchived,
+			&i.Visibility,
 			&i.PushedAt,
 			&i.DefaultBranch,
 			&i.DefaultBranchStatus,
@@ -787,28 +935,54 @@ func (q *Queries) ListReposByOwner(ctx context.Context, arg ListReposByOwnerPara
 	return items, nil
 }
 
-const listUserOrgMemberships = `-- name: ListUserOrgMemberships :many
-SELECT org_login FROM user_org_memberships WHERE actor = ? AND user_login = ?
+const listVisibleReposByOwner = `-- name: ListVisibleReposByOwner :many
+SELECT owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url FROM repos
+WHERE repos.owner = ?
+  AND (
+    repos.visibility = 'public'
+    OR EXISTS (
+      SELECT 1 FROM access_grants g
+      WHERE g.principal = ? AND g.owner = repos.owner AND g.repo = repos.name AND g.expires_at > ?
+    )
+  )
+ORDER BY repos.name
 `
 
-type ListUserOrgMembershipsParams struct {
-	Actor     string
-	UserLogin string
+type ListVisibleReposByOwnerParams struct {
+	Owner     string
+	Principal string
+	ExpiresAt string
 }
 
-func (q *Queries) ListUserOrgMemberships(ctx context.Context, arg ListUserOrgMembershipsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listUserOrgMemberships, arg.Actor, arg.UserLogin)
+// ListVisibleReposByOwner returns the owner's repos revealed to one principal:
+// public repos plus repos the principal holds an unexpired grant for.
+func (q *Queries) ListVisibleReposByOwner(ctx context.Context, arg ListVisibleReposByOwnerParams) ([]Repo, error) {
+	rows, err := q.db.QueryContext(ctx, listVisibleReposByOwner, arg.Owner, arg.Principal, arg.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []string
+	var items []Repo
 	for rows.Next() {
-		var org_login string
-		if err := rows.Scan(&org_login); err != nil {
+		var i Repo
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Name,
+			&i.NameWithOwner,
+			&i.Url,
+			&i.IsDisabled,
+			&i.IsArchived,
+			&i.Visibility,
+			&i.PushedAt,
+			&i.DefaultBranch,
+			&i.DefaultBranchStatus,
+			&i.OwnerLogin,
+			&i.OwnerAvatar,
+			&i.OwnerUrl,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, org_login)
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -819,14 +993,158 @@ func (q *Queries) ListUserOrgMemberships(ctx context.Context, arg ListUserOrgMem
 	return items, nil
 }
 
+const nullPRMergeableByBranch = `-- name: NullPRMergeableByBranch :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(?1 AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(?2 AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(?3 AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = ?4 AND repo = ?5 AND state = 'OPEN'
+  AND (base_ref_name = ?6 OR head_ref_name = ?7)
+`
+
+type NullPRMergeableByBranchParams struct {
+	StaleAt     string
+	StaleRef    sql.NullString
+	StaleAfter  sql.NullString
+	Owner       string
+	Repo        string
+	BaseRefName sql.NullString
+	HeadRefName sql.NullString
+}
+
+// NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
+// every open PR whose base or head is the pushed branch: GitHub recomputes
+// mergeability after either side moves (and emits NO webhook with the result),
+// so the last-known value is stale the moment the push lands. The nulled sha
+// is REMEMBERED (merge_stale_sha, stamped merge_stale_at): the pushed branch
+// provably moved, so GitHub re-offering that exact sha is a pre-push answer --
+// UpsertPullRequest's stale guard refuses to re-resolve from it. The marker
+// also records the PUSH-TIP PROOF (merge_stale_ref/merge_stale_after: the
+// pushed branch and its after tip; NULL when the caller had no usable after),
+// ALWAYS overwritten with the latest push's values -- an answer must reflect
+// the NEWEST push to be provably post-push. A second push before
+// re-resolution keeps the remembered sha (merge_commit_sha is already NULL)
+// and re-stamps the window (and the proof).
+func (q *Queries) NullPRMergeableByBranch(ctx context.Context, arg NullPRMergeableByBranchParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableByBranch,
+		arg.StaleAt,
+		arg.StaleRef,
+		arg.StaleAfter,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.HeadRefName,
+	)
+	return err
+}
+
+const nullPRMergeableByRepo = `-- name: NullPRMergeableByRepo :exec
+UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
+WHERE owner = ? AND repo = ? AND state = 'OPEN'
+`
+
+type NullPRMergeableByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// NullPRMergeableByRepo is the unparseable-push fallback: the payload proved a
+// push happened but not WHICH ref moved, so conservatively un-resolve merge
+// fields on every open PR (a wrongly-nulled row just re-fetches; a
+// wrongly-kept one can serve a frozen pre-push answer). It deliberately does
+// NOT stamp merge_stale_sha: the stale-by-definition invariant holds only for
+// a branch that provably moved -- an unmoved PR's re-offered sha is VALID, and
+// marking it stale would wedge that row into missing for the whole window.
+func (q *Queries) NullPRMergeableByRepo(ctx context.Context, arg NullPRMergeableByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const nullPRMergeableForPR = `-- name: NullPRMergeableForPR :exec
+UPDATE pull_requests SET
+    merge_stale_sha = COALESCE(merge_commit_sha, merge_stale_sha),
+    merge_stale_at = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                          THEN CAST(?1 AS TEXT) ELSE NULL END,
+    merge_stale_ref = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                           THEN CAST(?2 AS TEXT) ELSE NULL END,
+    merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
+                             THEN CAST(?3 AS TEXT) ELSE NULL END,
+    mergeable = NULL,
+    merge_commit_sha = NULL
+WHERE owner = ?4 AND repo = ?5
+  AND number = ?6 AND state = 'OPEN'
+`
+
+type NullPRMergeableForPRParams struct {
+	StaleAt    string
+	StaleRef   sql.NullString
+	StaleAfter sql.NullString
+	Owner      string
+	Repo       string
+	Number     int64
+}
+
+// NullPRMergeableForPR is the per-PR analog of NullPRMergeableByBranch, for
+// tip moves reported by the PR's OWN webhook (synchronize / base retarget):
+// a fork head emits no push webhook, so the per-branch un-resolve never runs
+// for it, and the pull_request payload -- which carries RETAINED pre-move
+// merge fields alongside the new tip -- is the only signal the tip changed.
+// Same marker semantics: the invalidated sha is remembered with the moved
+// ref and its new tip as the proof, so the upsert guard's exemptions apply
+// to this marker exactly as to a push-stamped one.
+func (q *Queries) NullPRMergeableForPR(ctx context.Context, arg NullPRMergeableForPRParams) error {
+	_, err := q.db.ExecContext(ctx, nullPRMergeableForPR,
+		arg.StaleAt,
+		arg.StaleRef,
+		arg.StaleAfter,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	return err
+}
+
+const setPRAutoMergeMethod = `-- name: SetPRAutoMergeMethod :exec
+UPDATE pull_requests SET auto_merge_method = ?
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type SetPRAutoMergeMethodParams struct {
+	AutoMergeMethod sql.NullString
+	Owner           string
+	Repo            string
+	Number          int64
+}
+
+// SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
+// directly fetched answer, INCLUDING null (not armed) -- the SetPRMergeable
+// idiom. The upsert only takes auto_merge_method from REST-shaped sources
+// (node_id present), so a stale armed flag left by a missed
+// auto_merge_disabled delivery can only be cleared by this explicit set (the
+// consistency check's apply mode).
+func (q *Queries) SetPRAutoMergeMethod(ctx context.Context, arg SetPRAutoMergeMethodParams) error {
+	_, err := q.db.ExecContext(ctx, setPRAutoMergeMethod,
+		arg.AutoMergeMethod,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	return err
+}
+
 const setPRLabelColorByName = `-- name: SetPRLabelColorByName :exec
 UPDATE pr_labels SET color = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND name = ?
+WHERE owner = ? AND repo = ? AND name = ?
 `
 
 type SetPRLabelColorByNameParams struct {
 	Color string
-	Actor string
 	Owner string
 	Repo  string
 	Name  string
@@ -835,7 +1153,6 @@ type SetPRLabelColorByNameParams struct {
 func (q *Queries) SetPRLabelColorByName(ctx context.Context, arg SetPRLabelColorByNameParams) error {
 	_, err := q.db.ExecContext(ctx, setPRLabelColorByName,
 		arg.Color,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Name,
@@ -843,14 +1160,40 @@ func (q *Queries) SetPRLabelColorByName(ctx context.Context, arg SetPRLabelColor
 	return err
 }
 
+const setPRMergeable = `-- name: SetPRMergeable :exec
+UPDATE pull_requests SET mergeable = ?
+WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type SetPRMergeableParams struct {
+	Mergeable sql.NullString
+	Owner     string
+	Repo      string
+	Number    int64
+}
+
+// SetPRMergeable overwrites a PR's stored mergeable with GitHub's freshly
+// fetched answer, INCLUDING null (recomputing). The upsert's COALESCE keeps
+// old values on null payloads; a direct REST read of the PR is authoritative
+// about "currently unresolved", so the cached single-PR route uses this after
+// absorbing to make a null answer miss again until GitHub resolves it.
+func (q *Queries) SetPRMergeable(ctx context.Context, arg SetPRMergeableParams) error {
+	_, err := q.db.ExecContext(ctx, setPRMergeable,
+		arg.Mergeable,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+	)
+	return err
+}
+
 const setPRStatusByHeadSha = `-- name: SetPRStatusByHeadSha :exec
 UPDATE pull_requests SET last_commit_status = ?
-WHERE actor = ? AND owner = ? AND repo = ? AND head_ref_oid = ?
+WHERE owner = ? AND repo = ? AND head_ref_oid = ?
 `
 
 type SetPRStatusByHeadShaParams struct {
 	LastCommitStatus sql.NullString
-	Actor            string
 	Owner            string
 	Repo             string
 	HeadRefOid       sql.NullString
@@ -859,7 +1202,6 @@ type SetPRStatusByHeadShaParams struct {
 func (q *Queries) SetPRStatusByHeadSha(ctx context.Context, arg SetPRStatusByHeadShaParams) error {
 	_, err := q.db.ExecContext(ctx, setPRStatusByHeadSha,
 		arg.LastCommitStatus,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.HeadRefOid,
@@ -867,116 +1209,111 @@ func (q *Queries) SetPRStatusByHeadSha(ctx context.Context, arg SetPRStatusByHea
 	return err
 }
 
+const setRepoArchived = `-- name: SetRepoArchived :exec
+UPDATE repos SET is_archived = ? WHERE owner = ? AND name = ?
+`
+
+type SetRepoArchivedParams struct {
+	IsArchived int64
+	Owner      string
+	Name       string
+}
+
+func (q *Queries) SetRepoArchived(ctx context.Context, arg SetRepoArchivedParams) error {
+	_, err := q.db.ExecContext(ctx, setRepoArchived, arg.IsArchived, arg.Owner, arg.Name)
+	return err
+}
+
 const setRepoDefaultBranchStatus = `-- name: SetRepoDefaultBranchStatus :exec
 UPDATE repos SET default_branch_status = ?
-WHERE actor = ? AND owner = ? AND name = ?
+WHERE owner = ? AND name = ?
 `
 
 type SetRepoDefaultBranchStatusParams struct {
 	DefaultBranchStatus sql.NullString
-	Actor               string
 	Owner               string
 	Name                string
 }
 
 func (q *Queries) SetRepoDefaultBranchStatus(ctx context.Context, arg SetRepoDefaultBranchStatusParams) error {
-	_, err := q.db.ExecContext(ctx, setRepoDefaultBranchStatus,
-		arg.DefaultBranchStatus,
-		arg.Actor,
-		arg.Owner,
-		arg.Name,
-	)
+	_, err := q.db.ExecContext(ctx, setRepoDefaultBranchStatus, arg.DefaultBranchStatus, arg.Owner, arg.Name)
 	return err
 }
 
 const setRepoPushedAt = `-- name: SetRepoPushedAt :exec
 UPDATE repos SET pushed_at = ?
-WHERE actor = ? AND owner = ? AND name = ?
+WHERE owner = ? AND name = ?
 `
 
 type SetRepoPushedAtParams struct {
 	PushedAt sql.NullString
-	Actor    string
 	Owner    string
 	Name     string
 }
 
 func (q *Queries) SetRepoPushedAt(ctx context.Context, arg SetRepoPushedAtParams) error {
-	_, err := q.db.ExecContext(ctx, setRepoPushedAt,
-		arg.PushedAt,
-		arg.Actor,
-		arg.Owner,
-		arg.Name,
-	)
+	_, err := q.db.ExecContext(ctx, setRepoPushedAt, arg.PushedAt, arg.Owner, arg.Name)
 	return err
 }
 
-const setUserOrgMembership = `-- name: SetUserOrgMembership :exec
-
-INSERT INTO user_org_memberships (actor, user_login, org_login)
-VALUES (?, ?, ?)
-ON CONFLICT (actor, user_login, org_login) DO NOTHING
+const setRepoVisibility = `-- name: SetRepoVisibility :exec
+UPDATE repos SET visibility = ? WHERE owner = ? AND name = ?
 `
 
-type SetUserOrgMembershipParams struct {
-	Actor     string
-	UserLogin string
-	OrgLogin  string
+type SetRepoVisibilityParams struct {
+	Visibility string
+	Owner      string
+	Name       string
 }
 
-// ============================================================================
-// User Org Memberships
-// ============================================================================
-func (q *Queries) SetUserOrgMembership(ctx context.Context, arg SetUserOrgMembershipParams) error {
-	_, err := q.db.ExecContext(ctx, setUserOrgMembership, arg.Actor, arg.UserLogin, arg.OrgLogin)
+func (q *Queries) SetRepoVisibility(ctx context.Context, arg SetRepoVisibilityParams) error {
+	_, err := q.db.ExecContext(ctx, setRepoVisibility, arg.Visibility, arg.Owner, arg.Name)
 	return err
 }
 
-const upsertBranchComparison = `-- name: UpsertBranchComparison :exec
+const upsertAccessGrant = `-- name: UpsertAccessGrant :exec
 
-INSERT INTO branch_comparisons (actor, owner, repo, base_ref, head_ref, ahead_by, behind_by)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, base_ref, head_ref) DO UPDATE SET
-    ahead_by = excluded.ahead_by,
-    behind_by = excluded.behind_by
+INSERT INTO access_grants (principal, owner, repo, granted_at, expires_at, source)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (principal, owner, repo) DO UPDATE SET
+    granted_at = excluded.granted_at,
+    expires_at = excluded.expires_at,
+    source = excluded.source
 `
 
-type UpsertBranchComparisonParams struct {
-	Actor    string
-	Owner    string
-	Repo     string
-	BaseRef  string
-	HeadRef  string
-	AheadBy  int64
-	BehindBy int64
+type UpsertAccessGrantParams struct {
+	Principal string
+	Owner     string
+	Repo      string
+	GrantedAt string
+	ExpiresAt string
+	Source    string
 }
 
 // ============================================================================
-// Branch Comparisons
+// Access grants + deny verdicts (the reveal layer)
 // ============================================================================
-func (q *Queries) UpsertBranchComparison(ctx context.Context, arg UpsertBranchComparisonParams) error {
-	_, err := q.db.ExecContext(ctx, upsertBranchComparison,
-		arg.Actor,
+func (q *Queries) UpsertAccessGrant(ctx context.Context, arg UpsertAccessGrantParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAccessGrant,
+		arg.Principal,
 		arg.Owner,
 		arg.Repo,
-		arg.BaseRef,
-		arg.HeadRef,
-		arg.AheadBy,
-		arg.BehindBy,
+		arg.GrantedAt,
+		arg.ExpiresAt,
+		arg.Source,
 	)
 	return err
 }
 
 const upsertCommitCheck = `-- name: UpsertCommitCheck :exec
 
-INSERT INTO commit_checks (actor, owner, repo, sha, context, state)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, sha, context) DO UPDATE SET
+INSERT INTO commit_checks (owner, repo, sha, context, state)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha, context) DO UPDATE SET
     state = excluded.state
 `
 
 type UpsertCommitCheckParams struct {
-	Actor   string
 	Owner   string
 	Repo    string
 	Sha     string
@@ -985,11 +1322,10 @@ type UpsertCommitCheckParams struct {
 }
 
 // ============================================================================
-// Commit Check States (CI rollup fed by webhooks)
+// Commit Check States (CI rollup fed by webhooks; global truth)
 // ============================================================================
 func (q *Queries) UpsertCommitCheck(ctx context.Context, arg UpsertCommitCheckParams) error {
 	_, err := q.db.ExecContext(ctx, upsertCommitCheck,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Sha,
@@ -999,61 +1335,161 @@ func (q *Queries) UpsertCommitCheck(ctx context.Context, arg UpsertCommitCheckPa
 	return err
 }
 
-const upsertOrg = `-- name: UpsertOrg :exec
-
-INSERT INTO orgs (actor, login, avatar_url, url)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (actor, login) DO UPDATE SET
-    avatar_url = excluded.avatar_url,
-    url = excluded.url
+const upsertDenyVerdict = `-- name: UpsertDenyVerdict :exec
+INSERT INTO deny_cache (principal, resource_kind, resource_key, owner, repo, status, message, denied_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (principal, resource_kind, resource_key) DO UPDATE SET
+    owner = excluded.owner,
+    repo = excluded.repo,
+    status = excluded.status,
+    message = excluded.message,
+    denied_at = excluded.denied_at,
+    expires_at = excluded.expires_at
 `
 
-type UpsertOrgParams struct {
-	Actor     string
-	Login     string
-	AvatarUrl sql.NullString
-	Url       sql.NullString
+type UpsertDenyVerdictParams struct {
+	Principal    string
+	ResourceKind string
+	ResourceKey  string
+	Owner        string
+	Repo         string
+	Status       int64
+	Message      string
+	DeniedAt     string
+	ExpiresAt    string
 }
 
-// ============================================================================
-// Orgs
-// ============================================================================
-func (q *Queries) UpsertOrg(ctx context.Context, arg UpsertOrgParams) error {
-	_, err := q.db.ExecContext(ctx, upsertOrg,
-		arg.Actor,
-		arg.Login,
-		arg.AvatarUrl,
-		arg.Url,
+func (q *Queries) UpsertDenyVerdict(ctx context.Context, arg UpsertDenyVerdictParams) error {
+	_, err := q.db.ExecContext(ctx, upsertDenyVerdict,
+		arg.Principal,
+		arg.ResourceKind,
+		arg.ResourceKey,
+		arg.Owner,
+		arg.Repo,
+		arg.Status,
+		arg.Message,
+		arg.DeniedAt,
+		arg.ExpiresAt,
 	)
 	return err
 }
 
 const upsertPullRequest = `-- name: UpsertPullRequest :exec
 
-INSERT INTO pull_requests (actor, owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, repo, number) DO UPDATE SET
+INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
     is_draft = excluded.is_draft,
     state = excluded.state,
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
-    additions = excluded.additions,
-    deletions = excluded.deletions,
-    mergeable = COALESCE(excluded.mergeable, pull_requests.mergeable),
-    author_login = excluded.author_login,
-    author_avatar = excluded.author_avatar,
-    author_url = excluded.author_url,
+    additions = COALESCE(excluded.additions, pull_requests.additions),
+    deletions = COALESCE(excluded.deletions, pull_requests.deletions),
+    mergeable = CASE
+        WHEN excluded.node_id IS NOT NULL
+             AND excluded.merge_commit_sha IS NOT NULL
+             AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
+             AND pull_requests.merge_stale_at IS NOT NULL
+             AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
+            THEN NULL
+        WHEN excluded.node_id IS NULL
+             AND pull_requests.node_id IS NOT NULL
+             AND (pull_requests.merge_commit_sha IS NULL
+                  OR pull_requests.merge_commit_sha = pull_requests.merge_stale_sha)
+            THEN pull_requests.mergeable
+        ELSE COALESCE(excluded.mergeable, pull_requests.mergeable)
+    END,
+    author_login = COALESCE(excluded.author_login, pull_requests.author_login),
+    author_avatar = COALESCE(excluded.author_avatar, pull_requests.author_avatar),
+    author_url = COALESCE(excluded.author_url, pull_requests.author_url),
     head_ref_name = excluded.head_ref_name,
     base_ref_name = excluded.base_ref_name,
     head_ref_oid = excluded.head_ref_oid,
-    review_request_count = excluded.review_request_count,
-    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status)
+    review_request_count = COALESCE(excluded.review_request_count, pull_requests.review_request_count),
+    last_commit_status = COALESCE(excluded.last_commit_status, pull_requests.last_commit_status),
+    node_id = COALESCE(excluded.node_id, pull_requests.node_id),
+    body = CASE WHEN excluded.node_id IS NULL THEN pull_requests.body ELSE excluded.body END,
+    author_type = COALESCE(excluded.author_type, pull_requests.author_type),
+    base_ref_oid = COALESCE(excluded.base_ref_oid, pull_requests.base_ref_oid),
+    head_repo_full_name = COALESCE(excluded.head_repo_full_name, pull_requests.head_repo_full_name),
+    auto_merge_method = CASE WHEN excluded.node_id IS NULL THEN pull_requests.auto_merge_method ELSE excluded.auto_merge_method END,
+    merge_commit_sha = CASE
+        WHEN excluded.node_id IS NULL THEN pull_requests.merge_commit_sha
+        WHEN excluded.merge_commit_sha IS NOT NULL
+             AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
+             AND pull_requests.merge_stale_at IS NOT NULL
+             AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
+            THEN NULL
+        ELSE excluded.merge_commit_sha
+    END,
+    merge_stale_sha = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_sha
+    END,
+    merge_stale_at = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_at
+    END,
+    merge_stale_ref = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_ref
+    END,
+    merge_stale_after = CASE
+        WHEN excluded.node_id IS NOT NULL AND excluded.merge_commit_sha IS NOT NULL
+             AND NOT (excluded.merge_commit_sha = pull_requests.merge_stale_sha
+                      AND pull_requests.merge_stale_at IS NOT NULL
+                      AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+                      AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                               AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                                    OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+                      AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                               AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds')))
+            THEN NULL
+        ELSE pull_requests.merge_stale_after
+    END,
+    touched_at = excluded.touched_at
 `
 
 type UpsertPullRequestParams struct {
-	Actor              string
 	Owner              string
 	Repo               string
 	Number             int64
@@ -1074,14 +1510,82 @@ type UpsertPullRequestParams struct {
 	HeadRefOid         sql.NullString
 	ReviewRequestCount sql.NullInt64
 	LastCommitStatus   sql.NullString
+	NodeID             sql.NullString
+	Body               sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
+	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
+	TouchedAt          string
 }
 
 // ============================================================================
-// Pull Requests
+// Pull Requests (global truth -- one row per PR)
 // ============================================================================
+// UpsertPullRequest merges one source's view of a PR into truth, stamping
+// touched_at. Sources carry different field subsets (GraphQL org fetch, REST
+// list, REST single, webhook payload). The REST-only columns (node_id ..
+// merge_commit_sha) COALESCE against the existing row so a GraphQL-shaped
+// upsert (which cannot know them) never wipes values a REST/webhook write
+// recorded -- with two exceptions that are real state, not "unknown": body and
+// auto_merge_method overwrite whenever the source knows the REST fields at all
+// (node_id present), because a null body and a disarmed auto-merge are
+// meaningful values a COALESCE would resurrect. That conditional is expressed
+// as CASE WHEN excluded.node_id IS NULL (the GraphQL-source signature) THEN
+// keep ELSE take END. mergeable and last_commit_status COALESCE because GitHub
+// computes them asynchronously (a payload's null must not clobber a known
+// value); the explicit reset/set queries below express "GitHub is recomputing"
+// and "a direct read said so". additions/deletions COALESCE because the REST
+// LIST shape omits them (a NULL there means "not carried", never "zero").
+//
+// The merge-field STALE GUARD (merge_stale_sha/merge_stale_at, stamped by
+// NullPRMergeableByBranch when a push un-resolves the row): a base/head tip
+// change ALWAYS changes the sha of a SUCCESSFUL test merge, so a
+// REST/webhook-shaped source (node_id present) re-offering the exact
+// invalidated sha is presumed a pre-push answer -- GitHub's recompute lag --
+// and must not re-resolve the row: mergeable and merge_commit_sha store NULL
+// instead, the marker stays, and the single-PR route keeps missing (each
+// miss re-triggers the recompute) until a NEW sha arrives, which clears the
+// marker. TWO exemptions overrule the presumption. (1) The push-tip PROOF
+// (merge_stale_ref/merge_stale_after: the pushed branch and its post-push
+// tip): a source whose reported tip for that branch (excluded.base_ref_oid /
+// excluded.head_ref_oid, matched by ref name) equals the push's after sha
+// provably post-dates the push, so its answer is NOT pre-push -- it is
+// accepted, and the marker cleared, even when it re-offers the remembered
+// sha. That heals the wrong-mark race (a fresh post-push answer absorbed
+// BEFORE the late push delivery landed, which then stamped the fresh sha
+// stale) on the very next fetch. (2) The DIRTY-RETAINED exemption: a
+// conflicted PR gets NO new test merge -- GitHub retains the last-good sha
+// and re-offers it with mergeable:false (base.sha frozen at the last clean
+// evaluation, so the tip proof cannot fire) -- so a CONFLICTING same-sha
+// source is accepted once the marker is at least 30 seconds old
+// (merge_stale_at at or before touched_at minus 30 seconds -- keep in sync
+// with ghdata.MergeStaleConflictingWindow; the window covers read-replica
+// lag, the only other way a CONFLICTING answer re-offers the marked sha).
+// The COALESCE(excluded.mergeable, ”) in that exemption is load-bearing
+// three-valued-logic hygiene: a bare NULL = 'CONFLICTING' is NULL, and
+// NOT (NULL AND <old marker>) is NULL -- which would poison the WHOLE
+// rejection predicate to NULL (falsy) and let a NULL-mergeable same-sha
+// source (the pulls-LIST absorb) store the stale sha and clear the marker;
+// coalesced, the exemption is definitely FALSE for unresolved sources and
+// the rejection stands. The marker also only rejects within its window
+// (merge_stale_at newer than touched_at minus 1 hour -- keep in sync with
+// ghdata.MergeStaleTTL): past it, a re-offered sha is accepted and the
+// marker cleared -- the OUTER backstop for a wrong mark whose answers never
+// demonstrate the tip (no usable push after, or GitHub's reported tip
+// lagging). Proof, dirty-retained exemption, or expiry, "not stale" means
+// the same thing everywhere below: the value is accepted and ALL FOUR
+// marker columns clear together.
+// A GraphQL-shaped source (node_id NULL) carries no
+// sha to vouch for its answer, so it may not set mergeable on a
+// REST-complete row whose stored sha is NULL or the invalidated one -- the
+// sync re-arm leak: resolved-looking rows with a null/stale test-merge sha.
+// (Pure GraphQL rows -- existing node_id NULL -- keep the plain COALESCE:
+// the /graphql tier serves their mergeable and they can never satisfy the
+// REST route's rest-complete gate.)
 func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPullRequest,
-		arg.Actor,
 		arg.Owner,
 		arg.Repo,
 		arg.Number,
@@ -1102,35 +1606,44 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		arg.HeadRefOid,
 		arg.ReviewRequestCount,
 		arg.LastCommitStatus,
+		arg.NodeID,
+		arg.Body,
+		arg.AuthorType,
+		arg.BaseRefOid,
+		arg.HeadRepoFullName,
+		arg.AutoMergeMethod,
+		arg.MergeCommitSha,
+		arg.TouchedAt,
 	)
 	return err
 }
 
 const upsertRepo = `-- name: UpsertRepo :exec
 
-INSERT INTO repos (actor, owner, name, name_with_owner, url, is_disabled, is_archived, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
+INSERT INTO repos (owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (actor, owner, name) DO UPDATE SET
+ON CONFLICT (owner, name) DO UPDATE SET
     name_with_owner = excluded.name_with_owner,
     url = excluded.url,
     is_disabled = excluded.is_disabled,
     is_archived = excluded.is_archived,
-    pushed_at = excluded.pushed_at,
-    default_branch = excluded.default_branch,
-    default_branch_status = excluded.default_branch_status,
-    owner_login = excluded.owner_login,
-    owner_avatar = excluded.owner_avatar,
-    owner_url = excluded.owner_url
+    visibility = CASE WHEN excluded.visibility != '' THEN excluded.visibility ELSE repos.visibility END,
+    pushed_at = COALESCE(excluded.pushed_at, repos.pushed_at),
+    default_branch = COALESCE(excluded.default_branch, repos.default_branch),
+    default_branch_status = COALESCE(excluded.default_branch_status, repos.default_branch_status),
+    owner_login = COALESCE(excluded.owner_login, repos.owner_login),
+    owner_avatar = COALESCE(excluded.owner_avatar, repos.owner_avatar),
+    owner_url = COALESCE(excluded.owner_url, repos.owner_url)
 `
 
 type UpsertRepoParams struct {
-	Actor               string
 	Owner               string
 	Name                string
 	NameWithOwner       string
 	Url                 string
 	IsDisabled          int64
 	IsArchived          int64
+	Visibility          string
 	PushedAt            sql.NullString
 	DefaultBranch       sql.NullString
 	DefaultBranchStatus sql.NullString
@@ -1140,52 +1653,27 @@ type UpsertRepoParams struct {
 }
 
 // ============================================================================
-// Repos
+// Repos (global truth -- one row per repo)
 // ============================================================================
+// UpsertRepo writes a repo row. visibility is only overwritten when the new
+// value is known (non-empty): the GraphQL org fetch cannot carry visibility,
+// and clobbering a webhook-learned value with ” would silently close the
+// public fast path (or worse, reopen it later from a stale write).
 func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) error {
 	_, err := q.db.ExecContext(ctx, upsertRepo,
-		arg.Actor,
 		arg.Owner,
 		arg.Name,
 		arg.NameWithOwner,
 		arg.Url,
 		arg.IsDisabled,
 		arg.IsArchived,
+		arg.Visibility,
 		arg.PushedAt,
 		arg.DefaultBranch,
 		arg.DefaultBranchStatus,
 		arg.OwnerLogin,
 		arg.OwnerAvatar,
 		arg.OwnerUrl,
-	)
-	return err
-}
-
-const upsertUser = `-- name: UpsertUser :exec
-
-INSERT INTO users (actor, login, avatar_url, url)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (actor, login) DO UPDATE SET
-    avatar_url = excluded.avatar_url,
-    url = excluded.url
-`
-
-type UpsertUserParams struct {
-	Actor     string
-	Login     string
-	AvatarUrl string
-	Url       string
-}
-
-// ============================================================================
-// Users
-// ============================================================================
-func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) error {
-	_, err := q.db.ExecContext(ctx, upsertUser,
-		arg.Actor,
-		arg.Login,
-		arg.AvatarUrl,
-		arg.Url,
 	)
 	return err
 }
