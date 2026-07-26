@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/api"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
@@ -124,4 +125,42 @@ func TestLoad_RefreshIntervalInvalid(t *testing.T) {
 // ghdata var, so it is read at its initializer value.)
 func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
 	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
+}
+
+// TestParsePassthroughDebounce covers the uncached-read coalescing window: the
+// default when unset, an explicit 0 disabling the feature, and loud startup
+// failures for values that would silently wedge every uncached read.
+func TestParsePassthroughDebounce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset uses the default", in: "", want: defaultPassthroughDebounce},
+		{name: "explicit zero disables", in: "0", want: 0},
+		{name: "zero seconds disables", in: "0s", want: 0},
+		{name: "custom window", in: "1500ms", want: 1500 * time.Millisecond},
+		{name: "at the ceiling", in: "30s", want: maxPassthroughDebounce},
+		{name: "negative rejected", in: "-1s", wantErr: true},
+		{name: "unparseable rejected", in: "soon", wantErr: true},
+		{name: "past the ceiling rejected", in: "5m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePassthroughDebounce(tc.in)
+			if tc.wantErr {
+				require.Error(t, err, "a bad window must fail startup, not fall back silently")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to the API
+// package's own bound, so the two literals cannot drift into a state where a
+// value config accepts is one internal/api considers implausible.
+func TestDebounceWindowBoundMatchesAPI(t *testing.T) {
+	assert.Equal(t, api.DebounceMaxWindow, maxPassthroughDebounce)
 }

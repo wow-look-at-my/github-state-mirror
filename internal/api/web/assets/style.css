@@ -372,6 +372,12 @@ table.webhooks td.grp-breakdown .disp { margin-right: 6px; }
    (not a pass/fail verdict — some reasons are the cache working as designed),
    and the sampled query-parameter names are monospaced like a path. */
 .disp.reason { color: var(--gray); background: rgba(110,118,129,0.15); }
+/* Debounce chips: "held" is a cost (neutral/warning), "saved" a benefit —
+   greyed out when a route is paying the hold without coalescing anything. */
+.disp.held       { color: var(--yellow); background: rgba(210,153,34,0.12); }
+.disp.saved      { color: var(--green);  background: rgba(63,185,80,0.12); }
+.disp.saved-none { color: var(--gray);   background: rgba(110,118,129,0.15); }
+
 .disp.qshape {
     color: var(--accent); background: rgba(47,129,247,0.10);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

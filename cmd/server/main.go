@@ -132,9 +132,20 @@ func main() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
+	// Passthrough debouncer: holds eligible uncached READS briefly so identical
+	// concurrent polls share one upstream call. Built here (not inside the
+	// router) because shutdown has to Drain it. A window of 0 returns nil,
+	// which the router treats as "no coalescing".
+	debouncer := api.NewDebouncer(cfg.PassthroughDebounce)
+	if w := debouncer.Window(); w > 0 {
+		slog.Info("passthrough debouncing enabled", "window", w)
+	} else {
+		slog.Info("passthrough debouncing disabled; uncached reads forward immediately")
+	}
+
 	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
 	// all data access goes through the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -168,6 +179,11 @@ func main() {
 	// them BEFORE closing the database, or a late metadata write lands on a
 	// closed handle. Bounded so a wedged upstream cannot hold shutdown hostage
 	// past the fetch safety timeout.
+	// Debounced passthrough batches first: their waiters are still on the wire
+	// and their fetches are detached like the freshness manager's. Drain cuts
+	// every pending window short so the answer goes out now rather than after
+	// the full hold, then waits out the fetches in flight.
+	debouncer.Drain(30 * time.Second)
 	if !mgr.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
 	}

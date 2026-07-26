@@ -786,6 +786,34 @@ function reasonCell(g: RequestGroup): HTMLElement {
     return cell;
 }
 
+// debounceCell shows what coalescing did for a route: how many uncached reads
+// were held for the debounce window, and how many GitHub calls that avoided.
+// Both are shown because they answer different questions — "held" is the
+// latency the callers paid, "saved" is what it bought. Held with nothing saved
+// means the polls are spread wider than the window: all cost, no benefit.
+function debounceCell(g: RequestGroup): HTMLElement {
+    const held = g.debounced || 0;
+    const saved = g.upstream_saved || 0;
+    const cell = el("td", { class: "grp-breakdown" });
+    if (held === 0) {
+        cell.textContent = "—";
+        return cell;
+    }
+    cell.appendChild(el("span", {
+        class: "disp held",
+        title: "uncached reads held for the debounce window before being forwarded",
+        text: "held " + held,
+    }));
+    cell.appendChild(el("span", {
+        class: saved > 0 ? "disp saved" : "disp saved-none",
+        title: saved > 0
+            ? "GitHub calls avoided — these requests shared another's response"
+            : "no calls avoided yet: these polls arrive further apart than the debounce window",
+        text: "saved " + saved,
+    }));
+    return cell;
+}
+
 // uncachedGroupsSection: the groups with passthrough traffic — reads the
 // cache did not handle, ranked by passthrough count. Write-only groups never
 // appear (a mutation is proxied by design, not a caching gap; the
@@ -799,16 +827,18 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
         el("td", { class: "num", text: g.passthrough + pctLabel(g.passthrough, passthroughTotal) }),
         el("td", { class: "num", text: String(g.total) }),
         reasonCell(g),
+        debounceCell(g),
         groupBreakdown(g, "passthrough"),
     ));
     return groupSection("Top uncached requests",
-        "These reads forward to GitHub uncached. \"Why\" separates real caching candidates from shapes the cache deliberately refuses — hover a reason for what it means.",
+        "These reads forward to GitHub uncached. \"Why\" separates real caching candidates from shapes the cache deliberately refuses — hover a reason for what it means. \"Debounce\" is what coalescing did: reads held for the window, and the GitHub calls that saved.",
         el("table", { class: "webhooks" },
             el("thead", null, el("tr", null,
                 el("th", { text: "Route" }),
                 el("th", { class: "num", text: "Passthrough" }),
                 el("th", { class: "num", text: "Total" }),
                 el("th", { text: "Why" }),
+                el("th", { text: "Debounce" }),
                 el("th", { text: "Other" }),
             )),
             el("tbody", null, rows),
