@@ -5,15 +5,38 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
+// The fixture timestamps are relative to now so they can never age past the
+// 14-day completed-job retention (ghdata's workflowJobRetention): hardcoded
+// dates rotted on 2026-07-17, when RecordWorkflowJob's on-write prune started
+// deleting the just-upserted completed rows mid-test. Truncated to the second
+// so the RFC3339 strings round-trip byte-identically through payload → store.
+var (
+	wfjStartedAt   = time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
+	wfjCompletedAt = time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
+)
+
 // makeWorkflowJobPayload builds a realistic workflow_job webhook body. status
 // "in_progress" carries null conclusion/completed_at; "completed" fills both.
 func makeWorkflowJobPayload(t *testing.T, action, owner, repo string, jobID int64, name, status, conclusion string) json.RawMessage {
+	t.Helper()
+	completedAt := ""
+	if status == "completed" {
+		completedAt = wfjCompletedAt
+	}
+	return makeWorkflowJobPayloadAt(t, action, owner, repo, jobID, name, status, conclusion, wfjStartedAt, completedAt)
+}
+
+// makeWorkflowJobPayloadAt is makeWorkflowJobPayload with explicit timestamps,
+// for tests that pin event times (e.g. past the retention horizon). An empty
+// completedAt stays JSON null, like a real in_progress payload.
+func makeWorkflowJobPayloadAt(t *testing.T, action, owner, repo string, jobID int64, name, status, conclusion, startedAt, completedAt string) json.RawMessage {
 	t.Helper()
 	job := map[string]interface{}{
 		"id":            jobID,
@@ -26,15 +49,15 @@ func makeWorkflowJobPayload(t *testing.T, action, owner, repo string, jobID int6
 		"status":        status,
 		"conclusion":    nil,
 		"name":          name,
-		"started_at":    "2026-07-03T10:00:00Z",
+		"started_at":    startedAt,
 		"completed_at":  nil,
 		"runner_name":   "runner-1",
 	}
 	if conclusion != "" {
 		job["conclusion"] = conclusion
 	}
-	if status == "completed" {
-		job["completed_at"] = "2026-07-03T10:05:00Z"
+	if completedAt != "" {
+		job["completed_at"] = completedAt
 	}
 	data, err := json.Marshal(map[string]interface{}{
 		"action":       action,
@@ -63,7 +86,7 @@ func TestDispatch_WorkflowJob_InProgressThenCompleted(t *testing.T) {
 	assert.Equal(t, "in_progress", jobs[0].Status)
 	assert.Equal(t, "build", jobs[0].Name)
 	assert.Equal(t, "CI", jobs[0].WorkflowName)
-	assert.Equal(t, "2026-07-03T10:00:00Z", jobs[0].StartedAt)
+	assert.Equal(t, wfjStartedAt, jobs[0].StartedAt)
 	assert.Equal(t, "", jobs[0].Conclusion)
 	assert.Equal(t, "runner-1", jobs[0].RunnerName)
 
@@ -76,7 +99,7 @@ func TestDispatch_WorkflowJob_InProgressThenCompleted(t *testing.T) {
 	require.Len(t, jobs, 1, "same job id must upsert, not duplicate")
 	assert.Equal(t, "completed", jobs[0].Status)
 	assert.Equal(t, "success", jobs[0].Conclusion)
-	assert.Equal(t, "2026-07-03T10:05:00Z", jobs[0].CompletedAt)
+	assert.Equal(t, wfjCompletedAt, jobs[0].CompletedAt)
 
 	// Both deliveries land in the global webhook log.
 	deliveries, err := store.RecentWebhookDeliveries(ctx, 10)
@@ -101,8 +124,8 @@ func TestDispatch_WorkflowJob_CompletedBeforeInProgress(t *testing.T) {
 	require.Len(t, jobs, 1)
 	assert.Equal(t, "completed", jobs[0].Status)
 	assert.Equal(t, "failure", jobs[0].Conclusion)
-	assert.Equal(t, "2026-07-03T10:00:00Z", jobs[0].StartedAt)
-	assert.Equal(t, "2026-07-03T10:05:00Z", jobs[0].CompletedAt)
+	assert.Equal(t, wfjStartedAt, jobs[0].StartedAt)
+	assert.Equal(t, wfjCompletedAt, jobs[0].CompletedAt)
 }
 
 // TestDispatch_WorkflowJob_LateInProgressDoesNotRegress covers the other
@@ -122,7 +145,40 @@ func TestDispatch_WorkflowJob_LateInProgressDoesNotRegress(t *testing.T) {
 	require.Len(t, jobs, 1)
 	assert.Equal(t, "completed", jobs[0].Status, "late in_progress must not regress a completed job")
 	assert.Equal(t, "success", jobs[0].Conclusion)
-	assert.Equal(t, "2026-07-03T10:05:00Z", jobs[0].CompletedAt)
+	assert.Equal(t, wfjCompletedAt, jobs[0].CompletedAt)
+}
+
+// TestDispatch_WorkflowJob_LateInProgressPastRetention is the deterministic
+// reproduction of the 2026-07-17 master incident (run 29575744119, commit
+// 998ee25): the then-hardcoded fixture completed_at aged past the 14-day
+// retention horizon, RecordWorkflowJob's on-write prune deleted the completed
+// row the same call had just written, and the late in_progress then INSERTED
+// a fresh running row -- status regressed to "in_progress", conclusion
+// blanked -- because the upsert's regression guard only fires when the row
+// still exists. The same interleaving is reachable in production via delivery
+// replays of old events (GitHub keeps deliveries 30 days; the org's
+// webhook-runner SDK replays missed windows). Retention now also keys on
+// updated_at (when the mirror last applied a webhook), so a just-recorded row
+// can never be pruned out from under the guard, however old the event's own
+// completed_at is.
+func TestDispatch_WorkflowJob_LateInProgressPastRetention(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+
+	startedAt := time.Now().UTC().Add(-15*24*time.Hour - 5*time.Minute).Truncate(time.Second).Format(time.RFC3339)
+	completedAt := time.Now().UTC().Add(-15 * 24 * time.Hour).Truncate(time.Second).Format(time.RFC3339)
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_job",
+		makeWorkflowJobPayloadAt(t, "completed", "my-org", "my-repo", 9, "lint", "completed", "success", startedAt, completedAt)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_job",
+		makeWorkflowJobPayloadAt(t, "in_progress", "my-org", "my-repo", 9, "lint", "in_progress", "", startedAt, "")))
+
+	jobs, err := store.RecentWorkflowJobs(ctx, 10)
+	require.Nil(t, err)
+	require.Len(t, jobs, 1, "the just-recorded completed row must survive its own call's prune")
+	assert.Equal(t, "completed", jobs[0].Status, "late in_progress must not regress a completed job")
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, completedAt, jobs[0].CompletedAt)
 }
 
 // TestDispatch_WorkflowJob_QueuedIgnored verifies the untracked actions

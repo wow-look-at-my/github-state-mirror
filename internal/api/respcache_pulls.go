@@ -36,23 +36,36 @@ import (
 //   maintenance). A rebuilt list as long as the request's per_page may be
 //   truncated upstream -- served as a miss, never from state.
 //
-//   SINGLE: the row must be rest-complete, RECENTLY TOUCHED (PRRowFresh --
-//   the staleness backstop for a missed `closed` delivery), AND its mergeable
-//   KNOWN. GitHub computes `mergeable` lazily and pr-minder polls this
-//   endpoint waiting for it to resolve, so an unknown/null mergeable always
-//   misses (fetch + absorb the computed answer) -- the cache must never wedge
-//   that poll. Branch pushes un-resolve the stored value (see
-//   NullPRMergeableByBranch) so a known answer can't go silently stale after
-//   either side moves.
+//   SINGLE (open): the row must be rest-complete, RECENTLY TOUCHED
+//   (PRRowFresh -- the staleness backstop for a missed `closed` delivery),
+//   AND its mergeable KNOWN. GitHub computes `mergeable` lazily and pr-minder
+//   polls this endpoint waiting for it to resolve, so an unknown/null
+//   mergeable always misses (fetch + absorb the computed answer) -- the cache
+//   must never wedge that poll. Branch pushes un-resolve the stored value
+//   (see NullPRMergeableByBranch) so a known answer can't go silently stale
+//   after either side moves.
 //
-// getPullDiff-style requests (Accept: application/vnd.github.diff etc.) pass
-// through verbatim, exactly like the contents route's raw/html media types.
+//   SINGLE (closed): a fetched CLOSED/merged PR is absorbed as a rendered
+//   whole-doc snapshot (closed_pull_cache) -- the open-only pull_requests
+//   invariant is untouched (the stale open row is still deleted; closed PRs
+//   live only in the doc side table). pull_request events flush the PR's doc
+//   (reopen/edit/relabel); a push never does (it cannot mutate a closed PR);
+//   the 24h TTL backstop bounds missed deliveries, like PRRowFresh.
+//
+//   DIFF READS (the single-PR route with the diff media type) get the
+//   406-verdict flow in respcache_pulldiff.go; any OTHER non-default Accept
+//   (raw/html/full, a multi-range Accept) passes through exactly as before.
 
 const (
 	// pullsListCacheTTL bounds how long a MISSED pull_request delivery could
 	// leave a stale absorbed list being served. Webhooks are the maintenance;
 	// this is only the backstop.
 	pullsListCacheTTL = 24 * time.Hour
+
+	// closedPullCacheTTL bounds how long a MISSED pull_request delivery
+	// (reopen/edit/relabel) could leave a stale closed-PR doc being served --
+	// the same accepted staleness class as PRRowFresh.
+	closedPullCacheTTL = 24 * time.Hour
 
 	// pullsDefaultPerPage is GitHub's default page size for the list route
 	// when the request does not send per_page.
@@ -141,12 +154,12 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	shape, ok := parsePullsListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
@@ -205,7 +218,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("pulls list absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.servePullsList(w, r, rows, labelsByPR, false)
 }
 
@@ -214,7 +227,17 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 // newest-created first (GitHub's default sort).
 func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, hit bool) {
 	items := make([]pullListItemJSON, 0, len(rows))
+	now := time.Now()
 	for _, pr := range rows {
+		// The single-PR route's stale-sha belt, applied to the list tier: a
+		// row somehow holding the push-invalidated test-merge sha must not
+		// serve it from ANY rebuild (the guarded writes null it instead, so
+		// this is belt and braces exactly like the single-PR hit gate).
+		// Gate rather than omit: the REST list shape genuinely carries
+		// merge_commit_sha, so the field stays for valid rows.
+		if ghdata.PRMergeShaStale(pr, now) {
+			pr.MergeCommitSha = sql.NullString{}
+		}
 		items = append(items, renderPullListItem(pr, labelsByPR[pr.Number]))
 	}
 	body, err := marshalTrimmed(items)
@@ -224,7 +247,7 @@ func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows [
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
@@ -243,21 +266,34 @@ func allRestComplete(rows []dbgen.PullRequest) bool {
 
 // ---- GET /repos/{owner}/{repo}/pulls/{number} ----
 
-// cachedPull serves a single OPEN PR from state when the row is
-// rest-complete AND its mergeable is known; everything else -- unknown or
-// null mergeable, closed or unknown PRs, non-numeric path segments like
-// /pulls/comments, query params, non-default Accept -- misses or passes
-// through. A fetched open PR is absorbed (including GitHub's computed
-// mergeable, null and all); a fetched closed PR deletes any cached row and
-// replays verbatim (the cache retains open PRs only).
+// cachedPull serves a single PR from state: an OPEN row when it is
+// rest-complete AND its mergeable is known, or a CLOSED PR's rendered doc
+// (closed_pull_cache -- every drain re-reads settled PRs, and each read used
+// to be a fresh passthrough). Everything else -- unknown or null mergeable,
+// unknown PRs, non-numeric path segments like /pulls/comments, query params,
+// non-default Accept -- misses or passes through. A fetched open PR is
+// absorbed (including GitHub's computed mergeable, null and all) and drops
+// any stale closed doc; a fetched closed PR deletes any cached open row (the
+// truth table retains open PRs only) and is absorbed as a whole-doc snapshot,
+// served rebuilt.
 func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
 	numStr := chi.URLParam(r, "number")
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
-	if err != nil || number <= 0 || !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
-		h.ghProxy.ServeHTTP(w, r)
+	if err != nil || number <= 0 || r.URL.RawQuery != "" {
+		h.passthrough(w, r, shapeReason(r, err == nil && number > 0))
+		return
+	}
+	if !acceptsDefaultJSON(r) {
+		// The DIFF representation gets the 406-verdict flow (see the file
+		// comment); every other non-default Accept keeps today's passthrough.
+		if acceptsPullDiff(r) {
+			h.cachedPullDiff(w, r, owner, repo, number, numStr)
+			return
+		}
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 
@@ -270,10 +306,23 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The hit gate: rest-complete, mergeable KNOWN, the stored test-merge sha
+	// not the push-invalidated one (belt and braces -- the guarded writes null
+	// that sha instead of storing it), and recently touched.
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
-	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && ghdata.PRRowFresh(pr, time.Now()) {
+	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && diffStatsKnown(pr) &&
+		!ghdata.PRMergeShaStale(pr, time.Now()) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
+		return
+	}
+
+	// No servable open row -- a CLOSED PR's rendered doc answers instead.
+	if doc, ok, err := h.store.GetCachedClosedPull(r.Context(), owner, repo, number, time.Now()); err != nil {
+		slog.Warn("closed PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
+	} else if ok {
+		h.reqlog.observe(r, DispHit)
+		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
 
@@ -299,19 +348,46 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pr.State != "OPEN" {
-		// Closed/merged: the cache retains open PRs only. Drop any stale row
-		// and hand GitHub's own answer through, unstored.
+		// Closed/merged: the truth table retains open PRs only, so drop any
+		// stale row -- and absorb GitHub's answer as a rendered whole-doc
+		// snapshot, served rebuilt (hit and miss byte-identical).
 		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
-		h.replayUnstored(w, r, resp, body)
+		doc, mErr := marshalTrimmed(renderClosedPull(pr, labels, raw.Merged != nil && *raw.Merged))
+		if mErr != nil {
+			slog.Warn("closed PR render failed", "path", r.URL.Path, "error", mErr)
+			h.replayUnstored(w, r, resp, body)
+			return
+		}
+		if err := h.store.PutCachedClosedPull(r.Context(), owner, repo, number, string(doc), time.Now(), closedPullCacheTTL); err != nil {
+			slog.Warn("closed PR doc store failed", "owner", owner, "repo", repo, "number", number, "error", err)
+		}
+		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+		h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
+		writeRebuilt(w, http.StatusOK, doc, false)
 		return
 	}
-	if err := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now()); err != nil {
-		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
+	staleRejected, aerr := h.store.AbsorbSinglePull(r.Context(), pr, labels, time.Now())
+	if aerr != nil {
+		slog.Warn("single PR absorb failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", aerr)
+	}
+	// A reopened PR must not keep serving its stale closed doc.
+	if err := h.store.InvalidateClosedPullForPR(r.Context(), owner, repo, number); err != nil {
+		slog.Warn("closed PR doc invalidate failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
-	h.reqlog.recordStatus(callerLabel(r), r.Method, r.URL.Path, DispMiss, resp.StatusCode)
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
+	if staleRejected {
+		// The fetch re-offered the test-merge sha a push just invalidated: a
+		// pre-push answer (GitHub's recompute lag), stored unresolved above.
+		// Serve it unresolved too -- exactly what GitHub answers once its
+		// recompute actually starts -- never the value the mirror just proved
+		// stale; the consumer's resolve-poll carries on and every poll misses
+		// (re-triggering the recompute) until GitHub serves a fresh sha.
+		pr.Mergeable = sql.NullString{}
+		pr.MergeCommitSha = sql.NullString{}
+	}
 	h.serveSinglePull(w, r, pr, labels, false)
 }
 
@@ -323,7 +399,7 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 		return
 	}
 	if hit {
-		h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, DispHit)
+		h.reqlog.observe(r, DispHit)
 	}
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
@@ -337,268 +413,14 @@ func mergeableKnown(pr dbgen.PullRequest) bool {
 		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING")
 }
 
-// ---- absorbing REST PR bodies ----
-
-// restPRJSON is the upstream shape both PR routes parse: the "simple PR" of a
-// list item, plus the merge-status fields only the single-PR response carries.
-type restPRJSON struct {
-	Number         int64   `json:"number"`
-	NodeID         string  `json:"node_id"`
-	State          string  `json:"state"`
-	Title          string  `json:"title"`
-	Body           *string `json:"body"`
-	Draft          bool    `json:"draft"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-	MergeCommitSHA *string `json:"merge_commit_sha"`
-	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
-	Additions      *int64  `json:"additions"` // single-PR responses only
-	Deletions      *int64  `json:"deletions"` // single-PR responses only
-	HTMLURL        string  `json:"html_url"`
-	User           *struct {
-		Login     string `json:"login"`
-		Type      string `json:"type"`
-		AvatarURL string `json:"avatar_url"`
-		HTMLURL   string `json:"html_url"`
-	} `json:"user"`
-	Labels []struct {
-		Name  string `json:"name"`
-		Color string `json:"color"`
-	} `json:"labels"`
-	Head struct {
-		Ref  string `json:"ref"`
-		SHA  string `json:"sha"`
-		Repo *struct {
-			FullName string `json:"full_name"`
-		} `json:"repo"`
-	} `json:"head"`
-	Base struct {
-		Ref  string `json:"ref"`
-		SHA  string `json:"sha"`
-		Repo *struct {
-			Name  string `json:"name"`
-			Owner struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		} `json:"repo"`
-	} `json:"base"`
-	AutoMerge *struct {
-		MergeMethod string `json:"merge_method"`
-	} `json:"auto_merge"`
-	RequestedReviewers []json.RawMessage `json:"requested_reviewers"`
-	RequestedTeams     []json.RawMessage `json:"requested_teams"`
-}
-
-// absorbPullsListBody parses a /pulls 200 array into storable rows + labels.
-// Reports false -- serve verbatim, store nothing -- for any other status or
-// any item the model cannot hold.
-func absorbPullsListBody(owner, repo string, status int, body []byte) ([]dbgen.PullRequest, map[int64][]dbgen.PrLabel, bool) {
-	if status != http.StatusOK {
-		return nil, nil, false
-	}
-	var raw []restPRJSON
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, false
-	}
-	rows := make([]dbgen.PullRequest, 0, len(raw))
-	labelsByPR := make(map[int64][]dbgen.PrLabel, len(raw))
-	for _, item := range raw {
-		pr, labels, ok := absorbRestPR(owner, repo, item)
-		if !ok {
-			return nil, nil, false
-		}
-		rows = append(rows, pr)
-		labelsByPR[pr.Number] = labels
-	}
-	return rows, labelsByPR, true
-}
-
-// absorbRestPR converts one REST PR object into a pull_requests row (+ label
-// rows), reporting false when required fields are missing. owner/repo come
-// from the response's own base.repo (canonical casing, so rows collide with
-// webhook/GraphQL-written ones); the URL values are only the fallback.
-func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []dbgen.PrLabel, bool) {
-	if p.Number <= 0 || p.NodeID == "" || p.User == nil || p.User.Login == "" ||
-		p.Head.Ref == "" || p.Head.SHA == "" || p.Base.Ref == "" || p.Base.SHA == "" ||
-		p.CreatedAt == "" || p.UpdatedAt == "" {
-		return dbgen.PullRequest{}, nil, false
-	}
-	var state string
-	switch p.State {
-	case "open":
-		state = "OPEN"
-	case "closed":
-		state = "CLOSED"
-	default:
-		return dbgen.PullRequest{}, nil, false
-	}
-	owner, repo := urlOwner, urlRepo
-	if p.Base.Repo != nil && p.Base.Repo.Owner.Login != "" && p.Base.Repo.Name != "" {
-		owner, repo = p.Base.Repo.Owner.Login, p.Base.Repo.Name
-	}
-	pr := dbgen.PullRequest{
-		Owner:        owner,
-		Repo:         repo,
-		Number:       p.Number,
-		Title:        p.Title,
-		Url:          p.HTMLURL,
-		IsDraft:      boolToInt64(p.Draft),
-		State:        state,
-		CreatedAt:    normalizeRESTTime(p.CreatedAt),
-		UpdatedAt:    normalizeRESTTime(p.UpdatedAt),
-		NodeID:       sql.NullString{String: p.NodeID, Valid: true},
-		AuthorLogin:  sql.NullString{String: p.User.Login, Valid: true},
-		AuthorType:   nullableStr(p.User.Type),
-		AuthorAvatar: nullableStr(p.User.AvatarURL),
-		AuthorUrl:    nullableStr(p.User.HTMLURL),
-		HeadRefName:  sql.NullString{String: p.Head.Ref, Valid: true},
-		HeadRefOid:   sql.NullString{String: p.Head.SHA, Valid: true},
-		BaseRefName:  sql.NullString{String: p.Base.Ref, Valid: true},
-		BaseRefOid:   sql.NullString{String: p.Base.SHA, Valid: true},
-		ReviewRequestCount: sql.NullInt64{
-			Int64: int64(len(p.RequestedReviewers) + len(p.RequestedTeams)), Valid: true,
-		},
-	}
-	if p.Body != nil {
-		pr.Body = sql.NullString{String: *p.Body, Valid: true}
-	}
-	if p.Head.Repo != nil {
-		pr.HeadRepoFullName = nullableStr(p.Head.Repo.FullName)
-	}
-	if p.AutoMerge != nil {
-		pr.AutoMergeMethod = nullableStr(p.AutoMerge.MergeMethod)
-	}
-	if p.MergeCommitSHA != nil {
-		pr.MergeCommitSha = nullableStr(*p.MergeCommitSHA)
-	}
-	if p.Mergeable != nil {
-		m := "CONFLICTING"
-		if *p.Mergeable {
-			m = "MERGEABLE"
-		}
-		pr.Mergeable = sql.NullString{String: m, Valid: true}
-	}
-	if p.Additions != nil {
-		pr.Additions = sql.NullInt64{Int64: *p.Additions, Valid: true}
-	}
-	if p.Deletions != nil {
-		pr.Deletions = sql.NullInt64{Int64: *p.Deletions, Valid: true}
-	}
-	labels := make([]dbgen.PrLabel, 0, len(p.Labels))
-	for _, l := range p.Labels {
-		labels = append(labels, dbgen.PrLabel{
-			Owner: owner, Repo: repo, PrNumber: p.Number, Name: l.Name, Color: l.Color,
-		})
-	}
-	return pr, labels, true
-}
-
-// ---- rebuilding trimmed PR bodies ----
-
-// The rebuilt shapes: GitHub's list/single PR fields that carry STATE, minus
-// every URL field and the untracked clutter (milestone, assignees, locked,
-// author_association, ...). A superset of every field pr-minder and the
-// pr-minder-reconcile hook read off mirror-served PR objects: number, state,
-// draft, title, body, node_id, user.login/.type, labels[].name/.color,
-// head.ref/.sha/.repo.full_name, base.ref/.sha, auto_merge, merge_commit_sha,
-// created_at/updated_at, and (single) mergeable/merged.
-type pullUserJSON struct {
-	Login string `json:"login"`
-	Type  string `json:"type,omitempty"`
-}
-
-type pullLabelJSON struct {
-	Name  string `json:"name"`
-	Color string `json:"color"`
-}
-
-type pullRepoRefJSON struct {
-	FullName string `json:"full_name"`
-}
-
-type pullHeadJSON struct {
-	Ref  string           `json:"ref"`
-	SHA  string           `json:"sha"`
-	Repo *pullRepoRefJSON `json:"repo"` // null when the head repo is gone
-}
-
-type pullBaseJSON struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
-}
-
-type pullAutoMergeJSON struct {
-	MergeMethod string `json:"merge_method"`
-}
-
-type pullListItemJSON struct {
-	NodeID         string             `json:"node_id"`
-	Number         int64              `json:"number"`
-	State          string             `json:"state"`
-	Title          string             `json:"title"`
-	User           pullUserJSON       `json:"user"`
-	Body           *string            `json:"body"`
-	Labels         []pullLabelJSON    `json:"labels"`
-	CreatedAt      string             `json:"created_at"`
-	UpdatedAt      string             `json:"updated_at"`
-	MergeCommitSHA *string            `json:"merge_commit_sha"`
-	Draft          bool               `json:"draft"`
-	AutoMerge      *pullAutoMergeJSON `json:"auto_merge"`
-	Head           pullHeadJSON       `json:"head"`
-	Base           pullBaseJSON       `json:"base"`
-}
-
-type pullSingleJSON struct {
-	pullListItemJSON
-	Merged    bool  `json:"merged"`
-	Mergeable *bool `json:"mergeable"`
-}
-
-func renderPullListItem(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullListItemJSON {
-	item := pullListItemJSON{
-		NodeID:    pr.NodeID.String,
-		Number:    pr.Number,
-		State:     strings.ToLower(pr.State),
-		Title:     pr.Title,
-		User:      pullUserJSON{Login: pr.AuthorLogin.String, Type: pr.AuthorType.String},
-		Labels:    make([]pullLabelJSON, 0, len(labels)),
-		CreatedAt: pr.CreatedAt,
-		UpdatedAt: pr.UpdatedAt,
-		Draft:     pr.IsDraft != 0,
-		Head:      pullHeadJSON{Ref: pr.HeadRefName.String, SHA: pr.HeadRefOid.String},
-		Base:      pullBaseJSON{Ref: pr.BaseRefName.String, SHA: pr.BaseRefOid.String},
-	}
-	if pr.Body.Valid {
-		item.Body = &pr.Body.String
-	}
-	if pr.MergeCommitSha.Valid && pr.MergeCommitSha.String != "" {
-		item.MergeCommitSHA = &pr.MergeCommitSha.String
-	}
-	if pr.AutoMergeMethod.Valid && pr.AutoMergeMethod.String != "" {
-		item.AutoMerge = &pullAutoMergeJSON{MergeMethod: pr.AutoMergeMethod.String}
-	}
-	if pr.HeadRepoFullName.Valid && pr.HeadRepoFullName.String != "" {
-		item.Head.Repo = &pullRepoRefJSON{FullName: pr.HeadRepoFullName.String}
-	}
-	for _, l := range labels {
-		item.Labels = append(item.Labels, pullLabelJSON{Name: l.Name, Color: l.Color})
-	}
-	return item
-}
-
-func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJSON {
-	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels)}
-	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate), so merged is
-	// false by definition.
-	switch pr.Mergeable.String {
-	case "MERGEABLE":
-		v := true
-		out.Mergeable = &v
-	case "CONFLICTING":
-		v := false
-		out.Mergeable = &v
-	}
-	return out
+// diffStatsKnown reports whether the row carries the additions/deletions only
+// a SINGLE-PR answer supplies. A row built from the /pulls LIST (or a webhook,
+// or a GraphQL sync) has none, and its mergeable can still be resolved
+// independently -- so without this gate such a row would hit and serve
+// `"additions": null` forever, with nothing to heal it short of a push. One
+// miss re-absorbs the stats from GitHub and every later read hits.
+func diffStatsKnown(pr dbgen.PullRequest) bool {
+	return pr.Additions.Valid && pr.Deletions.Valid
 }
 
 // ---- small helpers ----

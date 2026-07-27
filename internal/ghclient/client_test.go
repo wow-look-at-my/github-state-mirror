@@ -3,9 +3,14 @@ package ghclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -167,6 +172,165 @@ func TestDoJSON_SetsContentType(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// retryTestServer is testServer with zero retry backoff, so the transient
+// retries under test never really sleep.
+func retryTestServer(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	c := testServer(t, handler)
+	c.SetRetryBackoff([]time.Duration{0})
+	return c
+}
+
+// TestDoJSON_RetriesTransient502: a single 502 is retried and the second
+// attempt's result is returned (the request -- body included -- is resent).
+func TestDoJSON_RetriesTransient502(t *testing.T) {
+	calls := 0
+	var bodies []string
+	c := retryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	err := c.doJSON(context.Background(), "POST", "/graphql", strings.NewReader(`{"query":"q"}`), &out)
+	require.NoError(t, err)
+	assert.True(t, out.OK)
+	assert.Equal(t, 2, calls, "one retry after the 502")
+	assert.Equal(t, []string{`{"query":"q"}`, `{"query":"q"}`}, bodies, "every attempt resends the full body")
+}
+
+// TestDoJSON_PersistentTransientFailsAfterAttempts: a persistently-502ing
+// upstream fails after exactly doJSONAttempts requests, surfacing the status.
+func TestDoJSON_PersistentTransientFailsAfterAttempts(t *testing.T) {
+	calls := 0
+	c := retryTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("Bad Gateway"))
+	})
+
+	err := c.doJSON(context.Background(), "GET", "/test", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502")
+	assert.Equal(t, doJSONAttempts, calls)
+}
+
+// TestDoJSON_AuthoritativeStatusNotRetried: 4xx answers (other than 429) are
+// authoritative -- the reveal layer and deny-cache semantics depend on them --
+// so they must fail on the first attempt.
+func TestDoJSON_AuthoritativeStatusNotRetried(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		calls := 0
+		c := retryTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.WriteHeader(status)
+		})
+		err := c.doJSON(context.Background(), "GET", "/test", nil, nil)
+		require.Error(t, err, "status %d", status)
+		assert.Equal(t, 1, calls, "status %d must not be retried", status)
+	}
+}
+
+// flakyTransport fails the first failFirst round trips with a network error,
+// then delegates to the real transport.
+type flakyTransport struct {
+	calls     int
+	failFirst int
+	next      http.RoundTripper
+	err       error
+}
+
+func (tr *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tr.calls++
+	if tr.calls <= tr.failFirst {
+		return nil, tr.err
+	}
+	return tr.next.RoundTrip(req)
+}
+
+// TestDoJSON_RetriesNetworkError: a transient network failure is retried like
+// a 502.
+func TestDoJSON_RetriesNetworkError(t *testing.T) {
+	c := retryTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("{}"))
+	})
+	tr := &flakyTransport{failFirst: 1, next: http.DefaultTransport, err: fmt.Errorf("connection reset by peer")}
+	c.httpClient.Transport = tr
+
+	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
+	assert.Equal(t, 2, tr.calls)
+}
+
+// TestDoJSON_ContextCancellationNotRetried: the caller's own cancellation is
+// never a transient failure -- retrying it only delays the exit.
+func TestDoJSON_ContextCancellationNotRetried(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tr := &flakyTransport{failFirst: doJSONAttempts, err: fmt.Errorf("Get \"x\": %w", context.Canceled)}
+	c := NewWithBaseURL("http://unused.invalid")
+	c.SetRetryBackoff([]time.Duration{0})
+	c.httpClient.Transport = tr
+	cancel()
+
+	err := c.doJSON(ctx, "GET", "/test", nil, nil)
+	require.Error(t, err)
+	assert.Equal(t, 1, tr.calls, "a canceled context must not be retried")
+}
+
+// TestRetryDelay_RetryAfterFloorAndCap: a parseable Retry-After raises the
+// backoff floor but is capped so a huge value can't wedge a deadline-bounded
+// fetch; absent/garbage headers leave the configured backoff alone.
+func TestRetryDelay_RetryAfterFloorAndCap(t *testing.T) {
+	resp := func(retryAfter string) *http.Response {
+		r := &http.Response{Header: http.Header{}}
+		if retryAfter != "" {
+			r.Header.Set("Retry-After", retryAfter)
+		}
+		return r
+	}
+	assert.Equal(t, time.Duration(0), retryAfterDelay(nil))
+	assert.Equal(t, time.Duration(0), retryAfterDelay(resp("")))
+	assert.Equal(t, time.Duration(0), retryAfterDelay(resp("soon")))
+	assert.Equal(t, 2*time.Second, retryAfterDelay(resp("2")))
+	assert.Equal(t, retryAfterCap, retryAfterDelay(resp("3600")), "a huge Retry-After is capped")
+
+	c := New()
+	assert.Equal(t, 500*time.Millisecond, c.retryDelay(2, nil))
+	assert.Equal(t, 2*time.Second, c.retryDelay(3, nil), "the last backoff entry repeats")
+	assert.Equal(t, 2*time.Second, c.retryDelay(4, nil))
+	assert.Equal(t, 5*time.Second, c.retryDelay(2, resp("5")), "Retry-After raises the floor")
+	assert.Equal(t, retryAfterCap, c.retryDelay(2, resp("3600")))
+
+	c.SetRetryBackoff([]time.Duration{time.Minute})
+	assert.Equal(t, time.Minute, c.retryDelay(2, resp("5")), "a larger configured backoff wins over Retry-After")
+}
+
+// TestRateObserver_SeesRetriedResponses: the passive rate meter must observe
+// EVERY response the client receives, retried 502s included.
+func TestRateObserver_SeesRetriedResponses(t *testing.T) {
+	calls := 0
+	c := retryTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		rateHeaders(w)
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	})
+	ids := observed(c)
+
+	require.NoError(t, c.doJSON(actor.WithActor(context.Background(), "user:42"), "GET", "/test", nil, nil))
+	assert.Equal(t, []string{"user:42", "user:42"}, *ids, "both attempts' responses are observed")
+}
+
 func TestVerifyAppIdentity_Caches(t *testing.T) {
 	calls := 0
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +372,7 @@ func rateHeaders(w http.ResponseWriter) {
 // identities it was called with.
 func observed(c *Client) *[]string {
 	var ids []string
-	c.SetRateObserver(func(identity string, resp *http.Response) {
+	c.SetRateObserver(func(identity, name string, resp *http.Response) {
 		ids = append(ids, identity)
 	})
 	return &ids
@@ -270,4 +434,54 @@ func TestRateObserver_Unset(t *testing.T) {
 		w.Write([]byte("{}"))
 	})
 	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
+}
+
+// TestSetExchangeObserver_TimesEveryCall: the transport-level observer sees
+// every exchange the client performs — with method, path, status, a real
+// non-negative duration, and the credential-shape identity — and a ctx
+// principal (with verified name) takes precedence.
+func TestSetExchangeObserver_TimesEveryCall(t *testing.T) {
+	type obs struct {
+		identity, name, method, path string
+		status                       int
+		dur                          time.Duration
+	}
+	var mu sync.Mutex
+	var got []obs
+
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rate_limit" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	c.SetExchangeObserver(func(identity, name, method, path string, status int, start time.Time, dur time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		require.False(t, start.IsZero())
+		got = append(got, obs{identity, name, method, path, status, dur})
+	})
+
+	// A tokenless call labels anonymous.
+	_ = c.doJSON(context.Background(), "GET", "/meta", nil, nil)
+	// A bearer-token call labels by fingerprint shape.
+	_ = c.doJSON(WithToken(context.Background(), "ghs_sometoken"), "GET", "/meta", nil, nil)
+	// A ctx principal (with name) wins over the credential shape.
+	ctx := actor.WithName(actor.WithActor(WithToken(context.Background(), "ghs_other"), "app-installation:481"), "gsm-bot")
+	_ = c.doJSON(ctx, "POST", "/rate_limit", nil, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 3, "every exchange is observed")
+	assert.Equal(t, "anonymous", got[0].identity)
+	assert.Equal(t, "GET", got[0].method)
+	assert.Equal(t, "/meta", got[0].path)
+	assert.Equal(t, http.StatusOK, got[0].status)
+	assert.GreaterOrEqual(t, got[0].dur, time.Duration(0))
+	assert.True(t, strings.HasPrefix(got[1].identity, "token:"), "identity %q", got[1].identity)
+	assert.Empty(t, got[1].name, "a credential-shape identity never borrows a name")
+	assert.Equal(t, "app-installation:481", got[2].identity)
+	assert.Equal(t, "gsm-bot", got[2].name)
+	assert.Equal(t, http.StatusInternalServerError, got[2].status)
 }

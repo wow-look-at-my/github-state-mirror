@@ -44,6 +44,17 @@ func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			// Without this a cross-origin caller can read NONE of these: the
+			// CORS default exposes only the handful of "safelisted" response
+			// headers. Passthroughs inherit GitHub's own Expose-Headers (the
+			// proxy deliberately keeps it) and the two lists simply union, but
+			// a REBUILT response is written by the mirror alone -- so on every
+			// cache hit a browser app saw no rate-limit budget and no
+			// X-GSM-Cache at all. Added, never subtracted: this only widens
+			// what a browser may read.
+			w.Header().Add("Access-Control-Expose-Headers",
+				"X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Reset, "+
+					"X-GSM-Cache, X-GSM-Stale, X-GSM-Last-Fetched")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

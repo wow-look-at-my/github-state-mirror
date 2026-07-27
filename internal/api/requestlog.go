@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
 // Request dispositions recorded for the dashboard's "Requests" view.
@@ -21,6 +23,98 @@ const (
 	DispWrite       = "write"       // a MUTATING method proxied to GitHub (never cacheable by design)
 	DispError       = "error"       // the cache lookup/fetch failed
 )
+
+// Passthrough REASONS: WHY a read was forwarded to GitHub uncached. The
+// disposition alone says a route did not serve from state; the reason says
+// whether that is a caching GAP (a shape worth modeling) or the model working
+// as designed (a shape deliberately left uncacheable). Without it, reading the
+// dashboard's "Top uncached requests" table means going to the source — of
+// this repo AND of the calling service — to recover the query shape the log
+// threw away, which is exactly the archaeology this vocabulary replaces.
+//
+// The set is CLOSED and every value is a compile-time constant: reasons are
+// group-counter keys, so — like the timeline's lane names — they must never be
+// derived from a URL, a header, or anything else a caller controls.
+const (
+	// PassAccept: a non-default Accept media type (raw/html/diff/patch). The
+	// response is a different shape entirely, not the JSON the route models.
+	PassAccept = "unmodeled-accept"
+	// PassQuery: query parameters the route does not model — the filter/paging
+	// shape guards. The DOMINANT reason in practice and the one that decides
+	// whether a hot uncached route is a caching candidate: a filter that
+	// changes which resources the body describes (?status=queued) is
+	// deliberately unmodeled, while an unmodeled paging shape is a gap.
+	PassQuery = "unmodeled-query"
+	// PassPath: the route matched but a path segment is outside the model — a
+	// short (ambiguous) sha, a non-numeric PR number, a cross-fork compare
+	// basehead, an unrecognized /commits/{ref}/<sub> tail.
+	PassPath = "unmodeled-path"
+	// PassUnrouted: no cached route claims this path at all (chi's NotFound).
+	// The honest "we cache nothing here" answer — every genuinely new caching
+	// candidate starts life under this reason.
+	PassUnrouted = "unrouted"
+	// PassMethod: the path has a cached route but not for this method (chi's
+	// MethodNotAllowed) — e.g. the required-builds status PUBLISH landing on
+	// the GET-only statuses alias.
+	PassMethod = "unrouted-method"
+	// PassIdentity: a self-verifying App-JWT route whose bearer did not verify
+	// (or is absent). Not ours to cache; GitHub answers the caller itself.
+	PassIdentity = "unverified-identity"
+	// PassResponse: the REQUEST was modeled but the RESPONSE was not — an
+	// unexpected status, an oversized body, a symlink/submodule object. Set by
+	// replayUnstored, so these cost an upstream round trip unlike every other
+	// reason above.
+	PassResponse = "unmodeled-response"
+	// PassGraphQL: a GraphQL query other than the locked org-repos one.
+	PassGraphQL = "graphql-forward"
+)
+
+// passthroughReasonKey carries the reason from the declining handler to the
+// recorder (the proxy records centrally, so the reason cannot be a parameter).
+type passthroughReasonKey struct{}
+
+func withPassthroughReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, passthroughReasonKey{}, reason)
+}
+
+func passthroughReasonFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(passthroughReasonKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// passthrough forwards a request the cached route declined to the GitHub
+// proxy, tagging it with WHY so the dashboard can separate caching gaps from
+// shapes the model deliberately refuses. Every cached route's bail-out goes
+// through here rather than calling the proxy directly.
+func (h *handlers) passthrough(w http.ResponseWriter, r *http.Request, reason string) {
+	h.ghProxy.ServeHTTP(w, r.WithContext(withPassthroughReason(r.Context(), reason)))
+}
+
+// taggedProxy wraps the passthrough proxy so requests reaching it by a route
+// fallback (chi's NotFound / MethodNotAllowed) carry a reason too — the
+// handler-level h.passthrough equivalent for paths no handler ever saw.
+func taggedProxy(next http.Handler, reason string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(withPassthroughReason(r.Context(), reason)))
+	}
+}
+
+// shapeReason classifies a declined request across the shape dimensions in a
+// fixed order (Accept, then query, then path), so a request violating several
+// reports one stable reason instead of depending on how a condition was
+// spelled. modeledPath is the route's own path-level verdict.
+func shapeReason(r *http.Request, modeledPath bool) string {
+	switch {
+	case !acceptsDefaultJSON(r):
+		return PassAccept
+	case !modeledPath:
+		return PassPath
+	default:
+		return PassQuery
+	}
+}
 
 // dispositionHintKey lets a handler that forwards to the passthrough proxy
 // override the recorded disposition (e.g. the GraphQL route marking a
@@ -55,62 +149,127 @@ func passthroughDisposition(r *http.Request) string {
 
 // requestEvent is one recorded data-API request.
 type requestEvent struct {
-	Actor       string `json:"actor"`
+	Actor string `json:"actor"`
+	// ActorName is the principal's VERIFIED display name (user login / app
+	// slug), captured from the request context at record time. Empty (and
+	// omitted) when no verified name is known — notably the unverified
+	// X-Mirror-Identity "app:<iss>" label, which must never gain a name.
+	ActorName   string `json:"actor_name,omitempty"`
 	Method      string `json:"method"`
 	Path        string `json:"path"`
 	Disposition string `json:"disposition"`
 	// Status is the upstream HTTP status for a passthrough (so the row shows
 	// whether GitHub actually accepted it — 200 vs 401/404/502). 0 when not
 	// applicable (e.g. a cache hit makes no upstream call).
-	Status int    `json:"status,omitempty"`
+	Status int `json:"status,omitempty"`
+	// Reason is WHY a passthrough was forwarded uncached (one of the closed
+	// Pass* vocabulary above). Empty and omitted for every other disposition —
+	// a hit/miss/write has nothing to explain.
+	Reason string `json:"reason,omitempty"`
 	At     string `json:"at"` // RFC3339
 }
 
 // requestLog is an in-memory, bounded record of recent data-API requests plus
-// per-disposition counters, so the dashboard can show traffic hitting the cache
-// (hit/miss) vs. forwarded uncached (passthrough). It is deliberately NOT
-// persisted: request traffic is high-volume and this is a live operational view,
-// not an audit log (unlike webhook_deliveries). It resets on restart.
+// per-disposition counters and per-route-shape GROUP counters (requestgroups.go),
+// so the dashboard can show traffic hitting the cache (hit/miss) vs. forwarded
+// uncached (passthrough) — both as a flat recent list and aggregated by route
+// shape. It is deliberately NOT persisted: request traffic is high-volume and
+// this is a live operational view, not an audit log (unlike webhook_deliveries).
+// It resets on restart.
 type requestLog struct {
 	mu     sync.Mutex
 	total  int64
 	byDisp map[string]int64
-	recent []requestEvent // newest last; capped at requestLogRecentCap
+	groups map[string]*routeGroup // key: method + " " + normalizeRoute(path); bounded (requestgroups.go)
+	recent []requestEvent         // newest last; capped at requestLogRecentCap
+	// timeline mirrors every observed request onto the dashboard's Timeline
+	// chart with its real end-to-end duration (see observeStatus). Nil-safe.
+	timeline *reqtimeline.Recorder
 }
 
 const requestLogRecentCap = 500
 
 func newRequestLog() *requestLog {
-	return &requestLog{byDisp: make(map[string]int64)}
+	return &requestLog{byDisp: make(map[string]int64), groups: make(map[string]*routeGroup)}
 }
 
-func (l *requestLog) record(actorKey, method, path, disposition string) {
-	l.recordStatus(actorKey, method, path, disposition, 0)
+// observe records one served data-API request — into the request log AND,
+// timed end-to-end from the router's receipt stamp, into the timeline ring.
+// EVERY inbound disposition is charted: hits included (a hit is a request the
+// mirror served; concealing it from the chart would be a gap).
+func (l *requestLog) observe(r *http.Request, disposition string) {
+	l.observeStatus(r, disposition, 0)
 }
 
-func (l *requestLog) recordStatus(actorKey, method, path, disposition string, status int) {
+func (l *requestLog) observeStatus(r *http.Request, disposition string, status int) {
+	l.observeAs(r, callerLabel(r), disposition, status)
+}
+
+// observeAs is observeStatus with an explicit caller identity — for the
+// self-verifying app-JWT routes, whose verified app:<id>+slug identity
+// callerLabel cannot derive.
+func (l *requestLog) observeAs(r *http.Request, who callerIdent, disposition string, status int) {
+	l.recordFull(who, r.Method, r.URL.Path, disposition, status, passthroughReasonFrom(r.Context()), queryShape(r.URL.Query()))
+	// The router stamps every request (stampRequestStart), so the stamp is
+	// always present on served traffic; a direct handler invocation in a unit
+	// test without the router is the only stampless path.
+	if start, ok := requestStartFrom(r.Context()); ok {
+		l.timeline.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), status, disposition, who.Key, who.Name)
+	}
+}
+
+func (l *requestLog) record(who callerIdent, method, path, disposition string) {
+	l.recordFull(who, method, path, disposition, 0, "", "")
+}
+
+func (l *requestLog) recordStatus(who callerIdent, method, path, disposition string, status int) {
+	l.recordFull(who, method, path, disposition, status, "", "")
+}
+
+// recordFull is the single recording path: totals, the route-shape group (with
+// its passthrough-reason tally), and the recent ring.
+func (l *requestLog) recordFull(who callerIdent, method, path, disposition string, status int, reason, qshape string) {
+	if disposition != DispPassthrough {
+		// Only a passthrough has a reason to explain; a stray hint on any
+		// other disposition (a route that forwards, absorbs, then serves) must
+		// never pollute the tally.
+		reason, qshape = "", ""
+	}
+	now := time.Now().UTC()
+	route := normalizeRoute(path) // pure; kept outside the critical section
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.total++
 	l.byDisp[disposition]++
+	l.bumpGroupLocked(method, route, path, disposition, reason, qshape, now)
 	l.recent = append(l.recent, requestEvent{
-		Actor:       actorKey,
+		Actor:       who.Key,
+		ActorName:   who.Name,
 		Method:      method,
 		Path:        path,
 		Disposition: disposition,
 		Status:      status,
-		At:          time.Now().UTC().Format(time.RFC3339),
+		Reason:      reason,
+		At:          now.Format(time.RFC3339),
 	})
 	if len(l.recent) > requestLogRecentCap {
 		l.recent = l.recent[len(l.recent)-requestLogRecentCap:]
 	}
 }
 
-// requestLogSnapshot is the dashboard payload: totals + recent requests (newest first).
+// requestLogSnapshot is the dashboard payload: totals + route-shape groups
+// (total desc, capped) + recent requests (newest first).
 type requestLogSnapshot struct {
-	Total         int64            `json:"total"`
-	ByDisposition map[string]int64 `json:"by_disposition"`
-	Recent        []requestEvent   `json:"recent"`
+	Total         int64                  `json:"total"`
+	ByDisposition map[string]int64       `json:"by_disposition"`
+	Groups        []requestGroupSnapshot `json:"groups"`
+	Recent        []requestEvent         `json:"recent"`
+	// DBSizeBytes / DBWALSizeBytes are the SQLite database file's (and its -wal
+	// sidecar's) on-disk sizes — the cache's real footprint. Filled by the
+	// dashboard handler (which knows DB_PATH), not by snapshot(); 0/omitted
+	// when the file is missing or unreadable.
+	DBSizeBytes    int64 `json:"db_size_bytes,omitempty"`
+	DBWALSizeBytes int64 `json:"db_wal_size_bytes,omitempty"`
 }
 
 func (l *requestLog) snapshot(limit int) requestLogSnapshot {
@@ -128,7 +287,12 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 	for i := len(l.recent) - 1; i >= 0 && len(recent) < n; i-- {
 		recent = append(recent, l.recent[i])
 	}
-	return requestLogSnapshot{Total: l.total, ByDisposition: byDisp, Recent: recent}
+	return requestLogSnapshot{
+		Total:         l.total,
+		ByDisposition: byDisp,
+		Groups:        l.groupSnapshotsLocked(requestGroupsSnapshotCap),
+		Recent:        recent,
+	}
 }
 
 // recordPassthrough wraps the GitHub reverse proxy so every request it serves is
@@ -136,12 +300,13 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 // the dashboard shows whether the forwarded call actually succeeded. Used both as
 // the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
 // forward target, so each proxied request is counted exactly once regardless of
-// entry path.
+// entry path. observeStatus also times it end-to-end (upstream round-trip plus
+// response streaming) into the timeline ring.
 func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		log.recordStatus(callerLabel(r), r.Method, r.URL.Path, passthroughDisposition(r), sw.status)
+		log.observeStatus(r, passthroughDisposition(r), sw.status)
 	})
 }
 
@@ -173,30 +338,53 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
-// callerLabel derives a best-effort, display-only cache-partition label for a
-// request. It never makes a network call: it uses the actor already resolved by
-// requireAuth when present (the cached-endpoint path), else the App id from an
-// X-Mirror-Identity assertion (decoded WITHOUT verifying — a forged header only
-// mislabels a metric row, never a security boundary), else a short token
-// fingerprint, else "anonymous".
-func callerLabel(r *http.Request) string {
-	if a := actor.FromContext(r.Context()); a != "" {
-		return a
+// callerIdent identifies a request's caller for display surfaces (request
+// log, rate meter): the partition/label Key plus the VERIFIED display Name
+// (user login / app slug), empty when none was proven. Display-only — never a
+// storage key.
+type callerIdent struct {
+	Key  string
+	Name string
+}
+
+// callerLabel derives a best-effort, display-only caller identity for a
+// request. It never makes a network call: it uses the actor (and its verified
+// display name) already resolved by requireAuth when present (the
+// cached-endpoint path), else the App id from an X-Mirror-Identity assertion
+// (decoded WITHOUT verifying — a forged header only mislabels a metric row,
+// never a security boundary; deliberately NO name, names require
+// verification), else a short token fingerprint, else "anonymous".
+func callerLabel(r *http.Request) callerIdent {
+	ctx := r.Context()
+	if a := actor.FromContext(ctx); a != "" {
+		return callerIdent{Key: a, Name: actor.NameFromContext(ctx)}
 	}
 	if jwt := r.Header.Get("X-Mirror-Identity"); jwt != "" {
 		if iss := jwtIssuer(jwt); iss != "" {
-			return "app:" + iss
+			return callerIdent{Key: "app:" + iss}
 		}
-		return "app:?"
+		return callerIdent{Key: "app:?"}
 	}
 	if tok := bearerToken(r); tok != "" {
 		fp := ghclient.Fingerprint(tok)
 		if len(fp) > 12 {
 			fp = fp[:12]
 		}
-		return "token:" + fp
+		return callerIdent{Key: "token:" + fp}
 	}
-	return "anonymous"
+	return callerIdent{Key: "anonymous"}
+}
+
+// principalNameAttr returns an inline slog attr carrying the principal's
+// verified display name ("principal_name") when the context has one, or a
+// no-op attr (an empty group, which slog handlers elide) when it doesn't — so
+// log sites can append it unconditionally and only named principals gain the
+// field.
+func principalNameAttr(ctx context.Context) slog.Attr {
+	if name := actor.NameFromContext(ctx); name != "" {
+		return slog.Group("", slog.String("principal_name", name))
+	}
+	return slog.Group("")
 }
 
 // jwtIssuer extracts the `iss` claim from a JWT WITHOUT verifying its signature.

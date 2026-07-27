@@ -9,10 +9,22 @@ import (
 
 // PushPayload is the minimal info applied directly from a push webhook.
 type PushPayload struct {
-	Owner    string
-	Repo     string
-	Ref      string // e.g. "refs/heads/main"
-	PushedAt string // RFC3339
+	Owner string
+	Repo  string
+	Ref   string // e.g. "refs/heads/main"
+	// RefName is the pushed ref's SHORT name -- "main" for refs/heads/main,
+	// "v1.2.3" for refs/tags/v1.2.3 -- or "" when the ref is neither a branch
+	// nor a tag. Unlike Branch() it covers tags too: the response caches key
+	// rows by the REQUESTED ref spelling, and a tag push moves that ref's
+	// ref-relative answers just like a branch push, so the per-ref cache
+	// invalidation wants both ("" makes it fall back repo-wide).
+	RefName string
+	// DefaultBranch is repository.default_branch from the payload ("" when
+	// absent), so the dispatcher can tell a default-branch push -- which also
+	// owns the empty-ref-keyed (default-branch-relative) cache rows --
+	// without a DB read.
+	DefaultBranch string
+	PushedAt      string // RFC3339
 
 	// Fields for absorbing the pushed commits into the git-commits cache.
 	Before  string // sha of the ref before the push (all-zeros for a new ref)
@@ -26,6 +38,18 @@ func (p PushPayload) Branch() string {
 	const prefix = "refs/heads/"
 	if strings.HasPrefix(p.Ref, prefix) {
 		return p.Ref[len(prefix):]
+	}
+	return ""
+}
+
+// shortRefName strips the refs/heads/ or refs/tags/ prefix off a fully
+// qualified ref, returning "" for anything else (refs/notes/, a bare string,
+// an empty ref, ...).
+func shortRefName(ref string) string {
+	for _, prefix := range []string{"refs/heads/", "refs/tags/"} {
+		if name, ok := strings.CutPrefix(ref, prefix); ok {
+			return name
+		}
 	}
 	return ""
 }
@@ -50,8 +74,9 @@ type PushCommit struct {
 func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 	var body struct {
 		Repository *struct {
-			Name  string `json:"name"`
-			Owner struct {
+			Name          string `json:"name"`
+			DefaultBranch string `json:"default_branch"`
+			Owner         struct {
 				Login string `json:"login"`
 			} `json:"owner"`
 		} `json:"repository"`
@@ -84,12 +109,14 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 		return PushPayload{}, fmt.Errorf("parse push payload: no repository field")
 	}
 	p := PushPayload{
-		Owner:  body.Repository.Owner.Login,
-		Repo:   body.Repository.Name,
-		Ref:    body.Ref,
-		Before: body.Before,
-		After:  body.After,
-		Forced: body.Forced,
+		Owner:         body.Repository.Owner.Login,
+		Repo:          body.Repository.Name,
+		Ref:           body.Ref,
+		RefName:       shortRefName(body.Ref),
+		DefaultBranch: body.Repository.DefaultBranch,
+		Before:        body.Before,
+		After:         body.After,
+		Forced:        body.Forced,
 	}
 	if body.HeadCommit != nil && body.HeadCommit.Timestamp != "" {
 		p.PushedAt = normaliseTime(body.HeadCommit.Timestamp)

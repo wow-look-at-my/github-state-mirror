@@ -68,6 +68,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(withDispositionHint(r.Context(), DispWrite))
 		} else {
 			r = r.WithContext(withDispositionHint(r.Context(), DispPassthrough))
+			r = r.WithContext(withPassthroughReason(r.Context(), PassGraphQL))
 		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
@@ -78,7 +79,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
 		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
-			"org", orgLogin, "actor", actor.FromContext(ctx), "error", ensureErr)
+			"org", orgLogin, "actor", actor.Short(actor.FromContext(ctx)), "error", ensureErr, principalNameAttr(ctx))
 	}
 	disp := DispHit
 	switch {
@@ -87,7 +88,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	case outcome == freshness.OutcomeMiss:
 		disp = DispMiss
 	}
-	h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, disp)
+	h.reqlog.observe(r, disp)
 
 	// Read repos from GLOBAL truth, filtered to what the reveal layer permits
 	// this caller: public repos plus the caller's granted repos. The grant set

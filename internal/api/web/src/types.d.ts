@@ -79,17 +79,100 @@ export interface WebhooksResponse {
 // ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
+    // Verified display name for the actor (user login / app slug); absent when
+    // none was proven (e.g. token fingerprints, unverified identity headers).
+    actor_name?: string;
     method: string;
     path: string;
     disposition: string;
     status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
+    // Why this read was forwarded uncached; passthroughs only, absent
+    // otherwise. Same closed vocabulary as RequestGroup.by_reason's keys.
+    reason?: string;
     at: string;
+}
+
+// One route-shape group: cumulative (since restart) per-disposition counts for
+// every request whose method+normalized route matched, e.g.
+// "GET /repos/{owner}/{repo}/compare/{basehead}".
+export interface RequestGroup {
+    key: string; // method + " " + route
+    method: string;
+    route: string;
+    total: number;
+    hit: number;
+    miss: number;
+    passthrough: number;
+    write: number;
+    error: number;
+    // by_reason splits `passthrough` by WHY the read was forwarded uncached
+    // (a closed server-side vocabulary: unmodeled-query, unmodeled-accept,
+    // unmodeled-path, unrouted, unrouted-method, unverified-identity,
+    // unmodeled-response, graphql-forward). Absent when the group never
+    // passed through.
+    by_reason?: Record<string, number> | null;
+    // pass_query: one recent passthrough's query-parameter NAMES, comma-
+    // separated (values are never recorded). Absent when there were none.
+    pass_query?: string;
+    // debounced: uncacheable reads the passthrough debouncer HELD for its window.
+    // upstream_saved: GitHub calls that never happened because a batch had
+    // more than one member. Both absent when coalescing never applied.
+    debounced?: number;
+    upstream_saved?: number;
+    sample: string; // one recent raw path, for identifying the shape
+    last_seen: string; // RFC3339
 }
 
 export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
+    groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
     recent: RequestEvent[] | null;
+    db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
+    db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
+}
+
+// ---- traffic timeline (every exchange the mirror participates in) ----
+// One timed event on the Timeline chart. Kind-specific fields are omitted for
+// the other kinds; dur_ms is the REAL measured duration (never fabricated).
+export interface TimelineEvent {
+    id: number;
+    kind: string; // "webhook" | "request" | "notify"
+    lane: string; // "⇐ <event type>" | "<METHOD> <route shape>" | "⇒ notify"
+    start: string; // RFC3339
+    dur_ms: number;
+    disposition?: string;
+    // webhook fields
+    event_type?: string;
+    action?: string;
+    delivery_id?: string;
+    repo?: string;
+    // request/exchange fields
+    method?: string;
+    route?: string;
+    status?: number;
+    actor?: string;
+    actor_name?: string;
+    // free-form tooltip line (e.g. an unverified delivery's claimed type)
+    detail?: string;
+    // notify fields
+    target?: string;
+    attempt?: number;
+    final?: boolean;
+}
+
+export interface TimelineResponse {
+    events: TimelineEvent[] | null;
+    max_id: number; // the next ?since= cursor
+    retention_start: string; // RFC3339 — the 24h window floor
+    now: string; // RFC3339
+}
+
+// The <gsm-timeline> custom element (src/timeline.ts). app.ts creates it on
+// the Timeline tab and, in demo mode, overrides its fetcher so the standalone
+// preview renders canned data.
+export interface GsmTimelineElement extends HTMLElement {
+    fetcher: ((path: string) => Promise<TimelineResponse>) | null;
 }
 
 // ---- GitHub App rate limit ----
@@ -112,6 +195,9 @@ export interface InstallationRateLimit {
 // resets on restart.
 export interface ObservedRateLimit {
     identity: string;
+    // Verified display name for the identity (user login / app slug /
+    // installation account login); absent when none was observed.
+    name?: string;
     resource: string;
     limit: number;
     remaining: number;
@@ -249,6 +335,8 @@ export interface TruthFreshness {
     last_fetched_at?: string;
     error?: string;
     principal?: string;
+    // The principal's recorded display name (actor_identities), when known.
+    principal_name?: string;
 }
 
 export interface ConsistencyReport {
@@ -290,6 +378,7 @@ export interface DemoStateData {
     all?: CacheResponse;
     webhooks?: WebhooksResponse;
     requests?: RequestsResponse;
+    timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id

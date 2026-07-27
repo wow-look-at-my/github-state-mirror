@@ -4,9 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/api"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
 func TestAppPrivateKeyPEM_Inline(t *testing.T) {
@@ -53,4 +57,110 @@ func TestAppPrivateKeyPEM_Unset(t *testing.T) {
 func TestGitHubAppConfigured(t *testing.T) {
 	assert.False(t, Config{}.GitHubAppConfigured())
 	assert.True(t, Config{GitHubAppID: "42"}.GitHubAppConfigured())
+}
+
+// TestLoad_CacheMaxRowsDefault: an absent (or empty) CACHE_MAX_ROWS keeps the
+// default ceiling.
+func TestLoad_CacheMaxRowsDefault(t *testing.T) {
+	t.Setenv("CACHE_MAX_ROWS", "")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, defaultCacheMaxRows, cfg.CacheMaxRows)
+	assert.Equal(t, int64(1_000_000), cfg.CacheMaxRows)
+}
+
+// TestLoad_CacheMaxRowsValid: a valid override is applied verbatim.
+func TestLoad_CacheMaxRowsValid(t *testing.T) {
+	t.Setenv("CACHE_MAX_ROWS", "50000")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, int64(50000), cfg.CacheMaxRows)
+}
+
+// TestLoad_CacheMaxRowsInvalid: an unparseable or < 1 value must fail Load (a
+// loud misconfiguration -- the server refuses to start), never fall back
+// silently to a cap the operator didn't set.
+func TestLoad_CacheMaxRowsInvalid(t *testing.T) {
+	for _, v := range []string{"abc", "1.5", "10k", "0", "-5"} {
+		t.Setenv("CACHE_MAX_ROWS", v)
+		_, err := Load()
+		assert.Error(t, err, "CACHE_MAX_ROWS=%q must fail Load", v)
+	}
+}
+
+// TestLoad_RefreshIntervalDefault: an absent (or empty) REFRESH_INTERVAL keeps
+// the 6h default cadence.
+func TestLoad_RefreshIntervalDefault(t *testing.T) {
+	t.Setenv("REFRESH_INTERVAL", "")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, defaultRefreshInterval, cfg.RefreshInterval)
+	assert.Equal(t, 6*time.Hour, cfg.RefreshInterval)
+}
+
+// TestLoad_RefreshIntervalValid: a valid Go duration override is applied
+// verbatim.
+func TestLoad_RefreshIntervalValid(t *testing.T) {
+	t.Setenv("REFRESH_INTERVAL", "30m")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, cfg.RefreshInterval)
+}
+
+// TestLoad_RefreshIntervalInvalid: an unparseable or non-positive value must
+// fail Load (a loud misconfiguration -- the server refuses to start), never
+// fall back silently to a cadence the operator didn't set.
+func TestLoad_RefreshIntervalInvalid(t *testing.T) {
+	for _, v := range []string{"abc", "10", "0", "-5m", "0s"} {
+		t.Setenv("REFRESH_INTERVAL", v)
+		_, err := Load()
+		assert.Error(t, err, "REFRESH_INTERVAL=%q must fail Load", v)
+	}
+}
+
+// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to
+// ghdata.CacheMaxRows' own initializer, so a consumer that never runs
+// config.Load (tests, library use) sees the same ceiling the server defaults
+// to and the two literals cannot drift. (No test in THIS binary mutates the
+// ghdata var, so it is read at its initializer value.)
+func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
+	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
+}
+
+// TestParsePassthroughDebounce covers the uncacheable-read coalescing window: the
+// default when unset, an explicit 0 disabling the feature, and loud startup
+// failures for values that would silently wedge every uncacheable read.
+func TestParsePassthroughDebounce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset uses the default", in: "", want: defaultPassthroughDebounce},
+		{name: "explicit zero disables", in: "0", want: 0},
+		{name: "zero seconds disables", in: "0s", want: 0},
+		{name: "custom window", in: "1500ms", want: 1500 * time.Millisecond},
+		{name: "at the ceiling", in: "30s", want: maxPassthroughDebounce},
+		{name: "negative rejected", in: "-1s", wantErr: true},
+		{name: "unparseable rejected", in: "soon", wantErr: true},
+		{name: "past the ceiling rejected", in: "5m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePassthroughDebounce(tc.in)
+			if tc.wantErr {
+				require.Error(t, err, "a bad window must fail startup, not fall back silently")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to the API
+// package's own bound, so the two literals cannot drift into a state where a
+// value config accepts is one internal/api considers implausible.
+func TestDebounceWindowBoundMatchesAPI(t *testing.T) {
+	assert.Equal(t, api.DebounceMaxWindow, maxPassthroughDebounce)
 }

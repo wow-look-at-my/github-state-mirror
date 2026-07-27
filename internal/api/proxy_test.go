@@ -75,8 +75,15 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
 	assert.Equal(t, "*", acao[0])
-	// GitHub's Expose-Headers must survive so clients can read X-RateLimit-* etc.
-	assert.Equal(t, "X-RateLimit-Remaining, Link", w.Header().Get("Access-Control-Expose-Headers"))
+	// Expose-Headers is the one CORS header the proxy deliberately does NOT
+	// strip, so a passthrough exposes the UNION of GitHub's list and the
+	// mirror's own (repeated list-valued header fields combine, per RFC 9110 --
+	// so `Link` stays readable and the mirror's X-GSM-* join it). Only the
+	// Allow-* headers must be singular, since a browser rejects a duplicated
+	// Allow-Origin outright.
+	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ", ")
+	assert.Contains(t, exposed, "Link", "GitHub's own Expose-Headers must survive")
+	assert.Contains(t, exposed, cacheHeader, "the mirror's own headers must be exposed too")
 }
 
 // TestProxy_RequiresToken verifies the passthrough is not an open relay: a
@@ -157,16 +164,16 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 }
 
 // TestProxy_FormerlyCachedNowForwarded verifies the endpoints the mirror used to
-// cache with TRIMMED shapes (/user, /pulls/{n}/files) now pass through to GitHub
-// verbatim, so callers get GitHub's full response — not a subset. This is the
+// cache with TRIMMED shapes (/user) now pass through to GitHub verbatim, so
+// callers get GitHub's full response — not a subset. This is the
 // "identical-or-passthrough" rule: not served from cache => served as-is.
-// (/compare, once on this list for a trim that dropped `files`, is cached again
-// as a tier-2 route whose rebuild preserves files exactly — see
-// respcache_compare_test.go.)
+// (/compare and /pulls/{n}/files, both once on this list for trims that broke
+// or would break consumers, are cached again as tier-2 routes whose rebuilds
+// preserve the consumer-read fields exactly — see respcache_compare_test.go
+// and respcache_pullfiles_test.go.)
 func TestProxy_FormerlyCachedNowForwarded(t *testing.T) {
 	cases := []struct{ name, path, body string }{
 		{"user", "/user", `{"login":"octocat","id":1,"node_id":"MDQ6VXNlcjE=","type":"User","site_admin":false}`},
-		{"pr-files", "/repos/o/r/pulls/5/files", `[{"filename":"a.go","status":"modified","additions":1,"deletions":0,"patch":"@@ -1 +1 @@"}]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

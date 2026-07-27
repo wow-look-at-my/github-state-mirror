@@ -17,7 +17,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -77,6 +79,12 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				}
 				actorKey := fmt.Sprintf("app:%d", ident.ID)
 				ctx = actor.WithActor(ctx, actorKey)
+				if ident.Slug != "" {
+					// The app slug is GitHub-verified (GET /app answered it):
+					// carry it as the principal's display name so downstream
+					// surfaces (request log, rate meter, logs) can show it.
+					ctx = actor.WithName(ctx, ident.Slug)
+				}
 				record(ctx, actorKey, ident.Slug)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -103,6 +111,11 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				actorKey = fmt.Sprintf("user:%d", ident.ID)
 			}
 			ctx = actor.WithActor(ctx, actorKey)
+			if ident.IsUser && ident.Login != "" {
+				// The login came from GitHub's own GET /user answer: carry it
+				// as the display name. Non-user tokens have no name.
+				ctx = actor.WithName(ctx, ident.Login)
+			}
 			// Remember the actor->login mapping so the dashboard can group a
 			// user's scope by login. A non-user token has no login and is
 			// skipped by the recorder.
@@ -159,8 +172,15 @@ func NewRouter(
 	baseURL string,
 	checker *syncpkg.ConsistencyChecker,
 	meter *ratemeter.Store,
+	notifier *notify.Notifier,
+	dbPath string,
+	timeline *reqtimeline.Recorder,
+	debouncer *Debouncer,
 ) http.Handler {
 	r := chi.NewRouter()
+	// First: stamp every request's receipt time, so any record site can put a
+	// real end-to-end duration on the Timeline chart.
+	r.Use(stampRequestStart)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// CORS so browser clients on other origins (e.g. the repo-nightmare PR
@@ -169,32 +189,62 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 
 	// In-memory record of data-API requests (hit/miss/passthrough) for the
-	// dashboard's "Requests" view.
+	// dashboard's "Requests" view. Every observed request is also mirrored,
+	// timed end-to-end, onto the Timeline chart.
 	reqlog := newRequestLog()
+	reqlog.timeline = timeline
 
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
-	// proxied request is recorded as a passthrough.
-	ghProxy := recordPassthrough(newGitHubProxy(gh.BaseURL(), meter), reqlog)
+	// proxied request is recorded as a passthrough — and timed into the
+	// timeline ring for the dashboard's "Timeline" chart.
+	//
+	// The debouncer sits BETWEEN the recorder and the proxy: every inbound
+	// request is still recorded and timed individually (a waiter's duration
+	// honestly includes the hold), while the coalesced batch makes at most one
+	// call through the proxy itself. Nil (window <= 0) leaves the chain
+	// untouched.
+	debouncer.attach(reqlog, timeline)
+	ghProxy := recordPassthrough(debouncer.Wrap(newGitHubProxy(gh.BaseURL(), meter, func(resp *http.Response) {
+		// A 401/403 on a passthrough call carrying a minted installation
+		// token invalidates that mint (see invalidateMintOnAuthFailure).
+		// resp.Request is the outbound clone carrying the inbound headers.
+		if resp.Request != nil {
+			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
+		}
+	})), reqlog)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter}
+	// One debounced principal->name recorder shared by requireAuth and the
+	// self-verifying app-JWT routes (token mint, repo installation), so every
+	// GitHub-verified identity lands in actor_identities.
+	recordIdentity := newIdentityRecorder(store)
+
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter).routes(r)
+	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
-	// not a user token, so it sits outside the requireAuth group.
-	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher))
+	// not a user token, so it sits outside the requireAuth group. After each
+	// synchronous dispatch the subscriber notifier fans the outcome out to
+	// registered endpoints (non-blocking; nil keeps the feature inert). Each
+	// verified delivery's full handling duration is also recorded into the
+	// timeline ring (the dashboard's "Timeline" chart).
+	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline), notifier))
 
-	// GitHub OAuth token-exchange relay for browser clients. A purely
-	// client-side app cannot POST to github.com/login/oauth/access_token
-	// directly (that endpoint sends no CORS headers); the mirror relays it with
-	// correct CORS. It carries no bearer token (the OAuth client secret in the
-	// body is the credential), so it sits outside requireAuth, and it targets
-	// github.com — not the api.github.com passthrough.
+	// GitHub OAuth relays for browser clients. A purely client-side app cannot
+	// POST to github.com's login endpoints directly (they send no CORS
+	// headers); the mirror relays them with correct CORS. They carry no bearer
+	// token (the body is the credential — an OAuth client secret, or just a
+	// public client_id for the device flow), so they sit outside requireAuth,
+	// and they target github.com — not the api.github.com passthrough.
+	// access_token is the code-for-token exchange AND the device flow's
+	// polling leg; device/code starts an RFC 8628 device sign-in.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
+	r.Post("/login/device/code", h.oauthDeviceCode)
 
 	// Installation-token mint cache and the repo-installation lookup.
 	// Registered OUTSIDE requireAuth: the bearer token on both is a GitHub App
@@ -216,7 +266,15 @@ func NewRouter(
 	// TRIMMED body with every URL field (url, *_url, _links) dropped; and
 	// everything else falls through to the verbatim passthrough, uncached.
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(gh, newIdentityRecorder(store)))
+		r.Use(requireAuth(gh, recordIdentity))
+
+		// Subscriber-notification CRUD (subscriptions.go), under the RESERVED
+		// mirror-native /_mirror/* namespace (GitHub has no underscore-prefixed
+		// top-level paths, and registered routes beat the NotFound passthrough,
+		// so this can never collide with proxied GitHub traffic). Principal-
+		// scoped via requireAuth like every data route; not a repo read, so no
+		// reveal gate and no request-log entry.
+		(&subscriptionsAPI{notifier: notifier}).routes(r)
 
 		// GraphQL endpoint (only the org-repos query shape is cached; everything
 		// else h.graphql forwards to the passthrough).
@@ -234,17 +292,26 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/commits", h.cachedCommitsList)
 
 		// The /commits/* subtree dispatcher (respcache_commitci.go): a tail
-		// ending in /status (the combined commit status) or /check-runs is a
-		// cached commit-CI route -- the suffix anchor is what lets the ref
-		// carry slashes, which a single-segment {ref} parameter could never
-		// match. Snapshots are keyed by the VERBATIM ref (branch, sha, or
-		// tag; never resolved) and flushed by status/check_run/check_suite
-		// (CI moved) plus push/repository webhooks. Every other tail -- the
-		// single-commit read /commits/{sha} (a different response shape),
-		// the raw /statuses list, /check-suites, /pulls, /comments, ... --
-		// stays passthrough, now forwarded by the dispatcher instead of
-		// falling to the router's NotFound.
+		// ending in /status (the combined commit status), /check-runs, or
+		// /statuses (the raw statuses LIST) is a cached commit-CI route --
+		// the suffix anchor is what lets the ref carry slashes, which a
+		// single-segment {ref} parameter could never match. Snapshots are
+		// keyed by the VERBATIM ref (branch, sha, or tag; never resolved) +
+		// kind + per_page/page, and flushed per payload-named ref by
+		// status/check_run/check_suite (CI moved) plus push/repository
+		// webhooks. Every other tail -- the single-commit read
+		// /commits/{sha} (a different response shape), /check-suites,
+		// /pulls, /comments, ... -- stays passthrough, forwarded by the
+		// dispatcher instead of falling to the router's NotFound.
 		r.Get("/repos/{owner}/{repo}/commits/*", h.commitsSubtree)
+
+		// The LEGACY statuses-list spelling /statuses/{ref} -- the path the
+		// consumers actually send (required-builds paginates it per_page=100
+		// until a short page) -- lands in the SAME handler and row space as
+		// the modern /commits/{ref}/statuses form above. GET only: the
+		// required-builds status PUBLISH (POST /statuses/{sha}) falls to
+		// MethodNotAllowed and the passthrough proxy, untouched.
+		r.Get("/repos/{owner}/{repo}/statuses/*", h.statusesAlias)
 
 		// Cached compare (respcache_compare.go): the three-dot base...head
 		// comparison pr-minder's auto_open_pr / close-empty gates run per
@@ -255,17 +322,51 @@ func NewRouter(
 		// push/repository webhooks.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
 
-		// Cached PR routes (respcache_pulls.go): the open-PR list is served
-		// from webhook-maintained pull_requests state behind a per-(actor,
-		// repo) "list complete" marker; the single PR is served only when the
-		// row is rest-complete AND its `mergeable` is KNOWN — a null/unknown
-		// mergeable always misses so pr-minder's resolve-poll still reaches
-		// GitHub (diff/raw Accepts and unknown query shapes pass through).
-		// Sub-resources (/pulls/{n}/files, /reviews, /merge, ...) don't match
-		// these patterns and keep passing through; writes (POST/PATCH/PUT)
-		// fall to MethodNotAllowed → the proxy.
+		// Cached workflow-runs listing (respcache_actionsruns.go): the
+		// per-sha runs page pr-minder's zombie probe (reads total_count
+		// only) and required-builds' listWorkflowRuns poll. head_sha is
+		// REQUIRED for a cacheable shape (the unfiltered listing churns
+		// constantly and is deliberately unmodeled); any other filter param
+		// passes through, and deeper /actions/runs/{id}/... paths keep
+		// falling to the NotFound passthrough (this is an exact-literal
+		// registration). Flushed per sha by status/check_run/check_suite/
+		// workflow_job events, repo-wide by repository, + 24h TTL (run
+		// DELETION emits no webhook).
+		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
+
+		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
+		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
+		// how tier 1 serves truth (repository webhooks, fleet sync, and the
+		// consistency check keep the row converged; the reveal probe
+		// re-absorbs it per principal within the grant TTL). Served only when
+		// the row answers completely (known visibility -- unknown fails
+		// closed -- default branch, full name); anything else fetches and
+		// absorbs. Query params and non-default Accepts pass through, and
+		// HEAD requests fall to MethodNotAllowed → the proxy.
+		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
+
+		// Cached branches list (respcache_branches.go): per-page whole-doc
+		// snapshots. Branch create/delete/tip-move all arrive as pushes, so
+		// push/repository webhooks flush repo-wide. The single-branch read
+		// /branches/{branch} is a different shape and stays passthrough.
+		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+
+		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
+		// open-PR list is served from webhook-maintained pull_requests state
+		// behind a per-repo "list complete" marker; the single PR is served
+		// from an open row only when it is rest-complete AND its `mergeable`
+		// is KNOWN — a null/unknown mergeable always misses so pr-minder's
+		// resolve-poll still reaches GitHub — or, for a CLOSED PR, from its
+		// rendered doc snapshot (diff/raw Accepts and unknown query shapes
+		// pass through). The exact /pulls/{number}/files tail is cached as
+		// per-page whole-doc snapshots, flushed per PR by pull_request events
+		// and repo-wide by push/repository; every OTHER sub-resource
+		// (/reviews, /merge, /commits, ...) matches none of these patterns
+		// and keeps passing through, and writes (POST/PATCH/PUT) fall to
+		// MethodNotAllowed → the proxy.
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded
@@ -275,8 +376,11 @@ func NewRouter(
 	// these, so forwarded responses carry CORS headers and preflight is handled.
 	// MethodNotAllowed covers a known path hit with an unregistered method; the
 	// proxy itself enforces the bearer-token requirement.
-	r.NotFound(ghProxy.ServeHTTP)
-	r.MethodNotAllowed(ghProxy.ServeHTTP)
+	// Both fallbacks tag WHY they forwarded, so the dashboard separates "no
+	// cached route claims this path" (every new caching candidate starts here)
+	// from a cached route declining a shape it does model the path for.
+	r.NotFound(taggedProxy(ghProxy, PassUnrouted))
+	r.MethodNotAllowed(taggedProxy(ghProxy, PassMethod))
 
 	return r
 }
