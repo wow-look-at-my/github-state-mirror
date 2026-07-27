@@ -110,6 +110,11 @@ const demoWebhooks: WebhooksResponse = {
 // The route-shape groups sum exactly to by_disposition (hit 1503, miss 71,
 // passthrough 226, write 38, error 4 -> total 1842), sorted by total desc like
 // the backend, so the preview's share percentages are coherent.
+//
+// Keep every route and every pass_query shape REAL — a shape some consumer
+// actually sends. Invented ones read as genuine caching gaps to anyone
+// looking at the preview: a fabricated `/commits?author,since` here already
+// cost a real investigation into a filter no caller has ever sent.
 const demoRequests: RequestsResponse = {
     total: 1842,
     by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
@@ -119,8 +124,8 @@ const demoRequests: RequestsResponse = {
     groups: [
         { key: "POST /graphql", method: "POST", route: "/graphql", total: 1146, hit: 1103, miss: 41, passthrough: 0, write: 0, error: 2, sample: "/graphql", last_seen: ago(2) },
         { key: "GET /repos/{owner}/{repo}/pulls/{number}", method: "GET", route: "/repos/{owner}/{repo}/pulls/{number}", total: 248, hit: 236, miss: 12, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318", last_seen: ago(3) },
-        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, by_reason: { "unmodeled-query": 31, "unmodeled-path": 7 }, pass_query: "page,per_page", sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
-        { key: "GET /repos/{owner}/{repo}/commits", method: "GET", route: "/repos/{owner}/{repo}/commits", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, by_reason: { "unmodeled-query": 64 }, pass_query: "author,since", debounced: 64, upstream_saved: 41, sample: "/repos/wow-look-at-my/actions/commits", last_seen: ago(31) },
+        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, by_reason: { "unmodeled-path": 38 }, sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
+        { key: "GET /repos/{owner}/{repo}/actions/runs", method: "GET", route: "/repos/{owner}/{repo}/actions/runs", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, by_reason: { "unmodeled-query": 64 }, pass_query: "per_page,status", debounced: 64, upstream_saved: 41, sample: "/repos/wow-look-at-my/actions/actions/runs", last_seen: ago(31) },
         { key: "GET /search/issues", method: "GET", route: "/search/issues", total: 58, hit: 0, miss: 0, passthrough: 58, write: 0, error: 0, by_reason: { "unrouted": 58 }, pass_query: "per_page,q", debounced: 58, upstream_saved: 0, sample: "/search/issues", last_seen: ago(6) },
         { key: "GET /repos/{owner}/{repo}/commits/{ref}/status", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/status", total: 49, hit: 44, miss: 5, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/master/status", last_seen: ago(12) },
         { key: "GET /rate_limit", method: "GET", route: "/rate_limit", total: 41, hit: 0, miss: 0, passthrough: 41, write: 0, error: 0, by_reason: { "unrouted": 41 }, sample: "/rate_limit", last_seen: ago(14) },
