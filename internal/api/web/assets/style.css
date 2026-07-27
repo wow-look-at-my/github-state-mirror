@@ -384,16 +384,26 @@ table.webhooks .wh-when { color: var(--fg-muted); white-space: nowrap; }
 
 /* ---- Request groups (Requests tab: Top requests / Top uncached) ---- */
 /* ---- Wide log tables ---- */
-/* The log tables carry more columns than the 1100px reading column comfortably
-   holds. Rather than scroll (a table you have to drag sideways is a table you
-   don't read), they widen SYMMETRICALLY into the page margins — equal on both
-   sides, so the table stays centred in the window at every size — and only
-   ellipsize once even that is not enough. The negative margins are dropped
-   below the width where they would reach the window edge, so the page body
-   never scrolls horizontally. --table-bleed is half the extra width. */
-:root { --table-bleed: 200px; }
-.table-wide { margin-left: calc(-1 * var(--table-bleed)); margin-right: calc(-1 * var(--table-bleed)); }
-@media (max-width: 1560px) { :root { --table-bleed: 0px; } }
+/* Tables with more columns than the 1100px reading column comfortably holds
+   may widen SYMMETRICALLY into the page margins — equal on both sides, so they
+   stay centred in the window at every size — and only ellipsize once even that
+   is not enough. Rather than scroll: a table you have to drag sideways is a
+   table you don't read.
+   Applied only to the tables that NEED it (the 6-column uncached breakdown and
+   the request/webhook logs); a narrow table stretched to the same width just
+   spreads four columns across a screen's worth of nothing.
+   The width is continuous, not a media-query cliff: grow toward
+   --table-wide-max but never nearer the window edge than --table-gutter, and
+   never NARROWER than the container (max(100%, ...)), so small viewports fall
+   back to plain full-width with zero margins. The gutter also absorbs the
+   scrollbar 100vw includes, so the page body can never scroll sideways. */
+:root { --table-wide-max: 1320px; --table-gutter: 72px; }
+.table-wide {
+    --table-w: max(100%, min(var(--table-wide-max), 100vw - 2 * var(--table-gutter)));
+    width: var(--table-w);
+    margin-left: calc((100% - var(--table-w)) / 2);
+    margin-right: calc((100% - var(--table-w)) / 2);
+}
 
 /* ---- Collapsible log rows ---- */
 /* A caret in the first cell is the affordance; no extra column for it. */
