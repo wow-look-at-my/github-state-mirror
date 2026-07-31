@@ -382,6 +382,38 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 	assert.Equal(t, 0, len(nodes))
 }
 
+// The locked query selects repositories(isArchived: false), so GitHub itself
+// never returns an archived repo -- and the node has no isArchived field, so a
+// client cannot filter one out either. Truth holds archived repos (the owner
+// query the fleet refresher uses has no such filter), so the assembly must
+// drop them or the mirror answers with rows GitHub would have withheld.
+func TestGraphQL_ArchivedReposExcluded(t *testing.T) {
+	router, store := setupTestRouter(t)
+
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "active", NameWithOwner: "my-org/active", Url: "u1"},
+		{Owner: "my-org", Name: "retired", NameWithOwner: "my-org/retired", Url: "u2", IsArchived: 1},
+	}, map[string][]dbgen.PullRequest{})
+
+	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+
+	names := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		names = append(names, n.(map[string]interface{})["name"].(string))
+	}
+	assert.Equal(t, []string{"active"}, names)
+}
+
 func TestExtractOrgFromQuery(t *testing.T) {
 	tests := []struct {
 		query string
