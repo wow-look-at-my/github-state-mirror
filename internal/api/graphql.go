@@ -133,6 +133,18 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	// Build response matching GraphQL shape.
 	repoNodes := make([]map[string]interface{}, 0, len(repos))
 	for _, repo := range repos {
+		// The locked query selects repositories(isArchived: false), so GitHub
+		// itself never returns an archived repo here -- and the node carries no
+		// isArchived field for a client to filter on. Truth DOES hold archived
+		// repos (the owner query the fleet refresher uses has no such filter),
+		// so without this the mirror answered with rows GitHub would have
+		// withheld, and no consumer could tell. Filtered here rather than in
+		// ListVisibleReposByOwner: the reason is this route's contract, not a
+		// property of what the reveal layer permits.
+		if repo.IsArchived != 0 {
+			continue
+		}
+
 		// Get open PRs for this repo.
 		prs, err := h.store.ListOpenPRsByRepo(ctx, repo.Owner, repo.Name)
 		if err != nil {
