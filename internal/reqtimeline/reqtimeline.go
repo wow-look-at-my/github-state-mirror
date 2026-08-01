@@ -262,6 +262,50 @@ type Snapshot struct {
 	Now            time.Time
 }
 
+// SnapshotRange returns the live events overlapping [from, to) — the async
+// history read behind the chart's lazy backward loading. A zero `from` means
+// the retention floor and a zero `to` means now, so SnapshotRange(0,0) is the
+// whole window.
+//
+// It exists because a full window is 100k events, and the client cannot turn
+// 100k events into chart rows without blowing its frame budget: the chart
+// paints one hour, asks for older ranges as the viewport reaches them, and
+// pays for each in a bounded chunk. MaxID is still the ring's newest id (the
+// live cursor is independent of which range was read).
+func (r *Recorder) SnapshotRange(from, to time.Time) Snapshot {
+	if r == nil {
+		return Snapshot{Events: []Event{}}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	r.evictLocked(now)
+	live := r.events[r.head:]
+	if from.IsZero() {
+		from = now.Add(-r.retention)
+	}
+	if to.IsZero() {
+		to = now
+	}
+	// Live entries are ordered by END time, so the first candidate is the
+	// first whose end is at/after `from`.
+	i := sort.Search(len(live), func(i int) bool { return !live[i].end().Before(from) })
+	out := make([]Event, 0, len(live)-i)
+	for _, e := range live[i:] {
+		// An event overlaps the range if it starts before the end of it. (The
+		// end-ordering above already established e.end() >= from.)
+		if e.Start.Before(to) {
+			out = append(out, e)
+		}
+	}
+	return Snapshot{
+		Events:         out,
+		MaxID:          r.nextID,
+		RetentionStart: now.Add(-r.retention),
+		Now:            now,
+	}
+}
+
 // Snapshot returns the live events with ID > sinceID (the full retained window
 // when sinceID == 0), evicting lazily first. The returned slice is a copy.
 func (r *Recorder) Snapshot(sinceID uint64) Snapshot {

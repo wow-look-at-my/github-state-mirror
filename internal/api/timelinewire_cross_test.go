@@ -46,7 +46,7 @@ process.stdout.write(JSON.stringify({
         id: iv.id, laneId: iv.laneId, start: iv.start, end: iv.end,
         label: iv.label, state: iv.state,
     })),
-    events: page.intervals.map((iv) => eventAt(iv.data)),
+    events: page.intervals.map((iv, i) => eventAt(iv.data, i)),
 }));
 `
 

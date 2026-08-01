@@ -116,6 +116,39 @@ is measured is JS main-thread work to produce the chart's interval objects.
    columnar+gzip-1 costs 9 ms of server CPU for the full ring; on the realistic
    one-hour payload it is under 1 ms.
 
+## The frame budget (operator requirement)
+
+> "at the very least it must not ever block for more than 8ms per frame"
+
+The columnar decode was 63 ms in ONE synchronous task — four times better than
+the JSON path it replaced, and still eight dropped frames. Meeting 8 ms took
+three changes, in ascending order of importance:
+
+1. **Cooperative slicing.** Every phase — column decode, dictionary reads, the
+   JSON fallback's transpose, interval building — is a generator that yields at
+   chunk boundaries; `runSliced` runs them for `SLICE_BUDGET_MS` (3) at a
+   stretch and hands control back via `scheduler.yield()` (MessageChannel
+   fallback). Costs ~5% throughput.
+2. **Adaptive chunk sizing.** A fixed chunk cannot work: 2048 rows is ~0.2 ms
+   of varint decoding and ~3.5 ms of the JSON transpose, and a slower machine
+   shifts both. Each phase times its own chunks and steers toward ~1 ms, from a
+   deliberately small first chunk (cold, unoptimized code is several times
+   slower than the steady state that follows) with capped growth.
+3. **Not holding 100k intervals.** This is the one that actually mattered.
+   With the full ring in memory the worst slice still spiked to 19 ms, and
+   `--trace-gc` named the cause: 4-7 ms scavenges, triggered by 100k live
+   interval objects, landing inside decode slices. No amount of yielding hides
+   a GC pause. So the chart now FETCHES THE HOUR IT PAINTS
+   (`?from=`/`?to=`, served by `reqtimeline.SnapshotRange`) and pulls older
+   ranges through the component's `loadRange` hook as the viewport reaches
+   them, each clamped to an hour. Dropping the per-row `{columns, row}`
+   reference — the tooltip binary-searches the id column instead — removed
+   another 100k allocations.
+
+Measured on the real first-paint payload (4,166 events, one hour of realistic
+traffic) through the SHIPPED module: **worst synchronous slice 3.1 ms**, and
+`TestTimelineFrameBudget` fails the build above 8.
+
 ## What shipped
 
 Both halves of the recommendation below, minus the windowing (the operator's
@@ -140,6 +173,12 @@ just an order of magnitude smaller and ~5x cheaper to render.
   and tooltips have exactly one shape to handle. Intervals are built straight
   from columns; the 19-field event object is materialized only when a tooltip
   asks for a row (`eventAt`).
+- **`reqtimeline.SnapshotRange` + `?from=&to=`** — the windowed read behind the
+  chart's async history. `since` and `from`/`to` are mutually exclusive (they
+  answer different questions; silently ANDing them would let a history request
+  come back empty because the live cursor had moved past it), and a windowed
+  read still reports the live `max_id` — history never advances the cursor, or
+  events recorded between the last poll and the history fetch would be skipped.
 - **Tests.** `timelinewire_test.go` round-trips the encoder against a Go
   decoder that mirrors the TS one (and asserts the size claim, so a regression
   to per-event strings fails rather than merely disappoints).

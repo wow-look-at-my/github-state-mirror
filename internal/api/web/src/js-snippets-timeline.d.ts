@@ -53,6 +53,13 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
         coverage?: TimeRange;
     }
 
+    /**
+     * Async history loader: invoked when the viewport reaches uncovered past.
+     * Supply the data via mergeData() before resolving; resolve
+     * `{ exhausted: true }` when nothing exists before this range.
+     */
+    export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
+
     /** What the pointer is over — handed to tooltipFor and hover/click events. */
     export type TimelineHit =
         | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
@@ -76,6 +83,9 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
         get tooltipFor(): TooltipFn | null;
         set tooltipFor(fn: TooltipFn | null | undefined);
         setViewport(start: number | Date, end: number | Date): void;
+        /** Async history loader (see LoadRangeFn); null disables. */
+        get loadRange(): LoadRangeFn | null;
+        set loadRange(fn: LoadRangeFn | null | undefined);
         /** Whether the view is docked to the live "now" edge. */
         get followNow(): boolean;
         set followNow(v: boolean);

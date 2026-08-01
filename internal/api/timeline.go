@@ -118,6 +118,21 @@ func timelineDeliveryRecorder(tl *reqtimeline.Recorder) webhook.DeliveryRecorder
 	return deliveryTimeline{tl: tl}
 }
 
+// parseUnixMs reads an optional unix-millisecond query parameter. An empty
+// value is "unset" (zero time, ok); anything unparseable is rejected rather
+// than silently treated as unset — a typo'd bound must not answer with the
+// whole window.
+func parseUnixMs(v string) (time.Time, bool) {
+	if v == "" {
+		return time.Time{}, true
+	}
+	ms, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms).UTC(), true
+}
+
 // timelineResponse is the GET /api/timeline payload.
 type timelineResponse struct {
 	Events []reqtimeline.Event `json:"events"`
@@ -132,14 +147,25 @@ type timelineResponse struct {
 
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. ?since=<id> returns only events newer than that cursor (the
-// tab's incremental poll); omitted or 0 returns the full retained window.
+// actor/tenant. Three read shapes, all answering the same payload:
+//
+//	(no params)          the whole retained window
+//	?since=<id>          only events newer than that cursor — the 5s live poll
+//	?from=&to=<unix ms>  the events overlapping a time window — the chart's
+//	                     async history loader, which is what keeps a first
+//	                     paint from having to decode 24h of traffic to draw
+//	                     one hour of it
+//
+// since and from/to are mutually exclusive: they answer different questions
+// (what is NEW vs what was HAPPENING), and silently ANDing them would let a
+// history request come back empty because the live cursor had moved past it.
 func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
+	q := r.URL.Query()
 	var since uint64
-	if s := r.URL.Query().Get("since"); s != "" {
+	if s := q.Get("since"); s != "" {
 		v, err := strconv.ParseUint(s, 10, 64)
 		if err != nil {
 			http.Error(w, "bad since cursor", http.StatusBadRequest)
@@ -147,7 +173,21 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		since = v
 	}
+	from, okFrom := parseUnixMs(q.Get("from"))
+	to, okTo := parseUnixMs(q.Get("to"))
+	if !okFrom || !okTo {
+		http.Error(w, "bad from/to (unix milliseconds)", http.StatusBadRequest)
+		return
+	}
+	if since != 0 && (!from.IsZero() || !to.IsZero()) {
+		http.Error(w, "since and from/to are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+
 	snap := d.timeline.Snapshot(since)
+	if !from.IsZero() || !to.IsZero() {
+		snap = d.timeline.SnapshotRange(from, to)
+	}
 
 	// Content-negotiated encoding. The dashboard asks for the columnar format
 	// (timelinewire.go) — ~10 B/event gzipped against JSON's ~32, and ~5x

@@ -30,6 +30,7 @@
 // retried dynamic import in loadComponentForever below (tsc emits dynamic
 // import() verbatim, so the component URL survives into the built module).
 import type {
+    LoadRangeFn,
     TimelineHit,
     TimelineInterval,
     TimelineLane,
@@ -43,6 +44,20 @@ const POLL_MS = 5000; // the dashboard's shared refresh cadence (app.ts REFRESH_
 const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
 const STALE_AFTER_MS = 12000; // ~2.5 missed polls => the chart says "stale" instead of lying
 const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
+// The first paint FETCHES exactly the hour it draws, and older ranges arrive
+// through the component's async history loader as the viewport reaches them.
+// This is not a bandwidth optimization — it is what makes the frame budget
+// reachable at all: a full 24h window is 100k intervals, and 100k live objects
+// cost GC pauses no amount of slicing can hide (measured: 4-7 ms scavenges
+// landing mid-decode). An hour is ~4k.
+// A history request is clamped to this span too, so one huge zoom-out becomes
+// several bounded loads rather than one 100k-interval stall; the component
+// re-asks for whatever stays uncovered.
+const HISTORY_SPAN_MS = 60 * 60 * 1000;
+// The hard ceiling on any one synchronous stretch of decode/ingest work. A
+// 60fps frame is 16.7 ms; 8 leaves half of it for the browser's own work, so
+// staying under this means the chart never costs a dropped frame.
+const FRAME_BUDGET_MS = 8;
 
 // Bounded default fetcher. app.ts overrides `fetcher` only in demo mode (the
 // backend-free preview serves canned data); production uses this one — the
@@ -52,7 +67,7 @@ const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
 // back to JSON on whatever the server actually answers with, so a rollback of
 // the server half — or the demo preview, which serves canned JSON — keeps
 // working with no branch anywhere else in this file.
-async function fetchPage(path: string): Promise<TimelinePage> {
+async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
     const res = await fetch(path, {
         headers: { Accept: `${WIRE_TYPE}, application/json;q=0.9` },
         credentials: "same-origin",
@@ -60,9 +75,10 @@ async function fetchPage(path: string): Promise<TimelinePage> {
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     if ((res.headers.get("Content-Type") ?? "").startsWith(WIRE_TYPE)) {
-        return pageFromWire(new Uint8Array(await res.arrayBuffer()));
+        const buf = new Uint8Array(await res.arrayBuffer());
+        return runSliced(pageColumnsGen(buf), onSlice);
     }
-    return pageFromJSON((await res.json()) as TimelineResponse);
+    return runSliced(pageFromJSONGen((await res.json()) as TimelineResponse), onSlice);
 }
 
 // Tiny DOM helper (this module is standalone; app.ts's el() is not shared).
@@ -123,10 +139,27 @@ interface Columns {
     s: Record<ColName, StringColumn>;
 }
 
-// A row reference: what an interval carries instead of a materialized event.
-interface EventRef {
+// An interval carries its page's COLUMNS as `data` — one shared reference for
+// the whole page, not a per-row object. That is deliberate: a {columns, row}
+// pair per interval is another 100k allocations, and at this scale allocation
+// rate IS latency — the GC scavenges it triggers were landing inside decode
+// slices as 4-7 ms pauses, which is exactly the frame budget this file exists
+// to respect. The row is recovered on hover by binary-searching the id column
+// (ids ascend, one page is one contiguous run), which costs ~17 comparisons
+// once per tooltip.
+
+// One decoded payload before its intervals exist.
+interface DecodedPage {
     c: Columns;
-    i: number;
+    maxId: number;
+    retentionStart: number; // epoch ms
+    now: number; // epoch ms
+}
+
+// One chunk of built intervals, plus the lanes it introduced.
+interface IntervalBatch {
+    intervals: TimelineInterval[];
+    lanes: Array<{ lane: string; kind: string }>;
 }
 
 interface TimelinePage {
@@ -136,6 +169,94 @@ interface TimelinePage {
     maxId: number;
     retentionStart: number; // epoch ms
     now: number; // epoch ms
+}
+
+// ---- cooperative slicing ----
+//
+// HARD REQUIREMENT: decoding a page must never block the main thread for more
+// than one frame's slack. A full 24h window is ~1.8M varints and 100k
+// intervals — 63 ms in one go, which is eight dropped frames — so every phase
+// of the work is written as a generator that yields at chunk boundaries, and
+// the driver below runs it in bounded slices, handing control back to the
+// browser in between.
+//
+// Costs about 5% throughput against the straight-line loop. That is the point:
+// a chart that takes 70 ms spread across frames beats one that takes 63 ms
+// with the tab frozen.
+
+// A resumable unit of work: yields periodically, returns its result.
+type Task<T> = Generator<undefined, T, undefined>;
+
+// Chunk sizing is ADAPTIVE, not a constant. A fixed chunk cannot satisfy the
+// frame budget: 2048 rows is ~0.2 ms of varint decoding and ~3.5 ms of the
+// JSON fallback's transpose, on THIS machine — a slower one shifts both. So
+// each phase times its own chunks and steers toward TARGET_CHUNK_MS of work,
+// which is what bounds the overshoot: the driver checks the clock only BETWEEN
+// chunks, so the worst slice is its budget plus one chunk.
+const TARGET_CHUNK_MS = 1;
+const MIN_CHUNK = 32;
+const MAX_CHUNK = 8192;
+// Each phase starts SMALL and ramps. The first execution of any of these
+// loops runs cold — unoptimized, uninlined — and is several times slower than
+// the steady state that follows, so a phase that opened at its steady-state
+// size would blow the budget exactly once, on the slice that matters most (the
+// first paint). Growth is capped per step for the same reason: one unusually
+// cheap chunk must not license a chunk 50x larger.
+const START_CHUNK = 32;
+const MAX_GROWTH = 4;
+
+function nextChunk(size: number, ms: number): number {
+    const ceiling = Math.min(size * MAX_GROWTH, MAX_CHUNK);
+    if (ms <= 0) return ceiling;
+    const scaled = Math.round((size * TARGET_CHUNK_MS) / ms);
+    return Math.max(MIN_CHUNK, Math.min(ceiling, scaled || MIN_CHUNK));
+}
+
+// SLICE_BUDGET_MS is how long a single task may run before yielding. The
+// requirement is 8 ms per frame; 3 leaves room for the yield itself, for the
+// component's own render, and for a chunk that overruns because the machine is
+// slow — the clock is only checked BETWEEN chunks, so the true bound is
+// budget + one chunk.
+const SLICE_BUDGET_MS = 3;
+
+// yieldToBrowser hands control back so the frame can render. scheduler.yield()
+// is the purpose-built API (and keeps this work's continuation prioritized
+// ahead of new tasks); the MessageChannel fallback is a real macrotask without
+// setTimeout's 4 ms clamping.
+function yieldToBrowser(): Promise<void> {
+    const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+    if (typeof sched?.yield === "function") return sched.yield();
+    return new Promise<void>((resolve) => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => {
+            ch.port1.close();
+            resolve();
+        };
+        ch.port2.postMessage(0);
+    });
+}
+
+// runSliced drives a task to completion, never running it for more than
+// SLICE_BUDGET_MS at a stretch. onSlice reports each slice's real duration —
+// the element uses it to assert the frame budget in dev, and the bench to
+// measure the worst block.
+export async function runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T> {
+    for (;;) {
+        const t0 = performance.now();
+        let r = task.next();
+        while (!r.done && performance.now() - t0 < SLICE_BUDGET_MS) r = task.next();
+        onSlice?.(performance.now() - t0);
+        if (r.done) return r.value;
+        await yieldToBrowser();
+    }
+}
+
+// drain runs a task straight through, for callers that are not on a frame
+// budget: tests, and payloads small enough that the whole thing is one chunk.
+function drain<T>(task: Task<T>): T {
+    let r = task.next();
+    while (!r.done) r = task.next();
+    return r.value;
 }
 
 class WireReader {
@@ -161,16 +282,20 @@ class WireReader {
         return u % 2 === 0 ? u / 2 : -(u + 1) / 2;
     }
 
-    // Bulk readers for the columns. Nearly every value on the wire fits in one
-    // byte — dictionary indices for a column with <128 entries, a 1-per-event
-    // id delta, a 3 ms duration — so the single-byte case is inlined here
-    // rather than paying a call into uvarint() ~1.8M times per full window.
-    // That is the difference between a decode that outruns JSON.parse and one
-    // that merely matches it.
-    uvarints(out: Int32Array | Float64Array, n: number): void {
+    // Bulk readers for the columns. Two properties matter here:
+    //
+    //  - Nearly every value on the wire fits in one byte (a dictionary index
+    //    for a column with <128 entries, a 1-per-event id delta, a 3 ms
+    //    duration), so the single-byte case is inlined rather than paying a
+    //    call into uvarint() ~1.8M times per full window.
+    //  - Each reader decodes a ROW RANGE, not a whole column, and the read
+    //    position lives on the reader. That is what makes a decode
+    //    interruptible: the sliced driver calls these in chunks and yields to
+    //    the browser between them, so no single task blocks a frame.
+    uvarints(out: Int32Array | Float64Array, from: number, to: number): void {
         const b = this.b;
         let p = this.p;
-        for (let i = 0; i < n; i++) {
+        for (let i = from; i < to; i++) {
             const c0 = b[p++];
             if (c0 < 0x80) {
                 out[i] = c0;
@@ -192,11 +317,13 @@ class WireReader {
         this.p = p;
     }
 
-    // Running sums of zigzag deltas, straight into the output column.
-    varintSums(out: Float64Array, n: number): void {
+    // Running sums of zigzag deltas, straight into the output column. The
+    // accumulator is the previous value already written, so a range resumes
+    // exactly where the last one stopped.
+    varintSums(out: Float64Array, from: number, to: number): void {
         const b = this.b;
-        let p = this.p, acc = 0;
-        for (let i = 0; i < n; i++) {
+        let p = this.p, acc = from === 0 ? 0 : out[from - 1];
+        for (let i = from; i < to; i++) {
             let u = b[p++];
             if (u >= 0x80) {
                 u &= 0x7f;
@@ -218,11 +345,11 @@ class WireReader {
         this.p = p;
     }
 
-    // Running sums of unsigned deltas (ids).
-    uvarintSums(out: Float64Array, n: number): void {
+    // Running sums of unsigned deltas (ids), same resumption rule.
+    uvarintSums(out: Float64Array, from: number, to: number): void {
         const b = this.b;
-        let p = this.p, acc = 0;
-        for (let i = 0; i < n; i++) {
+        let p = this.p, acc = from === 0 ? 0 : out[from - 1];
+        for (let i = from; i < to; i++) {
             const c0 = b[p++];
             if (c0 < 0x80) {
                 out[i] = acc += c0;
@@ -255,10 +382,19 @@ class WireReader {
         return this.dec.decode(this.bytes(this.uvarint()));
     }
 
-    dict(): string[] {
+    // A dictionary can be large (delivery GUIDs are unique per webhook), so
+    // reading one is chunked like everything else.
+    *dictChunked(): Task<string[]> {
         const n = this.uvarint();
         const out = new Array<string>(n);
-        for (let i = 0; i < n; i++) out[i] = this.str();
+        let size = START_CHUNK;
+        for (let i = 0; i < n; ) {
+            const to = Math.min(i + size, n);
+            const t0 = performance.now();
+            for (; i < to; i++) out[i] = this.str();
+            size = nextChunk(size, performance.now() - t0);
+            yield;
+        }
         return out;
     }
 
@@ -272,7 +408,10 @@ class WireReader {
     }
 }
 
-export function pageFromWire(buf: Uint8Array): TimelinePage {
+// pageColumnsGen decodes the payload's preamble and columns, yielding between
+// chunks. The intervals are built separately (intervalsGen) so the element can
+// paint the first batch before the last one exists.
+export function* pageColumnsGen(buf: Uint8Array): Task<DecodedPage> {
     const r = new WireReader(buf);
     r.expectMagic(WIRE_MAGIC);
     const maxId = r.uvarint();
@@ -290,30 +429,45 @@ export function pageFromWire(buf: Uint8Array): TimelinePage {
         final: new Uint8Array(0),
         s: {} as Record<ColName, StringColumn>,
     };
-    r.uvarintSums(c.id, n);
-    r.varintSums(c.start, n);
-    r.uvarints(c.dur, n);
-    r.uvarints(c.status, n);
-    r.uvarints(c.attempt, n);
+    yield* chunked(n, (from, to) => r.uvarintSums(c.id, from, to));
+    yield* chunked(n, (from, to) => r.varintSums(c.start, from, to));
+    yield* chunked(n, (from, to) => r.uvarints(c.dur, from, to));
+    yield* chunked(n, (from, to) => r.uvarints(c.status, from, to));
+    yield* chunked(n, (from, to) => r.uvarints(c.attempt, from, to));
     c.final = r.bytes((n + 7) >> 3);
 
     for (const name of COLS) {
-        const dict = r.dict();
+        const dict = yield* r.dictChunked();
         if (dict.length === 1) {
             c.s[name] = { dict, idx: null }; // column unused in this window
             continue;
         }
         const idx = new Int32Array(n);
-        r.uvarints(idx, n);
+        yield* chunked(n, (from, to) => r.uvarints(idx, from, to));
         c.s[name] = { dict, idx };
     }
     if (!r.atEnd()) throw new Error("timeline: trailing bytes in payload");
-    return finishPage(c, maxId, retentionStart, now);
+    return { c, maxId, retentionStart, now };
+}
+
+// chunked walks [0,n) in adaptively-sized ranges, yielding after each.
+function* chunked(n: number, work: (from: number, to: number) => void): Task<void> {
+    let size = START_CHUNK;
+    for (let i = 0; i < n; ) {
+        const to = Math.min(i + size, n);
+        const t0 = performance.now();
+        work(i, to);
+        size = nextChunk(size, performance.now() - t0);
+        i = to;
+        yield;
+    }
 }
 
 // The JSON fallback lands in the SAME column representation, so everything
 // downstream — intervals, lanes, tooltips — has exactly one shape to handle.
-export function pageFromJSON(resp: TimelineResponse): TimelinePage {
+// It is sliced too: JSON.parse itself is one unbreakable native call, but the
+// 100k-row transpose after it is ours and must not block either.
+export function* pageFromJSONGen(resp: TimelineResponse): Task<DecodedPage> {
     const events = resp.events ?? [];
     const n = events.length;
     const c: Columns = {
@@ -330,32 +484,69 @@ export function pageFromJSON(resp: TimelineResponse): TimelinePage {
     for (const name of COLS) {
         dicts.set(name, { dict: [""], seen: new Map([["", 0]]), idx: new Int32Array(n) });
     }
-    for (let i = 0; i < n; i++) {
-        const e = events[i];
-        c.id[i] = e.id;
-        c.start[i] = Date.parse(e.start);
-        c.dur[i] = e.dur_ms;
-        c.status[i] = e.status ?? 0;
-        c.attempt[i] = e.attempt ?? 0;
-        if (e.final) c.final[i >> 3] |= 1 << (i & 7);
-        for (const name of COLS) {
-            const v = (e as unknown as Record<string, unknown>)[name];
-            const str = typeof v === "string" ? v : "";
-            const d = dicts.get(name)!;
-            let ix = d.seen.get(str);
-            if (ix === undefined) {
-                ix = d.dict.length;
-                d.dict.push(str);
-                d.seen.set(str, ix);
+    yield* chunked(n, (from, to) => {
+        for (let i = from; i < to; i++) {
+            const e = events[i];
+            c.id[i] = e.id;
+            c.start[i] = Date.parse(e.start);
+            c.dur[i] = e.dur_ms;
+            c.status[i] = e.status ?? 0;
+            c.attempt[i] = e.attempt ?? 0;
+            if (e.final) c.final[i >> 3] |= 1 << (i & 7);
+            for (const name of COLS) {
+                const v = (e as unknown as Record<string, unknown>)[name];
+                const value = typeof v === "string" ? v : "";
+                const d = dicts.get(name)!;
+                let ix = d.seen.get(value);
+                if (ix === undefined) {
+                    ix = d.dict.length;
+                    d.dict.push(value);
+                    d.seen.set(value, ix);
+                }
+                d.idx[i] = ix;
             }
-            d.idx[i] = ix;
         }
-    }
+    });
     for (const name of COLS) {
         const d = dicts.get(name)!;
         c.s[name] = { dict: d.dict, idx: d.dict.length === 1 ? null : d.idx };
     }
-    return finishPage(c, resp.max_id, Date.parse(resp.retention_start), Date.parse(resp.now));
+    return {
+        c,
+        maxId: resp.max_id,
+        retentionStart: Date.parse(resp.retention_start),
+        now: Date.parse(resp.now),
+    };
+}
+
+// Synchronous convenience wrappers: the Go/node cross-decode test and any
+// caller not on a frame budget. The element never uses these.
+export function pageFromWire(buf: Uint8Array): TimelinePage {
+    return wholePage(drain(pageColumnsGen(buf)));
+}
+
+export function pageFromJSON(resp: TimelineResponse): TimelinePage {
+    return wholePage(drain(pageFromJSONGen(resp)));
+}
+
+function wholePage(d: DecodedPage): TimelinePage {
+    const batches: IntervalBatch[] = [];
+    drain(intervalsGen(d.c, (b) => batches.push(b)));
+    return {
+        intervals: batches.flatMap((b) => b.intervals),
+        lanes: mergeLaneBatches(batches),
+        maxId: d.maxId,
+        retentionStart: d.retentionStart,
+        now: d.now,
+    };
+}
+
+function mergeLaneBatches(batches: IntervalBatch[]): Array<{ lane: string; kind: string }> {
+    const lanes = new Map<string, string>();
+    for (const b of batches) {
+        for (const l of b.lanes) if (!lanes.has(l.lane)) lanes.set(l.lane, l.kind);
+    }
+    return [...lanes].map(([lane, kind]) => ({ lane, kind }));
 }
 
 const str = (col: StringColumn, i: number): string => (col.idx === null ? "" : col.dict[col.idx[i]]);
@@ -384,12 +575,13 @@ function stateForPair(kind: string, disp: string): string {
     return disp === "error" ? "failed" : "";
 }
 
-// finishPage builds one interval per row — and NOTHING else per row. The
-// 19-field event object a tooltip needs is built on hover (eventAt), which is
-// most of why a full-window page is ~4x cheaper to render than the JSON path
-// it replaced: 100k intervals now, one event object when someone points at
-// one.
-function finishPage(c: Columns, maxId: number, retentionStart: number, now: number): TimelinePage {
+// intervalsGen builds intervals in BATCHES, handing each to emit as soon as it
+// is ready — and NOTHING else per row. The 19-field event object a tooltip
+// needs is built on hover (eventAt), which is most of why this outruns the
+// JSON path it replaced: 100k intervals now, one event object when someone
+// points at one. Batching is what lets the element show the newest slice of
+// the chart while the rest is still decoding.
+export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void): Task<void> {
     const kindC = c.s.kind, laneC = c.s.lane, dispC = c.s.disposition,
         repoC = c.s.repo, actionC = c.s.action;
     const kindIdx = kindC.idx, laneIdx = laneC.idx, dispIdx = dispC.idx,
@@ -411,53 +603,66 @@ function finishPage(c: Columns, maxId: number, retentionStart: number, now: numb
         return s;
     };
 
-    const intervals = new Array<TimelineInterval>(c.n);
-    const lanes = new Map<string, string>();
-    for (let i = 0; i < c.n; i++) {
-        const ki = kindIdx === null ? 0 : kindIdx[i];
-        const lane = laneIdx === null ? "" : laneC.dict[laneIdx[i]];
-        if (!lanes.has(lane)) lanes.set(lane, kindC.dict[ki]);
+    let size = START_CHUNK;
+    for (let from = 0; from < c.n; ) {
+        const to = Math.min(from + size, c.n);
+        const t0 = performance.now();
+        const intervals = new Array<TimelineInterval>(to - from);
+        const lanes = new Map<string, string>();
+        for (let i = from; i < to; i++) {
+            const ki = kindIdx === null ? 0 : kindIdx[i];
+            const lane = laneIdx === null ? "" : laneC.dict[laneIdx[i]];
+            if (!lanes.has(lane)) lanes.set(lane, kindC.dict[ki]);
 
-        const status = statusCol[i];
-        let label: string;
-        if (isWebhook[ki]) {
-            const rl = repoIdx === null ? "" : repoLabel[repoIdx[i]];
-            label = rl || (actionIdx === null ? "" : actionC.dict[actionIdx[i]]);
-        } else {
-            label = labelForStatus(status);
+            const status = statusCol[i];
+            let label: string;
+            if (isWebhook[ki]) {
+                const rl = repoIdx === null ? "" : repoLabel[repoIdx[i]];
+                label = rl || (actionIdx === null ? "" : actionC.dict[actionIdx[i]]);
+            } else {
+                label = labelForStatus(status);
+            }
+            let state = dispIdx === null ? "" : stateTable[ki][dispIdx[i]];
+            if (!state && !isWebhook[ki] && status >= 500) state = "failed";
+
+            const start = startCol[i];
+            intervals[i - from] = {
+                id: String(idCol[i]),
+                laneId: lane,
+                start,
+                // end = start + the REAL measured duration. Never null (every
+                // recorded event finished) and never inflated: a sub-pixel
+                // span is the component's native instant pip, which is exactly
+                // right for a 3ms webhook dispatch.
+                end: start + (durCol[i] > 0 ? durCol[i] : 0),
+                label,
+                category: lane, // stable hue per lane
+                state,
+                data: c,
+            };
         }
-        let state = dispIdx === null ? "" : stateTable[ki][dispIdx[i]];
-        if (!state && !isWebhook[ki] && status >= 500) state = "failed";
-
-        const start = startCol[i];
-        intervals[i] = {
-            id: String(idCol[i]),
-            laneId: lane,
-            start,
-            // end = start + the REAL measured duration. Never null (every
-            // recorded event finished) and never inflated: a sub-pixel span is
-            // the component's native instant pip, which is exactly right for a
-            // 3ms webhook dispatch.
-            end: start + (durCol[i] > 0 ? durCol[i] : 0),
-            label,
-            category: lane, // stable hue per lane
-            state,
-            data: { c, i } satisfies EventRef,
-        };
+        size = nextChunk(size, performance.now() - t0);
+        emit({ intervals, lanes: [...lanes].map(([lane, kind]) => ({ lane, kind })) });
+        from = to;
+        yield;
     }
-    return {
-        intervals,
-        lanes: [...lanes].map(([lane, kind]) => ({ lane, kind })),
-        maxId,
-        retentionStart,
-        now,
-    };
 }
 
 // eventAt materializes one row as the flat event the tooltip reads. Called
 // once per hover, never per row.
-export function eventAt(ref: EventRef): TimelineEvent {
-    const { c, i } = ref;
+export function rowOfEventId(c: Columns, id: number): number {
+    let lo = 0, hi = c.n - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = c.id[mid];
+        if (v === id) return mid;
+        if (v < id) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
+
+export function eventAt(c: Columns, i: number): TimelineEvent {
     return {
         id: c.id[i],
         kind: str(c.s.kind, i),
@@ -483,9 +688,12 @@ export function eventAt(ref: EventRef): TimelineEvent {
 
 function tooltipFor(hit: TimelineHit): Node | null {
     if (hit.type !== "interval" || !hit.interval) return null;
-    const ref = hit.interval.data as EventRef | undefined;
-    if (!ref?.c) return null;
-    const e = eventAt(ref);
+    const c = hit.interval.data as Columns | undefined;
+    if (!c?.n) return null;
+    // (`row` is taken below by the tooltip's line helper.)
+    const rowIdx = rowOfEventId(c, Number(hit.interval.id));
+    if (rowIdx < 0) return null;
+    const e = eventAt(c, rowIdx);
     const root = document.createElement("div");
     const row = (k: string, v: string): void => {
         if (v === "") return;
@@ -531,10 +739,18 @@ class GsmTimeline extends HTMLElement {
     private timer: ReturnType<typeof setInterval> | undefined;
     private pollInFlight = false;
     private maxId = 0;
+    // The ring's retention floor (epoch ms) as of the last read — the point at
+    // which history is genuinely exhausted rather than merely unfetched.
+    private retentionStart = 0;
+    // Oldest instant the chart has data for; the live path's coverage floor.
+    private coveredFrom = 0;
     private seeded = false;
     // laneId -> kind, for the grouped lane ordering (webhooks first).
     private laneKinds = new Map<string, string>();
     private laneOrderKey = "";
+    // Longest synchronous slice this element has run, exposed for the bench
+    // and for anyone wondering whether the frame budget is being met.
+    worstSliceMs = 0;
 
     connectedCallback(): void {
         if (this.view || this.note) {
@@ -560,6 +776,10 @@ class GsmTimeline extends HTMLElement {
         if (!(await this.loadComponentForever())) return; // disconnected while retrying
         const tl = document.createElement("timeline-view") as TimelineViewElement;
         tl.tooltipFor = tooltipFor;
+        // Async history: the chart asks for older ranges as the viewport
+        // reaches them, instead of the page paying for 24h up front.
+        // Feature-detected so an older component build still renders.
+        if ("loadRange" in tl) tl.loadRange = this.loadRange;
         // Feature-detected staleness marking: with a 5s poll, ~2.5 missed
         // polls means the feed is genuinely dead — say so on the chart
         // instead of extrapolating.
@@ -602,11 +822,32 @@ class GsmTimeline extends HTMLElement {
         if (!tl || this.pollInFlight) return;
         this.pollInFlight = true;
         try {
-            const path = this.maxId > 0 ? "/api/timeline?since=" + this.maxId : "/api/timeline";
+            // First read: the hour the chart paints. After that the live
+            // cursor, which returns only what is new (a handful of events).
+            let path: string;
+            if (this.maxId > 0) {
+                path = "/api/timeline?since=" + this.maxId;
+            } else {
+                this.coveredFrom = Date.now() - INITIAL_WINDOW_MS;
+                path = "/api/timeline?from=" + this.coveredFrom;
+            }
             // A demo-mode override serves canned JSON; production takes the
-            // negotiated (columnar) path. Both end up as a TimelinePage.
+            // negotiated (columnar) path. Both decode into the same columns,
+            // in slices, so neither can freeze the tab on a full window.
             const fetcher = this.fetcher;
-            this.apply(tl, fetcher ? pageFromJSON(await fetcher(path)) : await fetchPage(path));
+            const decoded = fetcher
+                ? await runSliced(pageFromJSONGen(await fetcher(path)), this.recordSlice)
+                : await fetchDecoded(path, this.recordSlice);
+            if (!this.isConnected || this.view !== tl) return; // tab left mid-decode
+            if (decoded.maxId > this.maxId) this.maxId = decoded.maxId;
+            this.retentionStart = decoded.retentionStart;
+            // The live read covers [what it asked for, now]. On the first poll
+            // that is the initial window; afterwards the cursor's events all
+            // postdate it, so the covered end simply advances.
+            await this.merge(tl, decoded, {
+                start: this.coveredFrom || decoded.now - INITIAL_WINDOW_MS,
+                end: decoded.now,
+            });
         } catch (e) {
             // Keep the last data; the component's staleness marking says the
             // feed is down once STALE_AFTER_MS passes without a markFresh.
@@ -616,34 +857,101 @@ class GsmTimeline extends HTMLElement {
         }
     }
 
-    private apply(tl: TimelineViewElement, page: TimelinePage): void {
-        if (page.maxId > this.maxId) this.maxId = page.maxId;
-        const coverage = { start: page.retentionStart, end: page.now };
-        for (const { lane, kind } of page.lanes) {
-            if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
+    // recordSlice enforces the frame budget in the only place that can see it.
+    // A slice that overruns is a real defect (a chunk that got too expensive,
+    // or a phase that forgot to yield) and says so in the console rather than
+    // silently dropping frames.
+    private readonly recordSlice = (ms: number): void => {
+        if (ms > this.worstSliceMs) this.worstSliceMs = ms;
+        if (ms > FRAME_BUDGET_MS) {
+            console.warn(`timeline: decode slice ran ${ms.toFixed(1)}ms (budget ${FRAME_BUDGET_MS}ms)`);
         }
-        if (!this.seeded) {
+    };
+
+    // Feeds the chart in BATCHES, yielding between them: the first batch
+    // paints (and sets the viewport) while the rest is still being built, and
+    // no single setData/mergeData call ever sees 100k intervals — the
+    // component's own ingestion is main-thread work too.
+    // merge feeds one decoded page into the chart. Used by BOTH paths — the
+    // live poll and the history loader — which differ only in what they cover
+    // and whether they advance the live cursor (the caller decides; see
+    // loadRange).
+    private async merge(tl: TimelineViewElement, page: DecodedPage,
+                        coverage: { start: number; end: number }): Promise<void> {
+
+        const pending: IntervalBatch[] = [];
+        const task = intervalsGen(page.c, (b) => pending.push(b));
+        let empty = true;
+        for (;;) {
+            const t0 = performance.now();
+            let r = task.next();
+            while (!r.done && performance.now() - t0 < SLICE_BUDGET_MS) r = task.next();
+            this.recordSlice(performance.now() - t0);
+
+            for (const batch of pending.splice(0)) {
+                if (!batch.intervals.length) continue;
+                empty = false;
+                for (const { lane, kind } of batch.lanes) {
+                    if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
+                }
+                const t1 = performance.now();
+                if (!this.seeded) {
+                    this.seeded = true;
+                    this.laneOrderKey = "";
+                    const lanes = this.computeLanes();
+                    this.laneOrderKey = lanes.map((l) => l.id).join("\n");
+                    tl.setData({ lanes, intervals: batch.intervals, coverage });
+                    const now = coverage.end || Date.now();
+                    tl.setViewport(now - INITIAL_WINDOW_MS, now);
+                    tl.followNow = true;
+                } else {
+                    // MERGE, never setData: a rebuild would wipe held data and
+                    // reset sub-track packing mid-view. Coverage rides along
+                    // so the live window keeps tracking now.
+                    tl.mergeData({ intervals: batch.intervals, coverage });
+                    this.syncLanes(tl);
+                }
+                this.recordSlice(performance.now() - t1);
+            }
+            if (r.done) break;
+            await yieldToBrowser();
+            if (!this.isConnected || this.view !== tl) return; // tab left mid-apply
+        }
+
+        // An empty poll is still proof the feed is alive — and the very first
+        // one still has to seed the chart, or an idle mirror renders nothing.
+        if (empty && !this.seeded) {
             this.seeded = true;
-            this.laneOrderKey = "";
             const lanes = this.computeLanes();
             this.laneOrderKey = lanes.map((l) => l.id).join("\n");
-            tl.setData({ lanes, intervals: page.intervals, coverage });
+            tl.setData({ lanes, intervals: [], coverage });
             const now = coverage.end || Date.now();
             tl.setViewport(now - INITIAL_WINDOW_MS, now);
             tl.followNow = true;
-            this.markFresh(tl);
-            return;
         }
-        if (page.intervals.length > 0) {
-            // MERGE, never setData: a rebuild would wipe held data and reset
-            // sub-track packing mid-view. Coverage rides along so the live
-            // window keeps tracking now.
-            tl.mergeData({ intervals: page.intervals, coverage });
-            this.syncLanes(tl);
-        }
-        // An empty poll is still proof the feed is alive.
         this.markFresh(tl);
     }
+
+    // loadRange answers the component's history requests. It is clamped to
+    // HISTORY_SPAN_MS per call and merged in the same sliced batches as a
+    // live poll, so panning into the past can never cost a frame either.
+    private readonly loadRange: LoadRangeFn = async (start, end) => {
+        const tl = this.view;
+        if (!tl) return;
+        const floor = this.retentionStart;
+        if (floor > 0 && end <= floor) return { exhausted: true };
+        const from = Math.max(Math.round(start), Math.round(end) - HISTORY_SPAN_MS, floor);
+        if (from >= end) return { exhausted: true };
+        const decoded = await fetchDecoded(
+            `/api/timeline?from=${from}&to=${Math.round(end)}`, this.recordSlice);
+        if (!this.isConnected || this.view !== tl) return;
+        // History NEVER advances the live cursor: this response was assembled
+        // from an older window, and adopting its max_id would skip every event
+        // recorded between the last live poll and now.
+        await this.merge(tl, decoded, { start: from, end: Math.round(end) });
+        if (this.coveredFrom === 0 || from < this.coveredFrom) this.coveredFrom = from;
+        return from <= this.retentionStart ? { exhausted: true } : undefined;
+    };
 
     private markFresh(tl: TimelineViewElement): void {
         if (typeof tl.markFresh === "function") tl.markFresh();

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -394,4 +395,60 @@ func TestTimeline_NoGzipForTinyPayloads(t *testing.T) {
 	w := do(t, s.router, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, w.Header().Get("Content-Encoding"))
+}
+
+// TestTimeline_WindowedRead: ?from/?to is the chart's async-history read — the
+// hour it paints, not the day it retains. It must return exactly the
+// overlapping events, keep reporting the LIVE cursor (history never advances
+// it), and reject a shape that would silently answer the wrong question.
+func TestTimeline_WindowedRead(t *testing.T) {
+	svc := configuredAuth(t)
+	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+	now := time.Now().UTC()
+	for i := 6; i >= 1; i-- { // one delivery per hour, back six hours
+		s.timeline.RecordWebhook(now.Add(-time.Duration(i)*time.Hour), time.Millisecond,
+			"push", "", "d-"+strconv.Itoa(i), "o/r-"+strconv.Itoa(i), "applied")
+	}
+
+	get := func(target string) (*httptest.ResponseRecorder, timelinePayload) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.AddCookie(mintSession(t, svc, "PazerOP"))
+		w := do(t, s.router, req)
+		var got timelinePayload
+		if w.Code == http.StatusOK {
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		}
+		return w, got
+	}
+
+	// The last 3 hours: three of the six deliveries.
+	w, got := get("/api/timeline?from=" + strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, got.Events, 3)
+	assert.Equal(t, uint64(6), got.MaxID, "a windowed read still reports the live cursor")
+
+	// A bounded window in the middle.
+	w, got = get("/api/timeline?from=" + strconv.FormatInt(now.Add(-5*time.Hour).UnixMilli(), 10) +
+		"&to=" + strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, got.Events, 2)
+
+	// The same window in the columnar encoding decodes identically.
+	req := httptest.NewRequest(http.MethodGet, "/api/timeline?from="+
+		strconv.FormatInt(now.Add(-5*time.Hour).UnixMilli(), 10)+
+		"&to="+strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10), nil)
+	req.Header.Set("Accept", timelineWireType)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	wire := do(t, s.router, req)
+	require.Equal(t, http.StatusOK, wire.Code)
+	assert.Len(t, decodeTimelineV1(t, wire.Body.Bytes()).events, 2)
+
+	// Rejected shapes: a garbage bound, and mixing the two read models.
+	w, _ = get("/api/timeline?from=banana")
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	w, _ = get("/api/timeline?since=1&from=" + strconv.FormatInt(now.UnixMilli(), 10))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
