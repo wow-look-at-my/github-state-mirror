@@ -1,0 +1,36 @@
+// The schema codec_proto.go encodes on the wire. Written out so the numbers in
+// the report are reproducible with generated code (protoc-gen-go emits exactly
+// these bytes for this message); the prototype hand-encodes with protowire so
+// the bench needs no protoc in the loop.
+syntax = "proto3";
+
+package tlwire;
+
+message Event {
+  uint64 id = 1;
+  string kind = 2;
+  string lane = 3;
+  int64 start_unix_ms = 4;   // vs JSON's RFC3339Nano string
+  int64 dur_ms = 5;
+  string disposition = 6;
+  string event_type = 7;
+  string action = 8;
+  string delivery_id = 9;
+  string repo = 10;
+  string method = 11;
+  string route = 12;
+  int32 status = 13;
+  string actor = 14;
+  string actor_name = 15;
+  string detail = 16;
+  string target = 17;
+  int32 attempt = 18;
+  bool final = 19;
+}
+
+message Timeline {
+  repeated Event events = 1;
+  uint64 max_id = 2;
+  int64 retention_start_unix_ms = 3;
+  int64 now_unix_ms = 4;
+}
