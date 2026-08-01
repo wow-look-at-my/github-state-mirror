@@ -80,6 +80,7 @@ const (
 type pullsListShape struct {
 	perPage int
 	head    string // "" = unfiltered; else "owner:branch"
+	base    string // "" = unfiltered; else a base branch name
 }
 
 // parsePullsListShape reports the shape of a /pulls query and whether the
@@ -87,6 +88,12 @@ type pullsListShape struct {
 // malformed head, an out-of-range per_page, or any page other than the first
 // make it non-cacheable (page > 1 only ever follows a full page 1, which is
 // itself never served from state).
+//
+// head and base are both pure FILTERS over the open set the completeness
+// marker already vouches for -- given the whole open set, selecting the PRs
+// with a given head or base is exactly what GitHub does -- so they are
+// answered from state and, like any filtered response, never used to SET the
+// marker.
 func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 	shape := pullsListShape{perPage: pullsDefaultPerPage}
 	for key, vals := range q {
@@ -115,6 +122,11 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 				return shape, false
 			}
 			shape.head = v
+		case "base":
+			if v == "" {
+				return shape, false
+			}
+			shape.base = v
 		default:
 			return shape, false
 		}
@@ -125,22 +137,31 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 // filterPullRows applies the head=owner:branch filter the way GitHub does:
 // branch name exact, head-repo owner case-insensitive. A row with no head
 // repo (deleted fork) can never match an owner-qualified filter.
-func filterPullRows(rows []dbgen.PullRequest, head string) []dbgen.PullRequest {
-	if head == "" {
+func filterPullRows(rows []dbgen.PullRequest, head, base string) []dbgen.PullRequest {
+	if head == "" && base == "" {
 		return rows
 	}
 	hOwner, hBranch, _ := strings.Cut(head, ":")
 	var out []dbgen.PullRequest
 	for _, pr := range rows {
-		if !pr.HeadRefName.Valid || pr.HeadRefName.String != hBranch {
-			continue
+		if head != "" {
+			if !pr.HeadRefName.Valid || pr.HeadRefName.String != hBranch {
+				continue
+			}
+			if !pr.HeadRepoFullName.Valid {
+				continue
+			}
+			repoOwner, _, ok := strings.Cut(pr.HeadRepoFullName.String, "/")
+			if !ok || !strings.EqualFold(repoOwner, hOwner) {
+				continue
+			}
 		}
-		if !pr.HeadRepoFullName.Valid {
-			continue
-		}
-		repoOwner, _, ok := strings.Cut(pr.HeadRepoFullName.String, "/")
-		if !ok || !strings.EqualFold(repoOwner, hOwner) {
-			continue
+		if base != "" {
+			// The base branch always lives in THIS repo, so the bare name is
+			// the whole filter (unlike head, which can name a fork).
+			if !pr.BaseRefName.Valid || pr.BaseRefName.String != base {
+				continue
+			}
 		}
 		out = append(out, pr)
 	}
@@ -180,7 +201,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("pulls list cache read failed", "owner", owner, "repo", repo, "error", err)
 		} else if allRestComplete(rows) {
-			filtered := filterPullRows(rows, shape.head)
+			filtered := filterPullRows(rows, shape.head, shape.base)
 			// Pagination guard: a rebuilt list as long as the requested page
 			// could be truncated upstream -- only a provably-single-page
 			// answer is served from state.
@@ -209,7 +230,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	// and not a full page (a full page may continue upstream). A filtered or
 	// full-page response still absorbs rows -- useful state -- but sets no
 	// completeness marker.
-	complete := shape.head == "" && len(rows) < shape.perPage
+	complete := shape.head == "" && shape.base == "" && len(rows) < shape.perPage
 	absorbOwner, absorbRepo := owner, repo
 	if len(rows) > 0 {
 		absorbOwner, absorbRepo = rows[0].Owner, rows[0].Repo

@@ -145,3 +145,82 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 	}
 	return c, true
 }
+
+// ---- GET /orgs/{org}/installation and GET /users/{username}/installation ----
+
+// The OWNER-level installation lookups answer the same installation object as
+// the repo-level one above, for an account rather than a repository, and are
+// polled by the same App callers on the same cadence. They reuse that route's
+// absorb, rebuild, and row space: a row is keyed (app actor, owner, repo), so
+// an owner-level answer is stored under a SENTINEL repo value that no real
+// repository can collide with -- GitHub repo names cannot contain "*". The
+// two scopes are separate sentinels because they are separate questions: an
+// account can answer one and 404 the other.
+//
+// Invalidation rides the same signal: installation / installation_repositories
+// events flush by the stored installation id, which owner rows carry too.
+const (
+	ownerInstallScopeOrg  = "*org"
+	ownerInstallScopeUser = "*user"
+)
+
+// cachedOwnerInstallation serves an owner-level installation lookup. scope
+// picks which sentinel (and therefore which question) the row answers;
+// ownerParam names the chi URL parameter carrying the login.
+func (h *handlers) cachedOwnerInstallation(scope, ownerParam string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		jwt := bearerToken(r)
+		if jwt == "" {
+			h.passthrough(w, r, PassIdentity) // the proxy 401s tokenless requests
+			return
+		}
+		ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
+		if err != nil {
+			h.passthrough(w, r, PassIdentity)
+			return
+		}
+		if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
+			h.passthrough(w, r, shapeReason(r, true))
+			return
+		}
+		actorKey := fmt.Sprintf("app:%d", ident.ID)
+		ctx := actor.WithActor(r.Context(), actorKey)
+		if ident.Slug != "" {
+			ctx = actor.WithName(ctx, ident.Slug)
+		}
+		if h.recordIdentity != nil {
+			h.recordIdentity(ctx, actorKey, ident.Slug)
+		}
+		who := callerIdent{Key: actorKey, Name: ident.Slug}
+		owner := ghdata.NormalizeRepoKey(chi.URLParam(r, ownerParam))
+
+		now := time.Now()
+		if c, ok, err := h.store.GetCachedRepoInstallation(ctx, actorKey, owner, scope, now); err == nil && ok {
+			h.reqlog.observeAs(r, who, DispHit, 0)
+			h.serveRepoInstallation(w, c, true)
+			return
+		} else if err != nil {
+			slog.Warn("owner installation cache read failed", "owner", owner, "scope", scope, "error", err)
+		}
+
+		resp, body, overflow, err := h.fetchUpstream(r, nil)
+		if err != nil {
+			h.upstreamError(w, r, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		c, absorbed := absorbRepoInstallation(owner, scope, resp.StatusCode, body)
+		if overflow || !absorbed {
+			// Includes the 404 "not installed for this account": the app can
+			// be installed a moment later, so that answer is never stored.
+			h.replayUnstored(w, r, resp, body)
+			return
+		}
+		if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
+			slog.Warn("owner installation cache write failed", "owner", owner, "scope", scope, "error", err)
+		}
+		h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
+		h.serveRepoInstallation(w, c, false)
+	}
+}

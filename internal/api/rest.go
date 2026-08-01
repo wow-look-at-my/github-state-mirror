@@ -42,6 +42,9 @@ type handlers struct {
 	// timeline records each cached-route miss's timed upstream fetch for the
 	// dashboard's "Timeline" chart (fetchUpstream in respcache.go). Nil-safe.
 	timeline *reqtimeline.Recorder
+	// shapes captures the request/response SHAPE of uncached traffic (keys and
+	// types, never values) for the /api/brief implementation brief. Nil-safe.
+	shapes *shapeStore
 }
 
 // NOTE: the mirror once served /user, /user/orgs, /compare, and /pulls/{n}/files

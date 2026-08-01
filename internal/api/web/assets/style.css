@@ -447,6 +447,11 @@ details.req-groups > summary {
 }
 details.req-groups .grp-caption { color: var(--fg-muted); font-size: 12px; margin: 4px 0 8px; }
 details.req-groups table.webhooks { margin-top: 6px; }
+/* The implementation-brief bar under the uncached-routes table: the button
+   that turns those rows into a handoff document, with its one-line why. */
+.brief-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; }
+.brief-bar .grp-caption { margin: 0; flex: 1 1 320px; }
+
 table.webhooks th.num { text-align: right; }
 table.webhooks td.grp-breakdown .disp { margin-right: 6px; }
 

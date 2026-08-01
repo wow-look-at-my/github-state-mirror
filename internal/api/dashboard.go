@@ -74,9 +74,12 @@ type dashboard struct {
 	// timeline is the in-memory timed-traffic ring (webhook deliveries +
 	// proxied requests) behind the admin-only GET /api/timeline. Nil-safe.
 	timeline *reqtimeline.Recorder
+	// shapes is the captured request/response shape of uncached traffic
+	// (shapes.go) behind the admin-only GET /api/brief. Nil-safe.
+	shapes *shapeStore
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -117,6 +120,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		notifier: notifier,
 		dbPath:   dbPath,
 		timeline: timeline,
+		shapes:   shapes,
 	}
 }
 
@@ -170,6 +174,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
 	r.Get("/api/notifications", d.handleNotifications)
+	r.Get("/api/brief", d.handleBrief)
 }
 
 // serveAssets serves the content-addressed asset URLs (immutable cache) and

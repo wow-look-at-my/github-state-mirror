@@ -1,0 +1,73 @@
+{{- /*
+The implementation brief's Markdown document (text/template, embedded by
+brief.go). It lives in its own file so the document reads as the document:
+editing a heading or a bullet is editing Markdown, not threading a format
+string through a Fprintf call. Everything computed -- percentages, the counted
+name lists, the debounce verdict -- comes from the FuncMap in brief.go.
+
+text/template, never html/template: the output is Markdown for a human and a
+model to read, and HTML-escaping it would mangle every `<`, `&`, and quote in a
+captured path or skeleton.
+*/ -}}
+# github-state-mirror — uncached traffic brief
+
+Generated {{.GeneratedAt}}. Counters are cumulative since the process last restarted.
+
+## Traffic since restart
+
+{{.Total}} requests{{if .Dispositions}} — {{range $i, $d := .Dispositions}}{{if $i}}, {{end}}{{$d.Name}} {{$d.Count}} ({{pct $d.Count $.Total}}){{end}}{{end}}
+
+## Uncached routes, by passthrough volume
+{{if not .Candidates}}
+No route has forwarded a read uncached since restart.
+{{end}}
+{{- range $i, $c := .Candidates}}
+### {{ordinal $i}}. `{{$c.Key}}`
+
+- **Passthrough** {{$c.Passthrough}} of {{$c.Total}} total ({{pct $c.Passthrough $c.Total}} of this route; {{pct $c.Passthrough $.PassthroughTotal}} of all passthroughs)
+{{- if $c.ByReason}}
+- **Why uncached**: {{counts $c.ByReason}}
+{{- end}}
+{{- if gt (add $c.Hit $c.Miss $c.Error) 0}}
+- Other dispositions: hit {{$c.Hit}}, miss {{$c.Miss}}, error {{$c.Error}}
+{{- end}}
+{{- if or $c.Debounced $c.UpstreamSaved}}
+- Debounce: held {{$c.Debounced}}, upstream calls saved {{$c.UpstreamSaved}}{{debounceVerdict $c.Debounced $c.UpstreamSaved}}
+{{- end}}
+{{- if $c.PassQuery}}
+- Sampled passthrough query (names only): `?{{$c.PassQuery}}`
+{{- end}}
+{{- if $c.Sample}}
+- Sample path: `{{$c.Sample}}`
+{{- end}}
+{{- with $c.Shape}}
+{{- if .QueryNames}}
+- Query parameter names seen (union, never values): {{names .QueryNames}}
+{{- end}}
+{{- if .Accepts}}
+- Accept headers seen: {{names .Accepts}}
+{{- end}}
+{{- if .Callers}}
+- Callers: {{names .Callers}}
+{{- end}}
+{{- if .Statuses}}
+- Upstream statuses: {{statuses .Statuses}}
+{{- end}}
+{{- if gt (len .SamplePaths) 1}}
+- More sample paths: {{backtickList (rest .SamplePaths)}}
+{{- end}}
+{{- range .Bodies}}
+{{- if .Skeleton}}
+
+**Response shape — HTTP {{.Status}}** ({{orDash .ContentType}}, {{.Bytes}} bytes, keys and types only):
+
+```
+{{.Skeleton}}
+```
+{{- end}}
+{{- end}}
+{{- else}}
+- _No response shape captured yet — it is sampled on the next passthrough for this route._
+{{- end}}
+{{end}}
+{{.Checklist -}}
