@@ -1,0 +1,21 @@
+{
+  // Type-checks the test harnesses in internal/api/testdata/ against the
+  // dashboard source they drive. NoEmit on purpose: node runs the .ts files
+  // directly (type stripping), so there is no build step and no generated
+  // artifact to keep in sync — this config exists only to make the harnesses
+  // FAIL THE BUILD when the API they exercise changes shape.
+  //
+  // Separate from tsconfig.json because that one EMITS: src/*.ts is compiled
+  // into the embedded assets/, and a harness must never land there.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": null
+  },
+  "include": ["internal/api/testdata/**/*.ts", "internal/api/web/src/**/*.ts"]
+}
