@@ -28,9 +28,19 @@ already made is dead weight. To re-run it, check out `4a78cb8^` — nothing sinc
 then changed the shape of the data it measured.
 
 What survives in the tree is only what measures **shipped** code:
-`internal/api/testdata/` — `framecheck.mjs` (the frame budget, run by
-`TestTimelineFrameBudget`), `browsercheck.mjs` (the real-browser harness), and
-`shipbench.mjs` (the shipped decoder against the JSON path it replaced).
+`internal/api/testdata/` — `framecheck.ts` (the frame budget, run by
+`TestTimelineFrameBudget`), `browsercheck.ts` (the real-browser harness), and
+`shipbench.ts` (the shipped decoder against the JSON path it replaced).
+
+They are **TypeScript**, and that is load-bearing rather than tidiness. Each
+takes its TYPES from `web/src/timeline.ts` and its MODULE from the built
+`web/assets/timeline.js`: it must exercise the exact bytes the server embeds,
+but it should fail to COMPILE when the API it drives changes shape. That
+failure is not hypothetical — `runSliced` lost a parameter, framecheck kept
+passing the old one, and it surfaced as `pacer.charge is not a function`
+halfway through a measurement. `npm run check:harness` (noEmit; CI's
+`web-check` job) now catches it; node runs the `.ts` directly, so there is no
+build step and no generated artifact.
 
 Codecs: **json** (today), **bson** (`mongo-driver/v2`), **protobuf**
 (`timeline.proto`, hand-encoded with `protowire` — byte-identical to what
@@ -153,7 +163,7 @@ Both halves are pinned, and they are meant to be read together:
 `pageFromJSONGen` therefore has one consumer, the demo preview:
 `assets/demo-data.js` is a hand-maintained JS literal that cannot be binary,
 and it reaches the element through a fetcher override, never through this
-endpoint. `shipbench.mjs` also drives it, which keeps the measurement that
+endpoint. `shipbench.ts` also drives it, which keeps the measurement that
 chose columnar reproducible.
 
 ## The frame budget (operator requirement)
@@ -214,10 +224,10 @@ a sizing defect, but a chunk twice the budget is.
 
 ### What node could not see
 
-`framecheck.mjs` measures our decoder. The chart also hands intervals to the
+`framecheck.ts` measures our decoder. The chart also hands intervals to the
 `<timeline-view>` component, which ingests, packs sub-tracks and renders — on
 the same main thread, and node has no component. So
-`internal/api/testdata/browsercheck.mjs` boots the real pieces in headless
+`internal/api/testdata/browsercheck.ts` boots the real pieces in headless
 Chromium (the built `assets/timeline.js`, the real `<gsm-timeline>` element,
 the real component, a local server answering `/api/timeline` exactly as the
 mirror does) and times every call the adapter makes into the component.
@@ -232,7 +242,7 @@ fixed 1024 measured 7.6 ms.
 
 ### Where the frames actually go (browser, real component)
 
-`browsercheck.mjs` boots the real pieces in headless Chromium — the built
+`browsercheck.ts` boots the real pieces in headless Chromium — the built
 `assets/timeline.js`, the real `<gsm-timeline>`, the real `<timeline-view>`,
 a local server answering `/api/timeline` as the mirror does. It buckets every
 recorded slice of OUR work into the frame it landed in, adds that frame's rAF
@@ -318,7 +328,7 @@ just an order of magnitude smaller and ~5x cheaper to render.
   come back empty because the live cursor had moved past it), and a windowed
   read still reports the live `max_id` — history never advances the cursor, or
   events recorded between the last poll and the history fetch would be skipped.
-- **Browser harness.** `internal/api/testdata/browsercheck.mjs` (needs
+- **Browser harness.** `internal/api/testdata/browsercheck.ts` (needs
   `npm i playwright`; run it against a dumped payload) — the only check that
   sees the component. Deliberately NOT in CI: it needs a browser download and
   its frame-gap numbers are environment-dominated. The CI gate is the node
@@ -337,7 +347,7 @@ just an order of magnitude smaller and ~5x cheaper to render.
 A realistic full ring — 100,000 events over 24 h, 84% requests / 11% webhook
 deliveries carrying UNIQUE delivery GUIDs / 5% notifications — written by
 `TestTimelineWireDumpPayloads` and decoded by the REAL BUILT
-`assets/timeline.js` (`internal/api/testdata/shipbench.mjs`, node 22 = V8 =
+`assets/timeline.js` (`internal/api/testdata/shipbench.ts`, node 22 = V8 =
 Chrome, best of 5):
 
 | | on the wire | per event | browser decode |
@@ -346,7 +356,7 @@ Chrome, best of 5):
 | columnar (now) | 2.38 MB → **749 KB** gzipped | 23.8 B raw / 7.5 B gzipped | **63.2 ms** |
 
 **3.7× fewer bytes on the wire, 5× less main-thread time**, carrying exactly
-the same events (`shipbench.mjs` asserts the wire and JSON paths produce
+the same events (`shipbench.ts` asserts the wire and JSON paths produce
 identical intervals; the Go/node cross-decode test asserts every field).
 
 The decoder's first cut measured 85 ms; the bulk varint readers

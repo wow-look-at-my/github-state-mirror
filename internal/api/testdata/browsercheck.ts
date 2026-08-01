@@ -25,6 +25,54 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { chromium } from "playwright";
 
+// The shape of the instrumentation the PAGE below injects into the browser.
+// It is declared here, next to the injection, because these two must agree and
+// nothing else can check them against each other: the page script is a STRING
+// (not type-checked), while every page.evaluate() callback that reads it back
+// IS. Getting a field name or shape wrong used to surface as `undefined` deep
+// in a report line; now it does not compile.
+interface Sample { at: number; ms: number }
+interface RafSample { ms: number; at: number }
+interface GapSample { gap: number; at: number }
+interface IngestSample { name: string; ms: number; n: number; at: number }
+interface InnerStat { calls: number; total: number; max: number }
+interface InnerLogEntry { name: string; ms: number; at: number }
+interface LoafScript { src: string; invoker: string; dur: number }
+interface LoafEntry {
+    dur: number;
+    blocking: number;
+    renderStart: number;
+    styleLayout: number;
+    scripts: LoafScript[];
+}
+
+declare global {
+    interface Window {
+        __worst: number;
+        __tasks: number[];
+        __loaf: LoafEntry[];
+        __loafErr?: string;
+        __rafMax: number;
+        __rafs: RafSample[];
+        __frames?: Sample[];
+        __slices: Sample[];
+        __gaps: GapSample[];
+        __ingest: IngestSample[];
+        __inner?: Record<string, InnerStat>;
+        __innerLog?: InnerLogEntry[];
+        __settled?: boolean;
+    }
+}
+
+// The two custom elements the harness drives, narrowed to what it touches.
+interface TimelineViewEl extends Element {
+    followNow: boolean;
+    setViewport(from: number, to: number): void;
+}
+interface GsmTimelineEl extends Element {
+    worstSliceMs?: number;
+}
+
 const payloadPath = process.argv[2] ?? "timeline-1h.bin";
 const componentPath = process.argv[3] ?? "timeline-view.js";
 const modulePath = process.env.GSM_TIMELINE_JS ??
@@ -176,7 +224,7 @@ const patchTimer = setInterval(() => { if (patch()) clearInterval(patchTimer); }
 </script>`;
 
 const server = createServer((req, res) => {
-    const url = new URL(req.url, "http://localhost");
+    const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname === "/") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(PAGE);
@@ -201,15 +249,15 @@ const server = createServer((req, res) => {
 
 // A well-formed empty page: magic + max_id + retention_start + now + n=0 +
 // 13 single-entry dictionaries. Built by hand so the harness needs no server.
-function emptyPayload() {
-    const parts = [Buffer.from("TLC1")];
-    const uvarint = (v) => {
+function emptyPayload(): Buffer {
+    const parts: Buffer[] = [Buffer.from("TLC1")];
+    const uvarint = (v: number): Buffer => {
         const out = [];
         while (v >= 0x80) { out.push((v & 0x7f) | 0x80); v = Math.floor(v / 128); }
         out.push(v);
         return Buffer.from(out);
     };
-    const varint = (v) => uvarint(v < 0 ? -v * 2 - 1 : v * 2);
+    const varint = (v: number): Buffer => uvarint(v < 0 ? -v * 2 - 1 : v * 2);
     parts.push(uvarint(0));                    // max_id — 0 keeps the element's cursor put
     parts.push(varint(Date.now() - 86400000)); // retention_start
     parts.push(varint(Date.now()));            // now
@@ -221,8 +269,10 @@ function emptyPayload() {
     return Buffer.concat(parts);
 }
 
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+await new Promise<void>((r) => server.listen(0, () => r()));
+const addr = server.address();
+if (addr === null || typeof addr === "string") throw new Error("server did not bind a port");
+const port = addr.port;
 
 // The environment ships a prebuilt Chromium that may not match the npm
 // package's expected build; point at it rather than downloading another.
@@ -239,7 +289,7 @@ page.on("console", (m) => {
 // graph on a fake cycle. Serve the entry from the local copy and fetch each
 // sibling chunk once through curl (the browser has no route to the internet
 // here, node does).
-const chunkCache = new Map();
+const chunkCache = new Map<string, string | Buffer>();
 await page.route("https://sites.pazer.build/**", (route) => {
     const url = route.request().url();
     if (url.endsWith("/ui/timeline-view.js")) {
@@ -251,7 +301,8 @@ await page.route("https://sites.pazer.build/**", (route) => {
         // disk so an unmerged component change can be measured before it
         // publishes. Everything else still comes from the published site.
         const localDir = process.env.GSM_COMPONENT_DIST;
-        const local = localDir ? join(localDir, new URL(url).pathname.split("/").pop()) : null;
+        const chunkName = new URL(url).pathname.split("/").pop() ?? "";
+        const local = localDir ? join(localDir, chunkName) : null;
         if (local && existsSync(local)) {
             chunkCache.set(url, readFileSync(local));
         } else {
@@ -276,7 +327,11 @@ const perFrame = await page.evaluate(() => {
     // that frame's rAF work: that sum is what "blocking a frame" means.
     const frames = (window.__frames ?? []).slice().sort((a, b) => a.at - b.at);
     const slices = (window.__slices ?? []).slice().sort((a, b) => a.at - b.at);
-    const totals = [];
+    interface FrameTotal {
+        at: number; total: number; component: number; ours: number;
+        inside?: string[]; slices?: number[];
+    }
+    const totals: FrameTotal[] = [];
     for (let i = 0; i < frames.length; i++) {
         const from = frames[i].at, to = i + 1 < frames.length ? frames[i + 1].at : Infinity;
         let ours = 0;
@@ -330,8 +385,10 @@ console.log(`SETTLED worst rAF ${settled.rafMax.toFixed(2)} ms | top: ${settled.
 // full redraw happens. "Never blocks a frame" has to hold here too.
 await page.evaluate(() => { window.__rafMax = 0; window.__rafs = []; });
 await page.evaluate(async () => {
-    const tl = document.querySelector("timeline-view");
-    const wait = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const tl = document.querySelector("timeline-view") as TimelineViewEl | null;
+    if (!tl) return;
+    const wait = (): Promise<void> =>
+        new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     const now = Date.now();
     tl.followNow = false;
     for (let i = 0; i < 24; i++) { // zoom out in steps, then pan across
@@ -364,7 +421,7 @@ const result = await page.evaluate(() => ({
     ingestCalls: window.__ingest.length,
     ingestTotal: window.__ingest.reduce((a, b) => a + b.ms, 0),
     intervals: document.querySelector("timeline-view") ? "rendered" : "missing",
-    worstSlice: document.querySelector("gsm-timeline")?.worstSliceMs ?? -1,
+    worstSlice: (document.querySelector("gsm-timeline") as GsmTimelineEl | null)?.worstSliceMs ?? -1,
 }));
 
 console.log(`chart: ${result.intervals}`);

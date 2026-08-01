@@ -49,7 +49,7 @@ func TestTimelineFrameBudget(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not installed — cannot measure the browser decoder")
 	}
-	harness, err := filepath.Abs("testdata/framecheck.mjs")
+	harness, err := filepath.Abs("testdata/framecheck.ts")
 	require.NoError(t, err)
 
 	// Exactly what the first paint asks for: the last hour of realistic

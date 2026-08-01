@@ -16,7 +16,7 @@ import (
 // encodings, for measuring the browser side against the SHIPPED decoder:
 //
 //	GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
-//	cd /tmp && node <repo>/internal/api/testdata/shipbench.mjs
+//	cd /tmp && node <repo>/internal/api/testdata/shipbench.ts
 //
 // It is a measurement fixture, not an assertion — inert unless GSM_DUMP is
 // set. The size claim itself is asserted by TestTimelineWireIsMuchSmallerThanJSON.
@@ -33,7 +33,7 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 
 	t.Logf("1h window: %d events, %d B", len(hour.Events), len(encodeTimelineV1(hour)))
 	// A shorter first window, for measuring how the chart's load burst scales
-	// with what is on screen (browsercheck.mjs).
+	// with what is on screen (browsercheck.ts).
 	short := tl.SnapshotRange(time.Now().UTC().Add(-20*time.Minute), time.Time{})
 	require.NoError(t, os.WriteFile(dir+"/timeline-20m.bin", encodeTimelineV1(short), 0o644))
 	t.Logf("20m window: %d events, %d B", len(short.Events), len(encodeTimelineV1(short)))
