@@ -149,6 +149,39 @@ Measured on the real first-paint payload (4,166 events, one hour of realistic
 traffic) through the SHIPPED module: **worst synchronous slice 3.1 ms**, and
 `TestTimelineFrameBudget` fails the build above 8.
 
+### What node could not see
+
+`framecheck.mjs` measures our decoder. The chart also hands intervals to the
+`<timeline-view>` component, which ingests, packs sub-tracks and renders — on
+the same main thread, and node has no component. So
+`prototype/timelinewire/browsercheck.mjs` boots the real pieces in headless
+Chromium (the built `assets/timeline.js`, the real `<gsm-timeline>` element,
+the real component, a local server answering `/api/timeline` exactly as the
+mirror does) and times every call the adapter makes into the component.
+
+It immediately found a real defect the node harness could not: the apply loop
+ran a decode slice AND several component merges **in one task** — 3 ms of
+decode plus four merges is a 25 ms stall. The element now yields around every
+component call, and sizes each feed by what the last one actually cost
+(`TARGET_FEED_MS`, capped at 512): a merge costs ~2.8 us per interval and gets
+dearer as the chart fills, so an estimate taken from an early cheap call
+overshoots later ones — a fixed 1024 measured 7.6 ms.
+
+In-browser after the fix, worst synchronous stretch of OUR work (decode slice
+or component feed, whichever was longer): **3.6-5.8 ms** across runs.
+
+### Two limits, stated rather than papered over
+
+- **Frame gaps in this sandbox are not our signal.** A control run — same page,
+  same component, ZERO events — shows 25-53 ms frame gaps from headless
+  Chromium's own startup and container scheduling. The browser harness can
+  measure our synchronous work reliably; it cannot resolve an 8 ms budget in
+  wall-clock frame timing here.
+- **The component's render is upstream.** Feeding 4,166 intervals in a single
+  `setData` — no adapter involved at all — still produces frames past 16 ms,
+  and that cost lives in js-snippets, not here. What this repo controls is how
+  much it hands over per call and how often; that is now bounded on both axes.
+
 ## What shipped
 
 Both halves of the recommendation below, minus the windowing (the operator's
@@ -179,6 +212,11 @@ just an order of magnitude smaller and ~5x cheaper to render.
   come back empty because the live cursor had moved past it), and a windowed
   read still reports the live `max_id` — history never advances the cursor, or
   events recorded between the last poll and the history fetch would be skipped.
+- **Browser harness.** `prototype/timelinewire/browsercheck.mjs` (needs
+  `npm i playwright`; run it against a dumped payload) — the only check that
+  sees the component. Deliberately NOT in CI: it needs a browser download and
+  its frame-gap numbers are environment-dominated. The CI gate is the node
+  one, which is deterministic.
 - **Tests.** `timelinewire_test.go` round-trips the encoder against a Go
   decoder that mirrors the TS one (and asserts the size claim, so a regression
   to per-event strings fails rather than merely disappoints).

@@ -205,12 +205,38 @@ const MAX_CHUNK = 8192;
 const START_CHUNK = 32;
 const MAX_GROWTH = 4;
 
-function nextChunk(size: number, ms: number): number {
-    const ceiling = Math.min(size * MAX_GROWTH, MAX_CHUNK);
+function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
+                   max = MAX_CHUNK): number {
+    const ceiling = Math.min(size * MAX_GROWTH, max);
     if (ms <= 0) return ceiling;
-    const scaled = Math.round((size * TARGET_CHUNK_MS) / ms);
+    const scaled = Math.round((size * targetMs) / ms);
     return Math.max(MIN_CHUNK, Math.min(ceiling, scaled || MIN_CHUNK));
 }
+
+// Handing intervals to the component is main-thread work too — it ingests,
+// re-packs sub-tracks and marks the canvas dirty — and it is NOT ours to
+// slice, so the element yields around every call and never runs a decode slice
+// and a feed in the same task (that combination measured 25 ms in a browser,
+// and the node harness cannot see it because it has no component).
+//
+// The feed SIZE trades two costs against each other: measured in a real
+// browser one call runs ~2.8 us per interval (512 -> ~1.8 ms, 2048 -> ~5.5 ms),
+// so smaller feeds keep each task shorter — but every call marks the canvas
+// dirty, so smaller feeds also mean more renders for the same data. A fixed
+// 1024 measured 7.6 ms on a loaded machine: too close to the budget to be a
+// constant. So it is steered by what the last call actually cost, which lets a
+// fast machine take big feeds (few renders) and a slow one take small ones
+// (short tasks) without either blowing the budget.
+// The CAP matters as much as the target, because the cost is not linear in the
+// feed alone: a merge gets dearer as the chart holds more, so an estimate from
+// an early cheap call overshoots later ones (measured: the size ran up to 2048
+// and those calls then cost 5.5-6.0 ms). 512 is the largest size measured to
+// stay comfortably inside the budget once the chart is full, and the adaptive
+// size still shrinks below it on a slower machine. The first call is smaller
+// again: it is the one that initializes the canvas.
+const TARGET_FEED_MS = 2;
+const MAX_FEED_INTERVALS = 512;
+const START_FEED_INTERVALS = 128;
 
 // SLICE_BUDGET_MS is how long a single task may run before yielding. The
 // requirement is 8 ms per frame; 3 leaves room for the yield itself, for the
@@ -751,6 +777,9 @@ class GsmTimeline extends HTMLElement {
     // Longest synchronous slice this element has run, exposed for the bench
     // and for anyone wondering whether the frame budget is being met.
     worstSliceMs = 0;
+    // How many intervals to hand the component per call; steered by what the
+    // last call actually cost (see TARGET_FEED_MS).
+    private feedSize = START_FEED_INTERVALS;
 
     connectedCallback(): void {
         if (this.view || this.note) {
@@ -894,24 +923,17 @@ class GsmTimeline extends HTMLElement {
                 for (const { lane, kind } of batch.lanes) {
                     if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
                 }
-                const t1 = performance.now();
-                if (!this.seeded) {
-                    this.seeded = true;
-                    this.laneOrderKey = "";
-                    const lanes = this.computeLanes();
-                    this.laneOrderKey = lanes.map((l) => l.id).join("\n");
-                    tl.setData({ lanes, intervals: batch.intervals, coverage });
-                    const now = coverage.end || Date.now();
-                    tl.setViewport(now - INITIAL_WINDOW_MS, now);
-                    tl.followNow = true;
-                } else {
-                    // MERGE, never setData: a rebuild would wipe held data and
-                    // reset sub-track packing mid-view. Coverage rides along
-                    // so the live window keeps tracking now.
-                    tl.mergeData({ intervals: batch.intervals, coverage });
-                    this.syncLanes(tl);
+                for (let i = 0; i < batch.intervals.length; ) {
+                    await yieldToBrowser();
+                    if (!this.isConnected || this.view !== tl) return; // tab left mid-feed
+                    const part = batch.intervals.slice(i, i + this.feedSize);
+                    i += part.length;
+                    const t1 = performance.now();
+                    this.feed(tl, part, coverage);
+                    const ms = performance.now() - t1;
+                    this.feedSize = nextChunk(this.feedSize, ms, TARGET_FEED_MS, MAX_FEED_INTERVALS);
+                    this.recordSlice(ms);
                 }
-                this.recordSlice(performance.now() - t1);
             }
             if (r.done) break;
             await yieldToBrowser();
@@ -952,6 +974,27 @@ class GsmTimeline extends HTMLElement {
         if (this.coveredFrom === 0 || from < this.coveredFrom) this.coveredFrom = from;
         return from <= this.retentionStart ? { exhausted: true } : undefined;
     };
+
+    // feed hands ONE bounded batch to the component: the first call seeds the
+    // chart (and the viewport), every later one merges — never setData, which
+    // would wipe held data and reset sub-track packing mid-view.
+    private feed(tl: TimelineViewElement, intervals: TimelineInterval[],
+                 coverage: { start: number; end: number }): void {
+        if (!this.seeded) {
+            this.seeded = true;
+            this.laneOrderKey = "";
+            const lanes = this.computeLanes();
+            this.laneOrderKey = lanes.map((l) => l.id).join("\n");
+            tl.setData({ lanes, intervals, coverage });
+            const now = coverage.end || Date.now();
+            tl.setViewport(now - INITIAL_WINDOW_MS, now);
+            tl.followNow = true;
+            return;
+        }
+        // Coverage rides along so the live window keeps tracking now.
+        tl.mergeData({ intervals, coverage });
+        this.syncLanes(tl);
+    }
 
     private markFresh(tl: TimelineViewElement): void {
         if (typeof tl.markFresh === "function") tl.markFresh();
