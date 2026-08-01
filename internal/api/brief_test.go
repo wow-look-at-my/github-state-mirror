@@ -215,3 +215,51 @@ func TestRenderBriefTemplateExecutes(t *testing.T) {
 	// two run together into one unreadable block.
 	require.Contains(t, md, "```\n\n## How to model one of these")
 }
+
+// The end-to-end property the whole feature exists for: a route the mirror
+// does not model at all is forwarded, its ANSWER's shape is captured, and that
+// shape lands in the Markdown the button copies -- so "we have no evidence for
+// this route" fixes itself the moment the route sees traffic.
+//
+// GET /repos/{owner}/{repo}/labels/{name} is the live example: unrouted, so it
+// reaches chi's NotFound, the tagged proxy, and the recorder.
+func TestBrief_CapturesUnroutedRouteAndItsResponseShape(t *testing.T) {
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+			return
+		}
+		// GitHub's label object, URL fields and all.
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{
+			"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
+			"url": "https://api.github.com/repos/o/r/labels/bug",
+			"name": "bug", "color": "f29513", "default": true,
+			"description": "Something isn't working"
+		}`))
+	})
+	svc := configuredAuth(t)
+	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
+
+	w := do(t, router, authedReq("GET", "/repos/org1/repo1/labels/bug", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Empty(t, w.Header().Get(cacheHeader), "the route is unrouted: it must be forwarded")
+
+	req := httptest.NewRequest("GET", "/api/brief", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	var payload briefPayload
+	require.NoError(t, json.Unmarshal(do(t, router, req).Body.Bytes(), &payload))
+
+	md := payload.Markdown
+	require.Contains(t, md, "GET /repos/{owner}/{repo}/labels/{name}", "the route shape must be a candidate")
+	require.Contains(t, md, "`unrouted`", "with the reason that says nothing claims this path")
+	require.Contains(t, md, "**Response shape — HTTP 200**")
+	// Keys and types, recursively — everything a trimmed rebuild needs to be
+	// designed, and no value from the answer itself.
+	for _, want := range []string{"id: number", "name: string", "default: bool", "description: string", "url: string"} {
+		require.Contains(t, md, want)
+	}
+	for _, leak := range []string{"208045946", "f29513", "Something isn't working", "MDU6TGFiZWwyMDgwNDU5NDY="} {
+		require.NotContains(t, md, leak, "a captured value must never reach the brief")
+	}
+}
