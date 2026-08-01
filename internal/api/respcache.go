@@ -412,6 +412,15 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	// oversized body, a symlink/submodule object). Unlike every shape-guard
 	// passthrough this one already cost an upstream round trip.
 	h.reqlog.observeStatus(r.WithContext(withPassthroughReason(r.Context(), PassResponse)), DispPassthrough, resp.StatusCode)
+	// This path never reaches recordPassthrough's sampler, and it is exactly
+	// the class whose ANSWER the brief most needs — the route models the
+	// request but not what came back. The body is already buffered here.
+	route := normalizeRoute(r.URL.Path)
+	var sample []byte
+	if h.shapes.wantsBody(r.Method, route) && len(body) <= shapeMaxSampleBytes {
+		sample = body
+	}
+	h.shapes.observeRequest(r, route, resp.StatusCode, resp.Header.Get("Content-Type"), sample)
 }
 
 // upstreamError reports a failed upstream fetch, mirroring the passthrough

@@ -37,18 +37,33 @@ const goodAppJWT = "good-app-jwt"
 // cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
 // tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
-	contentsHits  int32
-	commitHits    int32
-	mintHits      int32
-	probeHits     int32
-	pullFilesHits int32
-	branchesHits  int32
+	contentsHits    int32
+	commitHits      int32
+	mintHits        int32
+	probeHits       int32
+	pullFilesHits   int32
+	branchesHits    int32
+	gitRefHits      int32
+	runJobsHits     int32
+	codeQualityHits int32
+	jobHits         int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
 	pullFiles func(w http.ResponseWriter, r *http.Request)
 	// branches answers GET /repos/{o}/{r}/branches; settable per test.
 	branches func(w http.ResponseWriter, r *http.Request)
+	// gitRef answers GET /repos/{o}/{r}/git/ref/{ref}; settable per test
+	// (the verdict tests answer 404).
+	gitRef func(w http.ResponseWriter, r *http.Request)
+	// runJobs answers GET /repos/{o}/{r}/actions/runs/{id}/jobs and job
+	// answers GET /repos/{o}/{r}/actions/jobs/{id}; settable per test (the
+	// live-job tests answer an in_progress job).
+	runJobs func(w http.ResponseWriter, r *http.Request)
+	job     func(w http.ResponseWriter, r *http.Request)
+	// codeQuality answers GET/PATCH /repos/{o}/{r}/code-quality/setup;
+	// settable per test (the relay tests answer 403).
+	codeQuality func(w http.ResponseWriter, r *http.Request)
 	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
 	// test (the miss-marker tests answer 404).
 	gitCommit func(w http.ResponseWriter, r *http.Request)
@@ -102,6 +117,10 @@ func newRespCacheUpstream() *respCacheUpstream {
 	// respcache_pullfiles_test.go / respcache_branches_test.go.
 	u.pullFiles = defaultPullFilesUpstream
 	u.branches = defaultBranchesUpstream
+	u.gitRef = defaultGitRefUpstream
+	u.runJobs = defaultRunJobsUpstream
+	u.job = defaultJobUpstream
+	u.codeQuality = defaultCodeQualityUpstream
 	return u
 }
 
@@ -140,6 +159,18 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)
+		case strings.HasSuffix(r.URL.Path, "/code-quality/setup"):
+			atomic.AddInt32(&u.codeQualityHits, 1)
+			u.codeQuality(w, r)
+		case strings.Contains(r.URL.Path, "/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			atomic.AddInt32(&u.runJobsHits, 1)
+			u.runJobs(w, r)
+		case strings.Contains(r.URL.Path, "/actions/jobs/"):
+			atomic.AddInt32(&u.jobHits, 1)
+			u.job(w, r)
+		case strings.Contains(r.URL.Path, "/git/ref/"):
+			atomic.AddInt32(&u.gitRefHits, 1)
+			u.gitRef(w, r)
 		case strings.Contains(r.URL.Path, "/git/commits/"):
 			atomic.AddInt32(&u.commitHits, 1)
 			u.gitCommit(w, r)

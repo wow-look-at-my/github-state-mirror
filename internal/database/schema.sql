@@ -741,3 +741,82 @@ CREATE TABLE workflow_jobs (
 -- completed_at < cutoff) a single indexed scan of only the completed rows.
 CREATE INDEX idx_workflow_jobs_completed_at
     ON workflow_jobs (completed_at) WHERE status = 'completed';
+
+-- Snapshots for GET /repos/{owner}/{repo}/git/ref/{ref} -- the ref-to-tip
+-- lookup (heads/<branch>, tags/<tag>). One row per (owner, repo, verbatim
+-- requested ref): callers may spell the same branch three ways and each
+-- spelling is its own row, so the per-ref push flush covers every spelling
+-- (refSpellings in internal/sync/webhook_invalidate.go). status is 200 (a
+-- real ref) or 404 (the "no such ref" VERDICT -- deleted branches are polled
+-- forever by fleet sweeps, and ref creation arrives as a push, which clears
+-- the verdict). doc holds the rendered trimmed body. owner/repo lowercased.
+CREATE TABLE git_ref_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    ref          TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
+    status       INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
+    doc          TEXT NOT NULL,              -- trimmed ref document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);
+CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
+
+-- Snapshots for the Actions JOB reads:
+--   GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
+--   GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
+--
+-- Only TERMINAL answers are stored: a page whose every job has completed, or
+-- a single completed job. A queued/in_progress job is a live value the GHA
+-- runner coordinator acts on, and no TTL short enough to be safe would be
+-- long enough to be useful -- those always reach GitHub. What is left is the
+-- fleet re-reading SETTLED runs forever, which is the traffic worth killing.
+--
+-- ref_id is the run id (kind 'run_jobs') or the job id (kind 'job'); run_id is
+-- carried on BOTH kinds so a re-run -- which replaces a run's jobs under the
+-- same run id -- flushes every row it invalidates from one signal.
+CREATE TABLE workflow_jobs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- 'run_jobs' | 'job'
+    ref_id       INTEGER NOT NULL,           -- run id ('run_jobs') or job id ('job')
+    run_id       INTEGER NOT NULL,           -- the owning run, on both kinds
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflow_jobs_cache_key ON workflow_jobs_cache (owner, repo, kind, ref_id, per_page, page);
+CREATE INDEX idx_workflow_jobs_cache_run ON workflow_jobs_cache (owner, repo, run_id);
+CREATE INDEX idx_workflow_jobs_cache_lru ON workflow_jobs_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/code-quality/setup -- GitHub Code
+-- Quality's per-repo enablement configuration (public preview; schema
+-- `code-quality-setup` in GitHub's OpenAPI description). One row per repo:
+-- the endpoint takes no query parameters, so the repo IS the key.
+--
+-- This is CONFIG, changed only by an explicit PATCH to the same path or by a
+-- human in the UI -- and GitHub emits no webhook for either. The mirror
+-- flushes the row when it PROXIES such a PATCH, and `repository` events flush
+-- repo-wide, but a change made outside the mirror is invisible until
+-- expires_at. The TTL is short for that reason (codeQualitySetupTTL); see
+-- docs/cache/rest-routes.md.
+CREATE TABLE code_quality_setup_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    doc          TEXT NOT NULL,              -- trimmed setup document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_code_quality_setup_cache_key ON code_quality_setup_cache (owner, repo);
+CREATE INDEX idx_code_quality_setup_cache_lru ON code_quality_setup_cache (last_used_at);

@@ -125,6 +125,17 @@ func (s *Store) InvalidateCommitsListCache(ctx context.Context, owner, repo stri
 	})
 }
 
+// InvalidatePullCommitsSnapshots drops a repo's PR-COMMIT snapshots -- the
+// rows keyed by the synthetic "pull/<number>/commits" ref
+// (internal/api/respcache_pullcommits.go). A push moves a PR's commit list
+// with no per-PR signal, so it flushes these repo-wide as the belt behind the
+// per-PR pull_request flush, exactly as it does the PR-files pages.
+func (s *Store) InvalidatePullCommitsSnapshots(ctx context.Context, owner, repo string) error {
+	return s.q.DeleteCommitsListCachePullSnapshots(ctx, dbgen.DeleteCommitsListCachePullSnapshotsParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+	})
+}
+
 // InvalidateCommitsListForRef drops one requested ref spelling's snapshots
 // (refParam "" = the default-branch listing) -- the per-ref push flush. A
 // push only moves the pushed ref's listings, so other refs' snapshots (and

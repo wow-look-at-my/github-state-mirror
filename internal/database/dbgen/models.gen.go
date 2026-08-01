@@ -73,6 +73,16 @@ type ClosedPullCache struct {
 	LastUsedAt string
 }
 
+type CodeQualitySetupCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CommitCheck struct {
 	Owner   string
 	Repo    string
@@ -180,6 +190,18 @@ type GitCommitsCache struct {
 	Parents        string
 	FetchedAt      string
 	LastUsedAt     string
+}
+
+type GitRefCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Ref        string
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type InstallTokenCache struct {
@@ -347,6 +369,21 @@ type WorkflowJob struct {
 	CompletedAt  string
 	RunnerName   string
 	UpdatedAt    string
+}
+
+type WorkflowJobsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	RunID      int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type WorkflowRunsCache struct {

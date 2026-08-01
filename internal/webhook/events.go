@@ -687,15 +687,25 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 // or statuses, so this delivery is the sole signal the cached listing moved
 // -- and nothing else reads the payload.
 func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
+	sha, _ := ParseWorkflowRunIdentity(raw)
+	return sha
+}
+
+// ParseWorkflowRunIdentity extracts a workflow_run payload's head_sha and run
+// id (zero values when absent or unparseable). The run id is what flushes the
+// run's cached JOB answers: a re-run replaces a run's jobs under the SAME id,
+// and the workflow_run delivery is the signal that happened.
+func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64) {
 	var body struct {
 		WorkflowRun *struct {
+			ID      int64  `json:"id"`
 			HeadSHA string `json:"head_sha"`
 		} `json:"workflow_run"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.WorkflowRun == nil {
-		return ""
+		return "", 0
 	}
-	return body.WorkflowRun.HeadSHA
+	return body.WorkflowRun.HeadSHA, body.WorkflowRun.ID
 }
 
 func strOrEmpty(s *string) string {
