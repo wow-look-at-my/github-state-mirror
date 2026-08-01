@@ -16,7 +16,7 @@ import (
 // encodings, for measuring the browser side against the SHIPPED decoder:
 //
 //	GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
-//	cd /tmp && node <repo>/prototype/timelinewire/shipbench.mjs
+//	cd /tmp && node <repo>/internal/api/testdata/shipbench.mjs
 //
 // It is a measurement fixture, not an assertion — inert unless GSM_DUMP is
 // set. The size claim itself is asserted by TestTimelineWireIsMuchSmallerThanJSON.

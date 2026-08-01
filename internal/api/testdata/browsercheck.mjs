@@ -16,7 +16,7 @@
 //   npm run build
 //   GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
 //   curl -fsSL https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js -o /tmp/timeline-view.js
-//   node prototype/timelinewire/browsercheck.mjs /tmp/timeline-1h.bin /tmp/timeline-view.js
+//   node internal/api/testdata/browsercheck.mjs /tmp/timeline-1h.bin /tmp/timeline-view.js
 //
 // Prints WORST_TASK_MS for the caller to assert on.
 import { createServer } from "node:http";
@@ -28,7 +28,7 @@ import { chromium } from "playwright";
 const payloadPath = process.argv[2] ?? "timeline-1h.bin";
 const componentPath = process.argv[3] ?? "timeline-view.js";
 const modulePath = process.env.GSM_TIMELINE_JS ??
-    new URL("../../internal/api/web/assets/timeline.js", import.meta.url).pathname;
+    new URL("../web/assets/timeline.js", import.meta.url).pathname;
 
 const payload = readFileSync(payloadPath);
 const moduleJs = readFileSync(modulePath);

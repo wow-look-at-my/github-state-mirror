@@ -13,19 +13,24 @@ app's job now.
 
 ## What was measured
 
-`prototype/timelinewire/` — a standalone module (own `go.mod`, so the repo
-build never sees its bson/protobuf deps). It generates a realistic window
-(100k events over 24 h: 18 route shapes, 12 webhook event types, 220 repos,
-34 principals, unique delivery GUIDs on webhook events, skewed durations),
-round-trips it through every candidate codec (`TestRoundTrip` — a lossy format
-is not a small format, it is a wrong one), and reports size + time:
+A bake-off, in a throwaway module (`prototype/timelinewire/`, own `go.mod` so
+the repo build never saw its bson/protobuf deps). It generated a realistic
+window (100k events over 24 h: 18 route shapes, 12 webhook event types, 220
+repos, 34 principals, unique delivery GUIDs on webhook events, skewed
+durations), round-tripped it through every candidate codec (a lossy format is
+not a small format, it is a wrong one), and reported size + time — the tables
+below.
 
-```sh
-cd prototype/timelinewire
-go test -run TestReport -v                 # the tables below
-TLWIRE_DUMP=. go test -run TestDump        # writes events.{json,col,row}
-node bench.mjs                             # the browser-side half
-```
+**That module is gone, deliberately.** It was a prototype, it answered its
+question, and the answer is these tables plus the format that shipped. Keeping
+a second Go module with protobuf and bson dependencies to re-derive a decision
+already made is dead weight. To re-run it, check out `4a78cb8^` — nothing since
+then changed the shape of the data it measured.
+
+What survives in the tree is only what measures **shipped** code:
+`internal/api/testdata/` — `framecheck.mjs` (the frame budget, run by
+`TestTimelineFrameBudget`), `browsercheck.mjs` (the real-browser harness), and
+`shipbench.mjs` (the shipped decoder against the JSON path it replaced).
 
 Codecs: **json** (today), **bson** (`mongo-driver/v2`), **protobuf**
 (`timeline.proto`, hand-encoded with `protowire` — byte-identical to what
@@ -82,7 +87,9 @@ is measured is JS main-thread work to produce the chart's interval objects.
 | columnar → intervals, event objects built lazily on hover | **53.8 ms** |
 | row → intervals | 117.3 ms |
 
-`bench.mjs` asserts all three paths produce identical intervals (0 mismatches).
+The bake-off's `bench.mjs` asserted all three paths produced identical
+intervals (0 mismatches) — a format that decodes to different data is not a
+faster format.
 
 ## Findings
 
@@ -210,7 +217,7 @@ a sizing defect, but a chunk twice the budget is.
 `framecheck.mjs` measures our decoder. The chart also hands intervals to the
 `<timeline-view>` component, which ingests, packs sub-tracks and renders — on
 the same main thread, and node has no component. So
-`prototype/timelinewire/browsercheck.mjs` boots the real pieces in headless
+`internal/api/testdata/browsercheck.mjs` boots the real pieces in headless
 Chromium (the built `assets/timeline.js`, the real `<gsm-timeline>` element,
 the real component, a local server answering `/api/timeline` exactly as the
 mirror does) and times every call the adapter makes into the component.
@@ -296,7 +303,7 @@ just an order of magnitude smaller and ~5x cheaper to render.
 - **`internal/api/compress.go`** — gzip at BestSpeed for the dashboard's
   buffered admin payloads, since the grey-clouded origin has nothing in front
   of it. Level 1 rather than 6 because on this shape it is 1006 KB in 24 ms
-  against 952 KB in 140 ms (`prototype/timelinewire`, `TestStdlibGzip`).
+  against 952 KB in 140 ms (measured in the retired bake-off module).
   Deliberately NOT wired into the GitHub data plane: the cached routes have a
   pinned response-header contract, the proxy relays GitHub's own encoding, and
   the consistency check's NDJSON must keep flushing per line.
@@ -311,7 +318,7 @@ just an order of magnitude smaller and ~5x cheaper to render.
   come back empty because the live cursor had moved past it), and a windowed
   read still reports the live `max_id` — history never advances the cursor, or
   events recorded between the last poll and the history fetch would be skipped.
-- **Browser harness.** `prototype/timelinewire/browsercheck.mjs` (needs
+- **Browser harness.** `internal/api/testdata/browsercheck.mjs` (needs
   `npm i playwright`; run it against a dumped payload) — the only check that
   sees the component. Deliberately NOT in CI: it needs a browser download and
   its frame-gap numbers are environment-dominated. The CI gate is the node
@@ -330,7 +337,7 @@ just an order of magnitude smaller and ~5x cheaper to render.
 A realistic full ring — 100,000 events over 24 h, 84% requests / 11% webhook
 deliveries carrying UNIQUE delivery GUIDs / 5% notifications — written by
 `TestTimelineWireDumpPayloads` and decoded by the REAL BUILT
-`assets/timeline.js` (`prototype/timelinewire/shipbench.mjs`, node 22 = V8 =
+`assets/timeline.js` (`internal/api/testdata/shipbench.mjs`, node 22 = V8 =
 Chrome, best of 5):
 
 | | on the wire | per event | browser decode |
@@ -350,22 +357,28 @@ on the wire is one byte, and there are ~1.8M of them in a full window.
 Also measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 uniform
 events: JSON 495,009 B → columnar+gzip 271 B.
 
-## Recommendation (as of the prototype)
+## What the bake-off recommended, and what shipped
 
-Two changes, independent, in this order of value:
+The recommendation was two independent changes, in this order of value — both
+are now in place, so this section is the record of the reasoning, not a plan:
 
-1. **Bound the uncursored response** (`?since=`/`limit`/window) so first paint
-   fetches the hour it draws, and let the component's lazy-history path pull
-   older windows on demand. This alone is 27 MB → 1.1 MB.
-2. **Negotiated compression in the app** (`Accept-Encoding`: zstd → br → gzip,
-   gzip as the universal floor) on the dashboard JSON endpoints. 1.1 MB →
-   129 KB.
+1. **Bound the uncursored response** so first paint fetches the hour it draws,
+   and let the component's lazy-history path pull older windows on demand.
+   27 MB → 1.1 MB on its own. *Shipped* as `?from=`/`?to=` over
+   `reqtimeline.SnapshotRange`, plus the `loadRange` history hook.
+2. **Compression in the app**, since the origin is grey-clouded. 1.1 MB →
+   129 KB. *Shipped* as `internal/api/compress.go` — gzip only, at BestSpeed,
+   rather than the negotiated zstd→br→gzip ladder first sketched: every browser
+   takes gzip, so there is no negotiation to get wrong, and on this shape
+   level 1 costs a sixth of level 6's CPU for 6% more bytes.
 
-With both, JSON is already fine (129 KB, 20 ms of JS) and needs zero client
-change. The columnar format is what to reach for if the chart is ever to hold
-the full 24 h in view: **columnar + gzip** is 1.01 MB and 54 ms of main-thread
-work against JSON+gzip's 3.02 MB and 275 ms — 3× the bytes and 5× the CPU
-saved — for the cost of ~120 lines of encoder, ~90 lines of TS decoder, and a
-format version byte. Keep the JSON path as the fallback and content-negotiate
-the binary one (`Accept: application/vnd.gsm.timeline.v1`), so the endpoint
-stays curl-readable.
+With both, JSON alone would have been tolerable (129 KB, 20 ms of JS). The
+columnar format was still worth its ~120 lines of encoder and ~90 of TS
+decoder: **columnar + gzip** is 1.01 MB and 54 ms of main-thread work against
+JSON+gzip's 3.02 MB and 275 ms — 3× the bytes and 5× the CPU — and it is what
+makes holding a wide window in view survivable at all.
+
+The one recommendation NOT followed as written is "keep the JSON path as the
+fallback": the JSON stays, but as an answer to callers that ask for it, never
+as something the chart falls back to. See "Two encodings, one of which the
+chart refuses" above for why that distinction is the whole safety argument.

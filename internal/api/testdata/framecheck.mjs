@@ -8,12 +8,12 @@
 //
 //   npm run build
 //   GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
-//   node prototype/timelinewire/framecheck.mjs /tmp/timeline-1h.bin [/tmp/timeline.json]
+//   node internal/api/testdata/framecheck.mjs /tmp/timeline-1h.bin [/tmp/timeline.json]
 //
 // TestTimelineFrameBudget runs exactly this and asserts the numbers.
 globalThis.HTMLElement = class {};
 globalThis.customElements = { define() {} };
-const mod = await import(process.env.GSM_TIMELINE_JS ?? "/home/user/github-state-mirror/internal/api/web/assets/timeline.js");
+const mod = await import(process.env.GSM_TIMELINE_JS ?? new URL("../web/assets/timeline.js", import.meta.url).href);
 import { readFileSync } from "node:fs";
 
 const bin = new Uint8Array(readFileSync(process.argv[2] ?? "timeline.bin"));

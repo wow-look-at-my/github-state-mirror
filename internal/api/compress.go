@@ -21,8 +21,7 @@ import (
 // gzip only, at BestSpeed. Every browser accepts gzip, so there is no
 // negotiation to get wrong, and on the shape that matters — the columnar
 // timeline payload — level 1 is 1006 KB in 24 ms against level 6's 952 KB in
-// 140 ms: 6% more bytes for a sixth of the CPU (measured in
-// prototype/timelinewire, TestStdlibGzip).
+// 140 ms: 6% more bytes for a sixth of the CPU (docs/timeline-wire-format.md).
 
 // compressMinBytes is the floor below which compressing costs more than it
 // saves (a small payload can even grow past the gzip header/trailer).

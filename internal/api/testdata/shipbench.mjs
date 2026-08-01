@@ -4,14 +4,15 @@
 //
 //   npm run build
 //   GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
-//   cd /tmp && node <repo>/prototype/timelinewire/shipbench.mjs
+//   cd /tmp && node <repo>/internal/api/testdata/shipbench.mjs
 //
-// The prototype benches next to this file compare CANDIDATE formats; this one
-// checks what actually shipped, which is the only number worth quoting.
+// This is the only bench left, and deliberately so: the candidate-format
+// bake-off that chose columnar was a prototype, was finished, and is gone (see
+// docs/timeline-wire-format.md). What ships is what is worth measuring.
 // Stub the two DOM globals the module's custom-element registration needs.
 globalThis.HTMLElement = class {};
 globalThis.customElements = { define() {} };
-const { pageFromWire, pageFromJSON } = await import(process.env.GSM_TIMELINE_JS ?? "../../internal/api/web/assets/timeline.js");
+const { pageFromWire, pageFromJSON } = await import(process.env.GSM_TIMELINE_JS ?? new URL("../web/assets/timeline.js", import.meta.url).href);
 import { readFileSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
