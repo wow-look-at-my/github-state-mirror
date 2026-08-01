@@ -172,32 +172,51 @@ or component feed, whichever was longer): **3.6-5.8 ms** across runs.
 
 ### Where the frames actually go (browser, real component)
 
-Measured with `browsercheck.mjs` (headless Chromium, the real `<timeline-view>`,
-the one-hour first-paint payload), separating the ~1s initial load from the
-chart the user then watches:
+`browsercheck.mjs` boots the real pieces in headless Chromium — the built
+`assets/timeline.js`, the real `<gsm-timeline>`, the real `<timeline-view>`,
+a local server answering `/api/timeline` as the mirror does — wraps
+`requestAnimationFrame` to time every callback's synchronous JS, and reports
+three phases separately, because they are three different questions.
 
-| phase | worst frame (JS in one rAF) |
+| phase | worst frame |
 |---|---:|
-| initial load burst | 13.5-18.7 ms (~3 frames over 8) |
-| **steady state** (loaded, polling, following now) | **1.8-4.3 ms** |
+| initial load (after the first paint) | **≤ 6.3 ms** |
+| steady state — loaded, polling, following now | **3.7-4.9 ms** |
+| interaction — 24 zoom steps + 24 pans, chart fully loaded | **3.7-6.3 ms** |
+| the page's FIRST paint (see below) | 8.1-10.5 ms |
 
-Our own work is bounded everywhere: decode slices and component feeds measure
-3.0-5.8 ms. The over-budget frames are the component's FULL PAINT of a freshly
-loaded chart — `draw` 9-13 ms, `updateVisibleLayout` 5-6 ms — and they scale
-with what is on screen (a 20-minute first window instead of an hour: 10.8-11.6
-ms worst).
+The first paint is the one frame at or over budget, and it is not ours:
 
-That cost got materially smaller upstream in js-snippets (see that repo's
-`claude/timeline-api-nulls-size-1zp5u5`): incremental per-lane rebuild instead
-of whole-chart work per merge, batched cluster-marker paths (drawIntervals
-6.6-7.8 ms -> 4.2-5.7 ms), batched lane separators and memoized label fitting.
-The adapter also now declares every lane on the first feed, because a lane
-arriving mid-stream is a structural change that forces the component to
-re-cluster everything it holds.
+| payload on that first paint | worst frame |
+|---|---:|
+| a full hour, 4,166 events | 8.1-10.5 ms |
+| **ZERO events** | **8.0-11.3 ms** |
 
-Closing the last gap means the component rendering incrementally — time-boxing
-its own paint across frames — which is a redesign of a shared component, not a
-tweak, and is NOT done.
+An empty chart costs the same. That frame is Chromium first-touching a
+2400x1200 backing store and measuring axis fonts in a software rasterizer
+(this container has no GPU); the data pipeline contributes nothing measurable
+to it. Everything after it — every decode slice, every feed, every redraw
+during load, panning, zooming and live polling — is inside the budget.
+
+Four changes got the load phase there, in the order they mattered:
+
+1. **One feed per FRAME, not per task** (`yieldToNextFrame`). Macrotask yields
+   kept our slices small but several still landed in one frame, so the
+   component redrew the whole already-grown chart in one go. Paced to a frame
+   each, every draw is a small increment. 13.5-18.7 ms -> 7.8-10.7 ms.
+2. **Let the empty chart paint first.** The cold costs — font metrics, backing
+   store, the component's warm-up — now land on an empty frame instead of the
+   frame that also ingests and draws real data. In production the network
+   round-trip usually provides that gap; a fast or cached response does not.
+3. **Never a decode slice and a component feed in the same task**, with the
+   feed size steered by what the last one cost.
+4. **Upstream, in js-snippets** (`claude/timeline-api-nulls-size-1zp5u5`):
+   incremental per-lane rebuild instead of whole-chart work per merge; batched
+   cluster-marker paths, capped at a measured 32 per path (batching REVERSES
+   past a few hundred: 1.75 us/marker at 8-32 per path, 8.08 with 1200 in one);
+   batched lane separators; memoized label fitting. Total draw over a load:
+   57-59 ms -> 39-45 ms. Rendering verified unchanged by pixel diff (0.09% of
+   pixels, max channel delta 12 — antialiasing).
 
 ### Two limits, stated rather than papered over
 
@@ -206,10 +225,10 @@ tweak, and is NOT done.
   Chromium's own startup and container scheduling. The browser harness can
   measure our synchronous work reliably; it cannot resolve an 8 ms budget in
   wall-clock frame timing here.
-- **The component's render is upstream.** Feeding 4,166 intervals in a single
-  `setData` — no adapter involved at all — still produces frames past 16 ms,
-  and that cost lives in js-snippets, not here. What this repo controls is how
-  much it hands over per call and how often; that is now bounded on both axes.
+- **The first paint belongs to the browser.** 8-11 ms with zero events in this
+  software-rasterizing container, and there is no code here (or in
+  js-snippets) that makes a blank canvas rasterize faster. On GPU-backed canvas
+  it is a fraction of that.
 
 ## What shipped
 

@@ -262,6 +262,20 @@ function yieldToBrowser(): Promise<void> {
     });
 }
 
+// yieldToNextFrame waits for the browser to actually PAINT, then resumes in a
+// fresh task. yieldToBrowser above only yields the task — several yields can
+// still land in one frame, which is right for decode work but wrong for
+// feeding the chart: every feed makes the component redraw, so N feeds in one
+// frame means it draws the whole (already grown) chart in one go. Paced one
+// per frame, each draw is a small increment on a chart that grew a little,
+// which is what keeps the first paint inside the frame budget.
+function yieldToNextFrame(): Promise<void> {
+    if (typeof requestAnimationFrame !== "function") return yieldToBrowser();
+    return new Promise<void>((resolve) => {
+        requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+}
+
 // runSliced drives a task to completion, never running it for more than
 // SLICE_BUDGET_MS at a stretch. onSlice reports each slice's real duration —
 // the element uses it to assert the frame budget in dev, and the bench to
@@ -839,6 +853,13 @@ class GsmTimeline extends HTMLElement {
         tl.setAttribute("empty-text", "no traffic recorded yet");
         this.view = tl;
         this.appendChild(tl);
+        // Let the EMPTY chart paint once before any data arrives. That first
+        // paint is where the cold costs live — font metrics for the axis and
+        // gutter, the canvas backing store, the component's own warm-up — and
+        // paying them on an empty frame keeps them out of the frame that also
+        // ingests and draws real data. In production the network round-trip
+        // usually provides this gap; a fast (or cached) response does not.
+        await yieldToNextFrame();
         await this.poll(); // first page: setData + initial viewport
         this.note?.remove();
         this.note = null;
@@ -954,7 +975,7 @@ class GsmTimeline extends HTMLElement {
                     if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
                 }
                 for (let i = 0; i < batch.intervals.length; ) {
-                    await yieldToBrowser();
+                    await yieldToNextFrame();
                     if (!this.isConnected || this.view !== tl) return; // tab left mid-feed
                     const part = batch.intervals.slice(i, i + this.feedSize);
                     i += part.length;
