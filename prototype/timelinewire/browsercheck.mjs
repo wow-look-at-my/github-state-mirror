@@ -22,6 +22,7 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { chromium } from "playwright";
 
 const payloadPath = process.argv[2] ?? "timeline-1h.bin";
@@ -245,10 +246,20 @@ await page.route("https://sites.pazer.build/**", (route) => {
         return route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body: componentJs });
     }
     if (!chunkCache.has(url)) {
-        try {
-            chunkCache.set(url, execFileSync("curl", ["-fsSL", url], { maxBuffer: 32 << 20 }));
-        } catch {
-            return route.fulfill({ status: 502, body: "" });
+        // A locally built component (GSM_COMPONENT_DIST=<js-snippets>/dist)
+        // names its own chunks, which do not exist upstream — serve those from
+        // disk so an unmerged component change can be measured before it
+        // publishes. Everything else still comes from the published site.
+        const localDir = process.env.GSM_COMPONENT_DIST;
+        const local = localDir ? join(localDir, new URL(url).pathname.split("/").pop()) : null;
+        if (local && existsSync(local)) {
+            chunkCache.set(url, readFileSync(local));
+        } else {
+            try {
+                chunkCache.set(url, execFileSync("curl", ["-fsSL", url], { maxBuffer: 32 << 20 }));
+            } catch {
+                return route.fulfill({ status: 502, body: "" });
+            }
         }
     }
     return route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body: chunkCache.get(url) });

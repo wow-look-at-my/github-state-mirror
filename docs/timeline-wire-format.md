@@ -118,22 +118,29 @@ is measured is JS main-thread work to produce the chart's interval objects.
 
 ## The frame budget (operator requirement)
 
-> "at the very least it must not ever block for more than 8ms per frame"
+> "make sure the average loading workload per frame for the duration of the
+> load is <8ms per chunk, and load 1 chunk per frame"
 
 The columnar decode was 63 ms in ONE synchronous task — four times better than
-the JSON path it replaced, and still eight dropped frames. Meeting 8 ms took
-three changes, in ascending order of importance:
+the JSON path it replaced, and still eight dropped frames. Meeting the budget
+took three changes, in ascending order of importance:
 
-1. **Cooperative slicing.** Every phase — column decode, dictionary reads, the
-   JSON fallback's transpose, interval building — is a generator that yields at
-   chunk boundaries; `runSliced` runs them for `SLICE_BUDGET_MS` (3) at a
-   stretch and hands control back via `scheduler.yield()` (MessageChannel
-   fallback). Costs ~5% throughput.
+1. **One chunk per frame.** `runSliced` runs a single chunk, then waits for the
+   next frame. That is the entire pacing model, and it is what makes the budget
+   checkable: one unit per frame means the unit's cost IS the frame's load, so
+   keeping a chunk under budget keeps every frame under budget. Every phase —
+   column decode, dictionary reads, the JSON fallback's transpose, interval
+   building, and the component feeds — is a generator that yields at chunk
+   boundaries and is driven this way.
 2. **Adaptive chunk sizing.** A fixed chunk cannot work: 2048 rows is ~0.2 ms
    of varint decoding and ~3.5 ms of the JSON transpose, and a slower machine
-   shifts both. Each phase times its own chunks and steers toward ~1 ms, from a
-   deliberately small first chunk (cold, unoptimized code is several times
-   slower than the steady state that follows) with capped growth.
+   shifts both. Each phase times its own chunks and steers toward
+   `TARGET_CHUNK_MS` (3 — well under the 8 ms ceiling, so the estimate can be
+   wrong by 2× and still fit), from a small first chunk (cold, unoptimized code
+   is several times slower than the steady state) with capped growth. The ramp
+   costs *frames* now that a step is a frame, so it starts at 256 and grows ×8:
+   three steps to the ceiling. (512/×4 reaches it in the same three steps but
+   overshoots harder per step — measured 8.7 ms.)
 3. **Not holding 100k intervals.** This is the one that actually mattered.
    With the full ring in memory the worst slice still spiked to 19 ms, and
    `--trace-gc` named the cause: 4-7 ms scavenges, triggered by 100k live
@@ -146,8 +153,12 @@ three changes, in ascending order of importance:
    another 100k allocations.
 
 Measured on the real first-paint payload (4,166 events, one hour of realistic
-traffic) through the SHIPPED module: **worst synchronous slice 3.1 ms**, and
-`TestTimelineFrameBudget` fails the build above 8.
+traffic) through the SHIPPED module: **0.13 ms of work per frame on average**,
+worst chunk 0.9 ms. The JSON fallback over a full 100k-event window averages
+2.8 ms per frame. `TestTimelineFrameBudget` gates on the average — that is the
+requirement — and bounds the worst single chunk at 2× the budget: a chunk is
+sized from what the previous one cost, so a GC pause landing inside one is not
+a sizing defect, but a chunk twice the budget is.
 
 ### What node could not see
 
@@ -161,14 +172,11 @@ mirror does) and times every call the adapter makes into the component.
 
 It immediately found a real defect the node harness could not: the apply loop
 ran a decode slice AND several component merges **in one task** — 3 ms of
-decode plus four merges is a 25 ms stall. The element now yields around every
-component call, and sizes each feed by what the last one actually cost
-(`TARGET_FEED_MS`, capped at 512): a merge costs ~2.8 us per interval and gets
-dearer as the chart fills, so an estimate taken from an early cheap call
-overshoots later ones — a fixed 1024 measured 7.6 ms.
-
-In-browser after the fix, worst synchronous stretch of OUR work (decode slice
-or component feed, whichever was longer): **3.6-5.8 ms** across runs.
+decode plus four merges is a 25 ms stall. A feed is now a chunk like any other
+— one per frame — sized by what the last one actually cost (`TARGET_FEED_MS`,
+capped at 512): a merge costs ~2.8 us per interval and gets dearer as the chart
+fills, so an estimate taken from an early cheap call overshoots later ones — a
+fixed 1024 measured 7.6 ms.
 
 ### Where the frames actually go (browser, real component)
 
@@ -178,37 +186,38 @@ a local server answering `/api/timeline` as the mirror does. It buckets every
 recorded slice of OUR work into the frame it landed in, adds that frame's rAF
 work, and reports the total: that sum is what "blocking a frame" means.
 
-**10 consecutive runs: ZERO frames over 8 ms, out of ~5,900 frames.** Steady
-state 1.9-2.7 ms; interaction (24 zoom steps + 24 pans on the loaded chart)
-3.5-5.8 ms; the load burst inside budget throughout.
+Across runs, **every data-bearing frame is under 8 ms.** Our own loading work
+peaks at 1.8-2.8 ms in any single frame and averages 0.13 ms; steady state
+1.9-2.7 ms; interaction (24 zoom steps + 24 pans on the loaded chart)
+3.5-5.8 ms.
 
-Getting there meant fixing five things, and the first is the one worth
-remembering:
+One frame per run does exceed it: **18-23 ms at t≈110 ms, before any data
+exists** — the browser evaluating the 164 KB component bundle and registering
+the custom element. Our loading work contributes 0 ms to it. That is module
+parse cost, not loading workload, and it is stated here rather than hidden
+behind a metric that excludes it.
 
-1. **The budget is per FRAME, not per task.** Yielding hands the task back,
-   but several tasks still land in one frame — a 3 ms-per-task budget measured
-   8.7-10.1 ms of our work inside one frame. `FramePacer` meters the frame,
-   keyed to the frame itself so two overlapping flows (a live poll and a
-   history load) share one budget rather than each taking a full one.
-2. **The budget is what is LEFT of the frame.** The component draws off its
-   own rAF, so 6 ms of decoding on top of a 5 ms redraw is an 11 ms frame
-   however carefully our half was metered. The pacer measures what the rest of
-   the frame cost (the gap between our animation-frame callback and the task
-   after it) and spends only the remainder.
-3. **One feed per frame, and the frame after a feed belongs to the component.**
-   Every feed makes it rebuild and redraw; feeding every frame put layout and
-   paint together in every frame.
-4. **A frame boundary has to be a real one.** `requestAnimationFrame` then
-   `setTimeout(0)` can resume inside the SAME frame when the caller was
-   already past that frame's callbacks — silently handing the frame a second
-   budget. The wait now confirms the tick advanced.
-5. **Upstream, in js-snippets** (`claude/timeline-api-nulls-size-1zp5u5`):
+Getting there meant fixing three things:
+
+1. **One chunk per frame, feeds included.** A feed makes the component rebuild
+   and redraw, so it is a unit of work like a decode chunk and takes its own
+   frame. The earlier design metered each frame's *remainder* against the
+   component's measured work — a `FramePacer` with fed-frame debt and per-unit
+   headroom estimates. All of that existed to answer "how much more may we
+   spend in this frame", a question that only arises when several units share
+   a frame. Putting one unit in a frame deletes the question and 145 lines.
+2. **Resume in a fresh task after the frame.** `requestAnimationFrame` then
+   `setTimeout(0)`: resuming inside the rAF callback would put the next chunk
+   in the same frame as the component's redraw.
+3. **Upstream, in js-snippets** (`claude/timeline-api-nulls-size-1zp5u5`):
    incremental per-lane rebuild instead of whole-chart work per merge; batched
    cluster-marker paths capped at a measured 32 per path (batching REVERSES
    past a few hundred: 1.75 us/marker at 8-32, 8.08 with 1200 in one path);
    batched lane separators; memoized label fitting; the cold-surface split
-   (the first draw establishes the canvas and warms text shaping, the next one
-   renders); and the rebuild/paint split. Total draw over a load: 57-59 ms ->
+   (the first draw establishes the canvas and warms text shaping at EVERY size
+   a lane label can use, the next one renders — warming only the base size left
+   an 8 ms `drawLanes` on the first data-bearing frame, now 0.9 ms); and the
+   rebuild/paint split. Total draw over a load: 57-59 ms ->
    39-45 ms, with rendering unchanged (pixel diff 0.089%, max channel delta 10).
 
 ### Two limits, stated rather than papered over
