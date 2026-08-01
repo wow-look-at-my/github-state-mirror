@@ -1,8 +1,9 @@
 package api
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // The one property the whole capture rests on: a sampled response body is
@@ -18,61 +19,55 @@ func TestJSONSkeletonKeepsNoValues(t *testing.T) {
 	sk := jsonSkeleton(body)
 
 	for _, leak := range []string{"ghs_SUPERSECRETVALUE", "octocat", "api.github.com", "true", "7", "one"} {
-		if strings.Contains(sk, leak) {
-			t.Fatalf("skeleton leaked a value %q:\n%s", leak, sk)
-		}
+		require.NotContains(t, sk, leak)
+
 	}
 	for _, want := range []string{"total_count: number", "secret_token: string", "flag: bool", "missing: null", "items: [{"} {
-		if !strings.Contains(sk, want) {
-			t.Fatalf("skeleton missing %q:\n%s", want, sk)
-		}
+		require.Contains(t, sk, want)
+
 	}
 	// The array's length rides along (a page-shaped answer is worth knowing)
 	// but its elements' values do not.
-	if !strings.Contains(sk, "] × 2") {
-		t.Fatalf("skeleton lost the array length:\n%s", sk)
-	}
+	require.Contains(t, sk, "] × 2")
+
 }
 
 // A non-JSON body has no shape to model — and saying so is the answer (such a
 // route cannot become a tier-2 route), not a reason to retain the bytes.
 func TestJSONSkeletonRefusesNonJSON(t *testing.T) {
-	if sk := jsonSkeleton([]byte("diff --git a/x b/x\n+secret line\n")); sk != "" {
-		t.Fatalf("expected no skeleton for an opaque body, got %q", sk)
-	}
+	sk := jsonSkeleton([]byte("diff --git a/x b/x\n+secret line\n"))
+	require.Equal(t, "", sk)
+
 }
 
 func TestShapeStoreSamplingAndSnapshot(t *testing.T) {
 	s := newShapeStore()
 	route := "/repos/{owner}/{repo}/hooks"
 
-	if !s.wantsBody("GET", route) {
-		t.Fatal("a never-sampled route should want a body sample")
-	}
+	require.True(t, s.wantsBody("GET", route))
+
 	s.observe(observation{
 		Method: "GET", Route: route, Path: "/repos/o/r/hooks",
 		QueryNames: []string{"per_page"}, Accept: "application/vnd.github+json",
 		Caller: "pr-minder", Status: 200, ContentType: "application/json",
 		Body: []byte(`[{"id":1,"active":true}]`),
 	})
-	if s.wantsBody("GET", route) {
-		t.Fatal("a just-sampled route should not immediately re-sample")
-	}
+	require.False(t, s.wantsBody("GET", route))
 
 	snap := s.snapshot()
 	sh, ok := snap["GET "+route]
-	if !ok {
-		t.Fatalf("route missing from snapshot: %v", snap)
-	}
-	if sh.Seen != 1 || len(sh.Bodies) != 1 || sh.Bodies[0].Status != 200 {
-		t.Fatalf("unexpected snapshot: %+v", sh)
-	}
-	if len(sh.QueryNames) != 1 || sh.QueryNames[0].Name != "per_page" {
-		t.Fatalf("query names not captured: %+v", sh.QueryNames)
-	}
-	if len(sh.Callers) != 1 || sh.Callers[0].Name != "pr-minder" {
-		t.Fatalf("caller not captured: %+v", sh.Callers)
-	}
+	require.True(t, ok)
+
+	require.EqualValues(t, 1, sh.Seen)
+	require.Len(t, sh.Bodies, 1)
+	require.Equal(t, 200, sh.Bodies[0].Status)
+
+	require.Len(t, sh.QueryNames, 1)
+	require.Equal(t, "per_page", sh.QueryNames[0].Name)
+
+	require.Len(t, sh.Callers, 1)
+	require.Equal(t, "pr-minder", sh.Callers[0].Name)
+
 }
 
 // Sampling must never be the reason a body is retained whole: a body past the
@@ -81,12 +76,10 @@ func TestShapeStoreIgnoresUnparseableBody(t *testing.T) {
 	s := newShapeStore()
 	s.observe(observation{Method: "GET", Route: "/x", Path: "/x", Status: 200, Body: []byte(`{"a":`)})
 	sh := s.snapshot()["GET /x"]
-	if len(sh.Bodies) != 0 {
-		t.Fatalf("expected no body sample from unparseable JSON, got %+v", sh.Bodies)
-	}
-	if sh.Seen != 1 {
-		t.Fatalf("the request itself should still be counted, got %d", sh.Seen)
-	}
+	require.Empty(t, sh.Bodies, "an unparseable body must yield no skeleton")
+
+	require.Equal(t, int64(1), sh.Seen)
+
 }
 
 func TestBuildBriefRanksPassthroughAndSkipsCachedRoutes(t *testing.T) {
@@ -104,36 +97,30 @@ func TestBuildBriefRanksPassthroughAndSkipsCachedRoutes(t *testing.T) {
 		"GET /b": {Key: "GET /b", Seen: 20, Bodies: []bodySample{{Status: 200, Skeleton: "{\n  id: number\n}"}}},
 	}
 	cands := buildBrief(snap, shapes, 10)
-	if len(cands) != 2 {
-		t.Fatalf("expected only the two passthrough routes, got %d: %+v", len(cands), cands)
-	}
-	if cands[0].Key != "GET /b" || cands[1].Key != "GET /c" {
-		t.Fatalf("candidates not ranked by passthrough volume: %+v", cands)
-	}
-	if cands[0].Shape == nil || cands[1].Shape != nil {
-		t.Fatalf("shapes joined incorrectly: %+v", cands)
-	}
+	require.Len(t, cands, 2, "only the passthrough routes are candidates")
+
+	require.Equal(t, "GET /b", cands[0].Key, "ranked by passthrough volume")
+	require.Equal(t, "GET /c", cands[1].Key)
+
+	require.NotNil(t, cands[0].Shape, "the captured shape must be joined on")
+	require.Nil(t, cands[1].Shape, "a route with no capture yet joins to nothing")
 
 	md := renderBrief(snap, cands, "2026-08-01T00:00:00Z")
 	for _, want := range []string{"GET /b", "id: number", "tier-2 contract", "assertNoURLKeys", "SchemaVersion"} {
-		if !strings.Contains(md, want) {
-			t.Fatalf("brief markdown missing %q:\n%s", want, md)
-		}
+		require.Contains(t, md, want)
+
 	}
-	if strings.Contains(md, "POST /d") {
-		t.Fatalf("a write-only route must not appear as a caching candidate:\n%s", md)
-	}
+	require.NotContains(t, md, "POST /d")
+
 }
 
 // Nil-receiver safety: a router built without a shape store (as several tests
 // do) must not panic on the recording path.
 func TestShapeStoreNilSafe(t *testing.T) {
 	var s *shapeStore
-	if s.wantsBody("GET", "/x") {
-		t.Fatal("a nil store never wants a sample")
-	}
+	require.False(t, s.wantsBody("GET", "/x"))
+
 	s.observe(observation{Method: "GET", Route: "/x"})
-	if len(s.snapshot()) != 0 {
-		t.Fatal("a nil store has no shapes")
-	}
+	require.Empty(t, s.snapshot())
+
 }
