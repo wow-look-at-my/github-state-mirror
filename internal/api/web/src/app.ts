@@ -17,7 +17,7 @@ import type {
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
-    RequestEvent, RequestGroup, RequestsResponse,
+    RequestEvent, RequestGroup, RequestsResponse, BriefResponse,
     TimelineResponse, GsmTimelineElement,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     DemoStateData, DemoConfig,
@@ -642,7 +642,10 @@ async function loadRequests(silent = false): Promise<void> {
     if (groups.length > 0) {
         body.appendChild(topGroupsSection(groups, total));
         const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
-        if (uncached) body.appendChild(uncached);
+        if (uncached) {
+            body.appendChild(uncached);
+            body.appendChild(briefBar());
+        }
     }
     if (recent.length === 0) {
         body.appendChild(el("div", { class: "empty" },
@@ -870,6 +873,81 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
             el("tbody", null, rows),
         ),
         true); // six columns of chips — this is the table that needs the room
+}
+
+// ---- implementation brief (admin) ----
+// The tables above say WHICH routes are uncached and why. Modeling one needs
+// the two things a counter cannot hold: the query shapes callers actually
+// send, and the SHAPE of what GitHub answers. The server captures both
+// (keys and types only, never values) and renders them, with this repo's
+// tier-2 checklist, as one Markdown document — so handing the work off is a
+// button, not a copy-paste of this whole page.
+function briefBar(): HTMLElement {
+    return el("div", { class: "brief-bar" },
+        el("button", { class: "btn btn-sm", onclick: () => void openBrief() }, "Capture implementation brief"),
+        el("span", { class: "grp-caption", text:
+            "Everything needed to model one of these as a cached route: request shapes, callers, upstream statuses, and the key/type outline of GitHub's response — copyable in one click." }),
+    );
+}
+
+async function openBrief(): Promise<void> {
+    const { body } = openModal("Implementation brief — uncached routes");
+    body.appendChild(el("div", { class: "loading", text: "Assembling brief…" }));
+    let data: BriefResponse;
+    try {
+        data = await api<BriefResponse>("/api/brief");
+    } catch (e) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not build the brief: " + (e as Error).message }));
+        return;
+    }
+    body.innerHTML = "";
+    body.appendChild(renderBrief(data));
+}
+
+function renderBrief(d: BriefResponse): HTMLElement {
+    const md = d.markdown || "";
+    const missing = (d.candidates ?? []).filter((c) => !c.shape || !(c.shape.bodies ?? []).length).length;
+    const wrap = el("div", { class: "detail" });
+    wrap.appendChild(el("div", { class: "detail-sub", text:
+        (d.candidates ?? []).length + " uncached route" + ((d.candidates ?? []).length === 1 ? "" : "s") +
+        " — request shapes, callers, upstream statuses and response outlines, plus the tier-2 checklist. " +
+        "No values are included: query parameters appear by name, bodies as key/type skeletons." }));
+    if (missing > 0) {
+        wrap.appendChild(el("div", { class: "detail-sub", text:
+            missing + " route" + (missing === 1 ? " has" : "s have") +
+            " no response outline yet — it is sampled on that route's next passthrough, so re-capture in a moment for the full picture." }));
+    }
+    wrap.appendChild(textBlock(md, "Copy brief", "gsm-uncached-brief.md"));
+    return wrap;
+}
+
+// textBlock renders copyable text with Copy and Download buttons. jsonBlock's
+// sibling for a document that is already rendered server-side.
+function textBlock(text: string, copyLabel: string, filename: string): HTMLElement {
+    const copyBtn = el("button", { class: "btn btn-sm" }, copyLabel);
+    copyBtn.addEventListener("click", () => {
+        const done = (ok: boolean): void => {
+            copyBtn.textContent = ok ? "Copied!" : "Copy failed";
+            setTimeout(() => { copyBtn.textContent = copyLabel; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+        } else {
+            done(false);
+        }
+    });
+    const dlBtn = el("button", { class: "btn btn-sm" }, "Download .md");
+    dlBtn.addEventListener("click", () => {
+        const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+        const a = el("a", { href: url, download: filename }) as HTMLAnchorElement;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
+    return el("div", { class: "json-wrap" },
+        el("div", { class: "json-toolbar" }, copyBtn, dlBtn),
+        el("pre", { class: "json-block", text }),
+    );
 }
 
 const REQUEST_DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [

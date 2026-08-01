@@ -536,3 +536,113 @@ DELETE FROM pull_diff406_cache WHERE expires_at <= ?;
 DELETE FROM pull_diff406_cache WHERE id IN (
     SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- git_ref_cache (GET /repos/{owner}/{repo}/git/ref/{ref}) ----
+
+-- name: GetGitRefCache :one
+SELECT * FROM git_ref_cache
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: UpsertGitRefCache :exec
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitRefCache :exec
+UPDATE git_ref_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- DeleteGitRefCacheForRef drops ONE requested spelling of a ref -- the
+-- per-ref push flush (a push moves, creates, or deletes exactly one ref).
+-- name: DeleteGitRefCacheForRef :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteGitRefCacheByRepo :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredGitRefCache :exec
+DELETE FROM git_ref_cache WHERE expires_at <= ?;
+
+-- name: PruneGitRefCacheLRU :exec
+DELETE FROM git_ref_cache WHERE id IN (
+    SELECT id FROM git_ref_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflow_jobs_cache (Actions job reads) ----
+
+-- name: GetWorkflowJobsCache :one
+SELECT * FROM workflow_jobs_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowJobsCache :exec
+INSERT INTO workflow_jobs_cache (owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    run_id = excluded.run_id,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowJobsCache :exec
+UPDATE workflow_jobs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowJobsCacheForRun drops every row a run's jobs back -- both the
+-- run's own jobs pages and the single-job rows under it. A re-run replaces a
+-- run's jobs under the SAME run id, so this is the flush that matters.
+-- name: DeleteWorkflowJobsCacheForRun :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
+-- name: DeleteWorkflowJobsCacheByRepo :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowJobsCache :exec
+DELETE FROM workflow_jobs_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowJobsCacheLRU :exec
+DELETE FROM workflow_jobs_cache WHERE id IN (
+    SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- DeleteCommitsListCachePullSnapshots drops a repo's PR-commit snapshots --
+-- the rows whose ref key is the synthetic "pull/<number>/commits" (see
+-- internal/api/respcache_pullcommits.go). A push moves a PR's commit list
+-- with no per-PR signal, exactly as it does the PR-files pages, so it flushes
+-- these repo-wide as the belt behind the per-PR pull_request flush.
+-- name: DeleteCommitsListCachePullSnapshots :exec
+DELETE FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param LIKE 'pull/%';
+
+-- ---- code_quality_setup_cache (GET /repos/{owner}/{repo}/code-quality/setup) ----
+
+-- name: GetCodeQualitySetupCache :one
+SELECT * FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: UpsertCodeQualitySetupCache :exec
+INSERT INTO code_quality_setup_cache (owner, repo, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCodeQualitySetupCache :exec
+UPDATE code_quality_setup_cache SET last_used_at = ? WHERE owner = ? AND repo = ?;
+
+-- name: DeleteCodeQualitySetupCacheByRepo :exec
+DELETE FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCodeQualitySetupCache :exec
+DELETE FROM code_quality_setup_cache WHERE expires_at <= ?;
+
+-- name: PruneCodeQualitySetupCacheLRU :exec
+DELETE FROM code_quality_setup_cache WHERE id IN (
+    SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

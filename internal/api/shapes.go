@@ -1,0 +1,387 @@
+package api
+
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Passthrough SHAPE capture: what the request-group counters (requestgroups.go)
+// deliberately do not hold.
+//
+// The groups answer "which uncached route is hottest and why". Modeling that
+// route then needs the part the log throws away: what the request actually
+// looked like (query parameter names, Accept, who sends it) and — the piece
+// nothing recorded until now — what GitHub ANSWERS with, so the trimmed rebuild
+// can be designed without guessing GitHub's schema from memory. This store
+// samples that, per route shape, and `GET /api/brief` renders it as a ready-to-
+// act implementation brief.
+//
+// Values are never recorded. A body sample is reduced to its JSON SKELETON —
+// key names and value TYPES only, recursively — before anything is retained;
+// the raw bytes are discarded immediately. Query parameters keep their NAMES
+// (a value can carry a credential; a name cannot), matching the existing
+// pass_query rule.
+
+const (
+	// shapeStoreCap bounds the map. Route shapes come from normalizeRoute, a
+	// small fixed family; past the cap NEW shapes are dropped and known ones
+	// keep updating.
+	shapeStoreCap = 300
+	// shapeResampleAfter is how long a captured skeleton is trusted before the
+	// next passthrough on that route is sampled again. A route's response
+	// schema is effectively static, so this is about picking up variants (a
+	// different status, an added field), not freshness.
+	shapeResampleAfter = 30 * time.Minute
+	// shapeMaxSampleBytes caps how much of a response body is buffered to
+	// build a skeleton. Larger bodies stream through untouched and are simply
+	// not sampled (the skeleton of a truncated body would be a lie).
+	shapeMaxSampleBytes = 256 << 10
+	// shapeMaxPaths / shapeMaxNames bound the per-shape detail sets.
+	shapeMaxPaths = 3
+	shapeMaxNames = 24
+	// Skeleton bounds: a dynamic-key object (rare in GitHub's API) or a deep
+	// document must not produce an unbounded string.
+	skeletonMaxDepth   = 6
+	skeletonMaxKeys    = 40
+	skeletonMaxKeyLen  = 64
+	skeletonMaxRunes   = 8000
+	skeletonIndentUnit = "  "
+)
+
+// routeShape is everything captured about one (method, route shape) that a
+// cached-route implementation would otherwise have to be reverse-engineered
+// from the calling service's source.
+type routeShape struct {
+	method string
+	route  string
+	seen   int64
+	// queryNames is the UNION of query parameter names seen on this route,
+	// each with how often it appeared — the shape guard's whole input. Names
+	// only, never values.
+	queryNames map[string]int64
+	accepts    map[string]int64
+	// callers are the verified display names (or short principal keys) that
+	// send this request: who breaks if the rebuild trims a field they read.
+	callers map[string]int64
+	// statuses tallies the upstream answers, so a route whose dominant answer
+	// is a 404 verdict is visible as such (that is a cacheable answer, not a
+	// failure).
+	statuses map[int]int64
+	// samplePaths are a few concrete paths, for recognizing the resource.
+	samplePaths []string
+
+	// The captured response, per status: skeleton is the key/type outline,
+	// contentType the response's own media type, bodyBytes its real size.
+	bodies       map[int]*bodySample
+	lastSampleAt time.Time
+}
+
+type bodySample struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type,omitempty"`
+	Bytes       int    `json:"bytes"`
+	Skeleton    string `json:"skeleton"`
+	At          string `json:"at"`
+}
+
+// shapeStore holds routeShapes. In-memory and reset on restart, on the
+// requestLog / ratemeter stance: this is a live operator view, not an audit
+// log, and it must not force a cache-nuking schema bump.
+type shapeStore struct {
+	mu     sync.Mutex
+	shapes map[string]*routeShape
+}
+
+func newShapeStore() *shapeStore { return &shapeStore{shapes: make(map[string]*routeShape)} }
+
+// wantsBody reports whether the next passthrough on this route should have its
+// response body sampled: nothing captured yet for it, or the last capture has
+// aged past shapeResampleAfter. Nil-receiver-safe (routers built without a
+// shape store, as some tests do).
+func (s *shapeStore) wantsBody(method, route string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh := s.shapes[method+" "+route]
+	if sh == nil {
+		return len(s.shapes) < shapeStoreCap
+	}
+	return time.Since(sh.lastSampleAt) > shapeResampleAfter
+}
+
+// observation is one recorded passthrough. Body is the buffered response body
+// when it was sampled (nil otherwise) and is consumed here — never retained.
+type observation struct {
+	Method      string
+	Route       string
+	Path        string
+	QueryNames  []string
+	Accept      string
+	Caller      string
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+func (s *shapeStore) observe(o observation) {
+	if s == nil || o.Route == "" {
+		return
+	}
+	key := o.Method + " " + o.Route
+	skeleton := ""
+	if len(o.Body) > 0 {
+		skeleton = jsonSkeleton(o.Body)
+	}
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh := s.shapes[key]
+	if sh == nil {
+		if len(s.shapes) >= shapeStoreCap {
+			return
+		}
+		sh = &routeShape{
+			method: o.Method, route: o.Route,
+			queryNames: map[string]int64{}, accepts: map[string]int64{},
+			callers: map[string]int64{}, statuses: map[int]int64{},
+			bodies: map[int]*bodySample{},
+		}
+		s.shapes[key] = sh
+	}
+	sh.seen++
+	sh.statuses[o.Status]++
+	bumpBounded(sh.queryNames, o.QueryNames...)
+	if a := strings.TrimSpace(o.Accept); a != "" {
+		bumpBounded(sh.accepts, clampRoute(a))
+	}
+	if o.Caller != "" {
+		bumpBounded(sh.callers, o.Caller)
+	}
+	if len(sh.samplePaths) < shapeMaxPaths && !containsString(sh.samplePaths, o.Path) {
+		sh.samplePaths = append(sh.samplePaths, clampRoute(o.Path))
+	}
+	if skeleton != "" {
+		sh.bodies[o.Status] = &bodySample{
+			Status: o.Status, ContentType: o.ContentType,
+			Bytes: len(o.Body), Skeleton: skeleton, At: now.Format(time.RFC3339),
+		}
+		sh.lastSampleAt = now
+		// Keep the per-status body map bounded the same way as everything
+		// else: statuses are few, but a pathological upstream must not grow it.
+		if len(sh.bodies) > shapeMaxNames {
+			for k := range sh.bodies {
+				delete(sh.bodies, k)
+				break
+			}
+		}
+	}
+}
+
+// bumpBounded increments counters for keys, refusing to grow the map past
+// shapeMaxNames (known keys keep counting).
+func bumpBounded(m map[string]int64, keys ...string) {
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		if _, ok := m[k]; !ok && len(m) >= shapeMaxNames {
+			continue
+		}
+		m[k]++
+	}
+}
+
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// routeShapeSnapshot is one shape in the brief payload.
+type routeShapeSnapshot struct {
+	Key         string        `json:"key"`
+	Method      string        `json:"method"`
+	Route       string        `json:"route"`
+	Seen        int64         `json:"seen"`
+	QueryNames  []countedName `json:"query_names,omitempty"`
+	Accepts     []countedName `json:"accepts,omitempty"`
+	Callers     []countedName `json:"callers,omitempty"`
+	Statuses    []countedInt  `json:"statuses,omitempty"`
+	SamplePaths []string      `json:"sample_paths,omitempty"`
+	Bodies      []bodySample  `json:"bodies,omitempty"`
+}
+
+type countedName struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+type countedInt struct {
+	Value int   `json:"value"`
+	Count int64 `json:"count"`
+}
+
+func (s *shapeStore) snapshot() map[string]routeShapeSnapshot {
+	out := map[string]routeShapeSnapshot{}
+	if s == nil {
+		return out
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, sh := range s.shapes {
+		snap := routeShapeSnapshot{
+			Key: key, Method: sh.method, Route: sh.route, Seen: sh.seen,
+			QueryNames: sortedCounts(sh.queryNames),
+			Accepts:    sortedCounts(sh.accepts),
+			Callers:    sortedCounts(sh.callers),
+			Statuses:   sortedIntCounts(sh.statuses),
+		}
+		snap.SamplePaths = append(snap.SamplePaths, sh.samplePaths...)
+		for _, b := range sh.bodies {
+			snap.Bodies = append(snap.Bodies, *b)
+		}
+		sort.Slice(snap.Bodies, func(i, j int) bool { return snap.Bodies[i].Status < snap.Bodies[j].Status })
+		out[key] = snap
+	}
+	return out
+}
+
+func sortedCounts(m map[string]int64) []countedName {
+	out := make([]countedName, 0, len(m))
+	for k, v := range m {
+		out = append(out, countedName{Name: k, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func sortedIntCounts(m map[int]int64) []countedInt {
+	out := make([]countedInt, 0, len(m))
+	for k, v := range m {
+		out = append(out, countedInt{Value: k, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
+	return out
+}
+
+// jsonSkeleton reduces a JSON document to its KEY/TYPE outline: every scalar
+// becomes its type name, every array collapses to its first element's shape
+// (with the observed length), every object keeps its key names. No value ever
+// survives — this is the one property that makes retaining a sample of another
+// caller's response safe.
+//
+// Returns "" for anything that is not JSON (an opaque body has no shape to
+// model, which is itself the answer: such a route cannot be a tier-2 route).
+func jsonSkeleton(body []byte) string {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	writeSkeleton(&sb, v, 0)
+	out := sb.String()
+	if len([]rune(out)) > skeletonMaxRunes {
+		return string([]rune(out)[:skeletonMaxRunes]) + "\n… (truncated)"
+	}
+	return out
+}
+
+func writeSkeleton(sb *strings.Builder, v any, depth int) {
+	if depth > skeletonMaxDepth {
+		sb.WriteString("…")
+		return
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if len(t) == 0 {
+			sb.WriteString("{}")
+			return
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		truncated := false
+		if len(keys) > skeletonMaxKeys {
+			keys, truncated = keys[:skeletonMaxKeys], true
+		}
+		sb.WriteString("{\n")
+		pad := strings.Repeat(skeletonIndentUnit, depth+1)
+		for _, k := range keys {
+			sb.WriteString(pad)
+			sb.WriteString(clampKey(k))
+			sb.WriteString(": ")
+			writeSkeleton(sb, t[k], depth+1)
+			sb.WriteString("\n")
+		}
+		if truncated {
+			sb.WriteString(pad + "… (more keys)\n")
+		}
+		sb.WriteString(strings.Repeat(skeletonIndentUnit, depth) + "}")
+	case []any:
+		if len(t) == 0 {
+			sb.WriteString("[] (empty)")
+			return
+		}
+		sb.WriteString("[")
+		writeSkeleton(sb, t[0], depth+1)
+		sb.WriteString("] × ")
+		sb.WriteString(itoa(len(t)))
+	case string:
+		sb.WriteString("string")
+	case float64:
+		sb.WriteString("number")
+	case bool:
+		sb.WriteString("bool")
+	case nil:
+		// A null is load-bearing information for a rebuild: the field is
+		// nullable and its key must still be emitted.
+		sb.WriteString("null")
+	default:
+		sb.WriteString("unknown")
+	}
+}
+
+func clampKey(k string) string {
+	if len(k) > skeletonMaxKeyLen {
+		return k[:skeletonMaxKeyLen] + "…"
+	}
+	return k
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}

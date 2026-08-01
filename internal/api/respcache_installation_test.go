@@ -78,3 +78,54 @@ func TestCachedRepoInstallation_RecordsAppIdentity(t *testing.T) {
 	assert.Equal(t, "app:777", ids[0].Actor)
 	assert.Equal(t, "testapp", ids[0].Login)
 }
+
+// The OWNER-level lookups share the repo route's absorb, rebuild, and row
+// space (under sentinel repo values). This pins the two properties that
+// sharing must not break: each scope caches independently, and neither
+// collides with the repo-level answer for the same login.
+func TestCachedOwnerInstallation_ScopesAreIndependent(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("Authorization", "Bearer "+goodAppJWT)
+		return do(t, router, req)
+	}
+
+	targets := []string{
+		"/orgs/org1/installation",
+		"/users/org1/installation",
+		"/repos/org1/repo1/installation",
+	}
+	for i, target := range targets {
+		w := get(target)
+		require.Equal(t, http.StatusOK, w.Code, target)
+		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "%s must not be answered by another scope's row", target)
+		assert.Equal(t, int32(i+1), atomic.LoadInt32(&u.installHits))
+		assertNoURLKeys(t, w.Body.Bytes())
+	}
+	for _, target := range targets {
+		w := get(target)
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), "%s must serve from its own row", target)
+	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.installHits), "hits must not call upstream")
+
+	// Owner rows carry the same installation id, so the same event flushes them.
+	postWebhook(t, router, "installation", `{"action":"suspend","installation":{"id":42}}`)
+	for _, target := range targets {
+		assert.Equal(t, "miss", get(target).Header().Get(cacheHeader), "%s must be flushed", target)
+	}
+}
+
+// An unverifiable bearer forwards unchanged, uncached — GitHub answers the
+// caller itself, exactly as on the repo-level route.
+func TestCachedOwnerInstallation_UnverifiedForwards(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	req := httptest.NewRequest("GET", "/orgs/org1/installation", nil)
+	req.Header.Set("Authorization", "Bearer not-an-app-jwt")
+
+	w := do(t, router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits))
+}
