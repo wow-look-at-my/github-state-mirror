@@ -1,11 +1,14 @@
 package api
 
 import (
+	_ "embed"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 )
 
@@ -72,92 +75,105 @@ func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, l
 	return out
 }
 
-// renderBrief writes the Markdown document. Keep it paste-ready: no ANSI, no
-// tables wider than they need to be, every section self-describing.
-func renderBrief(snap requestLogSnapshot, cands []briefCandidate, generatedAt string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# github-state-mirror — uncached traffic brief\n\n")
-	fmt.Fprintf(&b, "Generated %s. Counters are cumulative since the process last restarted.\n\n", generatedAt)
-
-	fmt.Fprintf(&b, "## Traffic since restart\n\n")
-	fmt.Fprintf(&b, "%d requests — ", snap.Total)
-	parts := make([]string, 0, len(snap.ByDisposition))
-	for _, d := range []string{DispHit, DispMiss, DispPassthrough, DispWrite, DispError} {
-		if n, ok := snap.ByDisposition[d]; ok {
-			parts = append(parts, fmt.Sprintf("%s %d (%s)", d, n, pct(n, snap.Total)))
-		}
-	}
-	fmt.Fprintf(&b, "%s\n\n", strings.Join(parts, ", "))
-
-	fmt.Fprintf(&b, "## Uncached routes, by passthrough volume\n\n")
-	if len(cands) == 0 {
-		b.WriteString("No route has forwarded a read uncached since restart.\n\n")
-	}
-	for i, c := range cands {
-		fmt.Fprintf(&b, "### %d. `%s`\n\n", i+1, c.Key)
-		fmt.Fprintf(&b, "- **Passthrough** %d of %d total (%s of this route; %s of all passthroughs)\n",
-			c.Passthrough, c.Total, pct(c.Passthrough, c.Total), pct(c.Passthrough, snap.ByDisposition[DispPassthrough]))
-		if len(c.ByReason) > 0 {
-			fmt.Fprintf(&b, "- **Why uncached**: %s\n", joinCounts(c.ByReason))
-		}
-		if c.Hit+c.Miss+c.Error > 0 {
-			fmt.Fprintf(&b, "- Other dispositions: hit %d, miss %d, error %d\n", c.Hit, c.Miss, c.Error)
-		}
-		if c.Debounced > 0 || c.UpstreamSaved > 0 {
-			fmt.Fprintf(&b, "- Debounce: held %d, upstream calls saved %d%s\n", c.Debounced, c.UpstreamSaved,
-				debounceVerdict(c.Debounced, c.UpstreamSaved))
-		}
-		if c.PassQuery != "" {
-			fmt.Fprintf(&b, "- Sampled passthrough query (names only): `?%s`\n", c.PassQuery)
-		}
-		if c.Sample != "" {
-			fmt.Fprintf(&b, "- Sample path: `%s`\n", c.Sample)
-		}
-		if c.Shape != nil {
-			writeShape(&b, c.Shape)
-		} else {
-			b.WriteString("- _No response shape captured yet — it is sampled on the next passthrough for this route._\n")
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString(briefChecklist)
-	return b.String()
+// briefView is the template's data. It is a flat, already-computed view: the
+// template renders, it does not decide (the one exception is the trivial
+// per-candidate arithmetic the FuncMap covers).
+type briefView struct {
+	GeneratedAt string
+	Total       int64
+	// Dispositions is the totals line, in a fixed reading order rather than
+	// map order.
+	Dispositions []dispositionCount
+	// PassthroughTotal is the denominator for "% of all passthroughs".
+	PassthroughTotal int64
+	Candidates       []briefCandidate
+	Checklist        string
 }
 
-func writeShape(b *strings.Builder, sh *routeShapeSnapshot) {
-	if len(sh.QueryNames) > 0 {
-		fmt.Fprintf(b, "- Query parameter names seen (union, never values): %s\n", namesLine(sh.QueryNames))
-	}
-	if len(sh.Accepts) > 0 {
-		fmt.Fprintf(b, "- Accept headers seen: %s\n", namesLine(sh.Accepts))
-	}
-	if len(sh.Callers) > 0 {
-		fmt.Fprintf(b, "- Callers: %s\n", namesLine(sh.Callers))
-	}
-	if len(sh.Statuses) > 0 {
-		parts := make([]string, 0, len(sh.Statuses))
-		for _, s := range sh.Statuses {
-			parts = append(parts, fmt.Sprintf("%d ×%d", s.Value, s.Count))
+type dispositionCount struct {
+	Name  string
+	Count int64
+}
+
+// briefTemplate is the document (brief.md.tmpl) -- kept as Markdown in its own
+// file so editing a heading or a bullet is editing Markdown. text/template,
+// NOT html/template: this is Markdown for a human and a model to read, and
+// HTML-escaping would mangle every `<`, `&`, and quote in a captured path or
+// skeleton.
+//
+//go:embed brief.md.tmpl
+var briefTemplate string
+
+// briefTmpl is parsed once at init: a template typo is then a startup panic in
+// every test and every boot, not a broken response some Tuesday.
+var briefTmpl = template.Must(template.New("brief").Funcs(briefFuncs).Parse(briefTemplate))
+
+// briefFuncs are the computations the document needs. Each is a pure function
+// over already-collected data; nothing here reaches for state.
+var briefFuncs = template.FuncMap{
+	"pct":     pct,
+	"ordinal": func(i int) int { return i + 1 },
+	"add": func(ns ...int64) int64 {
+		var sum int64
+		for _, n := range ns {
+			sum += n
 		}
-		fmt.Fprintf(b, "- Upstream statuses: %s\n", strings.Join(parts, ", "))
-	}
-	if len(sh.SamplePaths) > 1 {
-		fmt.Fprintf(b, "- More sample paths: `%s`\n", strings.Join(sh.SamplePaths[1:], "`, `"))
-	}
-	for _, body := range sh.Bodies {
-		if body.Skeleton == "" {
-			continue
+		return sum
+	},
+	"rest": func(ss []string) []string {
+		if len(ss) < 2 {
+			return nil
 		}
-		fmt.Fprintf(b, "\n**Response shape — HTTP %d** (%s, %d bytes, keys and types only):\n\n```\n%s\n```\n",
-			body.Status, orDash(body.ContentType), body.Bytes, body.Skeleton)
+		return ss[1:]
+	},
+	"backtickList": func(ss []string) string {
+		return "`" + strings.Join(ss, "`, `") + "`"
+	},
+	"names":           namesLine,
+	"counts":          joinCounts,
+	"statuses":        statusesLine,
+	"debounceVerdict": debounceVerdict,
+	"orDash":          orDash,
+}
+
+// renderBrief renders the Markdown document. Paste-ready by construction: no
+// ANSI, every section self-describing, the checklist last.
+func renderBrief(snap requestLogSnapshot, cands []briefCandidate, generatedAt string) string {
+	view := briefView{
+		GeneratedAt:      generatedAt,
+		Total:            snap.Total,
+		PassthroughTotal: snap.ByDisposition[DispPassthrough],
+		Candidates:       cands,
+		Checklist:        briefChecklist,
 	}
+	for _, d := range []string{DispHit, DispMiss, DispPassthrough, DispWrite, DispError} {
+		if n, ok := snap.ByDisposition[d]; ok {
+			view.Dispositions = append(view.Dispositions, dispositionCount{Name: d, Count: n})
+		}
+	}
+	var b strings.Builder
+	if err := briefTmpl.Execute(&b, view); err != nil {
+		// The template is parsed at init and its data is plain structs, so an
+		// execution error means a template edit no test exercised. Say so in
+		// the document rather than serving a silent half-brief.
+		slog.Error("render implementation brief failed", "error", err)
+		return "# github-state-mirror — uncached traffic brief\n\nThe brief template failed to render: " + err.Error() + "\n"
+	}
+	return b.String()
 }
 
 func namesLine(cs []countedName) string {
 	parts := make([]string, 0, len(cs))
 	for _, c := range cs {
 		parts = append(parts, fmt.Sprintf("`%s` ×%d", c.Name, c.Count))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func statusesLine(ss []countedInt) string {
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, fmt.Sprintf("%d ×%d", s.Value, s.Count))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -238,6 +254,14 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"6. **Only cacheable answers absorb.** A 200 whose body the model can hold, plus any " +
 	"authoritative verdict worth caching (a 404 \"absent\" answer often is). Transient failures " +
 	"(5xx, 429) relay unstored, every time.\n\n" +
+	"### Where the response shape comes from\n\n" +
+	"The skeletons above are what THIS fleet actually received — the authority on which " +
+	"answers really occur, which query shapes callers send, and who breaks if the rebuild trims a " +
+	"field. They are not the only source: GitHub publishes an OpenAPI description of every " +
+	"documented endpoint (`github/rest-api-description`, `descriptions/api.github.com/api.github.com.json`), " +
+	"which gives the full schema including fields this traffic happened not to exercise, and their " +
+	"nullability. For a documented endpoint, read the spec AND the capture; a route with no captured " +
+	"skeleton is not necessarily an undocumented one.\n\n" +
 	"### Files a new route touches\n\n" +
 	"- `internal/database/schema.sql` — the snapshot table (+ unique key and LRU index), then bump " +
 	"`SchemaVersion` in `internal/database/db.go` (there are no migrations: the cache is nuked and " +

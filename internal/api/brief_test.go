@@ -163,3 +163,55 @@ func TestDashboardBrief_AdminOnlyAndRendersRecordedTraffic(t *testing.T) {
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	require.Equal(t, http.StatusBadRequest, do(t, router, req).Code)
 }
+
+// The template is parsed at init (template.Must), so a syntax error is already
+// a startup panic. What a test still has to cover is EXECUTION: a field
+// renamed out from under the template, or a FuncMap entry dropped, fails only
+// when something renders. Both edges do.
+func TestRenderBriefTemplateExecutes(t *testing.T) {
+	empty := renderBrief(requestLogSnapshot{ByDisposition: map[string]int64{}}, nil, "2026-08-01T00:00:00Z")
+	require.Contains(t, empty, "No route has forwarded a read uncached since restart.")
+	require.Contains(t, empty, "## How to model one of these")
+	require.NotContains(t, empty, "template failed to render")
+
+	// Every optional section present at once: reasons, other dispositions,
+	// debounce, query shape, sample, and a captured body.
+	snap := requestLogSnapshot{
+		Total:         100,
+		ByDisposition: map[string]int64{DispHit: 40, DispPassthrough: 60},
+		Groups: []requestGroupSnapshot{{
+			Key: "GET /repos/{owner}/{repo}/hooks", Route: "/repos/{owner}/{repo}/hooks",
+			Total: 60, Passthrough: 60, Hit: 0, Miss: 0, Error: 0,
+			ByReason: map[string]int64{"unrouted": 60}, PassQuery: "per_page",
+			Debounced: 60, UpstreamSaved: 0, Sample: "/repos/o/r/hooks",
+		}},
+	}
+	shapes := map[string]routeShapeSnapshot{"GET /repos/{owner}/{repo}/hooks": {
+		Key:         "GET /repos/{owner}/{repo}/hooks",
+		QueryNames:  []countedName{{Name: "per_page", Count: 60}},
+		Accepts:     []countedName{{Name: "application/vnd.github+json", Count: 60}},
+		Callers:     []countedName{{Name: "pr-minder", Count: 60}},
+		Statuses:    []countedInt{{Value: 200, Count: 60}},
+		SamplePaths: []string{"/repos/o/r/hooks", "/repos/o/other/hooks"},
+		Bodies:      []bodySample{{Status: 200, ContentType: "application/json", Bytes: 42, Skeleton: "[{\n  id: number\n}] × 1"}},
+	}}
+	md := renderBrief(snap, buildBrief(snap, shapes, 10), "2026-08-01T00:00:00Z")
+	require.NotContains(t, md, "template failed to render")
+	for _, want := range []string{
+		"### 1. `GET /repos/{owner}/{repo}/hooks`",
+		"100.0% of this route",
+		"**Why uncached**: `unrouted` ×60",
+		"all cost, no benefit", // held 60, saved 0
+		"Sampled passthrough query (names only): `?per_page`",
+		"Callers: `pr-minder` ×60",
+		"Upstream statuses: 200 ×60",
+		"More sample paths: `/repos/o/other/hooks`",
+		"**Response shape — HTTP 200** (application/json, 42 bytes",
+		"id: number",
+	} {
+		require.Contains(t, md, want)
+	}
+	// The fenced skeleton must be separated from the checklist heading, or the
+	// two run together into one unreadable block.
+	require.Contains(t, md, "```\n\n## How to model one of these")
+}

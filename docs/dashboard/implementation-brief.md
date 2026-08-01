@@ -78,3 +78,26 @@ continuously and no webhook names the change.
 
 The JSON payload carries the same structure alongside the Markdown, so the
 endpoint is usable programmatically.
+
+The document itself is a `text/template` in `internal/api/brief.md.tmpl`,
+embedded and parsed once at init (`template.Must`, so a syntax error is a
+startup panic rather than a broken response some Tuesday). It lives in its own
+file so editing a heading or a bullet is editing Markdown; everything computed
+— percentages, counted-name lists, the debounce verdict — comes from the
+FuncMap in `brief.go`, and the template renders rather than decides. It is
+`text/template`, never `html/template`: the output is Markdown for a human and
+a model to read, and HTML-escaping would mangle every `<`, `&`, and quote in a
+captured path or skeleton.
+
+## What the capture is not
+
+It records what this fleet actually sends and receives. That makes it the
+authority on which answers really occur, which query shapes callers use, and
+who to survey before pinning a URL field — but it is not the only source of a
+response schema. GitHub publishes an OpenAPI description of every documented
+endpoint (`github/rest-api-description`), which carries the full schema
+including fields this traffic happens not to exercise, and their nullability.
+The Code Quality setup route was modeled from that spec before any sample had
+been captured. **A route with no captured skeleton is not necessarily an
+undocumented one** — check the spec first, then use the capture for the traffic
+and for anything the docs do not cover. The brief's checklist says so too.
