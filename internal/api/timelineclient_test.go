@@ -45,10 +45,10 @@ globalThis.fetch = async (_url, init) => {
     };
 };
 
-const { fetchDecoded } = await import("%s");
+const { fetchTimelineBytes } = await import("%s");
 let threw = false;
 try {
-    await fetchDecoded("/api/timeline");
+    await fetchTimelineBytes("/api/timeline");
 } catch (e) {
     threw = true;
 }
@@ -77,7 +77,7 @@ func TestTimelineClientRefusesJSON(t *testing.T) {
 
 	got := string(out)
 	require.Contains(t, got, `"threw":true`,
-		"fetchDecoded ACCEPTED a JSON answer (%s) — the chart would silently take "+
+		"fetchTimelineBytes ACCEPTED a JSON answer (%s) — the chart would silently take "+
 			"the ~10x-slower decode. The endpoint may serve JSON to curl only "+
 			"because the client refuses it.", got)
 	require.Contains(t, got, `"sentAccept":"`+timelineWireType+`"`,

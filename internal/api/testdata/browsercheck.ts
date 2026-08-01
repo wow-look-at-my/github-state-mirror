@@ -1,10 +1,15 @@
 // END-TO-END frame-budget check, in a real browser.
 //
-// framecheck.mjs measures our decoder under node. That is the bigger half of
-// the work but not all of it: the chart also hands intervals to the
-// <timeline-view> component, which ingests, packs sub-tracks and RENDERS —
-// all on the same main thread. A decode that never blocks a frame is worth
-// nothing if the ingest right after it blocks for 40 ms.
+// The codec and its one-chunk-per-frame driver live in js-snippets and are
+// unit-tested there, off-browser. That is the bigger half of the work but not
+// all of it: the chart also hands intervals to the <timeline-view> component,
+// which ingests, packs sub-tracks and RENDERS — all on the same main thread,
+// and none of it visible to a node test. A decode that never blocks a frame is
+// worth nothing if the ingest right after it blocks for 40 ms.
+//
+// So this is the mirror's end-to-end frame check, and the only place the whole
+// pipeline (fetch -> library decode -> our intervals -> component draw) is
+// measured together.
 //
 // So this boots the REAL page pieces in headless Chromium — the built
 // assets/timeline.js, the real <gsm-timeline> element it registers, the real
@@ -292,20 +297,30 @@ page.on("console", (m) => {
 const chunkCache = new Map<string, string | Buffer>();
 await page.route("https://sites.pazer.build/**", (route) => {
     const url = route.request().url();
-    if (url.endsWith("/ui/timeline-view.js")) {
-        return route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body: componentJs });
-    }
+    const serve = (body: string | Buffer): Promise<void> =>
+        route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body });
+
     if (!chunkCache.has(url)) {
-        // A locally built component (GSM_COMPONENT_DIST=<js-snippets>/dist)
-        // names its own chunks, which do not exist upstream — serve those from
-        // disk so an unmerged component change can be measured before it
-        // publishes. Everything else still comes from the published site.
+        // The library is CODE-SPLIT and now more than one module (the
+        // component and the wire codec), so serving one file for everything
+        // under this origin deadlocks the module graph on a fake cycle. Map
+        // each URL to its own file instead.
+        //
+        // With GSM_COMPONENT_DIST=<js-snippets>/dist, every module comes from
+        // that build — which is what lets an UNMERGED library change be
+        // measured before it publishes. The site path after /branch/<name>/
+        // is exactly the layout of dist/, so one join covers entries and
+        // chunks alike.
         const localDir = process.env.GSM_COMPONENT_DIST;
-        const chunkName = new URL(url).pathname.split("/").pop() ?? "";
-        const local = localDir ? join(localDir, chunkName) : null;
+        const rel = new URL(url).pathname.replace(/^\/js-snippets\/branch\/[^/]+\//, "");
+        const local = localDir ? join(localDir, rel) : null;
         if (local && existsSync(local)) {
             chunkCache.set(url, readFileSync(local));
+        } else if (url.endsWith("/ui/timeline-view.js")) {
+            chunkCache.set(url, componentJs); // the explicit copy passed in
         } else {
+            // Everything else comes from the published site; the browser has
+            // no route to the internet here, node does.
             try {
                 chunkCache.set(url, execFileSync("curl", ["-fsSL", url], { maxBuffer: 32 << 20 }));
             } catch {
@@ -313,7 +328,7 @@ await page.route("https://sites.pazer.build/**", (route) => {
             }
         }
     }
-    return route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body: chunkCache.get(url) });
+    return serve(chunkCache.get(url)!);
 });
 
 await page.goto(`http://localhost:${port}/${process.env.GSM_WARM === "1" ? "?warm" : ""}`);

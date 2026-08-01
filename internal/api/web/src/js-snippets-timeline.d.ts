@@ -97,3 +97,57 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
         staleAfterMs?: number;
     }
 }
+
+// The wire format the chart is fed with — same library, same runtime-import
+// model, same reason for a hand-maintained shim. Types only, trimmed to what
+// the adapter touches: the codec decodes a LAYOUT and takes this mirror's
+// column names as a schema, so nothing here carries mirror vocabulary.
+declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js' {
+    /** How a payload's columns are named and encoded — the consumer's own. */
+    export interface WireSchema {
+        magic: string;
+        deltaU: readonly string[];
+        deltaZ: readonly string[];
+        plain: readonly string[];
+        bits: readonly string[];
+        strings: readonly string[];
+    }
+
+    export interface StringColumn {
+        dict: string[];
+        /** null when the column went unused: every row reads dict[0]. */
+        idx: Int32Array | null;
+    }
+
+    /** One decoded page: typed arrays and dictionaries, no per-row objects. */
+    export interface Columns {
+        n: number;
+        u: Record<string, Float64Array>;
+        z: Record<string, Float64Array>;
+        p: Record<string, Int32Array>;
+        b: Record<string, Uint8Array>;
+        s: Record<string, StringColumn>;
+    }
+
+    export interface DecodedPage {
+        c: Columns;
+        maxId: number;
+        retentionStart: number;
+        now: number;
+    }
+
+    /** A resumable unit of work: yields periodically, returns its result. */
+    export type Task<T> = Generator<undefined, T, undefined>;
+
+    export function decodePageGen(buf: Uint8Array, schema: WireSchema): Task<DecodedPage>;
+    export function decodePage(buf: Uint8Array, schema: WireSchema): DecodedPage;
+    /** One chunk per frame, a chunk being CHUNK_MS of real work. */
+    export function runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T>;
+    export function nextFrame(): Promise<void>;
+    export function drain<T>(task: Task<T>): T;
+    export function stringAt(c: Columns, name: string, i: number): string;
+    export function bitAt(c: Columns, name: string, i: number): boolean;
+    export function rowOfId(c: Columns, idColumn: string, id: number): number;
+    export const CHUNK_MS: number;
+    export const STEP: number;
+}

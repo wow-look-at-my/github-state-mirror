@@ -27,20 +27,14 @@ a second Go module with protobuf and bson dependencies to re-derive a decision
 already made is dead weight. To re-run it, check out `4a78cb8^` — nothing since
 then changed the shape of the data it measured.
 
-What survives in the tree is only what measures **shipped** code:
-`internal/api/testdata/` — `framecheck.ts` (the frame budget, run by
-`TestTimelineFrameBudget`), `browsercheck.ts` (the real-browser harness), and
-`shipbench.ts` (the shipped decoder against the JSON path it replaced).
+What survives in this repo is `internal/api/testdata/browsercheck.ts`, the
+real-browser harness — the only place the whole pipeline (fetch → library
+decode → our intervals → component draw) is measured together. It is
+TypeScript, type-checked against `web/src/` by `npm run check:harness`, so a
+changed export fails the build rather than surfacing mid-measurement.
 
-They are **TypeScript**, and that is load-bearing rather than tidiness. Each
-takes its TYPES from `web/src/timeline.ts` and its MODULE from the built
-`web/assets/timeline.js`: it must exercise the exact bytes the server embeds,
-but it should fail to COMPILE when the API it drives changes shape. That
-failure is not hypothetical — `runSliced` lost a parameter, framecheck kept
-passing the old one, and it surfaced as `pacer.charge is not a function`
-halfway through a measurement. `npm run check:harness` (noEmit; CI's
-`web-check` job) now catches it; node runs the `.ts` directly, so there is no
-build step and no generated artifact.
+The node harnesses that drove the codec (`framecheck.ts`, `shipbench.ts`) are
+gone with the codec itself — see the next section.
 
 Codecs: **json** (today), **bson** (`mongo-driver/v2`), **protobuf**
 (`timeline.proto`, hand-encoded with `protowire` — byte-identical to what
@@ -132,6 +126,37 @@ faster format.
 6. **Compression is not optional and gzip is nearly free at this shape.**
    columnar+gzip-1 costs 9 ms of server CPU for the full ring; on the realistic
    one-hour payload it is under 1 ms.
+
+## Where the format lives
+
+**The codec is in js-snippets** (`src/ui/timeline-wire.ts`), next to the
+`<timeline-view>` component it exists to feed. That is where it belongs: a
+chart holding 100k intervals needs a way to receive them that is not 27 MB of
+JSON, and a decode that fits in a frame — both are properties of the timeline,
+not of this particular consumer. The browser imports it at runtime from the
+library site exactly like the component.
+
+The split is LAYOUT vs VOCABULARY:
+
+- **js-snippets owns the layout** — magic, varints, dictionaries, bitsets,
+  columns — plus the one-chunk-per-frame driver. It takes the column names as
+  a schema parameter, so it carries none of this mirror's words.
+- **The mirror owns the vocabulary and the meaning** — which 13 columns it
+  sends (`SCHEMA` in `web/src/timeline.ts`), and `intervalsGen`/`eventAt`,
+  which turn columns into intervals with labels, states and lanes. None of
+  that is wire format; all of it is what a github-mirror event *is*.
+
+The wire bytes did not change when it moved: the column names were never on
+the wire.
+
+**The Go encoder stays here** (`internal/api/timelinewire.go`) — it is server
+code, and js-snippets is a pnpm/ts0 library with no Go. Two implementations of
+one layout in two repos are held together by BYTES:
+`timelinewire_golden_test.go` asserts the encoder emits an exact payload for a
+fixed snapshot, and js-snippets' `timeline-wire.test.ts` decodes that same
+base64 and asserts the same values. Neither can drift without one going red,
+and neither runs the other's toolchain — which the old arrangement did, with a
+Go unit test executing a built browser bundle.
 
 ## Two encodings, one of which the chart refuses
 
