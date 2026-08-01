@@ -41,47 +41,54 @@ const (
 // webhook event carries no request noise and vice versa; Disposition is shared
 // (webhook: applied/invalidated/ignored/error — request: hit/miss/passthrough/
 // write/error).
+//
+// The `wire:` tags are this repo's whole half of the Timeline chart's columnar
+// format: the column names and their encodings, declared on the fields they
+// describe. js-snippets' timelinewire does the rest. Field order within a kind
+// IS wire order, and the chart's SCHEMA literal must match — pinned by
+// TestTimelineSchemaMatchesChart, since a mismatch encodes perfectly and only
+// fails in the browser.
 type Event struct {
 	// ID is a monotonically increasing sequence number — the client's merge
 	// key and the ?since= cursor.
-	ID   uint64 `json:"id"`
-	Kind string `json:"kind"`
+	ID   uint64 `json:"id" wire:"id,deltau"`
+	Kind string `json:"kind" wire:"kind,string"`
 	// Lane is the swimlane this event renders on: "⇐ <event type>" for
 	// webhooks, "<METHOD> <route shape>" (normalizeRoute's bounded families)
 	// for requests — never a per-URL lane.
-	Lane string `json:"lane"`
+	Lane string `json:"lane" wire:"lane,string"`
 	// Start is when handling/fetching began; DurMs is the real measured
 	// duration in milliseconds (0 for a sub-millisecond event — still its
 	// true rounding, never a fabricated instant).
-	Start time.Time `json:"start"`
-	DurMs int64     `json:"dur_ms"`
+	Start time.Time `json:"start" wire:"start,deltaz"`
+	DurMs int64     `json:"dur_ms" wire:"dur,plain"`
 
-	Disposition string `json:"disposition,omitempty"`
+	Disposition string `json:"disposition,omitempty" wire:"disposition,string"`
 
 	// Webhook fields.
-	EventType  string `json:"event_type,omitempty"`
-	Action     string `json:"action,omitempty"`
-	DeliveryID string `json:"delivery_id,omitempty"`
-	Repo       string `json:"repo,omitempty"`
+	EventType  string `json:"event_type,omitempty" wire:"event_type,string"`
+	Action     string `json:"action,omitempty" wire:"action,string"`
+	DeliveryID string `json:"delivery_id,omitempty" wire:"delivery_id,string"`
+	Repo       string `json:"repo,omitempty" wire:"repo,string"`
 
 	// Request fields.
-	Method string `json:"method,omitempty"`
-	Route  string `json:"route,omitempty"`
-	Status int    `json:"status,omitempty"`
+	Method string `json:"method,omitempty" wire:"method,string"`
+	Route  string `json:"route,omitempty" wire:"route,string"`
+	Status int    `json:"status,omitempty" wire:"status,plain"`
 	// Actor is the caller's principal/label key; ActorName its verified
 	// display name when one is known (display-only, like the request log).
-	Actor     string `json:"actor,omitempty"`
-	ActorName string `json:"actor_name,omitempty"`
+	Actor     string `json:"actor,omitempty" wire:"actor,string"`
+	ActorName string `json:"actor_name,omitempty" wire:"actor_name,string"`
 
 	// Detail is a short free-form tooltip line (e.g. an unverified delivery's
 	// claimed event type). Metadata only — never bodies or secrets.
-	Detail string `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty" wire:"detail,string"`
 
 	// Notify fields: the delivery target's host, the 1-based attempt number,
 	// and whether this attempt was terminal (success, or the last retry).
-	Target  string `json:"target,omitempty"`
-	Attempt int    `json:"attempt,omitempty"`
-	Final   bool   `json:"final,omitempty"`
+	Target  string `json:"target,omitempty" wire:"target,string"`
+	Attempt int    `json:"attempt,omitempty" wire:"attempt,plain"`
+	Final   bool   `json:"final,omitempty" wire:"final,bits"`
 }
 
 // end is the instant the event finished — the eviction clock. Events are

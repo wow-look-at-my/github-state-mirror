@@ -287,14 +287,14 @@ func TestTimeline_ColumnarNegotiated(t *testing.T) {
 	assert.Equal(t, timelineWireType, w.Header().Get("Content-Type"))
 	assert.Contains(t, w.Header().Values("Vary"), "Accept")
 
-	got := decodeTimelineV1(t, w.Body.Bytes())
-	require.Len(t, got.events, 2)
-	assert.Equal(t, "⇐ push", got.events[0].Lane)
-	assert.Equal(t, "applied", got.events[0].Disposition)
-	assert.Equal(t, "GET /repos/{owner}/{repo}/pulls", got.events[1].Lane)
-	assert.Equal(t, 200, got.events[1].Status)
-	assert.Equal(t, "PazerOP", got.events[1].ActorName)
-	assert.Equal(t, uint64(2), got.maxID)
+	events, h := decodeTimeline(t, w.Body.Bytes())
+	require.Len(t, events, 2)
+	assert.Equal(t, "⇐ push", events[0].Lane)
+	assert.Equal(t, "applied", events[0].Disposition)
+	assert.Equal(t, "GET /repos/{owner}/{repo}/pulls", events[1].Lane)
+	assert.Equal(t, 200, events[1].Status)
+	assert.Equal(t, "PazerOP", events[1].ActorName)
+	assert.Equal(t, uint64(2), h.MaxID)
 }
 
 // TestTimeline_ReadableByDefault: a caller that does not name the wire type
@@ -367,8 +367,9 @@ func TestTimeline_GzipWhenAccepted(t *testing.T) {
 	// Not a byte comparison: each response stamps its own `now`, so the two
 	// payloads legitimately differ in the preamble. What must be identical is
 	// the events they carry.
-	assert.Equal(t, decodeTimelineV1(t, plain.Body.Bytes()).events,
-		decodeTimelineV1(t, inflated).events, "gzip must not change the payload")
+	plainEvents, _ := decodeTimeline(t, plain.Body.Bytes())
+	inflatedEvents, _ := decodeTimeline(t, inflated)
+	assert.Equal(t, plainEvents, inflatedEvents, "gzip must not change the payload")
 	assert.Less(t, zipped.Body.Len(), plain.Body.Len()/2, "2000 uniform events must compress hard")
 
 	// The point of the whole exercise, asserted end to end.
@@ -446,7 +447,8 @@ func TestTimeline_WindowedRead(t *testing.T) {
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	wire := do(t, s.router, req)
 	require.Equal(t, http.StatusOK, wire.Code)
-	assert.Len(t, decodeTimelineV1(t, wire.Body.Bytes()).events, 2)
+	windowEvents, _ := decodeTimeline(t, wire.Body.Bytes())
+	assert.Len(t, windowEvents, 2)
 
 	// Rejected shapes: a garbage bound, and mixing the two read models.
 	w, _ = get("/api/timeline?from=banana")

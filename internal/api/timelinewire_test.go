@@ -13,9 +13,9 @@ import (
 	"github.com/wow-look-at-my/js-snippets/timelinewire"
 )
 
-// These tests cover the mapping — a Snapshot onto a Page, and the column names
-// the mapping and the chart must agree on. The layout is js-snippets' and is
-// tested there, so no bytes are re-specified here.
+// The format, the mapping, and the tests for both are js-snippets'. What is
+// ours is the VOCABULARY -- the `wire:` tags on reqtimeline.Event -- and the
+// chart's agreement with it. That is all these tests cover.
 
 func mustEncodeTimeline(t *testing.T, snap reqtimeline.Snapshot) []byte {
 	t.Helper()
@@ -24,50 +24,12 @@ func mustEncodeTimeline(t *testing.T, snap reqtimeline.Snapshot) []byte {
 	return b
 }
 
-type decodedTimeline struct {
-	events         []reqtimeline.Event
-	maxID          uint64
-	retentionStart time.Time
-	now            time.Time
-}
-
-// decodeTimelineV1 reverses timelinePage: the library decodes the layout, this
-// puts the columns back into events so handler tests can assert on what
-// /api/timeline actually served.
-func decodeTimelineV1(t *testing.T, b []byte) decodedTimeline {
+func decodeTimeline(t *testing.T, b []byte) ([]reqtimeline.Event, timelinewire.Header) {
 	t.Helper()
-	p, err := timelinewire.Decode(b, timelineSchema)
+	var events []reqtimeline.Event
+	h, err := timelinewire.DecodeRows(b, &events, timelineWireMagic)
 	require.NoError(t, err)
-
-	out := decodedTimeline{
-		events:         make([]reqtimeline.Event, p.N),
-		maxID:          p.MaxID,
-		retentionStart: time.UnixMilli(p.RetentionStartMs).UTC(),
-		now:            time.UnixMilli(p.NowMs).UTC(),
-	}
-	for i := range out.events {
-		e := &out.events[i]
-		e.ID = p.U["id"][i]
-		e.Start = time.UnixMilli(p.Z["start"][i]).UTC()
-		e.DurMs = int64(p.P["dur"][i])
-		e.Status = int(p.P["status"][i])
-		e.Attempt = int(p.P["attempt"][i])
-		e.Final = p.B["final"][i]
-		e.Kind = p.S["kind"][i]
-		e.Lane = p.S["lane"][i]
-		e.Disposition = p.S["disposition"][i]
-		e.EventType = p.S["event_type"][i]
-		e.Action = p.S["action"][i]
-		e.DeliveryID = p.S["delivery_id"][i]
-		e.Repo = p.S["repo"][i]
-		e.Method = p.S["method"][i]
-		e.Route = p.S["route"][i]
-		e.Actor = p.S["actor"][i]
-		e.ActorName = p.S["actor_name"][i]
-		e.Detail = p.S["detail"][i]
-		e.Target = p.S["target"][i]
-	}
-	return out
+	return events, h
 }
 
 // sampleTimeline records one of every event shape the ring can hold.
@@ -93,50 +55,23 @@ func sampleTimeline(t *testing.T) *reqtimeline.Recorder {
 	return tl
 }
 
-// The invariant that matters on this side: the columnar payload carries exactly
-// what the JSON payload does. A smaller encoding that drops a field is not
-// smaller, it is wrong.
-func TestTimelinePageCarriesEveryEventField(t *testing.T) {
+// The invariant that matters on this side: every field of an Event survives
+// the round trip, so the columnar payload carries exactly what the JSON one
+// does. A field that loses its `wire:` tag fails here rather than going
+// quietly missing from the chart.
+func TestTimelineWireCarriesEveryEventField(t *testing.T) {
 	snap := sampleTimeline(t).Snapshot(0)
-	p := timelinePage(snap)
+	events, h := decodeTimeline(t, mustEncodeTimeline(t, snap))
 
-	require.Equal(t, len(snap.Events), p.N)
-	assert.Equal(t, snap.MaxID, p.MaxID)
-	assert.Equal(t, snap.RetentionStart.UnixMilli(), p.RetentionStartMs)
-	assert.Equal(t, snap.Now.UnixMilli(), p.NowMs)
+	assert.Equal(t, snap.MaxID, h.MaxID)
+	assert.Equal(t, snap.RetentionStart.UnixMilli(), h.RetentionStartMs)
+	assert.Equal(t, snap.Now.UnixMilli(), h.NowMs)
+	require.Equal(t, len(snap.Events), len(events))
 
-	for i, e := range snap.Events {
-		assert.Equal(t, e.ID, p.U["id"][i])
-		assert.Equal(t, e.Start.UnixMilli(), p.Z["start"][i])
-		assert.Equal(t, uint64(e.DurMs), p.P["dur"][i])
-		assert.Equal(t, uint64(e.Status), p.P["status"][i])
-		assert.Equal(t, uint64(e.Attempt), p.P["attempt"][i])
-		assert.Equal(t, e.Final, p.B["final"][i])
-
-		assert.Equal(t, e.Kind, p.S["kind"][i])
-		assert.Equal(t, e.Lane, p.S["lane"][i])
-		assert.Equal(t, e.Disposition, p.S["disposition"][i])
-		assert.Equal(t, e.EventType, p.S["event_type"][i])
-		assert.Equal(t, e.Action, p.S["action"][i])
-		assert.Equal(t, e.DeliveryID, p.S["delivery_id"][i])
-		assert.Equal(t, e.Repo, p.S["repo"][i])
-		assert.Equal(t, e.Method, p.S["method"][i])
-		assert.Equal(t, e.Route, p.S["route"][i])
-		assert.Equal(t, e.Actor, p.S["actor"][i])
-		assert.Equal(t, e.ActorName, p.S["actor_name"][i])
-		assert.Equal(t, e.Detail, p.S["detail"][i])
-		assert.Equal(t, e.Target, p.S["target"][i])
-	}
-
-	// And back out through the real encoder and decoder, so this covers the
-	// payload the chart receives and not just the page behind it.
-	got := decodeTimelineV1(t, mustEncodeTimeline(t, snap))
-	require.Equal(t, len(snap.Events), len(got.events))
-	assert.Equal(t, snap.MaxID, got.maxID)
 	for i, want := range snap.Events {
 		// Start is ms-resolution on the wire, as it is in JSON once parsed.
 		want.Start = want.Start.Truncate(time.Millisecond).UTC()
-		require.Equal(t, want, got.events[i])
+		require.Equal(t, want, events[i])
 	}
 }
 
@@ -146,9 +81,9 @@ func TestTimelineWireUnicodeLanes(t *testing.T) {
 	tl := reqtimeline.New()
 	tl.RecordWebhook(time.Now(), time.Millisecond, "push", "", "d1", "o/r", "applied")
 	tl.RecordNotify(time.Now(), time.Millisecond, "h.example.com", 200, 1, true, "applied")
-	got := decodeTimelineV1(t, mustEncodeTimeline(t, tl.Snapshot(0)))
-	require.Equal(t, "⇐ push", got.events[0].Lane)
-	require.Equal(t, "⇒ notify", got.events[1].Lane)
+	events, _ := decodeTimeline(t, mustEncodeTimeline(t, tl.Snapshot(0)))
+	require.Equal(t, "⇐ push", events[0].Lane)
+	require.Equal(t, "⇒ notify", events[1].Lane)
 }
 
 // An empty ring must encode to a well-formed payload, not a special case the
@@ -156,24 +91,27 @@ func TestTimelineWireUnicodeLanes(t *testing.T) {
 func TestTimelineWireEmpty(t *testing.T) {
 	b := mustEncodeTimeline(t, reqtimeline.New().Snapshot(0))
 	require.GreaterOrEqual(t, len(b), 4)
-	require.Equal(t, timelineSchema.Magic, string(b[:4]))
+	require.Equal(t, timelineWireMagic, string(b[:4]))
 }
 
-// The library never sees a column name — producer and consumer each declare
-// their own — so a disagreement encodes perfectly and fails in the browser as
-// "trailing bytes". Both declarations are in this repo, and nothing but this
-// test stops them drifting apart.
+// The library never sees a column name -- producer and consumer each declare
+// their own -- so a disagreement encodes perfectly and fails in the browser as
+// "trailing bytes". Ours are the `wire:` tags on reqtimeline.Event, the
+// chart's are its SCHEMA literal, and nothing but this test compares them.
 func TestTimelineSchemaMatchesChart(t *testing.T) {
+	schema, err := timelinewire.SchemaOf(reqtimeline.Event{}, timelineWireMagic)
+	require.NoError(t, err)
+
 	src, err := os.ReadFile("web/src/timeline.ts")
 	require.NoError(t, err)
 
-	assert.Equal(t, timelineSchema.Magic, tsField(t, src, "magic"),
+	assert.Equal(t, schema.Magic, tsField(t, src, "magic"),
 		"the chart checks a different magic than the encoder writes")
-	assert.Equal(t, timelineSchema.DeltaU, tsList(t, src, "deltaU"))
-	assert.Equal(t, timelineSchema.DeltaZ, tsList(t, src, "deltaZ"))
-	assert.Equal(t, timelineSchema.Plain, tsList(t, src, "plain"))
-	assert.Equal(t, timelineSchema.Bits, tsList(t, src, "bits"))
-	assert.Equal(t, timelineSchema.Strings, tsList(t, src, "strings"),
+	assert.Equal(t, schema.DeltaU, tsList(t, src, "deltaU"))
+	assert.Equal(t, schema.DeltaZ, tsList(t, src, "deltaZ"))
+	assert.Equal(t, schema.Plain, tsList(t, src, "plain"))
+	assert.Equal(t, schema.Bits, tsList(t, src, "bits"))
+	assert.Equal(t, schema.Strings, tsList(t, src, "strings"),
 		"the string columns are ORDER-SENSITIVE on the wire")
 }
 

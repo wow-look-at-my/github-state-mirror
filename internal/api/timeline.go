@@ -210,8 +210,8 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if wantsTimelineWire(r.Header.Get("Accept")) {
 		wire, err := encodeTimelineV1(snap)
 		if err != nil {
-			// Only a page that disagrees with timelineSchema gets here, which no
-			// request can cause — it means the two were edited apart.
+			// Only a row type whose `wire:` tags do not describe it gets here,
+			// which no request can cause.
 			slog.Error("timeline wire encode failed", "error", err)
 			http.Error(w, "encode failed", http.StatusInternalServerError)
 			return

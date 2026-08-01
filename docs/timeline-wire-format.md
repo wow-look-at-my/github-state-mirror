@@ -157,11 +157,22 @@ so a Go producer reads its own payload instead of writing a second reader. One
 fixture, `timelinewire/testdata/golden-v1.b64`, is written by its Go test and
 decoded by the TypeScript one.
 
-It briefly lived here instead, which bought two implementations of one layout
-in two repos pinned by a base64 string copied between them — a contract held
-together by hand. What is left here is a MAPPING,
-`internal/api/timelinewire.go`: a `reqtimeline.Snapshot` laid out as columns
-under the names `timelineSchema` declares. No bytes are specified in this repo.
+**So is the mapping.** Building the column slices from a row type, the
+name-to-field switch, and their inverse for reading a payload back are the
+same code in every producer — ~200 lines of it lived here, and a second
+consumer of the chart would have copied them. `EncodeRows`/`DecodeRows` take a
+slice of structs tagged `wire:"name,kind"` and do it by reflection, `SchemaOf`
+derives the Schema the same way, and `Wants` is the exact-media-type Accept
+match a producer needs to serve this alongside a readable encoding. Wire order
+is struct field order within each kind, so the layout is a property of the
+declaration. Reflection costs ~1.8x the hand-written mapping on a full 100k
+ring (18 ms against 10, server-side, once) and no extra allocations;
+`BenchmarkEncodeRows` vs `BenchmarkEncodeManualMapping` keeps that comparison
+re-runnable.
+
+What is left in THIS repo is the vocabulary, declared on the fields it
+describes: the `wire:` tags on `reqtimeline.Event`. `internal/api/timelinewire.go`
+is the media type and the negotiation, nothing else.
 
 ## Two encodings, one of which the chart refuses
 
