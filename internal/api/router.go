@@ -194,6 +194,14 @@ func NewRouter(
 	reqlog := newRequestLog()
 	reqlog.timeline = timeline
 
+	// Captured SHAPE of uncached traffic (shapes.go): the query-parameter
+	// names callers send and the key/type outline of what GitHub answers,
+	// sampled at most once per route shape per window. It is what the
+	// admin-only implementation brief (GET /api/brief) is assembled from —
+	// the input for modeling the next cached route, which the request-group
+	// counters alone cannot supply.
+	shapes := newShapeStore()
+
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
@@ -213,19 +221,19 @@ func NewRouter(
 		if resp.Request != nil {
 			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
 		}
-	})), reqlog)
+	})), reqlog, shapes)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every
 	// GitHub-verified identity lands in actor_identities.
 	recordIdentity := newIdentityRecorder(store)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
 	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each

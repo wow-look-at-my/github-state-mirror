@@ -302,11 +302,42 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 // forward target, so each proxied request is counted exactly once regardless of
 // entry path. observeStatus also times it end-to-end (upstream round-trip plus
 // response streaming) into the timeline ring.
-func recordPassthrough(next http.Handler, log *requestLog) http.Handler {
+func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		// Sample the answer's SHAPE (keys and types, never values) for the
+		// implementation brief — at most once per route shape per
+		// shapeResampleAfter, so the hot path buffers nothing in steady state.
+		route := normalizeRoute(r.URL.Path)
+		if shapes.wantsBody(r.Method, route) {
+			sw.capture = make([]byte, 0, 8<<10)
+		}
 		next.ServeHTTP(sw, r)
 		log.observeStatus(r, passthroughDisposition(r), sw.status)
+		shapes.observeRequest(r, route, sw.status, sw.Header().Get("Content-Type"), sw.capturedBody())
+	})
+}
+
+// observeRequest records one passthrough's shape. body is nil unless this
+// request was selected for sampling; it is reduced to a skeleton and dropped.
+func (s *shapeStore) observeRequest(r *http.Request, route string, status int, contentType string, body []byte) {
+	if s == nil {
+		return
+	}
+	who := callerLabel(r)
+	name := who.Name
+	if name == "" {
+		name = actor.Short(who.Key)
+	}
+	q := r.URL.Query()
+	names := make([]string, 0, len(q))
+	for k := range q {
+		names = append(names, clampRoute(k))
+	}
+	s.observe(observation{
+		Method: r.Method, Route: route, Path: r.URL.Path,
+		QueryNames: names, Accept: r.Header.Get("Accept"), Caller: name,
+		Status: status, ContentType: contentType, Body: body,
 	})
 }
 
@@ -317,6 +348,20 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status  int
 	written bool
+	// capture, when non-nil, buffers a bounded PREFIX of the response body for
+	// shape sampling (shapes.go). It never affects what the client receives:
+	// every byte is still written through immediately. Past
+	// shapeMaxSampleBytes capture is abandoned (set to nil) rather than
+	// truncated — a truncated body yields no parseable skeleton.
+	capture  []byte
+	overflow bool
+}
+
+func (s *statusRecorder) capturedBody() []byte {
+	if s.overflow {
+		return nil
+	}
+	return s.capture
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
@@ -329,6 +374,13 @@ func (s *statusRecorder) WriteHeader(code int) {
 
 func (s *statusRecorder) Write(b []byte) (int, error) {
 	s.written = true // an implicit 200 when WriteHeader was never called
+	if s.capture != nil && !s.overflow {
+		if len(s.capture)+len(b) > shapeMaxSampleBytes {
+			s.capture, s.overflow = nil, true
+		} else {
+			s.capture = append(s.capture, b...)
+		}
+	}
 	return s.ResponseWriter.Write(b)
 }
 
