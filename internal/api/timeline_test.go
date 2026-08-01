@@ -17,6 +17,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
+// timelinePayload mirrors timelineResponse for decoding in tests.
+type timelinePayload struct {
+	Events         []reqtimeline.Event `json:"events"`
+	MaxID          uint64              `json:"max_id"`
+	RetentionStart string              `json:"retention_start"`
+	Now            string              `json:"now"`
+}
+
 // eventsWhere filters a snapshot's events by disposition, so assertions stay
 // robust as more sources record onto the shared ring (e.g. requireAuth's
 // ghclient /user resolution).
@@ -54,13 +62,14 @@ func TestTimeline_AdminGated(t *testing.T) {
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = do(t, s.router, req)
 	require.Equal(t, http.StatusOK, w.Code)
-	got := decodeTimelineV1(t, w.Body.Bytes())
-	require.Len(t, got.events, 1)
-	assert.Equal(t, reqtimeline.KindWebhook, got.events[0].Kind)
-	assert.Equal(t, "⇐ push", got.events[0].Lane)
-	assert.Equal(t, uint64(1), got.maxID)
-	assert.NotEmpty(t, got.retentionStart)
-	assert.NotEmpty(t, got.now)
+	var got timelinePayload
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Events, 1)
+	assert.Equal(t, reqtimeline.KindWebhook, got.Events[0].Kind)
+	assert.Equal(t, "⇐ push", got.Events[0].Lane)
+	assert.Equal(t, uint64(1), got.MaxID)
+	assert.NotEmpty(t, got.RetentionStart)
+	assert.NotEmpty(t, got.Now)
 }
 
 // TestTimeline_SinceCursor: ?since=<id> pages incrementally, and a garbage
@@ -73,28 +82,30 @@ func TestTimeline_SinceCursor(t *testing.T) {
 	s.timeline.RecordWebhook(time.Now(), time.Millisecond, "push", "", "d-1", "o/r", "applied")
 	s.timeline.RecordWebhook(time.Now(), time.Millisecond, "pull_request", "opened", "d-2", "o/r", "applied")
 
-	fetch := func(target string) decodedTimeline {
+	fetch := func(target string) timelinePayload {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		req.AddCookie(mintSession(t, svc, "PazerOP"))
 		w := do(t, s.router, req)
 		require.Equal(t, http.StatusOK, w.Code)
-		return decodeTimelineV1(t, w.Body.Bytes())
+		var got timelinePayload
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		return got
 	}
 
 	full := fetch("/api/timeline")
-	require.Len(t, full.events, 2)
-	require.Equal(t, uint64(2), full.maxID)
+	require.Len(t, full.Events, 2)
+	require.Equal(t, uint64(2), full.MaxID)
 
 	// Cursor past the first event: only the second comes back.
 	page := fetch("/api/timeline?since=1")
-	require.Len(t, page.events, 1)
-	assert.Equal(t, uint64(2), page.events[0].ID)
+	require.Len(t, page.Events, 1)
+	assert.Equal(t, uint64(2), page.Events[0].ID)
 
 	// Cursor at the frontier: empty page, MaxID still reported.
 	page = fetch("/api/timeline?since=2")
-	assert.Empty(t, page.events)
-	assert.Equal(t, uint64(2), page.maxID)
+	assert.Empty(t, page.Events)
+	assert.Equal(t, uint64(2), page.MaxID)
 
 	// Garbage cursor: 400.
 	req := httptest.NewRequest(http.MethodGet, "/api/timeline?since=banana", nil)
@@ -259,7 +270,7 @@ func TestTimeline_OAuthRelayRecorded(t *testing.T) {
 
 // TestTimeline_ColumnarNegotiated: a client asking for the columnar media
 // type gets it — and it decodes to exactly what the JSON path reports.
-func TestTimeline_AlwaysColumnar(t *testing.T) {
+func TestTimeline_ColumnarNegotiated(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -274,6 +285,7 @@ func TestTimeline_AlwaysColumnar(t *testing.T) {
 	w := do(t, s.router, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, timelineWireType, w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Header().Values("Vary"), "Accept")
 
 	got := decodeTimelineV1(t, w.Body.Bytes())
 	require.Len(t, got.events, 2)
@@ -285,13 +297,12 @@ func TestTimeline_AlwaysColumnar(t *testing.T) {
 	assert.Equal(t, uint64(2), got.maxID)
 }
 
-// TestTimeline_NoSecondFormat: the endpoint speaks ONE encoding. Whatever a
-// caller puts in Accept — nothing, */*, application/json, a future version —
-// the answer is the columnar payload. The JSON alternative this replaces had
-// no consumer (the chart asks for columnar; the preview replaces the fetcher
-// and never calls the endpoint) and was a silent downgrade path: an Accept
-// that drifted took the ~10x-slower decode with nothing failing.
-func TestTimeline_NoSecondFormat(t *testing.T) {
+// TestTimeline_ReadableByDefault: a caller that does not name the wire type
+// by exact media type — curl's */*, a browser, an operator with jq — gets
+// readable JSON. That second encoding is safe ONLY because the chart refuses
+// it; TestTimelineClientRefusesJSON is the other half of this contract and
+// they are meant to be read together.
+func TestTimeline_ReadableByDefault(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -306,9 +317,10 @@ func TestTimeline_NoSecondFormat(t *testing.T) {
 		req.AddCookie(mintSession(t, svc, "PazerOP"))
 		w := do(t, s.router, req)
 		require.Equal(t, http.StatusOK, w.Code, accept)
-		assert.Equal(t, timelineWireType, w.Header().Get("Content-Type"), accept)
-		got := decodeTimelineV1(t, w.Body.Bytes())
-		require.Len(t, got.events, 1, accept)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"), accept)
+		var got timelinePayload
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), accept)
+		require.Len(t, got.Events, 1, accept)
 	}
 }
 
@@ -402,14 +414,14 @@ func TestTimeline_WindowedRead(t *testing.T) {
 			"push", "", "d-"+strconv.Itoa(i), "o/r-"+strconv.Itoa(i), "applied")
 	}
 
-	get := func(target string) (*httptest.ResponseRecorder, decodedTimeline) {
+	get := func(target string) (*httptest.ResponseRecorder, timelinePayload) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		req.AddCookie(mintSession(t, svc, "PazerOP"))
 		w := do(t, s.router, req)
-		var got decodedTimeline
+		var got timelinePayload
 		if w.Code == http.StatusOK {
-			got = decodeTimelineV1(t, w.Body.Bytes())
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 		}
 		return w, got
 	}
@@ -417,14 +429,24 @@ func TestTimeline_WindowedRead(t *testing.T) {
 	// The last 3 hours: three of the six deliveries.
 	w, got := get("/api/timeline?from=" + strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10))
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Len(t, got.events, 3)
-	assert.Equal(t, uint64(6), got.maxID, "a windowed read still reports the live cursor")
+	assert.Len(t, got.Events, 3)
+	assert.Equal(t, uint64(6), got.MaxID, "a windowed read still reports the live cursor")
 
 	// A bounded window in the middle.
 	w, got = get("/api/timeline?from=" + strconv.FormatInt(now.Add(-5*time.Hour).UnixMilli(), 10) +
 		"&to=" + strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10))
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Len(t, got.events, 2)
+	assert.Len(t, got.Events, 2)
+
+	// The same window in the columnar encoding decodes identically.
+	req := httptest.NewRequest(http.MethodGet, "/api/timeline?from="+
+		strconv.FormatInt(now.Add(-5*time.Hour).UnixMilli(), 10)+
+		"&to="+strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10), nil)
+	req.Header.Set("Accept", timelineWireType)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	wire := do(t, s.router, req)
+	require.Equal(t, http.StatusOK, wire.Code)
+	assert.Len(t, decodeTimelineV1(t, wire.Body.Bytes()).events, 2)
 
 	// Rejected shapes: a garbage bound, and mixing the two read models.
 	w, _ = get("/api/timeline?from=banana")

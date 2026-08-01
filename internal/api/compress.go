@@ -99,3 +99,12 @@ func splitList(v string) []string {
 	}
 	return out
 }
+
+// mediaTypeOf strips any parameters (";q=0.9") from one Accept element and
+// lowercases what is left.
+func mediaTypeOf(part string) string {
+	if i := strings.IndexByte(part, ';'); i >= 0 {
+		part = part[:i]
+	}
+	return strings.TrimSpace(strings.ToLower(part))
+}

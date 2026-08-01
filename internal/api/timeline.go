@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -131,6 +133,21 @@ func parseUnixMs(v string) (time.Time, bool) {
 	return time.UnixMilli(ms).UTC(), true
 }
 
+// timelineResponse is the READABLE encoding of the payload — what any caller
+// that does not ask for the columnar media type by name receives. The chart
+// never parses it (see the handler); it exists so the endpoint stays
+// inspectable with curl and jq.
+type timelineResponse struct {
+	Events []reqtimeline.Event `json:"events"`
+	// MaxID is the newest event ID — pass it back as ?since= to receive only
+	// newer events on the next poll.
+	MaxID uint64 `json:"max_id"`
+	// RetentionStart is the ring's window floor (now − 24h): nothing older is
+	// retained, so the chart can pin its history boundary there.
+	RetentionStart string `json:"retention_start"`
+	Now            string `json:"now"`
+}
+
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
 // actor/tenant. Three read shapes, all answering the same payload:
@@ -175,13 +192,36 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		snap = d.timeline.SnapshotRange(from, to)
 	}
 
-	// ONE encoding: the columnar payload (timelinewire.go). There is no JSON
-	// alternative, deliberately. The only consumer is the dashboard chart,
-	// which asks for this; the backend-free preview replaces the element's
-	// fetcher outright and never reaches this handler. A negotiated JSON
-	// fallback served nobody and was a SILENT failure path — an Accept that
-	// drifted would have quietly downgraded the chart to a decode that costs
-	// ~10x the frames, with nothing failing. The format is versioned in the
-	// magic and the media type, so a change is v2, not a second branch here.
-	writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
+	// The chart asks for the columnar payload (timelinewire.go) by exact media
+	// type; anything else — curl's */*, a browser, an operator with jq — gets
+	// readable JSON.
+	//
+	// What makes a second encoding safe here is that the CLIENT refuses to
+	// fall back: fetchDecoded sends only the wire type and THROWS on any other
+	// content type. That is what removed the silent failure. Before, the chart
+	// accepted whatever came back, so an Accept that drifted quietly took a
+	// decode costing ~10x the frames with nothing failing; the defect was the
+	// fallback, not the JSON. Serving JSON to a human debugging the endpoint
+	// cannot reach the chart, and cannot degrade it if it somehow did.
+	//
+	// The columnar layout is versioned in the magic AND the media type, so a
+	// CHANGE to it is v2 — never a third branch here.
+	addVary(w.Header(), "Accept")
+	if wantsTimelineWire(r.Header.Get("Accept")) {
+		writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
+		return
+	}
+
+	body, err := json.Marshal(timelineResponse{
+		Events:         snap.Events,
+		MaxID:          snap.MaxID,
+		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
+		Now:            snap.Now.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		slog.Warn("timeline json encode failed", "error", err)
+		http.Error(w, "encode failed", http.StatusInternalServerError)
+		return
+	}
+	writeBody(w, r, "application/json", body)
 }

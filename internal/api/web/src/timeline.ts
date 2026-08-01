@@ -59,12 +59,16 @@ const HISTORY_SPAN_MS = 60 * 60 * 1000;
 // backend-free preview serves canned data); production uses this one — the
 // AbortSignal bound is what keeps the single-flight poll guard un-wedgeable.
 //
-// The endpoint speaks ONE encoding — the columnar payload — so this asks for
-// it and accepts nothing else. A content-type it does not recognize THROWS,
-// which surfaces as the chart's "feed is down" state. That is the point: the
-// previous version fell back to JSON on whatever came back, so a mismatch
-// downgraded the chart to a decode costing ~10x the frames and said nothing.
-async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
+// This asks for the columnar encoding and ACCEPTS NOTHING ELSE: a content type
+// it does not recognize THROWS, surfacing as the chart's "feed is down" state.
+//
+// That strictness is load-bearing, not defensive tidiness. The endpoint also
+// serves readable JSON to callers that do not name the wire type (curl, an
+// operator with jq), and this is what keeps that harmless: an earlier version
+// FELL BACK to whatever came back, so an Accept that drifted quietly took a
+// decode costing ~10x the frames with nothing failing. The defect was the
+// fallback, not the JSON. TestTimelineClientRefusesJSON pins this.
+export async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
     const res = await fetch(path, {
         headers: { Accept: WIRE_TYPE },
         credentials: "same-origin",
