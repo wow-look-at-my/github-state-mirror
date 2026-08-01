@@ -63,7 +63,7 @@ const HISTORY_SPAN_MS = 60 * 60 * 1000;
 // back to JSON on whatever the server actually answers with, so a rollback of
 // the server half — or the demo preview, which serves canned JSON — keeps
 // working with no branch anywhere else in this file.
-async function fetchDecoded(path: string, pacer: FramePacer, onSlice?: (ms: number) => void): Promise<DecodedPage> {
+async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
     const res = await fetch(path, {
         headers: { Accept: `${WIRE_TYPE}, application/json;q=0.9` },
         credentials: "same-origin",
@@ -72,9 +72,9 @@ async function fetchDecoded(path: string, pacer: FramePacer, onSlice?: (ms: numb
     if (!res.ok) throw new Error("HTTP " + res.status);
     if ((res.headers.get("Content-Type") ?? "").startsWith(WIRE_TYPE)) {
         const buf = new Uint8Array(await res.arrayBuffer());
-        return runSliced(pageColumnsGen(buf), pacer, onSlice);
+        return runSliced(pageColumnsGen(buf), onSlice);
     }
-    return runSliced(pageFromJSONGen((await res.json()) as TimelineResponse), pacer, onSlice);
+    return runSliced(pageFromJSONGen((await res.json()) as TimelineResponse), onSlice);
 }
 
 // Tiny DOM helper (this module is standalone; app.ts's el() is not shared).
@@ -183,23 +183,35 @@ interface TimelinePage {
 // A resumable unit of work: yields periodically, returns its result.
 type Task<T> = Generator<undefined, T, undefined>;
 
-// Chunk sizing is ADAPTIVE, not a constant. A fixed chunk cannot satisfy the
-// frame budget: 2048 rows is ~0.2 ms of varint decoding and ~3.5 ms of the
-// JSON fallback's transpose, on THIS machine — a slower one shifts both. So
-// each phase times its own chunks and steers toward TARGET_CHUNK_MS of work,
-// which is what bounds the overshoot: the driver checks the clock only BETWEEN
-// chunks, so the worst slice is its budget plus one chunk.
-const TARGET_CHUNK_MS = 1;
+// THE WHOLE PACING MODEL: one chunk of work per frame, and a chunk is sized
+// to cost less than the frame budget. Nothing else — no frame accounting, no
+// spending what is "left" of a frame. One unit per frame means the unit's cost
+// IS the frame's load, so keeping the unit under budget keeps the frame under
+// budget, for the whole load.
+//
+// Chunk sizing is ADAPTIVE, not a constant. A fixed chunk cannot hold a time
+// budget: 2048 rows is ~0.2 ms of varint decoding and ~3.5 ms of the JSON
+// fallback's transpose, on THIS machine — a slower one shifts both. So each
+// phase times its own chunks and steers toward TARGET_CHUNK_MS. The target is
+// half the budget so the estimate can be wrong by 2x and still fit.
+const TARGET_CHUNK_MS = 3;
 const MIN_CHUNK = 32;
 const MAX_CHUNK = 8192;
-// Each phase starts SMALL and ramps. The first execution of any of these
+// Each phase starts small and ramps. The first execution of any of these
 // loops runs cold — unoptimized, uninlined — and is several times slower than
 // the steady state that follows, so a phase that opened at its steady-state
 // size would blow the budget exactly once, on the slice that matters most (the
 // first paint). Growth is capped per step for the same reason: one unusually
 // cheap chunk must not license a chunk 50x larger.
-const START_CHUNK = 32;
-const MAX_GROWTH = 4;
+//
+// But the ramp costs FRAMES now that only one chunk runs per frame, and every
+// phase ramps from scratch: at 32/x4 the columnar decode spent 109 frames
+// (~1.8 s) on 8.4 ms of work. 256/x8 reaches the ceiling in three steps and
+// measured 0.44 ms cold on the dearest phase (the JSON transpose), so the
+// caution it drops was never buying anything. (512/x4 reaches the ceiling in
+// the same three steps but overshoots harder per step: measured 8.7 ms.)
+const START_CHUNK = 256;
+const MAX_GROWTH = 8;
 
 function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
                    max = MAX_CHUNK): number {
@@ -210,19 +222,9 @@ function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
 }
 
 // Handing intervals to the component is main-thread work too — it ingests,
-// re-packs sub-tracks and marks the canvas dirty — and it is NOT ours to
-// slice, so the element yields around every call and never runs a decode slice
-// and a feed in the same task (that combination measured 25 ms in a browser,
-// and the node harness cannot see it because it has no component).
+// re-packs sub-tracks and marks the canvas dirty — so a feed is a chunk like
+// any other: one per frame, sized by what the last one cost.
 //
-// The feed SIZE trades two costs against each other: measured in a real
-// browser one call runs ~2.8 us per interval (512 -> ~1.8 ms, 2048 -> ~5.5 ms),
-// so smaller feeds keep each task shorter — but every call marks the canvas
-// dirty, so smaller feeds also mean more renders for the same data. A fixed
-// 1024 measured 7.6 ms on a loaded machine: too close to the budget to be a
-// constant. So it is steered by what the last call actually cost, which lets a
-// fast machine take big feeds (few renders) and a slow one take small ones
-// (short tasks) without either blowing the budget.
 // The CAP matters as much as the target, because the cost is not linear in the
 // feed alone: a merge gets dearer as the chart holds more, so an estimate from
 // an early cheap call overshoots later ones (measured: the size ran up to 2048
@@ -230,24 +232,12 @@ function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
 // stay comfortably inside the budget once the chart is full, and the adaptive
 // size still shrinks below it on a slower machine. The first call is smaller
 // again: it is the one that initializes the canvas.
-const TARGET_FEED_MS = 2;
+const TARGET_FEED_MS = 4;
 const MAX_FEED_INTERVALS = 512;
 const START_FEED_INTERVALS = 128;
 
-// THE BUDGET IS PER FRAME, NOT PER TASK. That distinction is the whole game:
-// yields hand the task back to the browser, but several tasks still land in
-// ONE frame, so a 3 ms-per-task budget measured 8.7-10.1 ms of our work inside
-// a single frame. FramePacer below meters the frame instead.
-//
-// FRAME_BUDGET_MS is the ceiling for the WHOLE frame — ours plus the
-// component's plus the browser's. What we may spend is whatever measurement
-// says is left of it (see frameOtherMs), never a fixed slice: a fixed slice
-// is right only until something else in the frame gets busy, which during a
-// load is exactly when it does. FRAME_MIN_WORK_MS keeps progress on a frame
-// where everything else already ate the budget.
+// The ceiling a chunk is sized against, and what recordSlice warns on.
 const FRAME_BUDGET_MS = 8;
-const FRAME_MARGIN_MS = 1;
-const FRAME_MIN_WORK_MS = 0.75;
 
 // yieldToBrowser hands control back so the frame can render. scheduler.yield()
 // is the purpose-built API (and keeps this work's continuation prioritized
@@ -266,139 +256,31 @@ function yieldToBrowser(): Promise<void> {
     });
 }
 
-// yieldToNextFrame waits for the browser to actually PAINT, then resumes in a
-// fresh task. yieldToBrowser above only yields the task — several yields can
-// still land in one frame, which is right for decode work but wrong for
-// feeding the chart: every feed makes the component redraw, so N feeds in one
-// frame means it draws the whole (already grown) chart in one go. Paced one
-// per frame, each draw is a small increment on a chart that grew a little,
-// which is what keeps the first paint inside the frame budget.
-let frameTick = 0;
-// What the REST of the frame cost — the component's own rAF work (rebuild,
-// draw, tween) plus the browser's, measured as the gap between our animation
-// frame callback and the task that follows it. The budget below is what is
-// left of the frame after that, because the ceiling is on the FRAME, not on
-// us: 6 ms of decoding on top of a 5 ms redraw is an 11 ms frame however
-// carefully our own half was metered.
-let frameOtherMs = 0;
-
-function yieldToNextFrame(): Promise<void> {
+// nextFrame resumes after the browser has had a frame to render. The
+// setTimeout after the rAF callback is what makes the resumed work land in a
+// FRESH task rather than inside the frame we just handed over: resuming in the
+// rAF callback itself would put our chunk in the same frame as the
+// component's redraw.
+function nextFrame(): Promise<void> {
     if (typeof requestAnimationFrame !== "function") {
-        // No frames here (node, tests): treat each task as its own frame so
-        // the pacer still meters work instead of stalling on a tick that
-        // never advances.
-        return yieldToBrowser().then(() => {
-            frameTick++;
-        });
+        return yieldToBrowser(); // node, tests: no frames to wait for
     }
-    const start = frameTick;
     return new Promise<void>((resolve) => {
-        const wait = (): void => {
-            requestAnimationFrame(() => {
-                frameTick++;
-                const cbAt = performance.now();
-                // Resume in a fresh TASK after the frame's callbacks, and only
-                // once a frame boundary has genuinely passed: a bare
-                // rAF-then-setTimeout can land back in the same frame window
-                // when the caller was already past this frame's callbacks,
-                // which silently hands the frame a second budget.
-                setTimeout(() => {
-                    // Everything between our callback and this task belongs to
-                    // someone else's frame work.
-                    const other = performance.now() - cbAt;
-                    frameOtherMs = other > frameOtherMs ? other : frameOtherMs * 0.6 + other * 0.4;
-                    if (frameTick > start) resolve();
-                    else wait();
-                }, 0);
-            });
-        };
-        wait();
+        requestAnimationFrame(() => setTimeout(resolve, 0));
     });
 }
 
-/**
- * Meters main-thread work against a FRAME, across however many tasks that
- * frame contains. Every unit of work charges what it cost; when the frame's
- * budget is gone the caller waits for the next frame.
- *
- * `fed` marks a frame in which we handed the component data: it redraws in
- * that same frame, so we take nothing more from that one.
- */
-class FramePacer {
-    private used = 0;
-    private fed = false;
-    // The frame these counters describe. Resetting on "whoever yielded last"
-    // is wrong once two flows share the pacer — a live poll and a history load
-    // overlap, and one of them yielding would hand the OTHER a fresh budget
-    // inside the same frame. The budget belongs to the FRAME, so the reset is
-    // keyed to it.
-    private tickSeen = -1;
-    private owesDrawFrame = false;
-    // What the last unit of work cost. The clock is only read BETWEEN units,
-    // so a frame can overshoot by one of them — budgeting against this keeps
-    // the overshoot inside the ceiling instead of on top of it.
-    private lastUnitMs = 0.5;
-    worstFrameMs = 0;
-
-    private sync(): void {
-        if (this.tickSeen !== frameTick) {
-            this.tickSeen = frameTick;
-            this.used = 0;
-            this.fed = false;
-        }
-    }
-
-    remaining(): number {
-        this.sync();
-        if (this.fed) return -1;
-        // Headroom for the unit about to run, not just the ones that have.
-        const ours = FRAME_BUDGET_MS - FRAME_MARGIN_MS - frameOtherMs;
-        return Math.max(FRAME_MIN_WORK_MS, ours) - this.used - this.lastUnitMs;
-    }
-
-    charge(ms: number): void {
-        this.sync();
-        this.used += ms;
-        this.lastUnitMs = ms > this.lastUnitMs ? ms : this.lastUnitMs * 0.75 + ms * 0.25;
-        if (this.used > this.worstFrameMs) this.worstFrameMs = this.used;
-    }
-
-    /** The component was handed data in this frame; leave it the rest. */
-    markFed(): void {
-        this.sync();
-        this.fed = true;
-        this.owesDrawFrame = true;
-    }
-
-    async nextFrame(): Promise<void> {
-        await yieldToNextFrame();
-        // A frame in which we fed is followed by a frame the COMPONENT needs:
-        // it rebuilds and redraws off its own rAF, and if we spend that frame
-        // too the two land together (measured 8.3-8.7 ms — rebuild plus draw).
-        // Feeding every OTHER frame keeps each one to a single job.
-        if (this.owesDrawFrame) {
-            this.owesDrawFrame = false;
-            await yieldToNextFrame();
-        }
-        this.sync();
-    }
-}
-
-// runSliced drives a task to completion inside a pacer's per-frame budget,
-// taking as many frames as that needs. onSlice reports each chunk's real cost.
-export async function runSliced<T>(task: Task<T>, pacer: FramePacer = new FramePacer(),
-                                   onSlice?: (ms: number) => void): Promise<T> {
+// runSliced drives a task to completion at ONE chunk per frame. Each chunk
+// sizes itself from what the last one cost (see TARGET_CHUNK_MS), so the work
+// this puts in any frame is one chunk — which is the whole budget story.
+// onSlice reports each chunk's real cost.
+export async function runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T> {
     for (;;) {
-        let r: IteratorResult<undefined, T>;
-        do {
-            const t0 = performance.now();
-            r = task.next();
-            const ms = performance.now() - t0;
-            pacer.charge(ms);
-            onSlice?.(ms);
-        } while (!r.done && pacer.remaining() > 0);
+        const t0 = performance.now();
+        const r = task.next();
+        onSlice?.(performance.now() - t0);
         if (r.done) return r.value;
-        await pacer.nextFrame();
+        await nextFrame();
     }
 }
 
@@ -928,12 +810,6 @@ class GsmTimeline extends HTMLElement {
     // How many intervals to hand the component per call; steered by what the
     // last call actually cost (see TARGET_FEED_MS).
     private feedSize = START_FEED_INTERVALS;
-    // What the last feed cost, so the pacer knows whether one more fits in
-    // this frame before it has to spend it.
-    private lastFeedMs = TARGET_FEED_MS;
-    // ONE pacer for the element: a live poll and a history load can overlap,
-    // and the frame does not care which of them spent its budget.
-    private readonly pacer = new FramePacer();
 
     connectedCallback(): void {
         if (this.view || this.note) {
@@ -976,7 +852,7 @@ class GsmTimeline extends HTMLElement {
         // paying them on an empty frame keeps them out of the frame that also
         // ingests and draws real data. In production the network round-trip
         // usually provides this gap; a fast (or cached) response does not.
-        await yieldToNextFrame();
+        await nextFrame();
         await this.poll(); // first page: setData + initial viewport
         this.note?.remove();
         this.note = null;
@@ -1025,10 +901,9 @@ class GsmTimeline extends HTMLElement {
             // negotiated (columnar) path. Both decode into the same columns,
             // in slices, so neither can freeze the tab on a full window.
             const fetcher = this.fetcher;
-            const pacer = this.pacer;
             const decoded = fetcher
-                ? await runSliced(pageFromJSONGen(await fetcher(path)), pacer, this.recordSlice)
-                : await fetchDecoded(path, pacer, this.recordSlice);
+                ? await runSliced(pageFromJSONGen(await fetcher(path)), this.recordSlice)
+                : await fetchDecoded(path, this.recordSlice);
             if (!this.isConnected || this.view !== tl) return; // tab left mid-decode
             if (decoded.maxId > this.maxId) this.maxId = decoded.maxId;
             this.retentionStart = decoded.retentionStart;
@@ -1038,7 +913,7 @@ class GsmTimeline extends HTMLElement {
             await this.merge(tl, decoded, {
                 start: this.coveredFrom || decoded.now - INITIAL_WINDOW_MS,
                 end: decoded.now,
-            }, pacer);
+            });
         } catch (e) {
             // Keep the last data; the component's staleness marking says the
             // feed is down once STALE_AFTER_MS passes without a markFresh.
@@ -1068,8 +943,7 @@ class GsmTimeline extends HTMLElement {
     // and whether they advance the live cursor (the caller decides; see
     // loadRange).
     private async merge(tl: TimelineViewElement, page: DecodedPage,
-                        coverage: { start: number; end: number },
-                        pacer: FramePacer): Promise<void> {
+                        coverage: { start: number; end: number }): Promise<void> {
 
         // Declare every lane this page carries BEFORE the first feed: a lane
         // appearing later is a structural change that costs the component a
@@ -1078,47 +952,36 @@ class GsmTimeline extends HTMLElement {
             if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
         }
 
-        const pending: IntervalBatch[] = [];
-        const task = intervalsGen(page.c, (b) => pending.push(b));
-        let empty = true;
-        for (;;) {
-            // Build intervals until this frame's budget is spent...
-            let r: IteratorResult<undefined, void>;
-            do {
-                const t0 = performance.now();
-                r = task.next();
-                const ms = performance.now() - t0;
-                pacer.charge(ms);
-                this.recordSlice(ms);
-            } while (!r.done && pacer.remaining() > 0);
-
-            // ...then hand over what is ready, at most one feed per frame:
-            // the component redraws in the same frame, so the rest of that
-            // frame is its.
-            for (const batch of pending.splice(0)) {
-                if (!batch.intervals.length) continue;
-                empty = false;
-                for (const { lane, kind } of batch.lanes) {
-                    if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
-                }
-                for (let i = 0; i < batch.intervals.length; ) {
-                    if (pacer.remaining() < this.lastFeedMs) await pacer.nextFrame();
-                    if (!this.isConnected || this.view !== tl) return; // tab left mid-feed
-                    const part = batch.intervals.slice(i, i + this.feedSize);
-                    i += part.length;
-                    const t1 = performance.now();
-                    this.feed(tl, part, coverage);
-                    const ms = performance.now() - t1;
-                    this.lastFeedMs = ms;
-                    this.feedSize = nextChunk(this.feedSize, ms, TARGET_FEED_MS, MAX_FEED_INTERVALS);
-                    pacer.charge(ms);
-                    pacer.markFed();
-                    this.recordSlice(ms);
-                }
+        // ONE unit of work per frame — either build the next chunk of
+        // intervals, or hand one feed to the component (which redraws off it,
+        // so a feed owns its frame). Ready intervals are fed before more are
+        // built, so the chart paints early and the queue never runs ahead of
+        // what has been handed over.
+        const ready: TimelineInterval[] = [];
+        const task = intervalsGen(page.c, (b) => {
+            for (const { lane, kind } of b.lanes) {
+                if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
             }
-            if (r.done) break;
-            await pacer.nextFrame();
-            if (!this.isConnected || this.view !== tl) return; // tab left mid-decode
+            for (const iv of b.intervals) ready.push(iv);
+        });
+        let empty = true;
+        let building = true;
+        while (building || ready.length) {
+            if (!this.isConnected || this.view !== tl) return; // tab left mid-merge
+            if (ready.length) {
+                const part = ready.splice(0, this.feedSize);
+                empty = false;
+                const t0 = performance.now();
+                this.feed(tl, part, coverage);
+                const ms = performance.now() - t0;
+                this.feedSize = nextChunk(this.feedSize, ms, TARGET_FEED_MS, MAX_FEED_INTERVALS);
+                this.recordSlice(ms);
+            } else {
+                const t0 = performance.now();
+                building = !task.next().done;
+                this.recordSlice(performance.now() - t0);
+            }
+            await nextFrame();
         }
 
         // An empty poll is still proof the feed is alive — and the very first
@@ -1145,14 +1008,13 @@ class GsmTimeline extends HTMLElement {
         if (floor > 0 && end <= floor) return { exhausted: true };
         const from = Math.max(Math.round(start), Math.round(end) - HISTORY_SPAN_MS, floor);
         if (from >= end) return { exhausted: true };
-        const pacer = this.pacer;
         const decoded = await fetchDecoded(
-            `/api/timeline?from=${from}&to=${Math.round(end)}`, pacer, this.recordSlice);
+            `/api/timeline?from=${from}&to=${Math.round(end)}`, this.recordSlice);
         if (!this.isConnected || this.view !== tl) return;
         // History NEVER advances the live cursor: this response was assembled
         // from an older window, and adopting its max_id would skip every event
         // recorded between the last live poll and now.
-        await this.merge(tl, decoded, { start: from, end: Math.round(end) }, pacer);
+        await this.merge(tl, decoded, { start: from, end: Math.round(end) });
         if (this.coveredFrom === 0 || from < this.coveredFrom) this.coveredFrom = from;
         return from <= this.retentionStart ? { exhausted: true } : undefined;
     };
