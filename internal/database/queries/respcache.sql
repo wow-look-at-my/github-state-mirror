@@ -618,3 +618,31 @@ DELETE FROM workflow_jobs_cache WHERE id IN (
 -- name: DeleteCommitsListCachePullSnapshots :exec
 DELETE FROM commits_list_cache
 WHERE owner = ? AND repo = ? AND ref_param LIKE 'pull/%';
+
+-- ---- code_quality_setup_cache (GET /repos/{owner}/{repo}/code-quality/setup) ----
+
+-- name: GetCodeQualitySetupCache :one
+SELECT * FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: UpsertCodeQualitySetupCache :exec
+INSERT INTO code_quality_setup_cache (owner, repo, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCodeQualitySetupCache :exec
+UPDATE code_quality_setup_cache SET last_used_at = ? WHERE owner = ? AND repo = ?;
+
+-- name: DeleteCodeQualitySetupCacheByRepo :exec
+DELETE FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCodeQualitySetupCache :exec
+DELETE FROM code_quality_setup_cache WHERE expires_at <= ?;
+
+-- name: PruneCodeQualitySetupCacheLRU :exec
+DELETE FROM code_quality_setup_cache WHERE id IN (
+    SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

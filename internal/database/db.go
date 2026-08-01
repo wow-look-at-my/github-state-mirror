@@ -12,6 +12,10 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 21: code_quality_setup_cache -- the cached Code Quality
+// enablement read. Config with no webhook: flushed by a PATCH the mirror
+// proxies and by repository events, otherwise bounded by a short TTL.
+//
 // SchemaVersion 20: workflow_jobs_cache -- the cached Actions job reads (a
 // run's jobs page and a single job). Only TERMINAL answers are stored; a
 // re-run replaces a run's jobs under the same run id, so both kinds carry
@@ -64,7 +68,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 20
+const SchemaVersion = 21
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

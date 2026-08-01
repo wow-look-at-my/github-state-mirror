@@ -73,6 +73,16 @@ type ClosedPullCache struct {
 	LastUsedAt string
 }
 
+type CodeQualitySetupCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CommitCheck struct {
 	Owner   string
 	Repo    string

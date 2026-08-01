@@ -61,6 +61,20 @@ func (q *Queries) DeleteClosedPullCacheByRepo(ctx context.Context, arg DeleteClo
 	return err
 }
 
+const deleteCodeQualitySetupCacheByRepo = `-- name: DeleteCodeQualitySetupCacheByRepo :exec
+DELETE FROM code_quality_setup_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCodeQualitySetupCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteCodeQualitySetupCacheByRepo(ctx context.Context, arg DeleteCodeQualitySetupCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCodeQualitySetupCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteCommitCICacheByRepo = `-- name: DeleteCommitCICacheByRepo :exec
 DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?
 `
@@ -241,6 +255,15 @@ DELETE FROM closed_pull_cache WHERE expires_at <= ?
 
 func (q *Queries) DeleteExpiredClosedPullCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredClosedPullCache, expiresAt)
+	return err
+}
+
+const deleteExpiredCodeQualitySetupCache = `-- name: DeleteExpiredCodeQualitySetupCache :exec
+DELETE FROM code_quality_setup_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCodeQualitySetupCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCodeQualitySetupCache, expiresAt)
 	return err
 }
 
@@ -665,6 +688,32 @@ func (q *Queries) GetClosedPullCache(ctx context.Context, arg GetClosedPullCache
 		&i.Owner,
 		&i.Repo,
 		&i.Number,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getCodeQualitySetupCache = `-- name: GetCodeQualitySetupCache :one
+
+SELECT id, owner, repo, doc, fetched_at, expires_at, last_used_at FROM code_quality_setup_cache WHERE owner = ? AND repo = ?
+`
+
+type GetCodeQualitySetupCacheParams struct {
+	Owner string
+	Repo  string
+}
+
+// ---- code_quality_setup_cache (GET /repos/{owner}/{repo}/code-quality/setup) ----
+func (q *Queries) GetCodeQualitySetupCache(ctx context.Context, arg GetCodeQualitySetupCacheParams) (CodeQualitySetupCache, error) {
+	row := q.db.QueryRowContext(ctx, getCodeQualitySetupCache, arg.Owner, arg.Repo)
+	var i CodeQualitySetupCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
@@ -1201,6 +1250,17 @@ func (q *Queries) PruneClosedPullCacheLRU(ctx context.Context, offset int64) err
 	return err
 }
 
+const pruneCodeQualitySetupCacheLRU = `-- name: PruneCodeQualitySetupCacheLRU :exec
+DELETE FROM code_quality_setup_cache WHERE id IN (
+    SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCodeQualitySetupCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCodeQualitySetupCacheLRU, offset)
+	return err
+}
+
 const pruneCommitCICacheLRU = `-- name: PruneCommitCICacheLRU :exec
 DELETE FROM commit_ci_cache WHERE id IN (
     SELECT id FROM commit_ci_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1401,6 +1461,21 @@ func (q *Queries) TouchClosedPullCache(ctx context.Context, arg TouchClosedPullC
 		arg.Repo,
 		arg.Number,
 	)
+	return err
+}
+
+const touchCodeQualitySetupCache = `-- name: TouchCodeQualitySetupCache :exec
+UPDATE code_quality_setup_cache SET last_used_at = ? WHERE owner = ? AND repo = ?
+`
+
+type TouchCodeQualitySetupCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+}
+
+func (q *Queries) TouchCodeQualitySetupCache(ctx context.Context, arg TouchCodeQualitySetupCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCodeQualitySetupCache, arg.LastUsedAt, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1770,6 +1845,37 @@ func (q *Queries) UpsertClosedPullCache(ctx context.Context, arg UpsertClosedPul
 		arg.Owner,
 		arg.Repo,
 		arg.Number,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertCodeQualitySetupCache = `-- name: UpsertCodeQualitySetupCache :exec
+INSERT INTO code_quality_setup_cache (owner, repo, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCodeQualitySetupCacheParams struct {
+	Owner      string
+	Repo       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCodeQualitySetupCache(ctx context.Context, arg UpsertCodeQualitySetupCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCodeQualitySetupCache,
+		arg.Owner,
+		arg.Repo,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

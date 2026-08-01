@@ -783,3 +783,27 @@ CREATE TABLE workflow_jobs_cache (
 CREATE UNIQUE INDEX idx_workflow_jobs_cache_key ON workflow_jobs_cache (owner, repo, kind, ref_id, per_page, page);
 CREATE INDEX idx_workflow_jobs_cache_run ON workflow_jobs_cache (owner, repo, run_id);
 CREATE INDEX idx_workflow_jobs_cache_lru ON workflow_jobs_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/code-quality/setup -- GitHub Code
+-- Quality's per-repo enablement configuration (public preview; schema
+-- `code-quality-setup` in GitHub's OpenAPI description). One row per repo:
+-- the endpoint takes no query parameters, so the repo IS the key.
+--
+-- This is CONFIG, changed only by an explicit PATCH to the same path or by a
+-- human in the UI -- and GitHub emits no webhook for either. The mirror
+-- flushes the row when it PROXIES such a PATCH, and `repository` events flush
+-- repo-wide, but a change made outside the mirror is invisible until
+-- expires_at. The TTL is short for that reason (codeQualitySetupTTL); see
+-- docs/cache/rest-routes.md.
+CREATE TABLE code_quality_setup_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    doc          TEXT NOT NULL,              -- trimmed setup document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_code_quality_setup_cache_key ON code_quality_setup_cache (owner, repo);
+CREATE INDEX idx_code_quality_setup_cache_lru ON code_quality_setup_cache (last_used_at);

@@ -87,6 +87,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
 		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
+		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {

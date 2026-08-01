@@ -368,6 +368,15 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
 
+		// Cached Code Quality setup (respcache_codequality.go): the per-repo
+		// enablement config, modeled from GitHub's OpenAPI `code-quality-setup`
+		// schema. GitHub emits no webhook when it changes, so the PATCH is
+		// registered too -- purely to flush the row before proxying the write,
+		// which is the only change signal the mirror can see. A change made
+		// outside the mirror is bounded by the (deliberately short) TTL.
+		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
+		r.Patch("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the
