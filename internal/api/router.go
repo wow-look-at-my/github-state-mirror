@@ -194,6 +194,14 @@ func NewRouter(
 	reqlog := newRequestLog()
 	reqlog.timeline = timeline
 
+	// Captured SHAPE of uncached traffic (shapes.go): the query-parameter
+	// names callers send and the key/type outline of what GitHub answers,
+	// sampled at most once per route shape per window. It is what the
+	// admin-only implementation brief (GET /api/brief) is assembled from —
+	// the input for modeling the next cached route, which the request-group
+	// counters alone cannot supply.
+	shapes := newShapeStore()
+
 	// Transparent GitHub passthrough for anything the mirror does not serve
 	// itself. Built from the same base URL the cache fetchers use, so forwarded
 	// requests reach the same upstream (a fake server in tests). Wrapped so every
@@ -213,19 +221,19 @@ func NewRouter(
 		if resp.Request != nil {
 			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
 		}
-	})), reqlog)
+	})), reqlog, shapes)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every
 	// GitHub-verified identity lands in actor_identities.
 	recordIdentity := newIdentityRecorder(store)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
 	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each
@@ -253,6 +261,13 @@ func NewRouter(
 	// Unverifiable callers are forwarded unchanged.
 	r.Post("/app/installations/{id}/access_tokens", h.cachedInstallationToken)
 	r.Get("/repos/{owner}/{repo}/installation", h.cachedRepoInstallation)
+	// The OWNER-level installation lookups answer the same object for an
+	// account instead of a repository, on the same App-JWT terms and in the
+	// same row space (under a sentinel repo value -- see
+	// respcache_installation.go). Two registrations because they are two
+	// questions: an account can answer one and 404 the other.
+	r.Get("/orgs/{org}/installation", h.cachedOwnerInstallation(ownerInstallScopeOrg, "org"))
+	r.Get("/users/{username}/installation", h.cachedOwnerInstallation(ownerInstallScopeUser, "username"))
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
@@ -285,6 +300,15 @@ func NewRouter(
 		// and immutable git commits (also absorbed from push payloads).
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
+
+		// Cached ref lookup (respcache_gitrefs.go): "where does this branch
+		// point right now". Greedy wildcard -- a ref path is at least
+		// heads/<name> and branch names carry slashes -- stored VERBATIM, so
+		// each spelling of a ref is its own row. Create, delete, and tip-move
+		// all arrive as a push naming the ref, which flushes every spelling;
+		// the 404 absent-ref verdict is absorbed too (sweeps re-poll deleted
+		// heads forever) and cleared by the push that recreates the ref.
+		r.Get("/repos/{owner}/{repo}/git/ref/*", h.cachedGitRef)
 
 		// Cached commits LIST (respcache_commits.go): per-page sha snapshots
 		// over the same git_commits_cache rows, flushed by push/repository
@@ -334,6 +358,25 @@ func NewRouter(
 		// DELETION emits no webhook).
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
 
+		// Cached Actions JOB reads (respcache_workflowjobs.go): a run's jobs
+		// page and a single job. Only TERMINAL answers are stored -- a
+		// queued/in_progress job is a live value the runner coordinator
+		// provisions against, so those always reach GitHub; what this kills
+		// is the fleet re-reading SETTLED runs forever. A re-run replaces a
+		// run's jobs under the same run id, so workflow_job/workflow_run
+		// deliveries flush every row under that run.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
+		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
+
+		// Cached Code Quality setup (respcache_codequality.go): the per-repo
+		// enablement config, modeled from GitHub's OpenAPI `code-quality-setup`
+		// schema. GitHub emits no webhook when it changes, so the PATCH is
+		// registered too -- purely to flush the row before proxying the write,
+		// which is the only change signal the mirror can see. A change made
+		// outside the mirror is bounded by the (deliberately short) TTL.
+		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
+		r.Patch("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the
@@ -367,6 +410,14 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
+
+		// A PR's commits (respcache_pullcommits.go): GitHub answers the same
+		// item shape as the repository commits list, so this reuses that
+		// route's storage whole -- the commits land in the one global
+		// git_commits_cache and the page's ordered shas in a
+		// commits_list_cache snapshot under a synthetic "pull/<n>/commits"
+		// ref key. Flushed per PR by pull_request events, repo-wide by push.
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/commits", h.cachedPullCommits)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded

@@ -400,3 +400,30 @@ declare global {
         __GSM_DEMO__?: DemoConfig;
     }
 }
+
+// The admin-only implementation brief (GET /api/brief): every uncached route
+// joined to the captured shape of its requests and GitHub's answers, plus this
+// repo's tier-2 checklist, rendered as one copyable Markdown document. It
+// carries no values — query parameters appear by name, response bodies as
+// key/type skeletons.
+export interface BriefResponse {
+    generated_at: string;
+    total: number;
+    totals: Record<string, number>;
+    candidates: BriefCandidate[];
+    // markdown is the deliverable: what the "Copy implementation brief"
+    // button puts on the clipboard.
+    markdown: string;
+}
+
+export interface BriefCandidate extends RequestGroup {
+    shape?: {
+        seen: number;
+        query_names?: Array<{ name: string; count: number }>;
+        accepts?: Array<{ name: string; count: number }>;
+        callers?: Array<{ name: string; count: number }>;
+        statuses?: Array<{ value: number; count: number }>;
+        sample_paths?: string[];
+        bodies?: Array<{ status: number; content_type?: string; bytes: number; skeleton: string; at: string }>;
+    };
+}
