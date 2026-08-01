@@ -208,7 +208,15 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	// CHANGE to it is v2 — never a third branch here.
 	addVary(w.Header(), "Accept")
 	if wantsTimelineWire(r.Header.Get("Accept")) {
-		writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
+		wire, err := encodeTimelineV1(snap)
+		if err != nil {
+			// The encoder only refuses a page that disagrees with the schema —
+			// a programming error here, not anything a request can cause.
+			slog.Error("timeline wire encode failed", "error", err)
+			http.Error(w, "encode failed", http.StatusInternalServerError)
+			return
+		}
+		writeBody(w, r, timelineWireType, wire)
 		return
 	}
 

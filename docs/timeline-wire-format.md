@@ -149,14 +149,18 @@ The split is LAYOUT vs VOCABULARY:
 The wire bytes did not change when it moved: the column names were never on
 the wire.
 
-**The Go encoder stays here** (`internal/api/timelinewire.go`) — it is server
-code, and js-snippets is a pnpm/ts0 library with no Go. Two implementations of
-one layout in two repos are held together by BYTES:
-`timelinewire_golden_test.go` asserts the encoder emits an exact payload for a
-fixed snapshot, and js-snippets' `timeline-wire.test.ts` decodes that same
-base64 and asserts the same values. Neither can drift without one going red,
-and neither runs the other's toolchain — which the old arrangement did, with a
-Go unit test executing a built browser bundle.
+**The Go encoder moved with it.** It first stayed here, and what that bought
+was two implementations of one layout in two repos, pinned by a base64 string
+copied between them — a contract held together by hand. The encoder now lives
+in js-snippets too, as a nested Go module
+(`github.com/wow-look-at-my/js-snippets/timelinewire`), with `Decode` beside it
+so a Go producer reads its own payload instead of writing a second reader. One
+fixture in that repo, `timelinewire/testdata/golden-v1.b64`, is written by the
+Go test and decoded by the TypeScript one.
+
+What is left here is a MAPPING, `internal/api/timelinewire.go`: a
+`reqtimeline.Snapshot` laid out as columns under the names `timelineSchema`
+declares. No bytes are specified in this repo any more.
 
 ## Two encodings, one of which the chart refuses
 
@@ -188,8 +192,7 @@ Both halves are pinned, and they are meant to be read together:
 `pageFromJSONGen` therefore has one consumer, the demo preview:
 `assets/demo-data.js` is a hand-maintained JS literal that cannot be binary,
 and it reaches the element through a fetcher override, never through this
-endpoint. `shipbench.ts` also drives it, which keeps the measurement that
-chose columnar reproducible.
+endpoint.
 
 ## The frame budget (operator requirement)
 
@@ -330,11 +333,12 @@ call: "it doesn't matter if you send the events in 1hr chunks or 24hr all at
 once"). The endpoint still answers the full cursor-selected window — it is
 just an order of magnitude smaller and ~5x cheaper to render.
 
-- **`internal/api/timelinewire.go`** — the columnar encoder, magic `TLC1`,
-  media type `application/vnd.gsm.timeline.v1`. Selected by an EXACT Accept
-  match, so curl, the demo preview and any browser's `*/*` keep getting JSON.
-  The layout is versioned in both the magic and the media type and is never
-  evolved in place: a change is v2.
+- **`internal/api/timelinewire.go`** — the Snapshot→Page mapping and the
+  schema naming our 13 string columns, over js-snippets' encoder. Magic
+  `TLC1`, media type `application/vnd.gsm.timeline.v1`, selected by an EXACT
+  Accept match, so curl, the demo preview and any browser's `*/*` keep getting
+  JSON. The layout is versioned in both the magic and the media type and is
+  never evolved in place: a change is v2.
 - **`internal/api/compress.go`** — gzip at BestSpeed for the dashboard's
   buffered admin payloads, since the grey-clouded origin has nothing in front
   of it. Level 1 rather than 6 because on this shape it is 1006 KB in 24 ms
@@ -358,22 +362,25 @@ just an order of magnitude smaller and ~5x cheaper to render.
   sees the component. Deliberately NOT in CI: it needs a browser download and
   its frame-gap numbers are environment-dominated. The CI gate is the node
   one, which is deterministic.
-- **Tests.** `timelinewire_test.go` round-trips the encoder against a Go
-  decoder that mirrors the TS one (and asserts the size claim, so a regression
-  to per-event strings fails rather than merely disappoints).
-  `timelinewire_cross_test.go` runs the REAL BUILT `assets/timeline.js` under
-  node against a payload this package encoded and compares every field of
-  every event — the only check that the two languages actually agree.
-  `timeline_test.go` covers negotiation, the JSON default, gzip (including a
-  `gzip;q=0` refusal) and the small-payload floor.
+- **Tests.** `timelinewire_test.go` covers what is ours: every event field
+  reaches the page and survives a round trip, the size claim holds (so a
+  regression to per-event strings fails rather than merely disappoints), and
+  — the one agreement neither repo's tests can see — `timelineSchema` still
+  matches the chart's `SCHEMA` literal in `web/src/timeline.ts`. The library
+  never sees a column name, so a disagreement between those two would surface
+  only in the browser, as "trailing bytes" on a payload that encoded
+  perfectly. `timelineclient_test.go` drives the BUILT `assets/timeline.js`
+  under node to pin that the chart REFUSES a JSON answer. `timeline_test.go`
+  covers negotiation, the JSON default, gzip (including a `gzip;q=0` refusal)
+  and the small-payload floor. The layout itself is tested in js-snippets.
 
 ### Measured on what shipped
 
 A realistic full ring — 100,000 events over 24 h, 84% requests / 11% webhook
 deliveries carrying UNIQUE delivery GUIDs / 5% notifications — written by
 `TestTimelineWireDumpPayloads` and decoded by the REAL BUILT
-`assets/timeline.js` (`internal/api/testdata/shipbench.ts`, node 22 = V8 =
-Chrome, best of 5):
+`assets/timeline.js` under node 22 (= V8 = Chrome), best of 5, with the
+`shipbench.ts` harness that has since been retired along with the bake-off:
 
 | | on the wire | per event | browser decode |
 |---|---:|---:|---:|
@@ -381,8 +388,8 @@ Chrome, best of 5):
 | columnar (now) | 2.38 MB → **749 KB** gzipped | 23.8 B raw / 7.5 B gzipped | **63.2 ms** |
 
 **3.7× fewer bytes on the wire, 5× less main-thread time**, carrying exactly
-the same events (`shipbench.ts` asserts the wire and JSON paths produce
-identical intervals; the Go/node cross-decode test asserts every field).
+the same events (the harness asserted the wire and JSON paths produce
+identical intervals).
 
 The decoder's first cut measured 85 ms; the bulk varint readers
 (`WireReader.uvarints`/`varintSums`/`uvarintSums`) took it to 63 by inlining

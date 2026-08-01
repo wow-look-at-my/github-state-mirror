@@ -28,17 +28,19 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 	// The FULL ring, plus the one-hour window the chart actually paints on
 	// first load — the payload whose decode has to fit inside a frame budget.
 	hour := tl.SnapshotRange(time.Now().UTC().Add(-time.Hour), time.Time{})
-	require.NoError(t, os.WriteFile(dir+"/timeline-1h.bin", encodeTimelineV1(hour), 0o644))
+	hourWire := mustEncodeTimeline(t, hour)
+	require.NoError(t, os.WriteFile(dir+"/timeline-1h.bin", hourWire, 0o644))
 
-	t.Logf("1h window: %d events, %d B", len(hour.Events), len(encodeTimelineV1(hour)))
+	t.Logf("1h window: %d events, %d B", len(hour.Events), len(hourWire))
 	// A shorter first window, for measuring how the chart's load burst scales
 	// with what is on screen (browsercheck.ts).
 	short := tl.SnapshotRange(time.Now().UTC().Add(-20*time.Minute), time.Time{})
-	require.NoError(t, os.WriteFile(dir+"/timeline-20m.bin", encodeTimelineV1(short), 0o644))
-	t.Logf("20m window: %d events, %d B", len(short.Events), len(encodeTimelineV1(short)))
+	shortWire := mustEncodeTimeline(t, short)
+	require.NoError(t, os.WriteFile(dir+"/timeline-20m.bin", shortWire, 0o644))
+	t.Logf("20m window: %d events, %d B", len(short.Events), len(shortWire))
 
 	snap := tl.Snapshot(0)
-	wire := encodeTimelineV1(snap)
+	wire := mustEncodeTimeline(t, snap)
 	require.NoError(t, os.WriteFile(dir+"/timeline.bin", wire, 0o644))
 
 	// The JSON shape the endpoint USED to serve. It is no longer a response —
