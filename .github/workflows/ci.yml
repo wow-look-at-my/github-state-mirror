@@ -54,14 +54,14 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const mod = fs.readFileSync("go.mod", "utf-8");
+            const goMod = fs.readFileSync("go.mod", "utf-8");
             // v0.0.0-<utc timestamp>-<12-char commit sha>, the shape `go get`
             // writes for a module with no semver tag. The captured path stops
             // at the first slash after the org, which is the REPO to clone --
             // a nested module's path is not a clonable URL.
-            const pseudo = /^\s+(github\.com\/(?:wow-look-at-my|PazerOP)\/[^\s\/]+)\S*\s+(v[\d.]+-[\d]{14}-([0-9a-f]{12}))/gm;
+            const pseudo = /^\s+((github\.com\/(?:wow-look-at-my|PazerOP)\/[^\s\/]+)\S*)\s+(v[\d.]+-[\d]{14}-([0-9a-f]{12}))/gm;
             const bad: string[] = [];
-            for (const [, repo, version, short] of mod.matchAll(pseudo)) {
+            for (const [, modulePath, repo, version, short] of goMod.matchAll(pseudo)) {
               const dir = `/tmp/${repo.split("/").pop()}`;
               // The URL is built BEFORE interpolation: `$` passes each
               // interpolated value as its own argv entry (that is what makes it
@@ -78,6 +78,24 @@ jobs:
               if (!onDefault) {
                 bad.push(`${repo} ${version}: commit ${short} is not on the default branch` +
                   (branches.length ? ` (only ${branches.join(", ")})` : " -- unreachable, it survives only in the module proxy cache"));
+                continue;
+              }
+
+              // A pseudoversion is a bare commit sha: it says nothing about
+              // what changed and goes stale as soon as the dependency moves.
+              // Once a module publishes RELEASES there is no reason to keep
+              // copying commits out of it, so this turns itself on the moment
+              // tags appear -- no one has to remember to switch over.
+              const mod = modulePath.replace("github.com/", "");
+              const sub = mod.split("/").slice(2).join("/"); // nested module dir, if any
+              const tagGlob = sub ? `${sub}/v*` : "v*";
+              const tagged = (await exec.getExecOutput(
+                "git", ["-C", dir, "tag", "--list", tagGlob], { silent: true, ignoreReturnCode: true }))
+                .stdout.split("\n").map((t) => t.trim()).filter(Boolean);
+              if (tagged.length > 0) {
+                bad.push(`${modulePath} ${version}: this module publishes releases (` +
+                  `${tagged.slice(-3).join(", ")}) -- pin one instead of a commit: ` +
+                  `go get ${modulePath}@latest`);
               }
             }
             if (bad.length) {
