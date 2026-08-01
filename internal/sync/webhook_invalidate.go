@@ -83,6 +83,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -198,6 +199,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 	default:
 		// Every per-ref flush below covers the pushed ref in each spelling
 		// GitHub accepts for it (bare / heads/... / refs/heads/..., or the
@@ -237,6 +239,10 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			// immutable commit, and the push's brand-new shas have no rows
 			// yet).
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
+			// The ref's own tip: a push IS the move, and a push that creates
+			// the ref is what clears a cached absent-ref verdict. Rows key
+			// the verbatim requested spelling, hence one call per spelling.
+			flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, ref))
 		}
 	}
 

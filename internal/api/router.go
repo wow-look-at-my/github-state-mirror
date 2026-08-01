@@ -294,6 +294,15 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
+		// Cached ref lookup (respcache_gitrefs.go): "where does this branch
+		// point right now". Greedy wildcard -- a ref path is at least
+		// heads/<name> and branch names carry slashes -- stored VERBATIM, so
+		// each spelling of a ref is its own row. Create, delete, and tip-move
+		// all arrive as a push naming the ref, which flushes every spelling;
+		// the 404 absent-ref verdict is absorbed too (sweeps re-poll deleted
+		// heads forever) and cleared by the push that recreates the ref.
+		r.Get("/repos/{owner}/{repo}/git/ref/*", h.cachedGitRef)
+
 		// Cached commits LIST (respcache_commits.go): per-page sha snapshots
 		// over the same git_commits_cache rows, flushed by push/repository
 		// webhooks.

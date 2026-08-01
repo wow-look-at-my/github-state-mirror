@@ -43,12 +43,16 @@ type respCacheUpstream struct {
 	probeHits     int32
 	pullFilesHits int32
 	branchesHits  int32
+	gitRefHits    int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
 	pullFiles func(w http.ResponseWriter, r *http.Request)
 	// branches answers GET /repos/{o}/{r}/branches; settable per test.
 	branches func(w http.ResponseWriter, r *http.Request)
+	// gitRef answers GET /repos/{o}/{r}/git/ref/{ref}; settable per test
+	// (the verdict tests answer 404).
+	gitRef func(w http.ResponseWriter, r *http.Request)
 	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
 	// test (the miss-marker tests answer 404).
 	gitCommit func(w http.ResponseWriter, r *http.Request)
@@ -102,6 +106,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 	// respcache_pullfiles_test.go / respcache_branches_test.go.
 	u.pullFiles = defaultPullFilesUpstream
 	u.branches = defaultBranchesUpstream
+	u.gitRef = defaultGitRefUpstream
 	return u
 }
 
@@ -140,6 +145,9 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)
+		case strings.Contains(r.URL.Path, "/git/ref/"):
+			atomic.AddInt32(&u.gitRefHits, 1)
+			u.gitRef(w, r)
 		case strings.Contains(r.URL.Path, "/git/commits/"):
 			atomic.AddInt32(&u.commitHits, 1)
 			u.gitCommit(w, r)

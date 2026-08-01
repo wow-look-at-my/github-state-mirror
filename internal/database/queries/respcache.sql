@@ -536,3 +536,39 @@ DELETE FROM pull_diff406_cache WHERE expires_at <= ?;
 DELETE FROM pull_diff406_cache WHERE id IN (
     SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- git_ref_cache (GET /repos/{owner}/{repo}/git/ref/{ref}) ----
+
+-- name: GetGitRefCache :one
+SELECT * FROM git_ref_cache
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: UpsertGitRefCache :exec
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitRefCache :exec
+UPDATE git_ref_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- DeleteGitRefCacheForRef drops ONE requested spelling of a ref -- the
+-- per-ref push flush (a push moves, creates, or deletes exactly one ref).
+-- name: DeleteGitRefCacheForRef :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteGitRefCacheByRepo :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredGitRefCache :exec
+DELETE FROM git_ref_cache WHERE expires_at <= ?;
+
+-- name: PruneGitRefCacheLRU :exec
+DELETE FROM git_ref_cache WHERE id IN (
+    SELECT id FROM git_ref_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

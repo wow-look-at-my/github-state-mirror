@@ -12,6 +12,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 19: git_ref_cache -- the cached GET /git/ref/{ref} lookup
+// (the hottest UNROUTED path in the request log). Keyed by the VERBATIM
+// requested ref spelling; a push naming the ref flushes every spelling, which
+// is also what clears a cached absent-ref 404 verdict.
+//
 // SchemaVersion 18: pull_requests gains merge_stale_ref/merge_stale_after --
 // the stale marker's push-tip PROOF. A base/head push now records WHICH branch
 // moved and its post-push tip alongside the remembered sha, so an absorbed
@@ -54,7 +59,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 18
+const SchemaVersion = 19
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

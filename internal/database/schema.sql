@@ -728,3 +728,26 @@ CREATE TABLE workflow_jobs (
 -- completed_at < cutoff) a single indexed scan of only the completed rows.
 CREATE INDEX idx_workflow_jobs_completed_at
     ON workflow_jobs (completed_at) WHERE status = 'completed';
+
+-- Snapshots for GET /repos/{owner}/{repo}/git/ref/{ref} -- the ref-to-tip
+-- lookup (heads/<branch>, tags/<tag>). One row per (owner, repo, verbatim
+-- requested ref): callers may spell the same branch three ways and each
+-- spelling is its own row, so the per-ref push flush covers every spelling
+-- (refSpellings in internal/sync/webhook_invalidate.go). status is 200 (a
+-- real ref) or 404 (the "no such ref" VERDICT -- deleted branches are polled
+-- forever by fleet sweeps, and ref creation arrives as a push, which clears
+-- the verdict). doc holds the rendered trimmed body. owner/repo lowercased.
+CREATE TABLE git_ref_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    ref          TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
+    status       INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
+    doc          TEXT NOT NULL,              -- trimmed ref document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);
+CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
