@@ -22,10 +22,12 @@ async function measure(name, makeTask) {
     let worst = 0, slices = 0, total = 0;
     const onSlice = (ms) => { slices++; total += ms; if (ms > worst) worst = ms; };
     const t0 = performance.now();
-    const decoded = await mod.runSliced(makeTask(), onSlice);
+    // (task, pacer, onSlice) — pass no pacer so runSliced builds its own; in
+    // node every task is its own frame, so this measures per-task work.
+    const decoded = await mod.runSliced(makeTask(), undefined, onSlice);
     // Interval building is driven by the element the same way.
     const batches = [];
-    await mod.runSliced(mod.intervalsGen(decoded.c, (b) => batches.push(b)), onSlice);
+    await mod.runSliced(mod.intervalsGen(decoded.c, (b) => batches.push(b)), undefined, onSlice);
     const wall = performance.now() - t0;
     const n = batches.reduce((a, b) => a + b.intervals.length, 0);
     console.log(`${name}: worst slice ${worst.toFixed(2)}ms | slices ${slices} | cpu ${total.toFixed(1)}ms | wall ${wall.toFixed(1)}ms | ${n} intervals`);

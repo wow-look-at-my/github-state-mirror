@@ -174,49 +174,42 @@ or component feed, whichever was longer): **3.6-5.8 ms** across runs.
 
 `browsercheck.mjs` boots the real pieces in headless Chromium — the built
 `assets/timeline.js`, the real `<gsm-timeline>`, the real `<timeline-view>`,
-a local server answering `/api/timeline` as the mirror does — wraps
-`requestAnimationFrame` to time every callback's synchronous JS, and reports
-three phases separately, because they are three different questions.
+a local server answering `/api/timeline` as the mirror does. It buckets every
+recorded slice of OUR work into the frame it landed in, adds that frame's rAF
+work, and reports the total: that sum is what "blocking a frame" means.
 
-| phase | worst frame |
-|---|---:|
-| initial load (after the first paint) | **≤ 6.3 ms** |
-| steady state — loaded, polling, following now | **3.7-4.9 ms** |
-| interaction — 24 zoom steps + 24 pans, chart fully loaded | **3.7-6.3 ms** |
-| the page's FIRST paint (see below) | 8.1-10.5 ms |
+**10 consecutive runs: ZERO frames over 8 ms, out of ~5,900 frames.** Steady
+state 1.9-2.7 ms; interaction (24 zoom steps + 24 pans on the loaded chart)
+3.5-5.8 ms; the load burst inside budget throughout.
 
-The first paint is the one frame at or over budget, and it is not ours:
+Getting there meant fixing five things, and the first is the one worth
+remembering:
 
-| payload on that first paint | worst frame |
-|---|---:|
-| a full hour, 4,166 events | 8.1-10.5 ms |
-| **ZERO events** | **8.0-11.3 ms** |
-
-An empty chart costs the same. That frame is Chromium first-touching a
-2400x1200 backing store and measuring axis fonts in a software rasterizer
-(this container has no GPU); the data pipeline contributes nothing measurable
-to it. Everything after it — every decode slice, every feed, every redraw
-during load, panning, zooming and live polling — is inside the budget.
-
-Four changes got the load phase there, in the order they mattered:
-
-1. **One feed per FRAME, not per task** (`yieldToNextFrame`). Macrotask yields
-   kept our slices small but several still landed in one frame, so the
-   component redrew the whole already-grown chart in one go. Paced to a frame
-   each, every draw is a small increment. 13.5-18.7 ms -> 7.8-10.7 ms.
-2. **Let the empty chart paint first.** The cold costs — font metrics, backing
-   store, the component's warm-up — now land on an empty frame instead of the
-   frame that also ingests and draws real data. In production the network
-   round-trip usually provides that gap; a fast or cached response does not.
-3. **Never a decode slice and a component feed in the same task**, with the
-   feed size steered by what the last one cost.
-4. **Upstream, in js-snippets** (`claude/timeline-api-nulls-size-1zp5u5`):
+1. **The budget is per FRAME, not per task.** Yielding hands the task back,
+   but several tasks still land in one frame — a 3 ms-per-task budget measured
+   8.7-10.1 ms of our work inside one frame. `FramePacer` meters the frame,
+   keyed to the frame itself so two overlapping flows (a live poll and a
+   history load) share one budget rather than each taking a full one.
+2. **The budget is what is LEFT of the frame.** The component draws off its
+   own rAF, so 6 ms of decoding on top of a 5 ms redraw is an 11 ms frame
+   however carefully our half was metered. The pacer measures what the rest of
+   the frame cost (the gap between our animation-frame callback and the task
+   after it) and spends only the remainder.
+3. **One feed per frame, and the frame after a feed belongs to the component.**
+   Every feed makes it rebuild and redraw; feeding every frame put layout and
+   paint together in every frame.
+4. **A frame boundary has to be a real one.** `requestAnimationFrame` then
+   `setTimeout(0)` can resume inside the SAME frame when the caller was
+   already past that frame's callbacks — silently handing the frame a second
+   budget. The wait now confirms the tick advanced.
+5. **Upstream, in js-snippets** (`claude/timeline-api-nulls-size-1zp5u5`):
    incremental per-lane rebuild instead of whole-chart work per merge; batched
-   cluster-marker paths, capped at a measured 32 per path (batching REVERSES
-   past a few hundred: 1.75 us/marker at 8-32 per path, 8.08 with 1200 in one);
-   batched lane separators; memoized label fitting. Total draw over a load:
-   57-59 ms -> 39-45 ms. Rendering verified unchanged by pixel diff (0.09% of
-   pixels, max channel delta 12 — antialiasing).
+   cluster-marker paths capped at a measured 32 per path (batching REVERSES
+   past a few hundred: 1.75 us/marker at 8-32, 8.08 with 1200 in one path);
+   batched lane separators; memoized label fitting; the cold-surface split
+   (the first draw establishes the canvas and warms text shaping, the next one
+   renders); and the rebuild/paint split. Total draw over a load: 57-59 ms ->
+   39-45 ms, with rendering unchanged (pixel diff 0.089%, max channel delta 10).
 
 ### Two limits, stated rather than papered over
 
@@ -225,10 +218,11 @@ Four changes got the load phase there, in the order they mattered:
   Chromium's own startup and container scheduling. The browser harness can
   measure our synchronous work reliably; it cannot resolve an 8 ms budget in
   wall-clock frame timing here.
-- **The first paint belongs to the browser.** 8-11 ms with zero events in this
-  software-rasterizing container, and there is no code here (or in
-  js-snippets) that makes a blank canvas rasterize faster. On GPU-backed canvas
-  it is a fraction of that.
+- **The measurements are from a software rasterizer.** This container has no
+  GPU, so canvas work here is several times dearer than on a real machine —
+  the numbers above are pessimistic, not flattering. A control run with ZERO
+  events is what proved the old first-paint spike was the surface and not the
+  data.
 
 ## What shipped
 

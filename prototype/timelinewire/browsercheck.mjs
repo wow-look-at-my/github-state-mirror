@@ -35,6 +35,22 @@ const componentJs = readFileSync(componentPath);
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>frame budget</title>
 <body><gsm-timeline id="tl" style="display:block;height:600px"></gsm-timeline>
+<script>
+// EXPERIMENT: pay the cold canvas/text costs in their own frame before the
+// chart exists, and see whether the component's first paint gets cheaper.
+if (new URLSearchParams(location.search).has("warm")) {
+    const c = document.createElement("canvas");
+    c.width = 2400; c.height = 1200;
+    const x = c.getContext("2d");
+    x.fillStyle = "#111"; x.fillRect(0, 0, 2400, 1200);
+    x.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+    x.textBaseline = "middle";
+    for (const s of ["12:34", "GET /repos/{owner}/{repo}/pulls", "0123456789", "\u21d0 push"]) {
+        x.measureText(s); x.fillText(s, 10, 20);
+    }
+    x.beginPath(); x.moveTo(0, 0); x.lineTo(100, 100); x.stroke();
+}
+</script>
 <script type="module" src="/timeline.js"></script>
 <script>
 // Long tasks are the browser's own verdict on main-thread blocking: anything
@@ -80,9 +96,26 @@ window.__rafMax = 0; window.__rafs = [];
         const t0 = performance.now();
         cb(t);
         const ms = performance.now() - t0;
+        window.__frames = window.__frames ?? [];
+        window.__frames.push({ at: t0, ms });
         if (ms > 1) window.__rafs.push({ ms: +ms.toFixed(2), at: Math.round(t0) });
         if (ms > window.__rafMax) window.__rafMax = ms;
     });
+}
+// OUR work is not in a rAF callback (it runs in tasks), so the frame's true
+// main-thread total is our slices PLUS the component's rAF work in the same
+// frame window. recordSlice is an own property on the element, so it can be
+// wrapped from here.
+window.__slices = [];
+{
+    const patchSlices = setInterval(() => {
+        const el = document.querySelector("gsm-timeline");
+        if (!el || !el.recordSlice || el.__slicePatched) return;
+        el.__slicePatched = true;
+        const orig = el.recordSlice;
+        el.recordSlice = (ms) => { window.__slices.push({ at: performance.now() - ms, ms }); orig(ms); };
+        clearInterval(patchSlices);
+    }, 2);
 }
 window.__gaps = [];
 let last = performance.now();
@@ -221,12 +254,43 @@ await page.route("https://sites.pazer.build/**", (route) => {
     return route.fulfill({ status: 200, contentType: "text/javascript; charset=utf-8", body: chunkCache.get(url) });
 });
 
-await page.goto(`http://localhost:${port}/`);
+await page.goto(`http://localhost:${port}/${process.env.GSM_WARM === "1" ? "?warm" : ""}`);
 // Wait for the chart to actually exist and hold data.
 await page.waitForFunction(() => !!document.querySelector("timeline-view"), null, { timeout: 20000 });
 await page.waitForTimeout(3000);
 // Phase 2: the chart the user actually watches — loaded, live-polling,
 // following "now". Reset and measure a settled window.
+const perFrame = await page.evaluate(() => {
+    // Bucket every recorded slice into the frame window it landed in, and add
+    // that frame's rAF work: that sum is what "blocking a frame" means.
+    const frames = (window.__frames ?? []).slice().sort((a, b) => a.at - b.at);
+    const slices = (window.__slices ?? []).slice().sort((a, b) => a.at - b.at);
+    const totals = [];
+    for (let i = 0; i < frames.length; i++) {
+        const from = frames[i].at, to = i + 1 < frames.length ? frames[i + 1].at : Infinity;
+        let ours = 0;
+        for (const s of slices) if (s.at >= from && s.at < to) ours += s.ms;
+        totals.push({ at: Math.round(from), total: +(frames[i].ms + ours).toFixed(2), component: +frames[i].ms.toFixed(2), ours: +ours.toFixed(2) });
+    }
+    const worst = totals.slice().sort((a, b) => b.total - a.total).slice(0, 5);
+    const over = totals.filter((t) => t.total > 8);
+    const log = window.__innerLog ?? [];
+    for (const f of worst) {
+        f.inside = log.filter((e) => e.at >= f.at - 0.5 && e.at <= f.at + f.total)
+            .sort((a, b) => b.ms - a.ms).slice(0, 5).map((e) => `${e.name} ${e.ms}ms`);
+    }
+    // Is a fat frame ONE pathological slice, or many small ones summing?
+    const bySize = slices.slice().sort((a, b) => b.ms - a.ms).slice(0, 5).map((s) => +s.ms.toFixed(2));
+    for (const f of worst) {
+        const from = f.at, to = from + f.total;
+        f.slices = slices.filter((s) => s.at >= from - 0.5 && s.at < to).map((s) => +s.ms.toFixed(1));
+    }
+    return { worst, over: over.length, frames: totals.length, worstSlices: bySize };
+});
+console.log(`PER-FRAME TOTAL (ours + component): ${perFrame.over} of ${perFrame.frames} frames over 8ms`);
+for (const f of perFrame.worst) console.log(`   ${f.total}ms @${f.at} (component ${f.component} + ours ${f.ours}) slices=[${(f.slices ?? []).join(",")}] <= ${(f.inside ?? []).join(" | ")}`);
+console.log(`   worst individual slices of ours: ${perFrame.worstSlices.join(", ")} ms`);
+
 const loadPhase = await page.evaluate(() => {
     // Attribute the three worst load frames: which component calls ran inside
     // each, and for how long.
