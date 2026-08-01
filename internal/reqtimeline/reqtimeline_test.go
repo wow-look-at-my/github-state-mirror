@@ -1,6 +1,7 @@
 package reqtimeline
 
 import (
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
@@ -166,4 +167,35 @@ func TestConcurrentAccess(t *testing.T) {
 		require.Greater(t, snap.Events[i].ID, snap.Events[i-1].ID)
 
 	}
+}
+
+// TestSnapshotRange: the async-history read returns exactly the events
+// overlapping the window — the client's whole defence against decoding 100k
+// events to paint one hour.
+func TestSnapshotRange(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	r := &Recorder{retention: DefaultRetention, maxEvents: DefaultMaxEvents, now: func() time.Time { return base }}
+	// One event per hour for the last 6 hours, each 1 minute long.
+	for i := 6; i >= 1; i-- {
+		r.RecordWebhook(base.Add(-time.Duration(i)*time.Hour), time.Minute, "push", "", "d", "o/r", "applied")
+	}
+
+	got := r.SnapshotRange(base.Add(-3*time.Hour), base.Add(-1*time.Hour))
+	require.Equal(t, 2, len(got.Events))
+
+	assert.True(t, got.Events[0].Start.Equal(base.Add(-3*time.Hour)))
+
+	// The live cursor is independent of the range read.
+	assert.Equal(t, uint64(6), got.MaxID)
+
+	// An event STRADDLING the window boundary is included: it is visible in
+	// the range even though it began before it.
+	r.RecordWebhook(base.Add(-90*time.Minute), 60*time.Minute, "push", "", "d", "o/r", "applied")
+	straddle := r.SnapshotRange(base.Add(-45*time.Minute), base)
+	require.Equal(t, 1, len(straddle.Events))
+
+	// Zero bounds mean the whole retained window.
+	all := r.SnapshotRange(time.Time{}, time.Time{})
+	assert.Equal(t, 7, len(all.Events))
+
 }
