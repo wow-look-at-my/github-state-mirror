@@ -609,3 +609,12 @@ DELETE FROM workflow_jobs_cache WHERE expires_at <= ?;
 DELETE FROM workflow_jobs_cache WHERE id IN (
     SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- DeleteCommitsListCachePullSnapshots drops a repo's PR-commit snapshots --
+-- the rows whose ref key is the synthetic "pull/<number>/commits" (see
+-- internal/api/respcache_pullcommits.go). A push moves a PR's commit list
+-- with no per-PR signal, exactly as it does the PR-files pages, so it flushes
+-- these repo-wide as the belt behind the per-PR pull_request flush.
+-- name: DeleteCommitsListCachePullSnapshots :exec
+DELETE FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param LIKE 'pull/%';

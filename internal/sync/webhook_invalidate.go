@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -85,6 +86,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
 		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
+		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -94,6 +96,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull files cache", scope, d.store.InvalidatePullFilesForPR(ctx, owner, repo, event.PRNumber))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
+		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -261,6 +264,10 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
 	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
+	// A PR's commit list moves when its head moves, and a fork head's pushes
+	// never reach us -- pull_request deliveries carry the per-PR signal, and
+	// this is the repo-wide belt for a missed one (the PR-files stance).
+	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
 // flush logs one best-effort cache invalidation's failure; it never fails
@@ -282,6 +289,16 @@ func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, 
 		return
 	}
 	flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsForHeadSHA(ctx, owner, repo, sha))
+}
+
+// pullCommitsRefKey mirrors the API package's synthetic commits_list_cache
+// ref key for one PR's commit list ("pull/<number>/commits"). The two must
+// agree exactly -- a per-PR flush that misses the key leaves the snapshot
+// serving stale until the repo-wide push flush or the TTL catches it -- and a
+// sync -> api import would be a cycle, so it is restated here and pinned by a
+// test in the api package.
+func pullCommitsRefKey(number int64) string {
+	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }
 
 // flushWorkflowJobsForRun drops one run's cached job answers -- its jobs

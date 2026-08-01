@@ -401,6 +401,14 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
+
+		// A PR's commits (respcache_pullcommits.go): GitHub answers the same
+		// item shape as the repository commits list, so this reuses that
+		// route's storage whole -- the commits land in the one global
+		// git_commits_cache and the page's ordered shas in a
+		// commits_list_cache snapshot under a synthetic "pull/<n>/commits"
+		// ref key. Flushed per PR by pull_request events, repo-wide by push.
+		r.Get("/repos/{owner}/{repo}/pulls/{number}/commits", h.cachedPullCommits)
 	})
 
 	// Fallback: any request the mirror does not specifically serve is forwarded
