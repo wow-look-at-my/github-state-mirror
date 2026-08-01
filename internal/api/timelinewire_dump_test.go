@@ -32,6 +32,11 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 	require.NoError(t, os.WriteFile(dir+"/timeline-1h.bin", encodeTimelineV1(hour), 0o644))
 
 	t.Logf("1h window: %d events, %d B", len(hour.Events), len(encodeTimelineV1(hour)))
+	// A shorter first window, for measuring how the chart's load burst scales
+	// with what is on screen (browsercheck.mjs).
+	short := tl.SnapshotRange(time.Now().UTC().Add(-20*time.Minute), time.Time{})
+	require.NoError(t, os.WriteFile(dir+"/timeline-20m.bin", encodeTimelineV1(short), 0o644))
+	t.Logf("20m window: %d events, %d B", len(short.Events), len(encodeTimelineV1(short)))
 
 	snap := tl.Snapshot(0)
 	wire := encodeTimelineV1(snap)

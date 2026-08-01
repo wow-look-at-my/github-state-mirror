@@ -674,6 +674,29 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
     }
 }
 
+// laneKindsOf reads the page's COMPLETE lane set straight off the columns —
+// every lane is a dictionary entry, and one row per lane gives its kind — so
+// the chart can be told about all of them on the first feed.
+//
+// That matters for smoothness, not tidiness: a lane arriving mid-stream is a
+// STRUCTURAL change to the component, which forces it to re-cluster and
+// re-assign every lane it holds. Discovering lanes batch by batch therefore
+// turned each batch into whole-chart work; declaring them up front leaves the
+// component free to do only what changed.
+export function laneKindsOf(c: Columns): Array<{ lane: string; kind: string }> {
+    const laneCol = c.s.lane, kindCol = c.s.kind;
+    const dict = laneCol.dict;
+    const out: Array<{ lane: string; kind: string }> = [];
+    if (laneCol.idx === null) return out;
+    const kindByLaneIdx = new Map<number, string>();
+    for (let i = 0; i < c.n && kindByLaneIdx.size < dict.length - 1; i++) {
+        const li = laneCol.idx[i];
+        if (li !== 0 && !kindByLaneIdx.has(li)) kindByLaneIdx.set(li, str(kindCol, i));
+    }
+    for (const [li, kind] of kindByLaneIdx) out.push({ lane: dict[li], kind });
+    return out;
+}
+
 // eventAt materializes one row as the flat event the tooltip reads. Called
 // once per hover, never per row.
 export function rowOfEventId(c: Columns, id: number): number {
@@ -908,6 +931,13 @@ class GsmTimeline extends HTMLElement {
     private async merge(tl: TimelineViewElement, page: DecodedPage,
                         coverage: { start: number; end: number }): Promise<void> {
 
+        // Declare every lane this page carries BEFORE the first feed: a lane
+        // appearing later is a structural change that costs the component a
+        // whole-chart relayout (see laneKindsOf).
+        for (const { lane, kind } of laneKindsOf(page.c)) {
+            if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
+        }
+
         const pending: IntervalBatch[] = [];
         const task = intervalsGen(page.c, (b) => pending.push(b));
         let empty = true;
@@ -993,7 +1023,7 @@ class GsmTimeline extends HTMLElement {
         }
         // Coverage rides along so the live window keeps tracking now.
         tl.mergeData({ intervals, coverage });
-        this.syncLanes(tl);
+        this.syncLanes(tl); // no-op unless the lane ORDER actually changed
     }
 
     private markFresh(tl: TimelineViewElement): void {

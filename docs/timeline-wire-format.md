@@ -170,6 +170,35 @@ overshoots later ones — a fixed 1024 measured 7.6 ms.
 In-browser after the fix, worst synchronous stretch of OUR work (decode slice
 or component feed, whichever was longer): **3.6-5.8 ms** across runs.
 
+### Where the frames actually go (browser, real component)
+
+Measured with `browsercheck.mjs` (headless Chromium, the real `<timeline-view>`,
+the one-hour first-paint payload), separating the ~1s initial load from the
+chart the user then watches:
+
+| phase | worst frame (JS in one rAF) |
+|---|---:|
+| initial load burst | 13.5-18.7 ms (~3 frames over 8) |
+| **steady state** (loaded, polling, following now) | **1.8-4.3 ms** |
+
+Our own work is bounded everywhere: decode slices and component feeds measure
+3.0-5.8 ms. The over-budget frames are the component's FULL PAINT of a freshly
+loaded chart — `draw` 9-13 ms, `updateVisibleLayout` 5-6 ms — and they scale
+with what is on screen (a 20-minute first window instead of an hour: 10.8-11.6
+ms worst).
+
+That cost got materially smaller upstream in js-snippets (see that repo's
+`claude/timeline-api-nulls-size-1zp5u5`): incremental per-lane rebuild instead
+of whole-chart work per merge, batched cluster-marker paths (drawIntervals
+6.6-7.8 ms -> 4.2-5.7 ms), batched lane separators and memoized label fitting.
+The adapter also now declares every lane on the first feed, because a lane
+arriving mid-stream is a structural change that forces the component to
+re-cluster everything it holds.
+
+Closing the last gap means the component rendering incrementally — time-boxing
+its own paint across frames — which is a redesign of a shared component, not a
+tweak, and is NOT done.
+
 ### Two limits, stated rather than papered over
 
 - **Frame gaps in this sandbox are not our signal.** A control run — same page,
