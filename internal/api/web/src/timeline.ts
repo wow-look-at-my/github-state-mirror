@@ -30,7 +30,6 @@
 // retried dynamic import in loadComponentForever below (tsc emits dynamic
 // import() verbatim, so the component URL survives into the built module).
 import type {
-    TimelineData,
     TimelineHit,
     TimelineInterval,
     TimelineLane,
@@ -48,14 +47,22 @@ const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
 // Bounded default fetcher. app.ts overrides `fetcher` only in demo mode (the
 // backend-free preview serves canned data); production uses this one — the
 // AbortSignal bound is what keeps the single-flight poll guard un-wedgeable.
-async function fetchTimeline(path: string): Promise<TimelineResponse> {
+//
+// It asks for the COLUMNAR encoding (internal/api/timelinewire.go) and falls
+// back to JSON on whatever the server actually answers with, so a rollback of
+// the server half — or the demo preview, which serves canned JSON — keeps
+// working with no branch anywhere else in this file.
+async function fetchPage(path: string): Promise<TimelinePage> {
     const res = await fetch(path, {
-        headers: { Accept: "application/json" },
+        headers: { Accept: `${WIRE_TYPE}, application/json;q=0.9` },
         credentials: "same-origin",
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    return (await res.json()) as TimelineResponse;
+    if ((res.headers.get("Content-Type") ?? "").startsWith(WIRE_TYPE)) {
+        return pageFromWire(new Uint8Array(await res.arrayBuffer()));
+    }
+    return pageFromJSON((await res.json()) as TimelineResponse);
 }
 
 // Tiny DOM helper (this module is standalone; app.ts's el() is not shared).
@@ -72,61 +79,307 @@ function fmtDur(ms: number): string {
     return (ms / 60_000).toFixed(1) + " min";
 }
 
-// ---- event → component translation ----
+// ---- the wire format ----
+//
+// The payload is COLUMNAR (internal/api/timelinewire.go; the format and the
+// numbers behind choosing it are in docs/timeline-wire-format.md): every field
+// is a contiguous run, strings are a per-column dictionary plus one small
+// index per event, ids and timestamps are deltas. Against the JSON it
+// replaces it is ~10 B/event gzipped instead of ~32, and ~5x cheaper to turn
+// into the chart's intervals — because nothing here parses per record, and
+// the 19-field event object is never built at all until a tooltip asks for
+// one.
+//
+// Decoding mirrors the encoder field for field; internal/api/timelinewire_test.go
+// carries the same decoder in Go and round-trips the encoder against it, which
+// is what keeps the two halves honest. A change to the layout is a NEW version
+// (v2, new magic + new media type), never an edit to this one.
 
-function stateFor(e: TimelineEvent): string {
-    if (e.kind === "webhook") {
+const WIRE_TYPE = "application/vnd.gsm.timeline.v1";
+const WIRE_MAGIC = "TLC1";
+
+// String columns, in wire order.
+const COLS = ["kind", "lane", "disposition", "event_type", "action", "delivery_id",
+    "repo", "method", "route", "actor", "actor_name", "detail", "target"] as const;
+type ColName = (typeof COLS)[number];
+
+interface StringColumn {
+    dict: string[];
+    // null when the whole window left this field empty — the encoder writes no
+    // index run for such a column, and every read answers "".
+    idx: Int32Array | null;
+}
+
+// One decoded page's columns. The chart holds these for as long as the
+// intervals built from them are on screen.
+interface Columns {
+    n: number;
+    id: Float64Array; // ids exceed 2^31 in a long-lived process
+    start: Float64Array; // epoch ms
+    dur: Int32Array;
+    status: Int32Array;
+    attempt: Int32Array;
+    final: Uint8Array; // bitset
+    s: Record<ColName, StringColumn>;
+}
+
+// A row reference: what an interval carries instead of a materialized event.
+interface EventRef {
+    c: Columns;
+    i: number;
+}
+
+interface TimelinePage {
+    intervals: TimelineInterval[];
+    // (lane, kind) pairs seen on this page, for the grouped lane ordering.
+    lanes: Array<{ lane: string; kind: string }>;
+    maxId: number;
+    retentionStart: number; // epoch ms
+    now: number; // epoch ms
+}
+
+class WireReader {
+    private p = 0;
+    private dec = new TextDecoder();
+    constructor(private b: Uint8Array) {}
+
+    // Varints are read as floats past 2^31 (ids and epoch-ms deltas both
+    // exceed it); 2**s keeps the shift exact instead of wrapping at 32 bits.
+    uvarint(): number {
+        let x = 0, s = 0;
+        for (;;) {
+            const c = this.b[this.p++];
+            if (c === undefined) throw new Error("timeline: truncated varint");
+            if (c < 0x80) return x + c * 2 ** s;
+            x += (c & 0x7f) * 2 ** s;
+            s += 7;
+        }
+    }
+
+    varint(): number { // zigzag
+        const u = this.uvarint();
+        return u % 2 === 0 ? u / 2 : -(u + 1) / 2;
+    }
+
+    bytes(n: number): Uint8Array {
+        if (this.p + n > this.b.length) throw new Error("timeline: truncated payload");
+        const out = this.b.subarray(this.p, this.p + n);
+        this.p += n;
+        return out;
+    }
+
+    str(): string {
+        return this.dec.decode(this.bytes(this.uvarint()));
+    }
+
+    dict(): string[] {
+        const n = this.uvarint();
+        const out = new Array<string>(n);
+        for (let i = 0; i < n; i++) out[i] = this.str();
+        return out;
+    }
+
+    expectMagic(want: string): void {
+        const got = String.fromCharCode(...this.bytes(4));
+        if (got !== want) throw new Error(`timeline: bad magic ${JSON.stringify(got)}`);
+    }
+
+    atEnd(): boolean {
+        return this.p === this.b.length;
+    }
+}
+
+export function pageFromWire(buf: Uint8Array): TimelinePage {
+    const r = new WireReader(buf);
+    r.expectMagic(WIRE_MAGIC);
+    const maxId = r.uvarint();
+    const retentionStart = r.varint();
+    const now = r.varint();
+    const n = r.uvarint();
+
+    const c: Columns = {
+        n,
+        id: new Float64Array(n),
+        start: new Float64Array(n),
+        dur: new Int32Array(n),
+        status: new Int32Array(n),
+        attempt: new Int32Array(n),
+        final: new Uint8Array(0),
+        s: {} as Record<ColName, StringColumn>,
+    };
+    let id = 0;
+    for (let i = 0; i < n; i++) c.id[i] = id += r.uvarint();
+    let ms = 0;
+    for (let i = 0; i < n; i++) c.start[i] = ms += r.varint();
+    for (let i = 0; i < n; i++) c.dur[i] = r.uvarint();
+    for (let i = 0; i < n; i++) c.status[i] = r.uvarint();
+    for (let i = 0; i < n; i++) c.attempt[i] = r.uvarint();
+    c.final = r.bytes((n + 7) >> 3);
+
+    for (const name of COLS) {
+        const dict = r.dict();
+        if (dict.length === 1) {
+            c.s[name] = { dict, idx: null }; // column unused in this window
+            continue;
+        }
+        const idx = new Int32Array(n);
+        for (let i = 0; i < n; i++) idx[i] = r.uvarint();
+        c.s[name] = { dict, idx };
+    }
+    if (!r.atEnd()) throw new Error("timeline: trailing bytes in payload");
+    return finishPage(c, maxId, retentionStart, now);
+}
+
+// The JSON fallback lands in the SAME column representation, so everything
+// downstream — intervals, lanes, tooltips — has exactly one shape to handle.
+export function pageFromJSON(resp: TimelineResponse): TimelinePage {
+    const events = resp.events ?? [];
+    const n = events.length;
+    const c: Columns = {
+        n,
+        id: new Float64Array(n),
+        start: new Float64Array(n),
+        dur: new Int32Array(n),
+        status: new Int32Array(n),
+        attempt: new Int32Array(n),
+        final: new Uint8Array((n + 7) >> 3),
+        s: {} as Record<ColName, StringColumn>,
+    };
+    const dicts = new Map<ColName, { dict: string[]; seen: Map<string, number>; idx: Int32Array }>();
+    for (const name of COLS) {
+        dicts.set(name, { dict: [""], seen: new Map([["", 0]]), idx: new Int32Array(n) });
+    }
+    for (let i = 0; i < n; i++) {
+        const e = events[i];
+        c.id[i] = e.id;
+        c.start[i] = Date.parse(e.start);
+        c.dur[i] = e.dur_ms;
+        c.status[i] = e.status ?? 0;
+        c.attempt[i] = e.attempt ?? 0;
+        if (e.final) c.final[i >> 3] |= 1 << (i & 7);
+        for (const name of COLS) {
+            const v = (e as unknown as Record<string, unknown>)[name];
+            const str = typeof v === "string" ? v : "";
+            const d = dicts.get(name)!;
+            let ix = d.seen.get(str);
+            if (ix === undefined) {
+                ix = d.dict.length;
+                d.dict.push(str);
+                d.seen.set(str, ix);
+            }
+            d.idx[i] = ix;
+        }
+    }
+    for (const name of COLS) {
+        const d = dicts.get(name)!;
+        c.s[name] = { dict: d.dict, idx: d.dict.length === 1 ? null : d.idx };
+    }
+    return finishPage(c, resp.max_id, Date.parse(resp.retention_start), Date.parse(resp.now));
+}
+
+const str = (col: StringColumn, i: number): string => (col.idx === null ? "" : col.dict[col.idx[i]]);
+
+// ---- columns → component translation ----
+
+function stateForRow(c: Columns, i: number): string {
+    const kind = str(c.s.kind, i);
+    const disp = str(c.s.disposition, i);
+    if (kind === "webhook") {
         // error = dispatch failed; unverified/rejected/unparseable = a
         // delivery refused before dispatch — all unmissable.
-        if (e.disposition === "error" || e.disposition === "unverified" ||
-            e.disposition === "rejected" || e.disposition === "unparseable") return "failed";
-        if (e.disposition === "ignored") return "dim"; // received but not tracked
+        if (disp === "error" || disp === "unverified" ||
+            disp === "rejected" || disp === "unparseable") return "failed";
+        if (disp === "ignored") return "dim"; // received but not tracked
         return "";
     }
-    if (e.kind === "notify") {
-        return e.disposition === "failed" ? "failed" : "";
+    if (kind === "notify") {
+        return disp === "failed" ? "failed" : "";
     }
     // Requests/exchanges: an upstream 5xx or a failed exchange is unmissable;
     // 4xx stays neutral (a 404 passthrough is often the legitimate answer).
-    if (e.disposition === "error" || (e.status !== undefined && e.status >= 500)) return "failed";
+    if (disp === "error" || c.status[i] >= 500) return "failed";
     return "";
 }
 
-function labelFor(e: TimelineEvent): string {
-    if (e.kind === "webhook") {
-        if (e.repo) {
-            const slash = e.repo.indexOf("/");
-            return slash >= 0 ? e.repo.slice(slash + 1) : e.repo;
+function labelForRow(c: Columns, i: number): string {
+    if (str(c.s.kind, i) === "webhook") {
+        const repo = str(c.s.repo, i);
+        if (repo) {
+            const slash = repo.indexOf("/");
+            return slash >= 0 ? repo.slice(slash + 1) : repo;
         }
-        return e.action ?? "";
+        return str(c.s.action, i);
     }
-    if (e.kind === "notify") {
-        return e.status ? String(e.status) : "";
-    }
-    return e.status ? String(e.status) : "";
+    return c.status[i] ? String(c.status[i]) : "";
 }
 
-function toInterval(e: TimelineEvent): TimelineInterval {
-    const start = Date.parse(e.start);
-    // end = start + the REAL measured duration. Never null (every recorded
-    // event finished) and never inflated: a sub-pixel span is the component's
-    // native instant pip, which is exactly right for a 3ms webhook dispatch.
+// finishPage builds one interval per row — and NOTHING else per row. The
+// 19-field event object a tooltip needs is built on hover (eventAt), which is
+// what makes a full-window page ~5x cheaper to render than the JSON path it
+// replaced: 100k intervals now, one event object when someone points at one.
+function finishPage(c: Columns, maxId: number, retentionStart: number, now: number): TimelinePage {
+    const intervals = new Array<TimelineInterval>(c.n);
+    const lanes = new Map<string, string>();
+    for (let i = 0; i < c.n; i++) {
+        const lane = str(c.s.lane, i);
+        if (!lanes.has(lane)) lanes.set(lane, str(c.s.kind, i));
+        const start = c.start[i];
+        intervals[i] = {
+            id: String(c.id[i]),
+            laneId: lane,
+            start,
+            // end = start + the REAL measured duration. Never null (every
+            // recorded event finished) and never inflated: a sub-pixel span is
+            // the component's native instant pip, which is exactly right for a
+            // 3ms webhook dispatch.
+            end: start + Math.max(0, c.dur[i]),
+            label: labelForRow(c, i),
+            category: lane, // stable hue per lane
+            state: stateForRow(c, i),
+            data: { c, i } satisfies EventRef,
+        };
+    }
     return {
-        id: String(e.id),
-        laneId: e.lane,
-        start,
-        end: start + Math.max(0, e.dur_ms),
-        label: labelFor(e),
-        category: e.lane, // stable hue per lane
-        state: stateFor(e),
-        data: e,
+        intervals,
+        lanes: [...lanes].map(([lane, kind]) => ({ lane, kind })),
+        maxId,
+        retentionStart,
+        now,
+    };
+}
+
+// eventAt materializes one row as the flat event the tooltip reads. Called
+// once per hover, never per row.
+export function eventAt(ref: EventRef): TimelineEvent {
+    const { c, i } = ref;
+    return {
+        id: c.id[i],
+        kind: str(c.s.kind, i),
+        lane: str(c.s.lane, i),
+        start: new Date(c.start[i]).toISOString(),
+        dur_ms: c.dur[i],
+        disposition: str(c.s.disposition, i),
+        event_type: str(c.s.event_type, i),
+        action: str(c.s.action, i),
+        delivery_id: str(c.s.delivery_id, i),
+        repo: str(c.s.repo, i),
+        method: str(c.s.method, i),
+        route: str(c.s.route, i),
+        status: c.status[i],
+        actor: str(c.s.actor, i),
+        actor_name: str(c.s.actor_name, i),
+        detail: str(c.s.detail, i),
+        target: str(c.s.target, i),
+        attempt: c.attempt[i],
+        final: (c.final[i >> 3] & (1 << (i & 7))) !== 0,
     };
 }
 
 function tooltipFor(hit: TimelineHit): Node | null {
     if (hit.type !== "interval" || !hit.interval) return null;
-    const e = hit.interval.data as TimelineEvent | undefined;
-    if (!e) return null;
+    const ref = hit.interval.data as EventRef | undefined;
+    if (!ref?.c) return null;
+    const e = eventAt(ref);
     const root = document.createElement("div");
     const row = (k: string, v: string): void => {
         if (v === "") return;
@@ -243,9 +496,11 @@ class GsmTimeline extends HTMLElement {
         if (!tl || this.pollInFlight) return;
         this.pollInFlight = true;
         try {
-            const fetcher = this.fetcher ?? fetchTimeline;
             const path = this.maxId > 0 ? "/api/timeline?since=" + this.maxId : "/api/timeline";
-            this.apply(tl, await fetcher(path));
+            // A demo-mode override serves canned JSON; production takes the
+            // negotiated (columnar) path. Both end up as a TimelinePage.
+            const fetcher = this.fetcher;
+            this.apply(tl, fetcher ? pageFromJSON(await fetcher(path)) : await fetchPage(path));
         } catch (e) {
             // Keep the last data; the component's staleness marking says the
             // feed is down once STALE_AFTER_MS passes without a markFresh.
@@ -255,34 +510,29 @@ class GsmTimeline extends HTMLElement {
         }
     }
 
-    private apply(tl: TimelineViewElement, resp: TimelineResponse): void {
-        const events = resp.events ?? [];
-        if (resp.max_id > this.maxId) this.maxId = resp.max_id;
-        const coverage = {
-            start: Date.parse(resp.retention_start),
-            end: Date.parse(resp.now),
-        };
-        for (const e of events) {
-            if (!this.laneKinds.has(e.lane)) this.laneKinds.set(e.lane, e.kind);
+    private apply(tl: TimelineViewElement, page: TimelinePage): void {
+        if (page.maxId > this.maxId) this.maxId = page.maxId;
+        const coverage = { start: page.retentionStart, end: page.now };
+        for (const { lane, kind } of page.lanes) {
+            if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
         }
         if (!this.seeded) {
             this.seeded = true;
             this.laneOrderKey = "";
             const lanes = this.computeLanes();
             this.laneOrderKey = lanes.map((l) => l.id).join("\n");
-            const data: TimelineData = { lanes, intervals: events.map(toInterval), coverage };
-            tl.setData(data);
+            tl.setData({ lanes, intervals: page.intervals, coverage });
             const now = coverage.end || Date.now();
             tl.setViewport(now - INITIAL_WINDOW_MS, now);
             tl.followNow = true;
             this.markFresh(tl);
             return;
         }
-        if (events.length > 0) {
+        if (page.intervals.length > 0) {
             // MERGE, never setData: a rebuild would wipe held data and reset
             // sub-track packing mid-view. Coverage rides along so the live
             // window keeps tracking now.
-            tl.mergeData({ intervals: events.map(toInterval), coverage });
+            tl.mergeData({ intervals: page.intervals, coverage });
             this.syncLanes(tl);
         }
         // An empty poll is still proof the feed is alive.

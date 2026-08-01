@@ -116,7 +116,43 @@ is measured is JS main-thread work to produce the chart's interval objects.
    columnar+gzip-1 costs 9 ms of server CPU for the full ring; on the realistic
    one-hour payload it is under 1 ms.
 
-## Recommendation
+## What shipped
+
+Both halves of the recommendation below, minus the windowing (the operator's
+call: "it doesn't matter if you send the events in 1hr chunks or 24hr all at
+once"). The endpoint still answers the full cursor-selected window — it is
+just an order of magnitude smaller and ~5x cheaper to render.
+
+- **`internal/api/timelinewire.go`** — the columnar encoder, magic `TLC1`,
+  media type `application/vnd.gsm.timeline.v1`. Selected by an EXACT Accept
+  match, so curl, the demo preview and any browser's `*/*` keep getting JSON.
+  The layout is versioned in both the magic and the media type and is never
+  evolved in place: a change is v2.
+- **`internal/api/compress.go`** — gzip at BestSpeed for the dashboard's
+  buffered admin payloads, since the grey-clouded origin has nothing in front
+  of it. Level 1 rather than 6 because on this shape it is 1006 KB in 24 ms
+  against 952 KB in 140 ms (`prototype/timelinewire`, `TestStdlibGzip`).
+  Deliberately NOT wired into the GitHub data plane: the cached routes have a
+  pinned response-header contract, the proxy relays GitHub's own encoding, and
+  the consistency check's NDJSON must keep flushing per line.
+- **`internal/api/web/src/timeline.ts`** — the browser decoder. The JSON
+  fallback decodes into the SAME column representation, so intervals, lanes
+  and tooltips have exactly one shape to handle. Intervals are built straight
+  from columns; the 19-field event object is materialized only when a tooltip
+  asks for a row (`eventAt`).
+- **Tests.** `timelinewire_test.go` round-trips the encoder against a Go
+  decoder that mirrors the TS one (and asserts the size claim, so a regression
+  to per-event strings fails rather than merely disappoints).
+  `timelinewire_cross_test.go` runs the REAL BUILT `assets/timeline.js` under
+  node against a payload this package encoded and compares every field of
+  every event — the only check that the two languages actually agree.
+  `timeline_test.go` covers negotiation, the JSON default, gzip (including a
+  `gzip;q=0` refusal) and the small-payload floor.
+
+Measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 events:
+JSON 495,009 B → columnar+gzip 271 B.
+
+## Recommendation (as of the prototype)
 
 Two changes, independent, in this order of value:
 

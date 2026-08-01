@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -260,4 +263,135 @@ func TestTimeline_OAuthRelayRecorded(t *testing.T) {
 	assert.Equal(t, http.StatusOK, e.Status)
 	assert.Equal(t, "anonymous", e.Actor)
 	assert.GreaterOrEqual(t, e.DurMs, int64(0))
+}
+
+// ---- wire format + compression (timelinewire.go, compress.go) ----
+
+// TestTimeline_ColumnarNegotiated: a client asking for the columnar media
+// type gets it — and it decodes to exactly what the JSON path reports.
+func TestTimeline_ColumnarNegotiated(t *testing.T) {
+	svc := configuredAuth(t)
+	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+	s.timeline.RecordWebhook(time.Now(), 3*time.Millisecond, "push", "", "d-1", "o/r", "applied")
+	s.timeline.RecordRequest(time.Now(), 12*time.Millisecond, "GET",
+		"/repos/{owner}/{repo}/pulls", 200, DispHit, "user:1", "PazerOP")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
+	req.Header.Set("Accept", timelineWireType)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := do(t, s.router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, timelineWireType, w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Header().Values("Vary"), "Accept")
+
+	got := decodeTimelineV1(t, w.Body.Bytes())
+	require.Len(t, got.events, 2)
+	assert.Equal(t, "⇐ push", got.events[0].Lane)
+	assert.Equal(t, "applied", got.events[0].Disposition)
+	assert.Equal(t, "GET /repos/{owner}/{repo}/pulls", got.events[1].Lane)
+	assert.Equal(t, 200, got.events[1].Status)
+	assert.Equal(t, "PazerOP", got.events[1].ActorName)
+	assert.Equal(t, uint64(2), got.maxID)
+}
+
+// TestTimeline_DefaultsToJSON: every Accept that does not name the wire type
+// by exact media type keeps getting JSON — a browser's or curl's */* must
+// never be handed binary.
+func TestTimeline_DefaultsToJSON(t *testing.T) {
+	svc := configuredAuth(t)
+	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+	s.timeline.RecordWebhook(time.Now(), time.Millisecond, "push", "", "d-1", "o/r", "applied")
+
+	for _, accept := range []string{"", "*/*", "application/json", "text/html,*/*;q=0.8", "application/vnd.gsm.timeline.v2"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		req.AddCookie(mintSession(t, svc, "PazerOP"))
+		w := do(t, s.router, req)
+		require.Equal(t, http.StatusOK, w.Code, accept)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"), accept)
+		var got timelinePayload
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), accept)
+		require.Len(t, got.Events, 1, accept)
+	}
+}
+
+// TestTimeline_GzipWhenAccepted: the origin is grey-clouded, so the app is
+// what compresses. A payload past the floor comes back gzipped for a client
+// that accepts it, byte-identical to the uncompressed answer once inflated —
+// and a client that does not accept gzip still gets plain bytes.
+func TestTimeline_GzipWhenAccepted(t *testing.T) {
+	svc := configuredAuth(t)
+	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 2000; i++ {
+		s.timeline.RecordRequest(base.Add(time.Duration(i)*time.Second), 12*time.Millisecond, "GET",
+			"/repos/{owner}/{repo}/pulls", 200, DispHit, "user:1", "PazerOP")
+	}
+
+	get := func(accept, encoding string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		if encoding != "" {
+			req.Header.Set("Accept-Encoding", encoding)
+		}
+		req.AddCookie(mintSession(t, svc, "PazerOP"))
+		w := do(t, s.router, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		return w
+	}
+
+	plain := get(timelineWireType, "")
+	assert.Empty(t, plain.Header().Get("Content-Encoding"))
+
+	zipped := get(timelineWireType, "gzip")
+	require.Equal(t, "gzip", zipped.Header().Get("Content-Encoding"))
+	assert.Contains(t, zipped.Header().Values("Vary"), "Accept-Encoding")
+	zr, err := gzip.NewReader(bytes.NewReader(zipped.Body.Bytes()))
+	require.NoError(t, err)
+	inflated, err := io.ReadAll(zr)
+	require.NoError(t, err)
+	// Not a byte comparison: each response stamps its own `now`, so the two
+	// payloads legitimately differ in the preamble. What must be identical is
+	// the events they carry.
+	assert.Equal(t, decodeTimelineV1(t, plain.Body.Bytes()).events,
+		decodeTimelineV1(t, inflated).events, "gzip must not change the payload")
+	assert.Less(t, zipped.Body.Len(), plain.Body.Len()/2, "2000 uniform events must compress hard")
+
+	// The point of the whole exercise, asserted end to end.
+	jsonPlain := get("application/json", "")
+	t.Logf("2000 events: json %d B, json+gzip %d B, columnar %d B, columnar+gzip %d B",
+		jsonPlain.Body.Len(), get("application/json", "gzip").Body.Len(),
+		plain.Body.Len(), zipped.Body.Len())
+	assert.Less(t, zipped.Body.Len(), jsonPlain.Body.Len()/10,
+		"columnar+gzip must be an order of magnitude under raw JSON")
+
+	// An explicit refusal is honored, not overridden.
+	assert.Empty(t, get(timelineWireType, "gzip;q=0").Header().Get("Content-Encoding"))
+}
+
+// A payload under the floor is not worth compressing (gzip framing can make a
+// tiny body bigger).
+func TestTimeline_NoGzipForTinyPayloads(t *testing.T) {
+	svc := configuredAuth(t)
+	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+	}))
+	s.timeline.RecordWebhook(time.Now(), time.Millisecond, "push", "", "d-1", "o/r", "applied")
+	req := httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w := do(t, s.router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get("Content-Encoding"))
 }

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -146,10 +148,27 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		since = v
 	}
 	snap := d.timeline.Snapshot(since)
-	writeJSON(w, timelineResponse{
+
+	// Content-negotiated encoding. The dashboard asks for the columnar format
+	// (timelinewire.go) — ~10 B/event gzipped against JSON's ~32, and ~5x
+	// cheaper to turn into chart intervals; anything that does not ask for it
+	// by exact media type, curl included, keeps getting the JSON below.
+	addVary(w.Header(), "Accept")
+	if wantsTimelineWire(r.Header.Get("Accept")) {
+		writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
+		return
+	}
+
+	body, err := json.Marshal(timelineResponse{
 		Events:         snap.Events,
 		MaxID:          snap.MaxID,
 		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
 		Now:            snap.Now.UTC().Format(time.RFC3339Nano),
 	})
+	if err != nil {
+		slog.Warn("timeline json encode failed", "error", err)
+		http.Error(w, "encode failed", http.StatusInternalServerError)
+		return
+	}
+	writeBody(w, r, "application/json", body)
 }
