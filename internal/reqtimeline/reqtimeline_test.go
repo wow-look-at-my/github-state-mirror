@@ -1,6 +1,7 @@
 package reqtimeline
 
 import (
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
@@ -180,27 +181,21 @@ func TestSnapshotRange(t *testing.T) {
 	}
 
 	got := r.SnapshotRange(base.Add(-3*time.Hour), base.Add(-1*time.Hour))
-	if len(got.Events) != 2 { // -3h and -2h; -1h starts exactly at `to` and is excluded
-		t.Fatalf("got %d events, want 2: %+v", len(got.Events), got.Events)
-	}
-	if !got.Events[0].Start.Equal(base.Add(-3 * time.Hour)) {
-		t.Errorf("first event starts %s, want -3h", got.Events[0].Start)
-	}
+	require.Equal(t, 2, len(got.Events))
+
+	assert.True(t, got.Events[0].Start.Equal(base.Add(-3*time.Hour)))
+
 	// The live cursor is independent of the range read.
-	if got.MaxID != 6 {
-		t.Errorf("MaxID = %d, want 6", got.MaxID)
-	}
+	assert.Equal(t, uint64(6), got.MaxID)
 
 	// An event STRADDLING the window boundary is included: it is visible in
 	// the range even though it began before it.
 	r.RecordWebhook(base.Add(-90*time.Minute), 60*time.Minute, "push", "", "d", "o/r", "applied")
 	straddle := r.SnapshotRange(base.Add(-45*time.Minute), base)
-	if len(straddle.Events) != 1 {
-		t.Fatalf("straddling event: got %d, want 1", len(straddle.Events))
-	}
+	require.Equal(t, 1, len(straddle.Events))
 
 	// Zero bounds mean the whole retained window.
-	if all := r.SnapshotRange(time.Time{}, time.Time{}); len(all.Events) != 7 {
-		t.Errorf("unbounded range returned %d events, want 7", len(all.Events))
-	}
+	all := r.SnapshotRange(time.Time{}, time.Time{})
+	assert.Equal(t, 7, len(all.Events))
+
 }

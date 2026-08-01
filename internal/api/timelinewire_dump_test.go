@@ -29,9 +29,8 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 	// The FULL ring, plus the one-hour window the chart actually paints on
 	// first load — the payload whose decode has to fit inside a frame budget.
 	hour := tl.SnapshotRange(time.Now().UTC().Add(-time.Hour), time.Time{})
-	if err := os.WriteFile(dir+"/timeline-1h.bin", encodeTimelineV1(hour), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(dir+"/timeline-1h.bin", encodeTimelineV1(hour), 0o644))
+
 	t.Logf("1h window: %d events, %d B", len(hour.Events), len(encodeTimelineV1(hour)))
 
 	snap := tl.Snapshot(0)
