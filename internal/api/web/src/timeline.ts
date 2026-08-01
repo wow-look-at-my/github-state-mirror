@@ -161,6 +161,89 @@ class WireReader {
         return u % 2 === 0 ? u / 2 : -(u + 1) / 2;
     }
 
+    // Bulk readers for the columns. Nearly every value on the wire fits in one
+    // byte — dictionary indices for a column with <128 entries, a 1-per-event
+    // id delta, a 3 ms duration — so the single-byte case is inlined here
+    // rather than paying a call into uvarint() ~1.8M times per full window.
+    // That is the difference between a decode that outruns JSON.parse and one
+    // that merely matches it.
+    uvarints(out: Int32Array | Float64Array, n: number): void {
+        const b = this.b;
+        let p = this.p;
+        for (let i = 0; i < n; i++) {
+            const c0 = b[p++];
+            if (c0 < 0x80) {
+                out[i] = c0;
+                continue;
+            }
+            let x = c0 & 0x7f, sh = 7;
+            for (;;) {
+                const c = b[p++];
+                if (c === undefined) throw new Error("timeline: truncated varint");
+                if (c < 0x80) {
+                    x += c * 2 ** sh;
+                    break;
+                }
+                x += (c & 0x7f) * 2 ** sh;
+                sh += 7;
+            }
+            out[i] = x;
+        }
+        this.p = p;
+    }
+
+    // Running sums of zigzag deltas, straight into the output column.
+    varintSums(out: Float64Array, n: number): void {
+        const b = this.b;
+        let p = this.p, acc = 0;
+        for (let i = 0; i < n; i++) {
+            let u = b[p++];
+            if (u >= 0x80) {
+                u &= 0x7f;
+                let sh = 7;
+                for (;;) {
+                    const c = b[p++];
+                    if (c === undefined) throw new Error("timeline: truncated varint");
+                    if (c < 0x80) {
+                        u += c * 2 ** sh;
+                        break;
+                    }
+                    u += (c & 0x7f) * 2 ** sh;
+                    sh += 7;
+                }
+            }
+            acc += u % 2 === 0 ? u / 2 : -(u + 1) / 2;
+            out[i] = acc;
+        }
+        this.p = p;
+    }
+
+    // Running sums of unsigned deltas (ids).
+    uvarintSums(out: Float64Array, n: number): void {
+        const b = this.b;
+        let p = this.p, acc = 0;
+        for (let i = 0; i < n; i++) {
+            const c0 = b[p++];
+            if (c0 < 0x80) {
+                out[i] = acc += c0;
+                continue;
+            }
+            let x = c0 & 0x7f, sh = 7;
+            for (;;) {
+                const c = b[p++];
+                if (c === undefined) throw new Error("timeline: truncated varint");
+                if (c < 0x80) {
+                    x += c * 2 ** sh;
+                    break;
+                }
+                x += (c & 0x7f) * 2 ** sh;
+                sh += 7;
+            }
+            out[i] = acc += x;
+        }
+        this.p = p;
+    }
+
     bytes(n: number): Uint8Array {
         if (this.p + n > this.b.length) throw new Error("timeline: truncated payload");
         const out = this.b.subarray(this.p, this.p + n);
@@ -207,13 +290,11 @@ export function pageFromWire(buf: Uint8Array): TimelinePage {
         final: new Uint8Array(0),
         s: {} as Record<ColName, StringColumn>,
     };
-    let id = 0;
-    for (let i = 0; i < n; i++) c.id[i] = id += r.uvarint();
-    let ms = 0;
-    for (let i = 0; i < n; i++) c.start[i] = ms += r.varint();
-    for (let i = 0; i < n; i++) c.dur[i] = r.uvarint();
-    for (let i = 0; i < n; i++) c.status[i] = r.uvarint();
-    for (let i = 0; i < n; i++) c.attempt[i] = r.uvarint();
+    r.uvarintSums(c.id, n);
+    r.varintSums(c.start, n);
+    r.uvarints(c.dur, n);
+    r.uvarints(c.status, n);
+    r.uvarints(c.attempt, n);
     c.final = r.bytes((n + 7) >> 3);
 
     for (const name of COLS) {
@@ -223,7 +304,7 @@ export function pageFromWire(buf: Uint8Array): TimelinePage {
             continue;
         }
         const idx = new Int32Array(n);
-        for (let i = 0; i < n; i++) idx[i] = r.uvarint();
+        r.uvarints(idx, n);
         c.s[name] = { dict, idx };
     }
     if (!r.atEnd()) throw new Error("timeline: trailing bytes in payload");
@@ -281,9 +362,14 @@ const str = (col: StringColumn, i: number): string => (col.idx === null ? "" : c
 
 // ---- columns → component translation ----
 
-function stateForRow(c: Columns, i: number): string {
-    const kind = str(c.s.kind, i);
-    const disp = str(c.s.disposition, i);
+// Per-row label and state are pure functions of a few dictionary INDICES and
+// the status, so they are resolved once per dictionary ENTRY (a handful) and
+// then read per row (100k). This is what keeps the hot loop below to typed-
+// array reads plus array indexing — no string comparisons, no per-row branch
+// on kind.
+
+// stateFor one (kind, disposition) pair — the chart's failed/dim marking.
+function stateForPair(kind: string, disp: string): string {
     if (kind === "webhook") {
         // error = dispatch failed; unverified/rejected/unparseable = a
         // delivery refused before dispatch — all unmissable.
@@ -292,50 +378,70 @@ function stateForRow(c: Columns, i: number): string {
         if (disp === "ignored") return "dim"; // received but not tracked
         return "";
     }
-    if (kind === "notify") {
-        return disp === "failed" ? "failed" : "";
-    }
-    // Requests/exchanges: an upstream 5xx or a failed exchange is unmissable;
-    // 4xx stays neutral (a 404 passthrough is often the legitimate answer).
-    if (disp === "error" || c.status[i] >= 500) return "failed";
-    return "";
-}
-
-function labelForRow(c: Columns, i: number): string {
-    if (str(c.s.kind, i) === "webhook") {
-        const repo = str(c.s.repo, i);
-        if (repo) {
-            const slash = repo.indexOf("/");
-            return slash >= 0 ? repo.slice(slash + 1) : repo;
-        }
-        return str(c.s.action, i);
-    }
-    return c.status[i] ? String(c.status[i]) : "";
+    if (kind === "notify") return disp === "failed" ? "failed" : "";
+    // Requests/exchanges: a failed exchange is unmissable; the 5xx half of the
+    // rule is per-row (it reads the status) and is applied in the loop.
+    return disp === "error" ? "failed" : "";
 }
 
 // finishPage builds one interval per row — and NOTHING else per row. The
 // 19-field event object a tooltip needs is built on hover (eventAt), which is
-// what makes a full-window page ~5x cheaper to render than the JSON path it
-// replaced: 100k intervals now, one event object when someone points at one.
+// most of why a full-window page is ~4x cheaper to render than the JSON path
+// it replaced: 100k intervals now, one event object when someone points at
+// one.
 function finishPage(c: Columns, maxId: number, retentionStart: number, now: number): TimelinePage {
+    const kindC = c.s.kind, laneC = c.s.lane, dispC = c.s.disposition,
+        repoC = c.s.repo, actionC = c.s.action;
+    const kindIdx = kindC.idx, laneIdx = laneC.idx, dispIdx = dispC.idx,
+        repoIdx = repoC.idx, actionIdx = actionC.idx;
+    const { start: startCol, dur: durCol, status: statusCol, id: idCol } = c;
+
+    // state per (kind, disposition) pair — both dictionaries are tiny.
+    const stateTable: string[][] = kindC.dict.map((kind) =>
+        dispC.dict.map((disp) => stateForPair(kind, disp)));
+    // A webhook's label is its repo NAME; a request's is its status. Both
+    // resolve per dictionary entry, not per row.
+    const isWebhook = kindC.dict.map((k) => k === "webhook");
+    const repoLabel = repoC.dict.map((r) => (r ? r.slice(r.indexOf("/") + 1) : ""));
+    const statusLabel = new Map<number, string>();
+    const labelForStatus = (st: number): string => {
+        if (!st) return "";
+        let s = statusLabel.get(st);
+        if (s === undefined) statusLabel.set(st, (s = String(st)));
+        return s;
+    };
+
     const intervals = new Array<TimelineInterval>(c.n);
     const lanes = new Map<string, string>();
     for (let i = 0; i < c.n; i++) {
-        const lane = str(c.s.lane, i);
-        if (!lanes.has(lane)) lanes.set(lane, str(c.s.kind, i));
-        const start = c.start[i];
+        const ki = kindIdx === null ? 0 : kindIdx[i];
+        const lane = laneIdx === null ? "" : laneC.dict[laneIdx[i]];
+        if (!lanes.has(lane)) lanes.set(lane, kindC.dict[ki]);
+
+        const status = statusCol[i];
+        let label: string;
+        if (isWebhook[ki]) {
+            const rl = repoIdx === null ? "" : repoLabel[repoIdx[i]];
+            label = rl || (actionIdx === null ? "" : actionC.dict[actionIdx[i]]);
+        } else {
+            label = labelForStatus(status);
+        }
+        let state = dispIdx === null ? "" : stateTable[ki][dispIdx[i]];
+        if (!state && !isWebhook[ki] && status >= 500) state = "failed";
+
+        const start = startCol[i];
         intervals[i] = {
-            id: String(c.id[i]),
+            id: String(idCol[i]),
             laneId: lane,
             start,
             // end = start + the REAL measured duration. Never null (every
             // recorded event finished) and never inflated: a sub-pixel span is
             // the component's native instant pip, which is exactly right for a
             // 3ms webhook dispatch.
-            end: start + Math.max(0, c.dur[i]),
-            label: labelForRow(c, i),
+            end: start + (durCol[i] > 0 ? durCol[i] : 0),
+            label,
             category: lane, // stable hue per lane
-            state: stateForRow(c, i),
+            state,
             data: { c, i } satisfies EventRef,
         };
     }

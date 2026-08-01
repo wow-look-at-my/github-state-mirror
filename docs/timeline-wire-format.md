@@ -149,8 +149,30 @@ just an order of magnitude smaller and ~5x cheaper to render.
   `timeline_test.go` covers negotiation, the JSON default, gzip (including a
   `gzip;q=0` refusal) and the small-payload floor.
 
-Measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 events:
-JSON 495,009 B → columnar+gzip 271 B.
+### Measured on what shipped
+
+A realistic full ring — 100,000 events over 24 h, 84% requests / 11% webhook
+deliveries carrying UNIQUE delivery GUIDs / 5% notifications — written by
+`TestTimelineWireDumpPayloads` and decoded by the REAL BUILT
+`assets/timeline.js` (`prototype/timelinewire/shipbench.mjs`, node 22 = V8 =
+Chrome, best of 5):
+
+| | on the wire | per event | browser decode |
+|---|---:|---:|---:|
+| JSON (before) | 27.70 MB → **2.80 MB** gzipped | 277 B | **315.1 ms** |
+| columnar (now) | 2.38 MB → **749 KB** gzipped | 23.8 B raw / 7.5 B gzipped | **63.2 ms** |
+
+**3.7× fewer bytes on the wire, 5× less main-thread time**, carrying exactly
+the same events (`shipbench.mjs` asserts the wire and JSON paths produce
+identical intervals; the Go/node cross-decode test asserts every field).
+
+The decoder's first cut measured 85 ms; the bulk varint readers
+(`WireReader.uvarints`/`varintSums`/`uvarintSums`) took it to 63 by inlining
+the single-byte case rather than paying a call per value — nearly every value
+on the wire is one byte, and there are ~1.8M of them in a full window.
+
+Also measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 uniform
+events: JSON 495,009 B → columnar+gzip 271 B.
 
 ## Recommendation (as of the prototype)
 
