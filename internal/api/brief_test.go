@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -123,4 +126,40 @@ func TestShapeStoreNilSafe(t *testing.T) {
 	s.observe(observation{Method: "GET", Route: "/x"})
 	require.Empty(t, s.snapshot())
 
+}
+
+// The brief endpoint end to end: admin-only, and its payload carries both the
+// Markdown deliverable and the structured candidates — built from traffic the
+// router itself recorded, so the wiring (proxy sampling -> shape store ->
+// brief) is exercised rather than mocked.
+func TestDashboardBrief_AdminOnlyAndRendersRecordedTraffic(t *testing.T) {
+	svc := configuredAuth(t)
+	router, _, _ := newTestStack(t, svc)
+
+	// A read the mirror does not cache: forwarded, recorded, and sampled.
+	do(t, router, authedReq("GET", "/repos/org1/repo1/hooks?per_page=100", nil))
+
+	// Signed out and non-admin callers get nothing.
+	w := do(t, router, httptest.NewRequest("GET", "/api/brief", nil))
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	req := httptest.NewRequest("GET", "/api/brief", nil)
+	req.AddCookie(mintSession(t, svc, "not-an-admin"))
+	require.Equal(t, http.StatusForbidden, do(t, router, req).Code)
+
+	req = httptest.NewRequest("GET", "/api/brief", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	w = do(t, router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var payload briefPayload
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
+	require.NotEmpty(t, payload.Candidates, "the forwarded read must appear as a candidate")
+	require.Contains(t, payload.Markdown, "/repos/{owner}/{repo}/hooks")
+	require.Contains(t, payload.Markdown, "per_page", "the query shape must be captured, by name")
+	require.Contains(t, payload.Markdown, "tier-2 contract", "the checklist travels with the data")
+
+	// A bad limit is a 400, like every other paged admin view.
+	req = httptest.NewRequest("GET", "/api/brief?limit=zero", nil)
+	req.AddCookie(mintSession(t, svc, "PazerOP"))
+	require.Equal(t, http.StatusBadRequest, do(t, router, req).Code)
 }
