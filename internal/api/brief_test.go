@@ -94,10 +94,10 @@ func TestBuildBriefRanksPassthroughAndSkipsCachedRoutes(t *testing.T) {
 		Total:         100,
 		ByDisposition: map[string]int64{DispPassthrough: 30},
 		Groups: []requestGroupSnapshot{
-			{Key: "GET /a", Route: "/a", Total: 50, Hit: 50},              // fully cached: not a candidate
-			{Key: "GET /b", Route: "/b", Total: 20, Passthrough: 20},      // biggest gap
+			{Key: "GET /a", Route: "/a", Total: 50, Hit: 50},         // fully cached: not a candidate
+			{Key: "GET /b", Route: "/b", Total: 20, Passthrough: 20}, // biggest gap
 			{Key: "GET /c", Route: "/c", Total: 30, Passthrough: 10, Hit: 20},
-			{Key: "POST /d", Route: "/d", Total: 5, Write: 5},             // a write is not a caching gap
+			{Key: "POST /d", Route: "/d", Total: 5, Write: 5}, // a write is not a caching gap
 		},
 	}
 	shapes := map[string]routeShapeSnapshot{
