@@ -261,6 +261,13 @@ func NewRouter(
 	// Unverifiable callers are forwarded unchanged.
 	r.Post("/app/installations/{id}/access_tokens", h.cachedInstallationToken)
 	r.Get("/repos/{owner}/{repo}/installation", h.cachedRepoInstallation)
+	// The OWNER-level installation lookups answer the same object for an
+	// account instead of a repository, on the same App-JWT terms and in the
+	// same row space (under a sentinel repo value -- see
+	// respcache_installation.go). Two registrations because they are two
+	// questions: an account can answer one and 404 the other.
+	r.Get("/orgs/{org}/installation", h.cachedOwnerInstallation(ownerInstallScopeOrg, "org"))
+	r.Get("/users/{username}/installation", h.cachedOwnerInstallation(ownerInstallScopeUser, "username"))
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
