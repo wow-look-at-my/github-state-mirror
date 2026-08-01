@@ -125,22 +125,34 @@ The columnar decode was 63 ms in ONE synchronous task — four times better than
 the JSON path it replaced, and still eight dropped frames. Meeting the budget
 took three changes, in ascending order of importance:
 
-1. **One chunk per frame.** `runSliced` runs a single chunk, then waits for the
-   next frame. That is the entire pacing model, and it is what makes the budget
-   checkable: one unit per frame means the unit's cost IS the frame's load, so
-   keeping a chunk under budget keeps every frame under budget. Every phase —
-   column decode, dictionary reads, the JSON fallback's transpose, interval
-   building, and the component feeds — is a generator that yields at chunk
-   boundaries and is driven this way.
-2. **Adaptive chunk sizing.** A fixed chunk cannot work: 2048 rows is ~0.2 ms
-   of varint decoding and ~3.5 ms of the JSON transpose, and a slower machine
-   shifts both. Each phase times its own chunks and steers toward
-   `TARGET_CHUNK_MS` (3 — well under the 8 ms ceiling, so the estimate can be
-   wrong by 2× and still fit), from a small first chunk (cold, unoptimized code
-   is several times slower than the steady state) with capped growth. The ramp
-   costs *frames* now that a step is a frame, so it starts at 256 and grows ×8:
-   three steps to the ceiling. (512/×4 reaches it in the same three steps but
-   overshoots harder per step — measured 8.7 ms.)
+1. **One chunk per frame, where a chunk is A FRAME'S WORTH OF WORK.** That
+   second clause is the whole thing. `runSliced` claims a frame, then pulls
+   generator steps — across phase boundaries — until `CHUNK_MS` (4) of real
+   work is spent. One unit per frame means the unit's cost IS the frame's load,
+   so a chunk under budget keeps every frame under budget.
+
+   Defining a chunk as *one step of one phase* instead — each phase steering
+   its own step size toward a time target, yielding a frame at each — is what
+   the first cut did, and it took **70 frames (~1.2 s) to do 8 ms of work**:
+   there are ~23 phases, each paid at least one frame, and the resulting chunks
+   averaged 0.13 ms against an 8 ms budget. The step size was not the lever
+   (target 3 ms and 6 ms both gave 70 frames); loosening the growth caps only
+   reached 51, because the phase count was the floor. Filling the frame instead
+   took it to **3 frames**.
+
+   `STEP` is therefore a fixed granularity, not a size to tune: it bounds the
+   OVERSHOOT, since the clock is read between steps. 1024 rows is ~1.7 ms of
+   the dearest phase (the JSON transpose, ~1.7 us/row) and ~0.05 ms of the
+   cheapest, so `CHUNK_MS` plus a worst step stays inside 8.
+2. **A frame is a global TURN, and it is claimed BEFORE the work.** Neither
+   half is optional. A live poll and a history load are separate tasks, so each
+   taking "its own chunk per frame" put two chunks in one frame; and yielding
+   *after* working leaves seams — a task's last chunk and the next flow's first
+   one both run unwaited. Measured with chunks that actually fill a frame, that
+   was 9.4 ms of our work in one frame (slices of 3.0 + 3.5 + 2.9). Waiters now
+   queue for distinct frames, the wait confirms the frame counter moved
+   (`rAF`+`setTimeout(0)` can otherwise resume inside the frame it yielded),
+   and every unit claims its frame first.
 3. **Not holding 100k intervals.** This is the one that actually mattered.
    With the full ring in memory the worst slice still spiked to 19 ms, and
    `--trace-gc` named the cause: 4-7 ms scavenges, triggered by 100k live
@@ -153,9 +165,9 @@ took three changes, in ascending order of importance:
    another 100k allocations.
 
 Measured on the real first-paint payload (4,166 events, one hour of realistic
-traffic) through the SHIPPED module: **0.13 ms of work per frame on average**,
-worst chunk 0.9 ms. The JSON fallback over a full 100k-event window averages
-2.8 ms per frame. `TestTimelineFrameBudget` gates on the average — that is the
+traffic) through the SHIPPED module: **~3 ms of work per frame on average over
+3 frames**, worst chunk ~4 ms. The JSON fallback over a full 100k-event window
+averages 4.4 ms per frame over 34-39 frames. `TestTimelineFrameBudget` gates on the average — that is the
 requirement — and bounds the worst single chunk at 2× the budget: a chunk is
 sized from what the previous one cost, so a GC pause landing inside one is not
 a sizing defect, but a chunk twice the budget is.
@@ -186,16 +198,19 @@ a local server answering `/api/timeline` as the mirror does. It buckets every
 recorded slice of OUR work into the frame it landed in, adds that frame's rAF
 work, and reports the total: that sum is what "blocking a frame" means.
 
-Across runs, **every data-bearing frame is under 8 ms.** Our own loading work
-peaks at 1.8-2.8 ms in any single frame and averages 0.13 ms; steady state
-1.9-2.7 ms; interaction (24 zoom steps + 24 pans on the loaded chart)
-3.5-5.8 ms.
+Across runs, **exactly one slice of ours lands per frame**, peaking at
+4.0-5.4 ms; steady state 1.9-2.7 ms; interaction (24 zoom steps + 24 pans on
+the loaded chart) 3.5-5.8 ms.
 
-One frame per run does exceed it: **18-23 ms at t≈110 ms, before any data
-exists** — the browser evaluating the 164 KB component bundle and registering
-the custom element. Our loading work contributes 0 ms to it. That is module
-parse cost, not loading workload, and it is stated here rather than hidden
-behind a metric that excludes it.
+One frame per run does exceed 8 ms: **13-20 ms at t≈90-120 ms, before any data
+exists**, with 0 ms of our loading work in it. Long-animation-frame attribution
+names it rather than leaving it to guesswork — 18 ms under `resolve-promise` in
+`timeline.js`, which is `boot()` resuming after the component's dynamic import
+and calling `appendChild`, synchronously running the element's constructor and
+`connectedCallback` (shadow DOM, canvas, adopted stylesheet). The browser
+reports `blockingDuration: 0`. It is one-time element construction at boot, not
+loading workload, and it is stated here rather than hidden behind a metric that
+excludes it.
 
 Getting there meant fixing three things:
 

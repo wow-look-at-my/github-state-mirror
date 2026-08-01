@@ -183,47 +183,35 @@ interface TimelinePage {
 // A resumable unit of work: yields periodically, returns its result.
 type Task<T> = Generator<undefined, T, undefined>;
 
-// THE WHOLE PACING MODEL: one chunk of work per frame, and a chunk is sized
-// to cost less than the frame budget. Nothing else — no frame accounting, no
-// spending what is "left" of a frame. One unit per frame means the unit's cost
-// IS the frame's load, so keeping the unit under budget keeps the frame under
-// budget, for the whole load.
+// THE WHOLE PACING MODEL: one chunk of work per frame, where a chunk is A
+// FRAME'S WORTH OF WORK — not one step of one phase. That distinction is the
+// whole point. Each decode phase (column decode, dictionary reads, the JSON
+// fallback's transpose, interval building) is a generator yielding every STEP
+// rows, but a yield is only a place the driver MAY stop; it keeps pulling,
+// across phase boundaries, until CHUNK_MS of real work has been done. Then it
+// waits for a frame.
 //
-// Chunk sizing is ADAPTIVE, not a constant. A fixed chunk cannot hold a time
-// budget: 2048 rows is ~0.2 ms of varint decoding and ~3.5 ms of the JSON
-// fallback's transpose, on THIS machine — a slower one shifts both. So each
-// phase times its own chunks and steers toward TARGET_CHUNK_MS. The target is
-// half the budget so the estimate can be wrong by 2x and still fit.
-const TARGET_CHUNK_MS = 3;
-const MIN_CHUNK = 32;
-const MAX_CHUNK = 8192;
-// Each phase starts small and ramps. The first execution of any of these
-// loops runs cold — unoptimized, uninlined — and is several times slower than
-// the steady state that follows, so a phase that opened at its steady-state
-// size would blow the budget exactly once, on the slice that matters most (the
-// first paint). Growth is capped per step for the same reason: one unusually
-// cheap chunk must not license a chunk 50x larger.
+// Sizing each phase's step adaptively instead — steering every phase toward a
+// time target and yielding a frame at each one — is what the first cut did,
+// and it is why the columnar decode took 70 frames (~1.2 s) to do 8 ms of
+// work: there are ~23 phases, every one paid at least one frame, and the
+// chunks that resulted averaged 0.13 ms against a 8 ms budget. Loosening the
+// ramp caps only reached 51 frames, because the phase count was the floor.
 //
-// But the ramp costs FRAMES now that only one chunk runs per frame, and every
-// phase ramps from scratch: at 32/x4 the columnar decode spent 109 frames
-// (~1.8 s) on 8.4 ms of work. 256/x8 reaches the ceiling in three steps and
-// measured 0.44 ms cold on the dearest phase (the JSON transpose), so the
-// caution it drops was never buying anything. (512/x4 reaches the ceiling in
-// the same three steps but overshoots harder per step: measured 8.7 ms.)
-const START_CHUNK = 256;
-const MAX_GROWTH = 8;
-
-function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
-                   max = MAX_CHUNK): number {
-    const ceiling = Math.min(size * MAX_GROWTH, max);
-    if (ms <= 0) return ceiling;
-    const scaled = Math.round((size * targetMs) / ms);
-    return Math.max(MIN_CHUNK, Math.min(ceiling, scaled || MIN_CHUNK));
-}
+// So STEP is a fixed granularity, not a size to tune. It bounds the OVERSHOOT:
+// the clock is read between steps, so a chunk can run over by one step, and
+// 1024 rows is ~1.7 ms of the dearest phase (the JSON transpose at ~1.7 us per
+// row) against ~0.05 ms of the cheapest (varint decoding). CHUNK_MS plus that
+// worst step stays inside the 8 ms ceiling.
+const CHUNK_MS = 4;
+const STEP = 1024;
 
 // Handing intervals to the component is main-thread work too — it ingests,
-// re-packs sub-tracks and marks the canvas dirty — so a feed is a chunk like
-// any other: one per frame, sized by what the last one cost.
+// re-packs sub-tracks and marks the canvas dirty — so a feed is one chunk,
+// one frame. Unlike a decode step it CANNOT be accumulated to fill a chunk:
+// each call makes the component redraw, so several in a frame would draw the
+// whole grown chart at once. That is why a feed is the one thing still sized
+// adaptively — its cost per interval is not fixed.
 //
 // The CAP matters as much as the target, because the cost is not linear in the
 // feed alone: a merge gets dearer as the chart holds more, so an estimate from
@@ -235,6 +223,14 @@ function nextChunk(size: number, ms: number, targetMs = TARGET_CHUNK_MS,
 const TARGET_FEED_MS = 4;
 const MAX_FEED_INTERVALS = 512;
 const START_FEED_INTERVALS = 128;
+
+// Steer the feed size toward TARGET_FEED_MS from what the last call cost,
+// capped per step so one cheap call cannot license a huge one.
+function nextFeedSize(size: number, ms: number): number {
+    const ceiling = Math.min(size * 4, MAX_FEED_INTERVALS);
+    if (ms <= 0) return ceiling;
+    return Math.max(32, Math.min(ceiling, Math.round((size * TARGET_FEED_MS) / ms) || 32));
+}
 
 // The ceiling a chunk is sized against, and what recordSlice warns on.
 const FRAME_BUDGET_MS = 8;
@@ -256,31 +252,75 @@ function yieldToBrowser(): Promise<void> {
     });
 }
 
-// nextFrame resumes after the browser has had a frame to render. The
-// setTimeout after the rAF callback is what makes the resumed work land in a
-// FRESH task rather than inside the frame we just handed over: resuming in the
-// rAF callback itself would put our chunk in the same frame as the
-// component's redraw.
+// nextFrame resumes after the browser has had a frame to render, and it is
+// the thing that makes "one chunk per frame" true GLOBALLY rather than per
+// task. Two facts force both halves of it:
+//
+//   - Several LOADS overlap. A live poll and a history load are separate
+//     tasks; each taking its own chunk per frame puts two chunks in the frame
+//     (measured: four of our slices in one frame, 13.6 ms). So a frame is a
+//     TURN, handed to one waiter at a time.
+//   - requestAnimationFrame then setTimeout(0) does not guarantee a new frame.
+//     A caller already past this frame's callbacks gets its rAF in the frame
+//     it is standing in, and resumes inside it. So the wait confirms the frame
+//     counter actually moved.
+//
+// The setTimeout is still what puts the resumed work in a FRESH task after the
+// frame's callbacks, instead of inside the component's redraw.
+let frameSeq = 0;
+let framePending: Promise<void> | null = null;
+// Waiters take frames in turn: each awaits the one before it, so N concurrent
+// loads spread over N frames instead of sharing one.
+let frameQueue: Promise<void> = Promise.resolve();
+
+function afterNextFrame(): Promise<void> {
+    if (framePending) return framePending;
+    const start = frameSeq;
+    framePending = new Promise<void>((resolve) => {
+        const wait = (): void => {
+            requestAnimationFrame(() => {
+                frameSeq++;
+                setTimeout(() => {
+                    if (frameSeq > start) {
+                        framePending = null;
+                        resolve();
+                    } else {
+                        wait();
+                    }
+                }, 0);
+            });
+        };
+        wait();
+    });
+    return framePending;
+}
+
 function nextFrame(): Promise<void> {
     if (typeof requestAnimationFrame !== "function") {
         return yieldToBrowser(); // node, tests: no frames to wait for
     }
-    return new Promise<void>((resolve) => {
-        requestAnimationFrame(() => setTimeout(resolve, 0));
-    });
+    const turn = frameQueue.then(afterNextFrame);
+    frameQueue = turn.catch(() => undefined);
+    return turn;
 }
 
-// runSliced drives a task to completion at ONE chunk per frame. Each chunk
-// sizes itself from what the last one cost (see TARGET_CHUNK_MS), so the work
-// this puts in any frame is one chunk — which is the whole budget story.
-// onSlice reports each chunk's real cost.
+// runSliced drives a task to completion at ONE chunk per frame, a chunk being
+// CHUNK_MS of real work — it keeps pulling steps, across phase boundaries,
+// until that much time is spent. onSlice reports each chunk's real cost.
 export async function runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T> {
     for (;;) {
+        // Claim the frame BEFORE working, never after. Yielding afterwards
+        // leaves seams — a task's last chunk and the next flow's first one
+        // land in the same frame, because neither waited (measured: 9.4 ms of
+        // ours in one frame, as slices of 3.0 + 3.5 + 2.9).
+        await nextFrame();
         const t0 = performance.now();
-        const r = task.next();
+        let r: IteratorResult<undefined, T>;
+        do {
+            r = task.next();
+        } while (!r.done && performance.now() - t0 < CHUNK_MS);
         onSlice?.(performance.now() - t0);
         if (r.done) return r.value;
-        await nextFrame();
     }
 }
 
@@ -420,12 +460,9 @@ class WireReader {
     *dictChunked(): Task<string[]> {
         const n = this.uvarint();
         const out = new Array<string>(n);
-        let size = START_CHUNK;
         for (let i = 0; i < n; ) {
-            const to = Math.min(i + size, n);
-            const t0 = performance.now();
+            const to = Math.min(i + STEP, n);
             for (; i < to; i++) out[i] = this.str();
-            size = nextChunk(size, performance.now() - t0);
             yield;
         }
         return out;
@@ -485,12 +522,9 @@ export function* pageColumnsGen(buf: Uint8Array): Task<DecodedPage> {
 
 // chunked walks [0,n) in adaptively-sized ranges, yielding after each.
 function* chunked(n: number, work: (from: number, to: number) => void): Task<void> {
-    let size = START_CHUNK;
     for (let i = 0; i < n; ) {
-        const to = Math.min(i + size, n);
-        const t0 = performance.now();
+        const to = Math.min(i + STEP, n);
         work(i, to);
-        size = nextChunk(size, performance.now() - t0);
         i = to;
         yield;
     }
@@ -636,10 +670,8 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
         return s;
     };
 
-    let size = START_CHUNK;
     for (let from = 0; from < c.n; ) {
-        const to = Math.min(from + size, c.n);
-        const t0 = performance.now();
+        const to = Math.min(from + STEP, c.n);
         const intervals = new Array<TimelineInterval>(to - from);
         const lanes = new Map<string, string>();
         for (let i = from; i < to; i++) {
@@ -674,7 +706,6 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
                 data: c,
             };
         }
-        size = nextChunk(size, performance.now() - t0);
         emit({ intervals, lanes: [...lanes].map(([lane, kind]) => ({ lane, kind })) });
         from = to;
         yield;
@@ -967,6 +998,7 @@ class GsmTimeline extends HTMLElement {
         let empty = true;
         let building = true;
         while (building || ready.length) {
+            await nextFrame(); // claim the frame first — see runSliced
             if (!this.isConnected || this.view !== tl) return; // tab left mid-merge
             if (ready.length) {
                 const part = ready.splice(0, this.feedSize);
@@ -974,14 +1006,17 @@ class GsmTimeline extends HTMLElement {
                 const t0 = performance.now();
                 this.feed(tl, part, coverage);
                 const ms = performance.now() - t0;
-                this.feedSize = nextChunk(this.feedSize, ms, TARGET_FEED_MS, MAX_FEED_INTERVALS);
+                this.feedSize = nextFeedSize(this.feedSize, ms);
                 this.recordSlice(ms);
             } else {
+                // A chunk here is the same thing runSliced makes it: keep
+                // building until a frame's worth of work is done.
                 const t0 = performance.now();
-                building = !task.next().done;
+                do {
+                    building = !task.next().done;
+                } while (building && performance.now() - t0 < CHUNK_MS);
                 this.recordSlice(performance.now() - t0);
             }
-            await nextFrame();
         }
 
         // An empty poll is still proof the feed is alive — and the very first

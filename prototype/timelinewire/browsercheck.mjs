@@ -389,6 +389,12 @@ for (const c of result.ingest) console.log(`   ${c.name}(${c.n}) ${c.ms.toFixed(
 // whichever source saw it.
 const worst = Math.max(result.worstTask, result.worstSlice,
     ...(result.gaps.length ? [result.gaps[0].gap - 16.7] : [0]));
+console.log("\nLONG ANIMATION FRAMES (what actually ran):");
+for (const l of result.loaf ?? []) {
+    console.log(`   ${l.dur}ms  blocking ${l.blocking}ms  renderStart +${l.renderStart}ms  styleLayout ${l.styleLayout}ms`);
+    for (const sc of l.scripts ?? []) console.log(`      ${sc.dur}ms  ${sc.invoker}  ${sc.src}`);
+}
+if (result.loafErr) console.log("   (long-animation-frame unavailable: " + result.loafErr + ")");
 console.log(`WORST_TASK_MS ${worst.toFixed(3)}`);
 
 await browser.close();
