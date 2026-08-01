@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -108,13 +109,12 @@ func TestTimelineWireCrossDecode(t *testing.T) {
 
 	cmd := exec.Command("node", "--input-type=module", "-e",
 		fmt.Sprintf(nodeCrossCheck, "file://"+module, payload))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("node decode failed: %v\n%s", err, ee.Stderr)
-		}
-		t.Fatalf("node decode failed: %v", err)
-	}
+	// node's stderr IS the diagnosis when the decoder throws — a bare "exit
+	// status 1" would send the next reader hunting for it by hand.
+	require.NoError(t, err, "node decode failed:\n%s", stderr.String())
 
 	var got crossResult
 	require.NoError(t, json.Unmarshal(out, &got))

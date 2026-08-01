@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
@@ -61,9 +63,9 @@ func (r *wireReader) dict() []string {
 
 func decodeTimelineV1(t *testing.T, b []byte) decodedTimeline {
 	t.Helper()
-	if len(b) < 4 || string(b[:4]) != timelineWireMagic {
-		t.Fatalf("bad magic %q", b[:min(4, len(b))])
-	}
+	require.GreaterOrEqual(t, len(b), 4, "payload too short to carry the magic")
+	require.Equal(t, timelineWireMagic, string(b[:4]), "wrong format magic")
+
 	r := &wireReader{b: b, p: 4, t: t}
 	out := decodedTimeline{maxID: r.uvarint()}
 	out.retentionStart = time.UnixMilli(r.varint()).UTC()
@@ -106,9 +108,8 @@ func decodeTimelineV1(t *testing.T, b []byte) decodedTimeline {
 			setStringCol(&out.events[i], c, d[r.uvarint()])
 		}
 	}
-	if r.p != len(b) {
-		t.Fatalf("decoder consumed %d of %d bytes", r.p, len(b))
-	}
+	require.Equal(t, len(b), r.p, "decoder must consume the payload exactly")
+
 	return out
 }
 
@@ -173,25 +174,20 @@ func TestTimelineWireRoundTrip(t *testing.T) {
 	snap := sampleTimeline(t).Snapshot(0)
 	got := decodeTimelineV1(t, encodeTimelineV1(snap))
 
-	if got.maxID != snap.MaxID {
-		t.Errorf("max_id = %d, want %d", got.maxID, snap.MaxID)
-	}
-	if !got.retentionStart.Equal(snap.RetentionStart.Truncate(time.Millisecond)) {
-		t.Errorf("retention_start = %s, want %s", got.retentionStart, snap.RetentionStart)
-	}
-	if !got.now.Equal(snap.Now.Truncate(time.Millisecond)) {
-		t.Errorf("now = %s, want %s", got.now, snap.Now)
-	}
-	if len(got.events) != len(snap.Events) {
-		t.Fatalf("got %d events, want %d", len(got.events), len(snap.Events))
-	}
+	assert.Equal(t, snap.MaxID, got.maxID)
+
+	assert.True(t, got.retentionStart.Equal(snap.RetentionStart.Truncate(time.Millisecond)))
+
+	assert.True(t, got.now.Equal(snap.Now.Truncate(time.Millisecond)))
+
+	require.Equal(t, len(snap.Events), len(got.events))
+
 	for i, want := range snap.Events {
 		// Everything but Start compares directly; Start is ms-resolution on
 		// the wire (as it is in JSON once the browser parses it).
 		want.Start = want.Start.Truncate(time.Millisecond).UTC()
-		if got.events[i] != want {
-			t.Fatalf("event %d round-tripped as\n %+v\nwant\n %+v", i, got.events[i], want)
-		}
+		require.Equal(t, want, got.events[i])
+
 	}
 }
 
@@ -199,9 +195,8 @@ func TestTimelineWireRoundTrip(t *testing.T) {
 // client has to guess at.
 func TestTimelineWireEmpty(t *testing.T) {
 	got := decodeTimelineV1(t, encodeTimelineV1(reqtimeline.New().Snapshot(0)))
-	if len(got.events) != 0 {
-		t.Fatalf("got %d events, want 0", len(got.events))
-	}
+	require.Equal(t, 0, len(got.events))
+
 }
 
 // Unicode lane names (the "⇐ push" / "⇒ notify" prefixes) must survive the
@@ -211,9 +206,9 @@ func TestTimelineWireUnicodeLanes(t *testing.T) {
 	tl.RecordWebhook(time.Now(), time.Millisecond, "push", "", "d1", "o/r", "applied")
 	tl.RecordNotify(time.Now(), time.Millisecond, "h.example.com", 200, 1, true, "applied")
 	got := decodeTimelineV1(t, encodeTimelineV1(tl.Snapshot(0)))
-	if got.events[0].Lane != "⇐ push" || got.events[1].Lane != "⇒ notify" {
-		t.Fatalf("lanes round-tripped as %q / %q", got.events[0].Lane, got.events[1].Lane)
-	}
+	require.Equal(t, "⇐ push", got.events[0].Lane)
+	require.Equal(t, "⇒ notify", got.events[1].Lane)
+
 }
 
 // The size claim, asserted rather than quoted: the columnar payload must stay
@@ -234,7 +229,7 @@ func TestTimelineWireIsMuchSmallerThanJSON(t *testing.T) {
 	// Measured ~24 B/event on realistic mixed traffic (docs/timeline-wire-format.md);
 	// this uniform corpus is friendlier, so 40 is a loose ceiling that only a
 	// real regression trips.
-	if perEvent > 40 {
-		t.Errorf("columnar payload is %.1f B/event (%d bytes) — expected well under 40", perEvent, wire)
-	}
+	assert.LessOrEqual(t, perEvent, 40.0,
+		"columnar payload is %.1f B/event (%d bytes) — expected well under 40", perEvent, wire)
+
 }
