@@ -93,16 +93,6 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # The Timeline wire format lives in js-snippets (encoder and decoder
-      # together, next to the chart that reads it), so the Go build pulls a
-      # module from a PRIVATE org repo. secret-server vends the read token
-      # against this workflow's OIDC identity; GOPRIVATE keeps the module out
-      # of the public proxy and checksum database, which cannot see it either.
-      - uses: wow-look-at-my/actions@secret-server#latest
-      - if: env.PRIVATE_ORG_REPO_READ != ''
-        run: |
-          git config --global url."https://${PRIVATE_ORG_REPO_READ}@github.com/wow-look-at-my/".insteadOf "https://github.com/wow-look-at-my/"
-          echo "GOPRIVATE=github.com/wow-look-at-my/*" >> "$GITHUB_ENV"
       # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
       # on every run, and its cache key is once-per-run (NOT job-disambiguated),
       # so publish-ghcr just cache-downloads it. Do NOT add an explicit

@@ -13,15 +13,9 @@ import (
 	"github.com/wow-look-at-my/js-snippets/timelinewire"
 )
 
-// WHAT IS OURS HERE. The columnar LAYOUT — and both halves of it, encoder and
-// decoder — lives in js-snippets, pinned there by its own golden payload. This
-// file used to carry a third implementation (a Go decoder mirroring the
-// browser's) so a round-trip could prove the bytes; that is exactly the
-// duplication the move deleted.
-//
-// What remains ours is the mapping: a reqtimeline Snapshot onto a Page, and
-// the column NAMES that mapping and the chart must agree on. So that is what
-// these tests cover — no bytes are re-specified here.
+// These tests cover the mapping — a Snapshot onto a Page, and the column names
+// the mapping and the chart must agree on. The layout is js-snippets' and is
+// tested there, so no bytes are re-specified here.
 
 func mustEncodeTimeline(t *testing.T, snap reqtimeline.Snapshot) []byte {
 	t.Helper()
@@ -37,9 +31,9 @@ type decodedTimeline struct {
 	now            time.Time
 }
 
-// decodeTimelineV1 reads a served payload back into events — the library
-// decodes the LAYOUT, this reverses OUR mapping. Handler tests use it to
-// assert on what /api/timeline actually served.
+// decodeTimelineV1 reverses timelinePage: the library decodes the layout, this
+// puts the columns back into events so handler tests can assert on what
+// /api/timeline actually served.
 func decodeTimelineV1(t *testing.T, b []byte) decodedTimeline {
 	t.Helper()
 	p, err := timelinewire.Decode(b, timelineSchema)
@@ -99,11 +93,9 @@ func sampleTimeline(t *testing.T) *reqtimeline.Recorder {
 	return tl
 }
 
-// TestTimelinePageCarriesEveryEventField is the invariant that matters on this
-// side: the columnar payload carries EXACTLY what the JSON payload does. A
-// smaller encoding that drops a field is not smaller, it is wrong. Asserted on
-// the PAGE rather than on decoded bytes — the bytes are the library's contract,
-// the page is ours.
+// The invariant that matters on this side: the columnar payload carries exactly
+// what the JSON payload does. A smaller encoding that drops a field is not
+// smaller, it is wrong.
 func TestTimelinePageCarriesEveryEventField(t *testing.T) {
 	snap := sampleTimeline(t).Snapshot(0)
 	p := timelinePage(snap)
@@ -136,9 +128,8 @@ func TestTimelinePageCarriesEveryEventField(t *testing.T) {
 		assert.Equal(t, e.Target, p.S["target"][i])
 	}
 
-	// And back out through the real encoder and decoder: the payload the chart
-	// receives carries exactly what the JSON one does. A smaller encoding that
-	// drops a field is not smaller, it is wrong.
+	// And back out through the real encoder and decoder, so this covers the
+	// payload the chart receives and not just the page behind it.
 	got := decodeTimelineV1(t, mustEncodeTimeline(t, snap))
 	require.Equal(t, len(snap.Events), len(got.events))
 	assert.Equal(t, snap.MaxID, got.maxID)
@@ -168,10 +159,9 @@ func TestTimelineWireEmpty(t *testing.T) {
 	require.Equal(t, timelineSchema.Magic, string(b[:4]))
 }
 
-// THE ONE AGREEMENT THAT IS STILL OURS TO KEEP. The library never sees a
-// column name — the producer and the consumer each declare their own, and a
-// disagreement surfaces in the browser as "trailing bytes" on a payload that
-// encoded perfectly. Both declarations are in this repo, so nothing but this
+// The library never sees a column name — producer and consumer each declare
+// their own — so a disagreement encodes perfectly and fails in the browser as
+// "trailing bytes". Both declarations are in this repo, and nothing but this
 // test stops them drifting apart.
 func TestTimelineSchemaMatchesChart(t *testing.T) {
 	src, err := os.ReadFile("web/src/timeline.ts")
@@ -193,8 +183,9 @@ var (
 )
 
 // tsList reads one array field out of the chart's SCHEMA literal. A regex
-// rather than a parser on purpose: the literal is a fixed shape three lines
-// from a comment saying so, and a missing field fails the test loudly.
+// rather than a TypeScript parser: the literal is a flat list of string
+// constants, and a field this cannot find fails the test rather than passing
+// vacuously.
 func tsList(t *testing.T, src []byte, field string) []string {
 	t.Helper()
 	block := regexp.MustCompile(tsCols).Find(src)
@@ -218,10 +209,9 @@ func tsField(t *testing.T, src []byte, field string) string {
 	return string(m[1])
 }
 
-// The size claim, asserted rather than quoted: the columnar payload must stay
-// an order of magnitude under the JSON one. This is the regression guard for
-// the whole feature — an encoder change that quietly reverted to per-event
-// strings would still round-trip, and only this test would notice.
+// The size claim, asserted rather than quoted. This is the regression guard for
+// the whole feature: a change that quietly reverted to per-event strings would
+// still round-trip, and only this test would notice.
 func TestTimelineWireIsMuchSmallerThanJSON(t *testing.T) {
 	tl := reqtimeline.New()
 	base := time.Now().UTC().Add(-24 * time.Hour)

@@ -141,26 +141,27 @@ The split is LAYOUT vs VOCABULARY:
 - **js-snippets owns the layout** — magic, varints, dictionaries, bitsets,
   columns — plus the one-chunk-per-frame driver. It takes the column names as
   a schema parameter, so it carries none of this mirror's words.
-- **The mirror owns the vocabulary and the meaning** — which 13 columns it
-  sends (`SCHEMA` in `web/src/timeline.ts`), and `intervalsGen`/`eventAt`,
-  which turn columns into intervals with labels, states and lanes. None of
-  that is wire format; all of it is what a github-mirror event *is*.
+- **The mirror owns the vocabulary and the meaning** — the column names it
+  sends (13 string columns plus id/start/dur/status/attempt/final; declared in
+  Go as `timelineSchema` and in the chart as `SCHEMA`), and
+  `intervalsGen`/`eventAt`, which turn columns into intervals with labels,
+  states and lanes. None of that is wire format; all of it is what a
+  github-mirror event *is*.
 
 The wire bytes did not change when it moved: the column names were never on
 the wire.
 
-**The Go encoder moved with it.** It first stayed here, and what that bought
-was two implementations of one layout in two repos, pinned by a base64 string
-copied between them — a contract held together by hand. The encoder now lives
-in js-snippets too, as a nested Go module
-(`github.com/wow-look-at-my/js-snippets/timelinewire`), with `Decode` beside it
+**The Go encoder is there too** — a nested module,
+`github.com/wow-look-at-my/js-snippets/timelinewire`, with `Decode` beside it
 so a Go producer reads its own payload instead of writing a second reader. One
-fixture in that repo, `timelinewire/testdata/golden-v1.b64`, is written by the
-Go test and decoded by the TypeScript one.
+fixture, `timelinewire/testdata/golden-v1.b64`, is written by its Go test and
+decoded by the TypeScript one.
 
-What is left here is a MAPPING, `internal/api/timelinewire.go`: a
-`reqtimeline.Snapshot` laid out as columns under the names `timelineSchema`
-declares. No bytes are specified in this repo any more.
+It briefly lived here instead, which bought two implementations of one layout
+in two repos pinned by a base64 string copied between them — a contract held
+together by hand. What is left here is a MAPPING,
+`internal/api/timelinewire.go`: a `reqtimeline.Snapshot` laid out as columns
+under the names `timelineSchema` declares. No bytes are specified in this repo.
 
 ## Two encodings, one of which the chart refuses
 
@@ -169,10 +170,11 @@ media type exactly, and readable JSON to everyone else — curl, a browser, an
 operator with `jq`. The endpoint stays inspectable by hand.
 
 The first cut had the same two encodings and was still wrong, because the
-CLIENT fell back: `fetchDecoded` decoded whatever came back. So an `Accept`
-that drifted — a header edit, a proxy rewriting it, a `q=` mixup — silently
-took the decode costing ~10x the frames, with nothing failing and nothing
-logged. **The defect was the fallback, not the JSON.**
+CLIENT fell back — it decoded whatever came back. So an `Accept` that drifted
+— a header edit, a proxy rewriting it, a `q=` mixup — silently took the decode
+costing ~10x the frames, with nothing failing and nothing logged. **The defect
+was the fallback, not the JSON.** The refusal now sits in `fetchTimelineBytes`,
+which sends one Accept and throws on any other content type.
 
 Deleting the JSON was the wrong correction (briefly made, then reverted): it
 served a real consumer — a human debugging an admin endpoint — and dropping it
@@ -245,14 +247,18 @@ took three changes, in ascending order of importance:
 Measured on the real first-paint payload (4,166 events, one hour of realistic
 traffic) through the SHIPPED module: **~3 ms of work per frame on average over
 3 frames**, worst chunk ~4 ms. The JSON fallback over a full 100k-event window
-averages 4.4 ms per frame over 34-39 frames. `TestTimelineFrameBudget` gates on the average — that is the
-requirement — and bounds the worst single chunk at 2× the budget: a chunk is
-sized from what the previous one cost, so a GC pause landing inside one is not
-a sizing defect, but a chunk twice the budget is.
+averages 4.4 ms per frame over 34-39 frames — the ~10x-more-frames downgrade
+the chart's content-type refusal exists to prevent.
+
+The node gate that measured this (`TestTimelineFrameBudget` + `framecheck.ts`)
+went with the bake-off: it drove a decoder that now lives in js-snippets, and
+its numbers were environment-dominated. The pacing contract it checked is
+covered where the code is — js-snippets' `runSliced` tests — and end to end by
+`browsercheck.ts` below.
 
 ### What node could not see
 
-`framecheck.ts` measures our decoder. The chart also hands intervals to the
+The node harness measured the decoder alone. The chart also hands intervals to the
 `<timeline-view>` component, which ingests, packs sub-tracks and renders — on
 the same main thread, and node has no component. So
 `internal/api/testdata/browsercheck.ts` boots the real pieces in headless

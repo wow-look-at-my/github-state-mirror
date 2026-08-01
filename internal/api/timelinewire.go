@@ -5,39 +5,24 @@ import (
 	"github.com/wow-look-at-my/js-snippets/timelinewire"
 )
 
-// The Timeline chart's BINARY wire format: the same events as the JSON
-// payload, laid out COLUMNAR — every field a contiguous run, strings replaced
-// by a per-column dictionary plus one small index per event, ids and
-// timestamps delta-coded.
+// Our half of the Timeline chart's columnar wire format: a Snapshot mapped
+// onto the column names below. THE FORMAT ITSELF IS NOT HERE — encoder and
+// decoder both live in js-snippets next to <timeline-view>, pinned there by
+// one golden payload. Column names never reach the wire, which is why the
+// library can stay free of our vocabulary.
 //
-// Why it exists: the ring holds 24h capped at 100k events, and as JSON that is
-// ~283 B/event (~27 MB) — three quarters of it repeated field names and
-// RFC3339 timestamps for numbers that delta-code to one byte. Columnar is
-// ~23 B/event raw and ~10 B/event gzipped, and it decodes ~5x faster in the
-// browser because there is no per-record parsing at all (see
-// docs/timeline-wire-format.md for the measurements against BSON, protobuf
-// and a row-oriented variant).
-//
-// THE FORMAT IS NOT IMPLEMENTED HERE. Encoder and decoder both live in
-// js-snippets alongside <timeline-view>, held together by one golden payload
-// in that repo; this file only maps a Snapshot onto the schema below. The
-// column NAMES never reach the wire — they are ours, and the library stays
-// free of our vocabulary.
-//
-// Content-negotiated: a client sending Accept: application/vnd.gsm.timeline.v1
-// gets this; everything else — curl, the demo preview, anything that does not
-// know the format — keeps getting plain JSON. The format is versioned in BOTH
-// the media type and the magic bytes, and is never evolved in place: a change
-// is v2, so an old client can never mis-read a new payload.
+// A full 24h ring costs 277 B/event as JSON and 23.8 B/event here (7.5 B
+// gzipped), and decodes ~5x faster because nothing parses per record.
+// see docs/timeline-wire-format.md
 
 // timelineWireType is the media type that selects the columnar encoding, in
 // both the request's Accept and the response's Content-Type.
 const timelineWireType = "application/vnd.gsm.timeline.v1"
 
-// timelineSchema names our columns. Order within each group is WIRE ORDER, and
-// the chart's SCHEMA constant in web/src/timeline.ts must match it exactly —
-// TestTimelineSchemaMatchesChart pins that, because the library never sees a
-// column name and a disagreement would surface only in the browser.
+// timelineSchema names our columns; order within each group is WIRE ORDER. The
+// chart's SCHEMA literal in web/src/timeline.ts must match it exactly, and only
+// TestTimelineSchemaMatchesChart says so — a mismatch encodes fine and fails in
+// the browser as "trailing bytes".
 var timelineSchema = timelinewire.Schema{
 	Magic:  "TLC1",
 	DeltaU: []string{"id"},
@@ -50,15 +35,14 @@ var timelineSchema = timelinewire.Schema{
 	},
 }
 
-// encodeTimelineV1 renders a snapshot in the columnar format. It carries the
-// exact same information as timelineResponse — events plus the max_id cursor
-// and the retention/now boundary — so the two encodings are interchangeable.
+// encodeTimelineV1 renders a snapshot in the columnar format, carrying exactly
+// what timelineResponse does: the events, the max_id cursor, and the
+// retention/now boundary.
 func encodeTimelineV1(snap reqtimeline.Snapshot) ([]byte, error) {
 	return timelinewire.Encode(timelinePage(snap), timelineSchema)
 }
 
-// timelinePage is the whole of our side of the format: a Snapshot laid out as
-// columns under the names timelineSchema declares.
+// timelinePage lays a Snapshot out as columns under timelineSchema's names.
 func timelinePage(snap reqtimeline.Snapshot) timelinewire.Page {
 	ev := snap.Events
 	n := len(ev)
@@ -132,11 +116,11 @@ func stringCol(e *reqtimeline.Event, name string) string {
 	}
 }
 
-// wantsTimelineWire reports whether the caller asked for the columnar
-// encoding. Deliberately an exact media-type match on Accept: a wildcard
-// (*/*, which every browser and curl sends) keeps meaning readable JSON, so
-// the endpoint stays inspectable by hand. The chart cannot be harmed by that
-// default — it sends only this media type and refuses anything else.
+// wantsTimelineWire reports whether the caller asked for the columnar encoding.
+// The match is exact so that a wildcard Accept — what curl and browsers send —
+// still means JSON and the endpoint stays inspectable by hand. That default
+// cannot reach the chart: it sends this media type alone and refuses any other
+// answer.
 func wantsTimelineWire(accept string) bool {
 	for _, part := range splitList(accept) {
 		if mediaTypeOf(part) == timelineWireType {

@@ -14,16 +14,13 @@ import (
 // THE CLIENT MUST NOT FALL BACK.
 //
 // /api/timeline serves two encodings: the columnar payload to a caller that
-// names its media type, readable JSON to everyone else (curl, jq, a browser).
-// That second encoding is only safe because the CHART REFUSES IT. An earlier
-// version accepted whatever came back, so an Accept that drifted — a header
-// edit, a proxy rewriting it, a q= mixup — silently took a decode costing ~10x
-// the frames, with nothing failing and nothing logged.
+// names its media type, readable JSON to everyone else. The JSON is only safe
+// because the CHART REFUSES IT — an earlier version took whatever came back, so
+// an Accept that drifted silently cost ~10x the frames with nothing logged.
 //
-// The refusal therefore is not defensive tidiness; it is what lets the JSON
-// exist at all. Prose cannot hold it, so this drives the REAL BUILT module
-// under node with a stubbed fetch and requires fetchDecoded to reject a JSON
-// answer.
+// The refusal is therefore what lets the JSON exist at all, so this drives the
+// REAL BUILT module under node against a stubbed fetch rather than trusting a
+// comment to hold it.
 
 const nodeClientStrict = `
 // The module registers a custom element at import time; stub the two DOM
