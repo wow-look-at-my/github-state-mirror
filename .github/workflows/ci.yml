@@ -63,8 +63,13 @@ jobs:
             const bad: string[] = [];
             for (const [, repo, version, short] of mod.matchAll(pseudo)) {
               const dir = `/tmp/${repo.split("/").pop()}`;
+              // The URL is built BEFORE interpolation: `$` passes each
+              // interpolated value as its own argv entry (that is what makes it
+              // injection-safe), so `https://github.com/${repo}` would be two
+              // arguments and git exits 129.
+              const url = `https://github.com/${repo.replace("github.com/", "")}`;
               // A blobless clone: this needs the commit graph, not the files.
-              await $`git clone --filter=blob:none --quiet https://github.com/${repo.replace("github.com/", "")} ${dir}`;
+              await $`git clone --filter=blob:none --quiet ${url} ${dir}`;
               const res = await exec.getExecOutput(
                 "git", ["-C", dir, "branch", "--remotes", "--contains", short], { ignoreReturnCode: true });
               const branches = res.stdout.split("\n").map((b) => b.trim()).filter(Boolean);
