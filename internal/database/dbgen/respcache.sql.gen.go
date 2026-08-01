@@ -323,6 +323,15 @@ func (q *Queries) DeleteExpiredRepoInstallationCache(ctx context.Context, expire
 	return err
 }
 
+const deleteExpiredWorkflowJobsCache = `-- name: DeleteExpiredWorkflowJobsCache :exec
+DELETE FROM workflow_jobs_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowJobsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowJobsCache, expiresAt)
+	return err
+}
+
 const deleteExpiredWorkflowRunsCache = `-- name: DeleteExpiredWorkflowRunsCache :exec
 DELETE FROM workflow_runs_cache WHERE expires_at <= ?
 `
@@ -510,6 +519,38 @@ DELETE FROM repo_installation_cache WHERE installation_id = ?
 
 func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
+	return err
+}
+
+const deleteWorkflowJobsCacheByRepo = `-- name: DeleteWorkflowJobsCacheByRepo :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowJobsCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteWorkflowJobsCacheByRepo(ctx context.Context, arg DeleteWorkflowJobsCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowJobsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteWorkflowJobsCacheForRun = `-- name: DeleteWorkflowJobsCacheForRun :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?
+`
+
+type DeleteWorkflowJobsCacheForRunParams struct {
+	Owner string
+	Repo  string
+	RunID int64
+}
+
+// DeleteWorkflowJobsCacheForRun drops every row a run's jobs back -- both the
+// run's own jobs pages and the single-job rows under it. A re-run replaces a
+// run's jobs under the SAME run id, so this is the flush that matters.
+func (q *Queries) DeleteWorkflowJobsCacheForRun(ctx context.Context, arg DeleteWorkflowJobsCacheForRunParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowJobsCacheForRun, arg.Owner, arg.Repo, arg.RunID)
 	return err
 }
 
@@ -1036,6 +1077,49 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 	return i, err
 }
 
+const getWorkflowJobsCache = `-- name: GetWorkflowJobsCache :one
+
+SELECT id, owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_jobs_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type GetWorkflowJobsCacheParams struct {
+	Owner   string
+	Repo    string
+	Kind    string
+	RefID   int64
+	PerPage int64
+	Page    int64
+}
+
+// ---- workflow_jobs_cache (Actions job reads) ----
+func (q *Queries) GetWorkflowJobsCache(ctx context.Context, arg GetWorkflowJobsCacheParams) (WorkflowJobsCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowJobsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i WorkflowJobsCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Kind,
+		&i.RefID,
+		&i.RunID,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getWorkflowRunsCache = `-- name: GetWorkflowRunsCache :one
 
 SELECT id, owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache
@@ -1229,6 +1313,17 @@ DELETE FROM repo_installation_cache WHERE id IN (
 
 func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
+	return err
+}
+
+const pruneWorkflowJobsCacheLRU = `-- name: PruneWorkflowJobsCacheLRU :exec
+DELETE FROM workflow_jobs_cache WHERE id IN (
+    SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneWorkflowJobsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneWorkflowJobsCacheLRU, offset)
 	return err
 }
 
@@ -1537,6 +1632,34 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+	)
+	return err
+}
+
+const touchWorkflowJobsCache = `-- name: TouchWorkflowJobsCache :exec
+UPDATE workflow_jobs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type TouchWorkflowJobsCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchWorkflowJobsCache(ctx context.Context, arg TouchWorkflowJobsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchWorkflowJobsCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
 	)
 	return err
 }
@@ -2116,6 +2239,48 @@ func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRep
 		arg.AppID,
 		arg.AppSlug,
 		arg.TargetType,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertWorkflowJobsCache = `-- name: UpsertWorkflowJobsCache :exec
+INSERT INTO workflow_jobs_cache (owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    run_id = excluded.run_id,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertWorkflowJobsCacheParams struct {
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	RunID      int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertWorkflowJobsCache(ctx context.Context, arg UpsertWorkflowJobsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowJobsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.RunID,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,

@@ -12,6 +12,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 20: workflow_jobs_cache -- the cached Actions job reads (a
+// run's jobs page and a single job). Only TERMINAL answers are stored; a
+// re-run replaces a run's jobs under the same run id, so both kinds carry
+// run_id and one flush covers everything the re-run invalidates.
+//
 // SchemaVersion 19: git_ref_cache -- the cached GET /git/ref/{ref} lookup
 // (the hottest UNROUTED path in the request log). Keyed by the VERBATIM
 // requested ref spelling; a push naming the ref flushes every spelling, which
@@ -59,7 +64,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 19
+const SchemaVersion = 20
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

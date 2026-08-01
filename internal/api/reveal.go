@@ -59,6 +59,8 @@ const (
 	denyKindStatusesList = "statuses_list" // the raw statuses LIST (both path spellings)
 	denyKindWorkflowRuns = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
 	denyKindGitRef       = "git_ref"       // GET /repos/{owner}/{repo}/git/ref/{ref}
+	denyKindRunJobs      = "run_jobs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+	denyKindWorkflowJob  = "workflow_job"  // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 )
 
 // revealOutcome is the reveal decision for one request.

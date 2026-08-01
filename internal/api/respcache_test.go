@@ -44,6 +44,8 @@ type respCacheUpstream struct {
 	pullFilesHits int32
 	branchesHits  int32
 	gitRefHits    int32
+	runJobsHits   int32
+	jobHits       int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -53,6 +55,11 @@ type respCacheUpstream struct {
 	// gitRef answers GET /repos/{o}/{r}/git/ref/{ref}; settable per test
 	// (the verdict tests answer 404).
 	gitRef func(w http.ResponseWriter, r *http.Request)
+	// runJobs answers GET /repos/{o}/{r}/actions/runs/{id}/jobs and job
+	// answers GET /repos/{o}/{r}/actions/jobs/{id}; settable per test (the
+	// live-job tests answer an in_progress job).
+	runJobs func(w http.ResponseWriter, r *http.Request)
+	job     func(w http.ResponseWriter, r *http.Request)
 	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
 	// test (the miss-marker tests answer 404).
 	gitCommit func(w http.ResponseWriter, r *http.Request)
@@ -107,6 +114,8 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.pullFiles = defaultPullFilesUpstream
 	u.branches = defaultBranchesUpstream
 	u.gitRef = defaultGitRefUpstream
+	u.runJobs = defaultRunJobsUpstream
+	u.job = defaultJobUpstream
 	return u
 }
 
@@ -145,6 +154,12 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&u.contentsHits, 1)
 			u.contents(w, r)
+		case strings.Contains(r.URL.Path, "/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			atomic.AddInt32(&u.runJobsHits, 1)
+			u.runJobs(w, r)
+		case strings.Contains(r.URL.Path, "/actions/jobs/"):
+			atomic.AddInt32(&u.jobHits, 1)
+			u.job(w, r)
 		case strings.Contains(r.URL.Path, "/git/ref/"):
 			atomic.AddInt32(&u.gitRefHits, 1)
 			u.gitRef(w, r)

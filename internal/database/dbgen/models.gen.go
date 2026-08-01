@@ -351,6 +351,21 @@ type WorkflowJob struct {
 	UpdatedAt    string
 }
 
+type WorkflowJobsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	RunID      int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type WorkflowRunsCache struct {
 	ID         int64
 	Owner      string

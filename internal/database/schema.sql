@@ -751,3 +751,35 @@ CREATE TABLE git_ref_cache (
 
 CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);
 CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
+
+-- Snapshots for the Actions JOB reads:
+--   GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
+--   GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
+--
+-- Only TERMINAL answers are stored: a page whose every job has completed, or
+-- a single completed job. A queued/in_progress job is a live value the GHA
+-- runner coordinator acts on, and no TTL short enough to be safe would be
+-- long enough to be useful -- those always reach GitHub. What is left is the
+-- fleet re-reading SETTLED runs forever, which is the traffic worth killing.
+--
+-- ref_id is the run id (kind 'run_jobs') or the job id (kind 'job'); run_id is
+-- carried on BOTH kinds so a re-run -- which replaces a run's jobs under the
+-- same run id -- flushes every row it invalidates from one signal.
+CREATE TABLE workflow_jobs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- 'run_jobs' | 'job'
+    ref_id       INTEGER NOT NULL,           -- run id ('run_jobs') or job id ('job')
+    run_id       INTEGER NOT NULL,           -- the owning run, on both kinds
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflow_jobs_cache_key ON workflow_jobs_cache (owner, repo, kind, ref_id, per_page, page);
+CREATE INDEX idx_workflow_jobs_cache_run ON workflow_jobs_cache (owner, repo, run_id);
+CREATE INDEX idx_workflow_jobs_cache_lru ON workflow_jobs_cache (last_used_at);

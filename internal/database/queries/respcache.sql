@@ -572,3 +572,40 @@ DELETE FROM git_ref_cache WHERE expires_at <= ?;
 DELETE FROM git_ref_cache WHERE id IN (
     SELECT id FROM git_ref_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- workflow_jobs_cache (Actions job reads) ----
+
+-- name: GetWorkflowJobsCache :one
+SELECT * FROM workflow_jobs_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowJobsCache :exec
+INSERT INTO workflow_jobs_cache (owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    run_id = excluded.run_id,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowJobsCache :exec
+UPDATE workflow_jobs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowJobsCacheForRun drops every row a run's jobs back -- both the
+-- run's own jobs pages and the single-job rows under it. A re-run replaces a
+-- run's jobs under the SAME run id, so this is the flush that matters.
+-- name: DeleteWorkflowJobsCacheForRun :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
+-- name: DeleteWorkflowJobsCacheByRepo :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowJobsCache :exec
+DELETE FROM workflow_jobs_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowJobsCacheLRU :exec
+DELETE FROM workflow_jobs_cache WHERE id IN (
+    SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

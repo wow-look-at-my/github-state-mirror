@@ -351,6 +351,16 @@ func NewRouter(
 		// DELETION emits no webhook).
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
 
+		// Cached Actions JOB reads (respcache_workflowjobs.go): a run's jobs
+		// page and a single job. Only TERMINAL answers are stored -- a
+		// queued/in_progress job is a live value the runner coordinator
+		// provisions against, so those always reach GitHub; what this kills
+		// is the fleet re-reading SETTLED runs forever. A re-run replaces a
+		// run's jobs under the same run id, so workflow_job/workflow_run
+		// deliveries flush every row under that run.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
+		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the
