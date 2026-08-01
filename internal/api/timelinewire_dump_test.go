@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
@@ -58,15 +59,13 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 	}
 	snap := tl.Snapshot(0)
 	wire := encodeTimelineV1(snap)
-	if err := os.WriteFile(dir+"/timeline.bin", wire, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(dir+"/timeline.bin", wire, 0o644))
+
 	body, _ := json.Marshal(timelineResponse{Events: snap.Events, MaxID: snap.MaxID,
 		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
 		Now:            snap.Now.UTC().Format(time.RFC3339Nano)})
-	if err := os.WriteFile(dir+"/timeline.json", body, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(dir+"/timeline.json", body, 0o644))
+
 	t.Logf("100k events: columnar %d B (%.1f B/event), json %d B (%.1f B/event)",
 		len(wire), float64(len(wire))/100000, len(body), float64(len(body))/100000)
 }
