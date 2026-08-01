@@ -59,22 +59,21 @@ const HISTORY_SPAN_MS = 60 * 60 * 1000;
 // backend-free preview serves canned data); production uses this one — the
 // AbortSignal bound is what keeps the single-flight poll guard un-wedgeable.
 //
-// It asks for the COLUMNAR encoding (internal/api/timelinewire.go) and falls
-// back to JSON on whatever the server actually answers with, so a rollback of
-// the server half — or the demo preview, which serves canned JSON — keeps
-// working with no branch anywhere else in this file.
+// The endpoint speaks ONE encoding — the columnar payload — so this asks for
+// it and accepts nothing else. A content-type it does not recognize THROWS,
+// which surfaces as the chart's "feed is down" state. That is the point: the
+// previous version fell back to JSON on whatever came back, so a mismatch
+// downgraded the chart to a decode costing ~10x the frames and said nothing.
 async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
     const res = await fetch(path, {
-        headers: { Accept: `${WIRE_TYPE}, application/json;q=0.9` },
+        headers: { Accept: WIRE_TYPE },
         credentials: "same-origin",
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    if ((res.headers.get("Content-Type") ?? "").startsWith(WIRE_TYPE)) {
-        const buf = new Uint8Array(await res.arrayBuffer());
-        return runSliced(pageColumnsGen(buf), onSlice);
-    }
-    return runSliced(pageFromJSONGen((await res.json()) as TimelineResponse), onSlice);
+    const ct = res.headers.get("Content-Type") ?? "";
+    if (!ct.startsWith(WIRE_TYPE)) throw new Error("timeline: expected " + WIRE_TYPE + ", got " + ct);
+    return runSliced(pageColumnsGen(new Uint8Array(await res.arrayBuffer())), onSlice);
 }
 
 // Tiny DOM helper (this module is standalone; app.ts's el() is not shared).
@@ -530,10 +529,15 @@ function* chunked(n: number, work: (from: number, to: number) => void): Task<voi
     }
 }
 
-// The JSON fallback lands in the SAME column representation, so everything
-// downstream — intervals, lanes, tooltips — has exactly one shape to handle.
-// It is sliced too: JSON.parse itself is one unbreakable native call, but the
-// 100k-row transpose after it is ours and must not block either.
+// The DEMO PREVIEW's decoder — not a wire fallback. /api/timeline speaks only
+// the columnar format; this exists because the backend-free styling preview
+// replaces the element's fetcher with one that hands over a canned
+// TimelineResponse literal from assets/demo-data.js (a hand-maintained JS
+// file, which binary cannot be). It lands in the SAME column representation,
+// so everything downstream — intervals, lanes, tooltips — has one shape to
+// handle, and it is sliced too: JSON.parse is one unbreakable native call, but
+// the transpose after it is ours. shipbench.mjs also drives it, to keep the
+// measurement that chose columnar reproducible.
 export function* pageFromJSONGen(resp: TimelineResponse): Task<DecodedPage> {
     const events = resp.events ?? [];
     const n = events.length;

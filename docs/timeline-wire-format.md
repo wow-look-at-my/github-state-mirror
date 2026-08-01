@@ -116,6 +116,33 @@ is measured is JS main-thread work to produce the chart's interval objects.
    columnar+gzip-1 costs 9 ms of server CPU for the full ring; on the realistic
    one-hour payload it is under 1 ms.
 
+## One encoding, not two
+
+`GET /api/timeline` answers in the columnar format whatever the caller sends in
+`Accept`. The first cut content-negotiated it, keeping JSON as the default so
+"clients that do not request the columnar format" kept working. There are no
+such clients: the dashboard chart is the only HTTP consumer and it asks for
+columnar; the backend-free styling preview replaces the element's fetcher
+outright and never reaches the handler.
+
+So the JSON branch served nobody, and it was worse than dead code — it was a
+SILENT downgrade path. An `Accept` that drifted (a header edit, a proxy
+rewriting it, a `q=` mixup) would have quietly taken the decode that costs
+~10x the frames, with nothing failing and nothing logged. Two encodings also
+meant two response shapes to keep in step forever.
+
+Both halves are now single: the handler encodes one way, and the client sends
+one `Accept` and THROWS on any other content type rather than falling back.
+`TestTimeline_NoSecondFormat` pins it across `Accept: */*`, `application/json`,
+absent, and a future version string. The trade is that `curl /api/timeline`
+returns binary — acceptable for an admin debugging endpoint whose payload is
+already gzipped, and `pageFromWire` decodes a dump.
+
+`pageFromJSONGen` survives, but as the demo preview's decoder, not a fallback:
+`assets/demo-data.js` is a hand-maintained JS literal that cannot be binary.
+`shipbench.mjs` also drives it, which keeps the measurement that chose columnar
+reproducible.
+
 ## The frame budget (operator requirement)
 
 > "make sure the average loading workload per frame for the duration of the

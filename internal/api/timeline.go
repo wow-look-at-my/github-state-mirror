@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -133,18 +131,6 @@ func parseUnixMs(v string) (time.Time, bool) {
 	return time.UnixMilli(ms).UTC(), true
 }
 
-// timelineResponse is the GET /api/timeline payload.
-type timelineResponse struct {
-	Events []reqtimeline.Event `json:"events"`
-	// MaxID is the newest event ID — pass it back as ?since= to receive only
-	// newer events on the next poll.
-	MaxID uint64 `json:"max_id"`
-	// RetentionStart is the ring's window floor (now − 24h): nothing older is
-	// retained, so the chart can pin its history boundary there.
-	RetentionStart string `json:"retention_start"`
-	Now            string `json:"now"`
-}
-
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
 // actor/tenant. Three read shapes, all answering the same payload:
@@ -189,26 +175,13 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		snap = d.timeline.SnapshotRange(from, to)
 	}
 
-	// Content-negotiated encoding. The dashboard asks for the columnar format
-	// (timelinewire.go) — ~10 B/event gzipped against JSON's ~32, and ~5x
-	// cheaper to turn into chart intervals; anything that does not ask for it
-	// by exact media type, curl included, keeps getting the JSON below.
-	addVary(w.Header(), "Accept")
-	if wantsTimelineWire(r.Header.Get("Accept")) {
-		writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
-		return
-	}
-
-	body, err := json.Marshal(timelineResponse{
-		Events:         snap.Events,
-		MaxID:          snap.MaxID,
-		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
-		Now:            snap.Now.UTC().Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		slog.Warn("timeline json encode failed", "error", err)
-		http.Error(w, "encode failed", http.StatusInternalServerError)
-		return
-	}
-	writeBody(w, r, "application/json", body)
+	// ONE encoding: the columnar payload (timelinewire.go). There is no JSON
+	// alternative, deliberately. The only consumer is the dashboard chart,
+	// which asks for this; the backend-free preview replaces the element's
+	// fetcher outright and never reaches this handler. A negotiated JSON
+	// fallback served nobody and was a SILENT failure path — an Accept that
+	// drifted would have quietly downgraded the chart to a decode that costs
+	// ~10x the frames, with nothing failing. The format is versioned in the
+	// magic and the media type, so a change is v2, not a second branch here.
+	writeBody(w, r, timelineWireType, encodeTimelineV1(snap))
 }

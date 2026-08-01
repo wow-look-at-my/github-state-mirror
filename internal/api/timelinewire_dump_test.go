@@ -42,13 +42,26 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 	wire := encodeTimelineV1(snap)
 	require.NoError(t, os.WriteFile(dir+"/timeline.bin", wire, 0o644))
 
-	body, _ := json.Marshal(timelineResponse{Events: snap.Events, MaxID: snap.MaxID,
+	// The JSON shape the endpoint USED to serve. It is no longer a response —
+	// /api/timeline speaks only the columnar format — but the benches compare
+	// the two decoders, and that comparison is the record of why columnar was
+	// chosen, so the fixture is generated here rather than deleted.
+	body, _ := json.Marshal(legacyTimelineJSON{Events: snap.Events, MaxID: snap.MaxID,
 		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
 		Now:            snap.Now.UTC().Format(time.RFC3339Nano)})
 	require.NoError(t, os.WriteFile(dir+"/timeline.json", body, 0o644))
 
 	t.Logf("100k events: columnar %d B (%.1f B/event), json %d B (%.1f B/event)",
 		len(wire), float64(len(wire))/100000, len(body), float64(len(body))/100000)
+}
+
+// legacyTimelineJSON is the retired response shape, kept only as a bench
+// fixture (see above).
+type legacyTimelineJSON struct {
+	Events         []reqtimeline.Event `json:"events"`
+	MaxID          uint64              `json:"max_id"`
+	RetentionStart string              `json:"retention_start"`
+	Now            string              `json:"now"`
 }
 
 // realisticRing builds a ring shaped like real mirror traffic: mostly requests

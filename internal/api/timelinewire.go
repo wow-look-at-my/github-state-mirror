@@ -186,15 +186,3 @@ func (d *wireDict) appendTo(b []byte) []byte {
 	}
 	return b
 }
-
-// wantsTimelineWire reports whether the caller asked for the columnar
-// encoding. Deliberately an exact media-type match on Accept: a wildcard
-// (*/*, which every browser and curl sends) must keep meaning JSON.
-func wantsTimelineWire(accept string) bool {
-	for _, part := range splitList(accept) {
-		if mediaTypeOf(part) == timelineWireType {
-			return true
-		}
-	}
-	return false
-}
