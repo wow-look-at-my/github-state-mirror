@@ -2,8 +2,11 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // The implementation BRIEF: `GET /api/brief`, behind the dashboard's "Copy
@@ -252,3 +255,38 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"A route whose response describes a set that changes continuously and has no webhook naming the " +
 	"change (a queued-work backlog, a live runner roster) is not a caching gap — it is the model " +
 	"working. Record that verdict in CLAUDE.md rather than shipping a TTL that serves wrong answers.\n"
+
+// handleBrief renders the implementation brief (brief.go): every uncached
+// route joined to its captured request/response shape, plus the tier-2
+// checklist — the whole input for modeling the next cached route, in one
+// copyable document. Admin-only like every other operator view; the payload
+// carries no values (query parameters by name, bodies as key/type skeletons).
+func (d *dashboard) handleBrief(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAdmin(w, r); !ok {
+		return
+	}
+	limit := briefDefaultCandidates
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid 'limit' query parameter", http.StatusBadRequest)
+			return
+		}
+		limit = min(n, briefMaxCandidates)
+	}
+	snap := d.reqlog.snapshot(0)
+	cands := buildBrief(snap, d.shapes.snapshot(), limit)
+	generated := time.Now().UTC().Format(time.RFC3339)
+	writeJSON(w, briefPayload{
+		GeneratedAt: generated,
+		Total:       snap.Total,
+		Totals:      snap.ByDisposition,
+		Candidates:  cands,
+		Markdown:    renderBrief(snap, cands, generated),
+	})
+}
+
+const (
+	briefDefaultCandidates = 20
+	briefMaxCandidates     = 100
+)
