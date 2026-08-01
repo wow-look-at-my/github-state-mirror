@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -83,6 +84,10 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
+		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
+		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
+		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -92,6 +97,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull files cache", scope, d.store.InvalidatePullFilesForPR(ctx, owner, repo, event.PRNumber))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
+		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -141,11 +147,15 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// actions onWorkflowJob drops as ignored: invalidateResponseCaches is
 		// called before the disposition logic, and a queued job is exactly a
 		// run the cached listing may not have shown yet.
-		headSHA := ""
+		headSHA, runID := "", int64(0)
 		if payload, err := webhook.ParseWorkflowJobPayload(event.Raw); err == nil {
-			headSHA = payload.HeadSHA
+			headSHA, runID = payload.HeadSHA, payload.RunID
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
+		// A job's state moved, so the run's cached JOB answers moved with it.
+		// Only terminal answers are ever stored, but a RE-RUN replaces a
+		// run's jobs under the same run id -- this is that signal.
+		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "workflow_run":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -158,8 +168,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// queued/waiting workflow_job deliveries above, invalidation runs
 		// BEFORE the disposition logic: the truth side has no workflow_run
 		// handler, so the delivery still records as ignored.
-		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo,
-			webhook.ParseWorkflowRunHeadSHA(event.Raw))
+		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
+		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
+		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
 		if event.InstallationID == 0 {
 			return
@@ -198,6 +209,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 	default:
 		// Every per-ref flush below covers the pushed ref in each spelling
 		// GitHub accepts for it (bare / heads/... / refs/heads/..., or the
@@ -237,6 +249,10 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			// immutable commit, and the push's brand-new shas have no rows
 			// yet).
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
+			// The ref's own tip: a push IS the move, and a push that creates
+			// the ref is what clears a cached absent-ref verdict. Rows key
+			// the verbatim requested spelling, hence one call per spelling.
+			flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, ref))
 		}
 	}
 
@@ -249,6 +265,10 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
 	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
+	// A PR's commit list moves when its head moves, and a fork head's pushes
+	// never reach us -- pull_request deliveries carry the per-PR signal, and
+	// this is the repo-wide belt for a missed one (the PR-files stance).
+	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
 // flush logs one best-effort cache invalidation's failure; it never fails
@@ -270,6 +290,28 @@ func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, 
 		return
 	}
 	flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsForHeadSHA(ctx, owner, repo, sha))
+}
+
+// pullCommitsRefKey mirrors the API package's synthetic commits_list_cache
+// ref key for one PR's commit list ("pull/<number>/commits"). The two must
+// agree exactly -- a per-PR flush that misses the key leaves the snapshot
+// serving stale until the repo-wide push flush or the TTL catches it -- and a
+// sync -> api import would be a cycle, so it is restated here and pinned by a
+// test in the api package.
+func pullCommitsRefKey(number int64) string {
+	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
+}
+
+// flushWorkflowJobsForRun drops one run's cached job answers -- its jobs
+// pages AND the single-job rows under it -- widening to the repo-wide flush
+// when the payload named no run: an id of zero would exact-match nothing (a
+// silent no-op) while the delivery still said SOME run's jobs moved.
+func (d *WebhookDispatcher) flushWorkflowJobsForRun(ctx context.Context, scope, owner, repo string, runID int64) {
+	if runID <= 0 {
+		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
+		return
+	}
+	flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsForRun(ctx, owner, repo, runID))
 }
 
 // refSpellings returns every ref spelling GitHub accepts for a short branch
