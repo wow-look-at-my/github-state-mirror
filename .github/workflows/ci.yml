@@ -56,6 +56,11 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
+      # The test harnesses in internal/api/testdata/ are TypeScript checked
+      # against the dashboard source they drive, so a changed export signature
+      # fails HERE rather than at runtime inside a measurement. They emit
+      # nothing (node runs the .ts directly); this is a type-check only.
+      - run: npm run check:harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
         with:

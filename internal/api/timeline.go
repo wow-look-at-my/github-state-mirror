@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -116,7 +118,25 @@ func timelineDeliveryRecorder(tl *reqtimeline.Recorder) webhook.DeliveryRecorder
 	return deliveryTimeline{tl: tl}
 }
 
-// timelineResponse is the GET /api/timeline payload.
+// parseUnixMs reads an optional unix-millisecond query parameter. An empty
+// value is "unset" (zero time, ok); anything unparseable is rejected rather
+// than silently treated as unset — a typo'd bound must not answer with the
+// whole window.
+func parseUnixMs(v string) (time.Time, bool) {
+	if v == "" {
+		return time.Time{}, true
+	}
+	ms, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms).UTC(), true
+}
+
+// timelineResponse is the READABLE encoding of the payload — what any caller
+// that does not ask for the columnar media type by name receives. The chart
+// never parses it (see the handler); it exists so the endpoint stays
+// inspectable with curl and jq.
 type timelineResponse struct {
 	Events []reqtimeline.Event `json:"events"`
 	// MaxID is the newest event ID — pass it back as ?since= to receive only
@@ -130,14 +150,25 @@ type timelineResponse struct {
 
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. ?since=<id> returns only events newer than that cursor (the
-// tab's incremental poll); omitted or 0 returns the full retained window.
+// actor/tenant. Three read shapes, all answering the same payload:
+//
+//	(no params)          the whole retained window
+//	?since=<id>          only events newer than that cursor — the 5s live poll
+//	?from=&to=<unix ms>  the events overlapping a time window — the chart's
+//	                     async history loader, which is what keeps a first
+//	                     paint from having to decode 24h of traffic to draw
+//	                     one hour of it
+//
+// since and from/to are mutually exclusive: they answer different questions
+// (what is NEW vs what was HAPPENING), and silently ANDing them would let a
+// history request come back empty because the live cursor had moved past it.
 func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
+	q := r.URL.Query()
 	var since uint64
-	if s := r.URL.Query().Get("since"); s != "" {
+	if s := q.Get("since"); s != "" {
 		v, err := strconv.ParseUint(s, 10, 64)
 		if err != nil {
 			http.Error(w, "bad since cursor", http.StatusBadRequest)
@@ -145,11 +176,60 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		since = v
 	}
+	from, okFrom := parseUnixMs(q.Get("from"))
+	to, okTo := parseUnixMs(q.Get("to"))
+	if !okFrom || !okTo {
+		http.Error(w, "bad from/to (unix milliseconds)", http.StatusBadRequest)
+		return
+	}
+	if since != 0 && (!from.IsZero() || !to.IsZero()) {
+		http.Error(w, "since and from/to are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+
 	snap := d.timeline.Snapshot(since)
-	writeJSON(w, timelineResponse{
+	if !from.IsZero() || !to.IsZero() {
+		snap = d.timeline.SnapshotRange(from, to)
+	}
+
+	// The chart asks for the columnar payload (timelinewire.go) by exact media
+	// type; anything else — curl's */*, a browser, an operator with jq — gets
+	// readable JSON.
+	//
+	// What makes a second encoding safe here is that the CLIENT refuses to
+	// fall back: fetchDecoded sends only the wire type and THROWS on any other
+	// content type. That is what removed the silent failure. Before, the chart
+	// accepted whatever came back, so an Accept that drifted quietly took a
+	// decode costing ~10x the frames with nothing failing; the defect was the
+	// fallback, not the JSON. Serving JSON to a human debugging the endpoint
+	// cannot reach the chart, and cannot degrade it if it somehow did.
+	//
+	// The columnar layout is versioned in the magic AND the media type, so a
+	// CHANGE to it is v2 — never a third branch here.
+	addVary(w.Header(), "Accept")
+	if wantsTimelineWire(r.Header.Get("Accept")) {
+		wire, err := encodeTimelineV1(snap)
+		if err != nil {
+			// Only a row type whose `wire:` tags do not describe it gets here,
+			// which no request can cause.
+			slog.Error("timeline wire encode failed", "error", err)
+			http.Error(w, "encode failed", http.StatusInternalServerError)
+			return
+		}
+		writeBody(w, r, timelineWireType, wire)
+		return
+	}
+
+	body, err := json.Marshal(timelineResponse{
 		Events:         snap.Events,
 		MaxID:          snap.MaxID,
 		RetentionStart: snap.RetentionStart.UTC().Format(time.RFC3339Nano),
 		Now:            snap.Now.UTC().Format(time.RFC3339Nano),
 	})
+	if err != nil {
+		slog.Warn("timeline json encode failed", "error", err)
+		http.Error(w, "encode failed", http.StatusInternalServerError)
+		return
+	}
+	writeBody(w, r, "application/json", body)
 }
