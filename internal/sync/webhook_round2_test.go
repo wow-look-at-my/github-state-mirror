@@ -92,13 +92,26 @@ func (s r2Seeder) compareServe(basehead string) bool {
 
 func (s r2Seeder) seedWorkflowRuns(sha string) {
 	s.t.Helper()
-	require.NoError(s.t, s.store.PutCachedWorkflowRuns(context.Background(), "org1", "repo1", sha, 30, 1,
+	require.NoError(s.t, s.store.PutCachedWorkflowRuns(context.Background(), "org1", "repo1", sha, "", 30, 1,
 		`{"total_count":1}`, s.now, time.Hour))
 }
 
 func (s r2Seeder) workflowRunsServe(sha string) bool {
 	s.t.Helper()
-	_, ok, err := s.store.GetCachedWorkflowRuns(context.Background(), "org1", "repo1", sha, 30, 1, s.now)
+	_, ok, err := s.store.GetCachedWorkflowRuns(context.Background(), "org1", "repo1", sha, "", 30, 1, s.now)
+	require.NoError(s.t, err)
+	return ok
+}
+
+func (s r2Seeder) seedWorkflowRunsListing(filters string) {
+	s.t.Helper()
+	require.NoError(s.t, s.store.PutCachedWorkflowRuns(context.Background(), "org1", "repo1", "", filters, 100, 1,
+		`{"total_count":1}`, s.now, time.Hour))
+}
+
+func (s r2Seeder) workflowRunsListingServe(filters string) bool {
+	s.t.Helper()
+	_, ok, err := s.store.GetCachedWorkflowRuns(context.Background(), "org1", "repo1", "", filters, 100, 1, s.now)
 	require.NoError(s.t, err)
 	return ok
 }
@@ -374,6 +387,73 @@ func TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA(t *testing.T) {
 	assert.Equal(t, webhook.DispIgnored, result.Disposition, "no truth-side handler; the delivery stays ignored")
 	assert.False(t, s.workflowRunsServe(r2SHA), "the run's head sha's workflow-runs pages must flush")
 	assert.True(t, s.workflowRunsServe(r2OtherSHA), "another sha's workflow-runs pages must survive")
+}
+
+// TestDispatch_RunStateEvents_FlushWorkflowRunsListings: the repo-wide runs
+// LISTING (the coordinator's queued-backlog answer) names no sha, so the
+// per-sha flush cannot reach it. Every run-state delivery must therefore
+// flush every listing row for the repo -- this is the invalidation the
+// listing shape is cached ON, and if any of these deliveries stops flushing,
+// a queued run can appear or vanish behind a served answer.
+func TestDispatch_RunStateEvents_FlushWorkflowRunsListings(t *testing.T) {
+	for _, tc := range []struct {
+		name, event string
+		payload     string
+	}{{
+		name:  "check_run completed",
+		event: "check_run",
+		payload: `{"action": "completed",
+			"check_run": {"head_sha": "` + r2SHA + `", "status": "completed", "conclusion": "success",
+				"name": "build", "check_suite": {"head_branch": "feat"}},
+			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+	}, {
+		name:  "check_suite requested (a run entering the queue)",
+		event: "check_suite",
+		payload: `{"action": "requested",
+			"check_suite": {"head_sha": "` + r2SHA + `", "status": "queued", "head_branch": "feat"},
+			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+	}, {
+		name:  "workflow_run completed",
+		event: "workflow_run",
+		payload: `{"action": "completed",
+			"workflow_run": {"id": 99, "head_sha": "` + r2SHA + `", "status": "completed", "conclusion": "success"},
+			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dispatcher, _, _, store := setupDispatcher(t)
+			s := r2Seeder{t: t, store: store, now: time.Now()}
+			s.seedWorkflowRunsListing("status=queued")
+			s.seedWorkflowRunsListing("branch=main&status=in_progress")
+			s.seedWorkflowRuns(r2OtherSHA)
+
+			dispatcher.Dispatch(context.Background(), webhook.ParseEvent(tc.event, []byte(tc.payload)))
+
+			assert.False(t, s.workflowRunsListingServe("status=queued"),
+				"the queued-backlog listing must flush")
+			assert.False(t, s.workflowRunsListingServe("branch=main&status=in_progress"),
+				"every listing filter must flush, not just the one that moved")
+			assert.True(t, s.workflowRunsServe(r2OtherSHA),
+				"an unrelated sha's per-commit pages must survive")
+		})
+	}
+
+	// workflow_job carries its own payload shape (and its queued action is
+	// dropped by the disposition logic) -- the listing flush must run anyway.
+	t.Run("workflow_job queued", func(t *testing.T) {
+		dispatcher, _, _, store := setupDispatcher(t)
+		s := r2Seeder{t: t, store: store, now: time.Now()}
+		s.seedWorkflowRunsListing("status=queued")
+		s.seedWorkflowRuns(r2OtherSHA)
+
+		result := dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_job",
+			makeWorkflowJobPayload(t, "queued", "org1", "repo1", 42, "build", "queued", "")))
+
+		assert.Equal(t, webhook.DispIgnored, result.Disposition, "queued stays ignored for the job table")
+		assert.False(t, s.workflowRunsListingServe("status=queued"),
+			"a queued job is exactly a run entering the backlog: the listing must flush")
+		assert.True(t, s.workflowRunsServe(r2OtherSHA),
+			"an unrelated sha's per-commit pages must survive")
+	})
 }
 
 // TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide: the shared

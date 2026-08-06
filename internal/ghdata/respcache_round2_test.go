@@ -21,43 +21,91 @@ func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "Org1", "Repo1", testSHA, 30, 1, `{"total_count":1}`, now, time.Hour))
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, `{"total_count":2}`, now, time.Hour))
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, `{"total_count":3}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "Org1", "Repo1", testSHA, "", 30, 1, `{"total_count":1}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, `{"total_count":2}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, `{"total_count":3}`, now, time.Hour))
 
 	// Keys normalize (URL casing folds) and the pagination shape is part of
 	// the key: each shape is its own row.
-	doc, ok, err := s.GetCachedWorkflowRuns(ctx, "ORG1", "REPO1", testSHA, 30, 1, now)
+	doc, ok, err := s.GetCachedWorkflowRuns(ctx, "ORG1", "REPO1", testSHA, "", 30, 1, now)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, `{"total_count":1}`, doc)
-	doc, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, now)
+	doc, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, now)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, `{"total_count":2}`, doc)
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 100, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 100, 1, now)
 	require.NoError(t, err)
 	assert.False(t, ok, "an unstored pagination shape must miss")
 
 	// An expired row is a miss.
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 30, 1, now.Add(2*time.Hour))
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, now.Add(2*time.Hour))
 	require.NoError(t, err)
 	assert.False(t, ok, "an expired snapshot must miss")
 
 	// Per-sha invalidation drops both of the sha's pages, keeps the other sha.
 	require.NoError(t, s.InvalidateWorkflowRunsForHeadSHA(ctx, "org1", "repo1", testSHA))
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, now)
 	require.NoError(t, err)
 	assert.False(t, ok, "the sha's pages must be gone")
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, now)
 	require.NoError(t, err)
 	assert.True(t, ok, "another sha's pages must survive a per-sha flush")
 
 	// Repo-wide invalidation drops the rest.
 	require.NoError(t, s.InvalidateWorkflowRunsCache(ctx, "org1", "repo1"))
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, now)
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+// TestCachedWorkflowRuns_ListingRowsFlushAlone: the sha-less LISTING rows and
+// the per-commit rows share the table but are invalidated apart. A run-state
+// delivery flushes every listing row for the repo (the queued-backlog answer
+// names no sha for a per-sha flush to match) while another commit's pages
+// survive; the per-sha flush leaves the listings alone.
+func TestCachedWorkflowRuns_ListingRowsFlushAlone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seed := func() {
+		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", "", "status=queued", 100, 1, `{"total_count":1}`, now, time.Hour))
+		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", "", "status=in_progress", 100, 1, `{"total_count":2}`, now, time.Hour))
+		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, `{"total_count":3}`, now, time.Hour))
+	}
+	listingServed := func(filters string) bool {
+		_, ok, err := s.GetCachedWorkflowRuns(ctx, "org1", "repo1", "", filters, 100, 1, now)
+		require.NoError(t, err)
+		return ok
+	}
+	commitServed := func() bool {
+		_, ok, err := s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, now)
+		require.NoError(t, err)
+		return ok
+	}
+
+	// The filters are part of the key: two listings coexist, and neither is
+	// the per-commit row.
+	seed()
+	assert.True(t, listingServed("status=queued"))
+	assert.True(t, listingServed("status=in_progress"))
+	assert.True(t, commitServed())
+
+	// A per-sha flush must not reach the listings -- they carry head_sha ''
+	// and the flush is an exact match on a full-hex sha.
+	require.NoError(t, s.InvalidateWorkflowRunsForHeadSHA(ctx, "org1", "repo1", testSHA))
+	assert.False(t, commitServed(), "the sha's pages must be gone")
+	assert.True(t, listingServed("status=queued"), "a per-sha flush must not touch the listings")
+
+	// The listing flush is the mirror image: every filter goes, the
+	// per-commit rows stay.
+	seed()
+	require.NoError(t, s.InvalidateWorkflowRunsListings(ctx, "org1", "repo1"))
+	assert.False(t, listingServed("status=queued"), "every listing filter must be flushed")
+	assert.False(t, listingServed("status=in_progress"), "every listing filter must be flushed")
+	assert.True(t, commitServed(), "per-commit pages must survive a listing flush")
 }
 
 // TestCachedGitCommitMiss_RoundTrip: put/get one 404 verdict, expiry as a

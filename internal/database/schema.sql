@@ -497,25 +497,40 @@ CREATE TABLE branches_list_cache (
 CREATE UNIQUE INDEX idx_branches_list_cache_key ON branches_list_cache (owner, repo, per_page, page);
 CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
 
--- Per-page snapshots for GET /repos/{owner}/{repo}/actions/runs?head_sha=...
--- (the workflow-runs listing filtered to one commit -- pr-minder's
--- hasWorkflowRuns zombie probe, repeated per bot PR by the reconcile hook's
--- fleet sweeps). Whole-doc snapshots per exact pagination shape, keyed by
--- (owner, repo, head_sha, per_page, page); doc holds the ALREADY-TRIMMED
--- document as JSON. A sha's runs change when its CI moves, so
--- status/check_run/check_suite/workflow_job/workflow_run webhooks flush that
--- sha's rows (workflow_job is the precise signal -- its head_sha names the
--- row directly; workflow_run is the ONLY signal for a startup_failure run,
--- which creates no jobs, check runs, or statuses; repo-wide only when a
--- payload carries no sha) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries.
+-- Per-page snapshots for GET /repos/{owner}/{repo}/actions/runs. Two shapes
+-- share the table: the per-COMMIT listing (?head_sha=..., pr-minder's
+-- hasWorkflowRuns zombie probe) and the repo-wide LISTING filtered by
+-- status/branch (the GHA runner coordinator's queued-backlog poll, the
+-- largest single slice of forwarded traffic there has ever been). Whole-doc
+-- snapshots per exact request, keyed by (owner, repo, head_sha, filters,
+-- per_page, page); doc holds the ALREADY-TRIMMED document as JSON.
+--
+-- head_sha is '' for the listing shape, and filters is '' for the per-commit
+-- shape, so the two never collide and the listing rows are addressable on
+-- their own (head_sha = '') for the repo-wide flush.
+--
+-- Invalidation is what makes the listing safe to store: every run-state
+-- transition in the repo fires status/check_run/check_suite/workflow_job/
+-- workflow_run, and all five flush EVERY listing row for the repo (a run
+-- entering or leaving `queued` changes an answer that names no sha, so the
+-- per-sha flush cannot cover it). The per-commit rows keep the narrower
+-- per-sha flush (workflow_job's head_sha names the row directly;
+-- workflow_run is the ONLY signal for a startup_failure run, which creates
+-- no jobs, check runs, or statuses; repo-wide only when a payload carries no
+-- sha), and repository events flush the whole repo.
+--
+-- expires_at is the backstop for the one transition GitHub never delivers --
+-- run DELETION -- and for missed deliveries. It is deliberately SHORT for
+-- listing rows (minutes, not the per-commit rows' 24h): a phantom queued run
+-- is what a runner coordinator would over-provision against.
 -- owner/repo lowercased like the other cached-route tables; head_sha
 -- lowercased full hex.
 CREATE TABLE workflow_runs_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased
     repo         TEXT NOT NULL,              -- lowercased
-    head_sha     TEXT NOT NULL,              -- lowercased full hex
+    head_sha     TEXT NOT NULL,              -- lowercased full hex, '' for the listing shape
+    filters      TEXT NOT NULL,              -- canonical "k=v&k=v" of the modeled filters, '' for none
     per_page     INTEGER NOT NULL,
     page         INTEGER NOT NULL,
     doc          TEXT NOT NULL,              -- trimmed runs document as JSON
@@ -524,7 +539,7 @@ CREATE TABLE workflow_runs_cache (
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_workflow_runs_cache_key ON workflow_runs_cache (owner, repo, head_sha, per_page, page);
+CREATE UNIQUE INDEX idx_workflow_runs_cache_key ON workflow_runs_cache (owner, repo, head_sha, filters, per_page, page);
 CREATE INDEX idx_workflow_runs_cache_lru ON workflow_runs_cache (last_used_at);
 
 -- Expiring 404 verdicts for GET /repos/{owner}/{repo}/git/commits/{sha}. The

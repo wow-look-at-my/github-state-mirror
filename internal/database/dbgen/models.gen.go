@@ -381,6 +381,7 @@ type WorkflowRunsCache struct {
 	Owner      string
 	Repo       string
 	HeadSha    string
+	Filters    string
 	PerPage    int64
 	Page       int64
 	Doc        string

@@ -17,43 +17,57 @@ import (
 // This file implements the cached workflow-runs route (tier 2 of the cache
 // contract, like respcache.go):
 //
-//	GET /repos/{owner}/{repo}/actions/runs?head_sha=<sha>
+//	GET /repos/{owner}/{repo}/actions/runs[?head_sha=|?status=&branch=]
 //
-// The per-sha runs listing is what both mirror-pointed consumers poll
-// (survey 2026-07-11): pr-minder's hasWorkflowRuns sends
-// `?head_sha=<hex>&per_page=1` and reads ONLY `total_count` (the zombie-PR
-// probe, repeated per bot PR by the reconcile hook's fleet sweep), and
-// required-builds' listWorkflowRuns pages `?head_sha=<hex>&per_page=100&
-// page=N` reading name/status/conclusion/html_url. Between CI events a sha's
-// listing is stable, so the whole trimmed page is snapshotted per exact
-// request (owner, repo, head_sha, per_page, page).
+// Two request shapes, one table, keyed apart by (head_sha, filters):
 //
-// head_sha is REQUIRED for a cacheable shape: an UNFILTERED runs listing
-// churns with every run anywhere in the repo and no consumer sends it, so it
-// is deliberately unmodeled (passthrough) rather than a cache row that would
-// be stale on arrival. Every other filter param (branch, event, status,
-// actor, created, exclude_pull_requests, ...) changes the body's contents
-// and passes through too. Deeper /actions/runs/{id}/... paths never reach
-// this route (the registration is the exact literal) and keep falling to the
-// NotFound passthrough.
+//   - The per-COMMIT listing (`?head_sha=<hex>`), what both mirror-pointed
+//     consumers poll (survey 2026-07-11): pr-minder's hasWorkflowRuns sends
+//     `?head_sha=<hex>&per_page=1` and reads ONLY `total_count` (the
+//     zombie-PR probe, repeated per bot PR by the reconcile hook's fleet
+//     sweep), and required-builds' listWorkflowRuns pages
+//     `?head_sha=<hex>&per_page=100&page=N` reading name/status/conclusion/
+//     html_url.
+//   - The repo-wide LISTING (`?status=queued&per_page=N`, optionally
+//     `branch=`), the GHA runner coordinator's queued-backlog poll.
 //
-// Staleness: run creation and state changes fire check_suite/check_run/
-// workflow_job events within seconds, and the round-2 dispatcher flushes the
-// sha's pages on all of them (workflow_job deliveries flush even when the
-// queued/waiting disposition drops them, since invalidation precedes the
-// disposition logic). Run DELETION emits no webhook at all, so a deleted
-// run's page can only age out via the 24h TTL -- acceptable because both
-// consumers fail safe on a stale answer (pr-minder's zombie revive is
-// additionally guarded by its commit-age deferral, and required-builds
-// re-aggregates on the next event). repository events flush repo-wide like
-// every response cache.
+// Every other filter (event, actor, created, exclude_pull_requests,
+// check_suite_id, ...) is unmodeled and passes through, as do repeated
+// params and out-of-range paging. Deeper /actions/runs/{id}/... paths never
+// reach this route (the registration is the exact literal) and keep falling
+// to the NotFound passthrough.
+//
+// Invalidation is what makes the LISTING safe to store, and it is the whole
+// argument. A queued-backlog answer names no sha, so the per-sha flush that
+// covers the commit shape cannot reach it -- instead every run-state
+// delivery (status/check_run/check_suite/workflow_job/workflow_run) flushes
+// EVERY listing row for the repo. Those deliveries cover both edges of
+// `queued`: a run enters it via check_suite/check_run created +
+// workflow_job queued (invalidation precedes the disposition logic, so the
+// queued/waiting actions onWorkflowJob drops as ignored still flush), and
+// leaves it via the same events' in_progress/completed actions.
+//
+// What the TTL is actually for: run DELETION, which GitHub delivers no
+// webhook for at all, plus any missed delivery. For the commit shape that
+// stays 24h -- both consumers fail safe on a stale answer (pr-minder's
+// zombie revive is additionally guarded by its commit-age deferral, and
+// required-builds re-aggregates on the next event). For the LISTING it is
+// deliberately minutes: a phantom queued run is what a runner coordinator
+// would over-provision against, so the un-delivered case is bounded tight
+// even though it costs a re-fetch on an otherwise-quiet repo.
 
 const (
-	// workflowRunsCacheTTL bounds how long a stale runs page can be served.
-	// CI webhooks flush within seconds of any run change; the TTL is the
-	// backstop for the one signal GitHub never webhooks -- run DELETION --
-	// and for missed deliveries.
+	// workflowRunsCacheTTL bounds how long a stale per-COMMIT runs page can
+	// be served. CI webhooks flush within seconds of any run change; the TTL
+	// is the backstop for the one signal GitHub never webhooks -- run
+	// DELETION -- and for missed deliveries.
 	workflowRunsCacheTTL = 24 * time.Hour
+
+	// workflowRunsListingTTL is the same backstop for the repo-wide LISTING,
+	// held far shorter: this shape answers "what work is queued right now",
+	// and the un-delivered failure (a deleted run, a missed delivery) leaves
+	// a phantom in the queue rather than a stale answer nobody acts on.
+	workflowRunsListingTTL = 5 * time.Minute
 
 	// workflowRunsDefaultPerPage is GitHub's default page size for the runs
 	// listing when the request does not send per_page.
@@ -62,49 +76,95 @@ const (
 	// workflowRunsMaxCachedPage caps which pages are modeled. A sha rarely
 	// has more than a handful of runs; deeper pagination passes through.
 	workflowRunsMaxCachedPage = 10
+
+	// workflowRunsMaxBranchLen bounds the branch filter admitted into a
+	// cache key. Git's own ref limit is far higher, but nothing near this
+	// occurs and an unbounded key component is a cardinality footgun.
+	workflowRunsMaxBranchLen = 255
 )
 
+// workflowRunStatuses is the set of values GitHub documents for the runs
+// listing's `status` filter (it doubles as a conclusion filter). Validating
+// against the closed set keeps the cache key's cardinality bounded and makes
+// an unknown value pass through rather than mint a row nothing will read.
+var workflowRunStatuses = map[string]bool{
+	"completed": true, "action_required": true, "cancelled": true,
+	"failure": true, "neutral": true, "skipped": true, "stale": true,
+	"success": true, "timed_out": true, "in_progress": true, "queued": true,
+	"requested": true, "waiting": true, "pending": true,
+}
+
+// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ''
+// for the repo-wide listing and Filters is '' when no modeled filter was
+// sent; the pair is the row key, and HeadSHA == "" is also what selects the
+// listing TTL and the repo-wide listing flush.
+type workflowRunsShape struct {
+	HeadSHA string
+	Filters string
+	PerPage int
+	Page    int
+}
+
+// listing reports whether this is the repo-wide shape (no head_sha), whose
+// staleness rules differ from a single commit's.
+func (s workflowRunsShape) listing() bool { return s.HeadSHA == "" }
+
 // parseWorkflowRunsShape reports the shape of an /actions/runs query and
-// whether the cache models it: head_sha REQUIRED (non-empty, a full hex
-// object id after lowercasing -- the returned value is the normalized form),
-// plus the standard per_page/page bounds. Unknown params, repeated params,
-// or an absent/malformed head_sha make it non-cacheable.
-func parseWorkflowRunsShape(q url.Values) (headSHA string, perPage, page int, ok bool) {
-	perPage, page = workflowRunsDefaultPerPage, 1
+// whether the cache models it. head_sha (a full hex object id, lowercased),
+// status (one of GitHub's documented values), and branch (a bounded ref
+// name) are modeled, as are the standard per_page/page bounds; the modeled
+// filters are canonicalized into one sorted, escaped key component. Unknown
+// params, repeated params, or a malformed value make it non-cacheable.
+func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
+	shape := workflowRunsShape{PerPage: workflowRunsDefaultPerPage, Page: 1}
+	filters := url.Values{}
 	for key, vals := range q {
 		if len(vals) != 1 {
-			return "", 0, 0, false
+			return workflowRunsShape{}, false
 		}
 		v := vals[0]
 		switch key {
 		case "head_sha":
-			headSHA = strings.ToLower(v)
-			if !isFullHexSHA(headSHA) {
-				return "", 0, 0, false
+			shape.HeadSHA = strings.ToLower(v)
+			if !isFullHexSHA(shape.HeadSHA) {
+				return workflowRunsShape{}, false
 			}
+		case "status":
+			if !workflowRunStatuses[v] {
+				return workflowRunsShape{}, false
+			}
+			filters.Set(key, v)
+		case "branch":
+			if v == "" || len(v) > workflowRunsMaxBranchLen || strings.ContainsFunc(v, isControlRune) {
+				return workflowRunsShape{}, false
+			}
+			filters.Set(key, v)
 		case "per_page":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > 100 {
-				return "", 0, 0, false
+				return workflowRunsShape{}, false
 			}
-			perPage = n
+			shape.PerPage = n
 		case "page":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > workflowRunsMaxCachedPage {
-				return "", 0, 0, false
+				return workflowRunsShape{}, false
 			}
-			page = n
+			shape.Page = n
 		default:
-			return "", 0, 0, false
+			return workflowRunsShape{}, false
 		}
 	}
-	if headSHA == "" {
-		// No head_sha at all: the unfiltered listing, deliberately unmodeled
-		// (see the file comment).
-		return "", 0, 0, false
-	}
-	return headSHA, perPage, page, true
+	// Encode sorts by key, so the canonical form does not depend on map
+	// iteration order or on how the caller ordered its query string.
+	shape.Filters = filters.Encode()
+	return shape, true
 }
+
+// isControlRune reports whether r is a C0/C7F control character -- rejected
+// from a cache key so a caller cannot smuggle a newline or NUL into stored
+// state (the same stance as the repo's control-character CI check).
+func isControlRune(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // cachedWorkflowRuns serves one page of a sha's workflow-runs listing from a
 // stored whole-doc snapshot, fetching and absorbing on a miss. Shapes the
@@ -117,13 +177,13 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
-	headSHA, perPage, page, ok := parseWorkflowRunsShape(r.URL.Query())
+	shape, ok := parseWorkflowRunsShape(r.URL.Query())
 	if !ok {
 		h.passthrough(w, r, PassQuery)
 		return
 	}
 
-	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindWorkflowRuns, owner+"/"+repo+"/actions/runs@"+headSHA); outcome {
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindWorkflowRuns, workflowRunsResourceKey(owner, repo, shape)); outcome {
 	case revealDenied:
 		h.serveDenyVerdict(w, r, verdict, cached)
 		return
@@ -133,8 +193,8 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	if doc, ok, err := h.store.GetCachedWorkflowRuns(r.Context(), owner, repo, headSHA, perPage, page, now); err != nil {
-		slog.Warn("workflow runs cache read failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
+	if doc, ok, err := h.store.GetCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.Filters, shape.PerPage, shape.Page, now); err != nil {
+		slog.Warn("workflow runs cache read failed", "owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "filters", shape.Filters, "error", err)
 	} else if ok {
 		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
@@ -155,12 +215,27 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, headSHA, perPage, page, doc, now, workflowRunsCacheTTL); err != nil {
-		slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
+	ttl := workflowRunsCacheTTL
+	if shape.listing() {
+		ttl = workflowRunsListingTTL
+	}
+	if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.Filters, shape.PerPage, shape.Page, doc, now, ttl); err != nil {
+		slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "filters", shape.Filters, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
+}
+
+// workflowRunsResourceKey names the resource behind a runs request for the
+// reveal layer's deny cache. The shape is part of the key so a denial
+// recorded for one query cannot be replayed for another.
+func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string {
+	key := owner + "/" + repo + "/actions/runs@" + shape.HeadSHA
+	if shape.Filters != "" {
+		key += "?" + shape.Filters
+	}
+	return key
 }
 
 // workflowRunItemJSON is one trimmed entry of the workflow_runs array: the

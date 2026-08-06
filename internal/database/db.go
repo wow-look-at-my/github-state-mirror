@@ -12,6 +12,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 22: workflow_runs_cache gains a filters column -- the
+// repo-wide runs LISTING (?status=&branch=) joins the per-commit shape in
+// the same table, keyed apart by (head_sha, filters) and flushed repo-wide
+// by every run-state delivery.
+//
 // SchemaVersion 21: code_quality_setup_cache -- the cached Code Quality
 // enablement read. Config with no webhook: flushed by a PATCH the mirror
 // proxies and by repository events, otherwise bounded by a short TTL.
@@ -68,7 +73,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 21
+const SchemaVersion = 22
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

@@ -54,6 +54,13 @@ import (
 //     repo-installation answers (a suspended/deleted/re-scoped installation
 //     must not keep serving either).
 //
+// Every run-state delivery above (status/check_run/check_suite/workflow_job/
+// workflow_run) additionally flushes ALL of the repo's sha-less workflow-runs
+// LISTING rows -- the queued-backlog shape. Those name no sha for a per-sha
+// flush to match, and this is the signal they are cached ON, so it runs
+// unconditionally rather than only when a payload identifies a commit (see
+// flushWorkflowRunsForSHA).
+//
 // Git-commit rows are immutable and are deliberately never invalidated; the
 // git-commit 404 MISS markers are instead cleared by the absorb path itself
 // (every real commit upsert un-misses its sha -- ghdata.upsertGitCommit).
@@ -279,12 +286,20 @@ func flush(what, scope string, err error) {
 	}
 }
 
-// flushWorkflowRunsForSHA drops one sha's cached workflow-runs pages,
-// widening to the repo-wide flush when the sha is empty: workflow_runs_cache
-// keys full-hex shas, so an empty sha would exact-match nothing (a silent
-// no-op) while the triggering payload still said SOME run in the repo
-// changed.
+// flushWorkflowRunsForSHA drops the cached workflow-runs answers a run-state
+// delivery makes stale. Two grains, because the table holds two shapes:
+//
+//   - the sha's per-commit pages, widening to the repo-wide flush when the
+//     payload named no sha (workflow_runs_cache keys full-hex shas, so an
+//     empty sha would exact-match nothing -- a silent no-op -- while the
+//     payload still said SOME run in the repo changed);
+//   - EVERY sha-less LISTING row for the repo, unconditionally. A
+//     queued-backlog answer names no sha for the per-sha flush to match, and
+//     the run that just moved is in it (or has just left it), so the listing
+//     rows go on every run-state delivery whether or not the payload
+//     identified a commit.
 func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, owner, repo, sha string) {
+	flush("workflow runs listings", scope, d.store.InvalidateWorkflowRunsListings(ctx, owner, repo))
 	if sha == "" {
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 		return

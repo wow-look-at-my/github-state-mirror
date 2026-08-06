@@ -40,10 +40,10 @@ const (
 	// response is a different shape entirely, not the JSON the route models.
 	PassAccept = "unmodeled-accept"
 	// PassQuery: query parameters the route does not model — the filter/paging
-	// shape guards. The DOMINANT reason in practice and the one that decides
-	// whether a hot uncached route is a caching candidate: a filter that
-	// changes which resources the body describes (?status=queued) is
-	// deliberately unmodeled, while an unmodeled paging shape is a gap.
+	// shape guards. The DOMINANT reason in practice, and always a gap to
+	// close rather than a verdict: a filter that selects a different set
+	// needs its own key and its own invalidation, which is what modeling it
+	// means.
 	PassQuery = "unmodeled-query"
 	// PassPath: the route matched but a path segment is outside the model — a
 	// short (ambiguous) sha, a non-numeric PR number, a cross-fork compare

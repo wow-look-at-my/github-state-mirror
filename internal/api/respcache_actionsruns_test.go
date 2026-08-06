@@ -71,8 +71,13 @@ func newWorkflowRunsUpstream() *workflowRunsUpstream {
 		// total_count deliberately EXCEEDS the page (GitHub's total matching
 		// count vs the page length -- exactly what pr-minder's per_page=1
 		// probe relies on), and the sha echoes the request's filter so
-		// distinct shas produce distinguishable docs.
+		// distinct shas produce distinguishable docs. A request that names
+		// no sha (the repo-wide listing shape) still gets runs carrying a
+		// real one, exactly as GitHub answers it.
 		sha := strings.ToLower(r.URL.Query().Get("head_sha"))
+		if sha == "" {
+			sha = shaTip
+		}
 		servePRJSON(w, map[string]any{
 			"total_count": 3,
 			"workflow_runs": []any{
@@ -199,24 +204,86 @@ func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 	assert.Equal(t, int32(4), atomic.LoadInt32(&u.runsHits))
 }
 
+// TestCachedWorkflowRuns_ListingMissAbsorbHit: the repo-wide listing -- the
+// GHA runner coordinator's `?status=queued&per_page=100` backlog poll, the
+// largest single slice of forwarded traffic there has ever been -- absorbs
+// and serves like every other tier-2 shape. It carries no head_sha, so it is
+// stored under the sha-less listing key.
+func TestCachedWorkflowRuns_ListingMissAbsorbHit(t *testing.T) {
+	router, _, db, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assertNoURLKeys(t, w1.Body.Bytes(), "html_url")
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
+
+	// Stored under the sha-less key -- that is what the repo-wide listing
+	// flush matches on.
+	var headSHA, filters string
+	require.NoError(t, db.QueryRow(
+		`SELECT head_sha, filters FROM workflow_runs_cache`).Scan(&headSHA, &filters))
+	assert.Empty(t, headSHA, "a listing row carries no head_sha")
+	assert.Equal(t, "status=queued", filters)
+}
+
+// TestCachedWorkflowRuns_ListingKeyedPerFilter: each distinct filter set is
+// its own snapshot, and the key is CANONICAL -- the same filters sent in a
+// different query-string order fold onto one row rather than minting a
+// second copy of the same answer.
+func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+
+	targets := []string{
+		"/repos/org1/repo1/actions/runs?status=queued&per_page=100",
+		"/repos/org1/repo1/actions/runs?status=in_progress&per_page=100",
+		"/repos/org1/repo1/actions/runs?status=queued&per_page=100&branch=main",
+		"/repos/org1/repo1/actions/runs?status=queued&per_page=30",
+		"/repos/org1/repo1/actions/runs?per_page=100", // no filter at all
+	}
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code, target)
+		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each filter shape is its own key: %s", target)
+	}
+	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits))
+
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+	}
+	// Reordered filters are the same request, so they hit the row above.
+	w := do(t, router, authedReq("GET",
+		"/repos/org1/repo1/actions/runs?branch=main&per_page=100&status=queued", nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "filter order must not mint a second row")
+	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
+}
+
 // TestCachedWorkflowRuns_ShapePassthroughs: shapes the cache does not model
-// pass through verbatim, uncached -- crucially the UNFILTERED listing (no
-// head_sha: it churns with every run in the repo and is deliberately
-// unmodeled), any other filter param, a malformed/short sha, out-of-range
+// pass through verbatim, uncached -- an unmodeled filter param, a status
+// value outside GitHub's documented set, a branch that would smuggle a
+// control character into a cache key, a malformed/short sha, out-of-range
 // paging, a non-default Accept, and the deeper /actions/runs/{id}/... paths
 // the exact-literal registration never sees.
 func TestCachedWorkflowRuns_ShapePassthroughs(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 
 	for i, target := range []string{
-		"/repos/org1/repo1/actions/runs",                                            // no head_sha: unfiltered
-		"/repos/org1/repo1/actions/runs?per_page=1",                                 // still no head_sha
-		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&branch=main",        // unknown filter param
-		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&event=push",         // unknown filter param
+		"/repos/org1/repo1/actions/runs?event=push",                                 // unmodeled filter param
+		"/repos/org1/repo1/actions/runs?actor=octocat",                              // unmodeled filter param
+		"/repos/org1/repo1/actions/runs?status=bogus",                               // not a documented status
+		"/repos/org1/repo1/actions/runs?branch=main%0Ainjected",                     // control char in a key
 		"/repos/org1/repo1/actions/runs?head_sha=abc123",                            // short sha
 		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=101",       // out of range
 		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&page=11",            // beyond the modeled cap
 		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&head_sha=" + shaMid, // repeated
+		"/repos/org1/repo1/actions/runs?status=queued&status=completed",             // repeated
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
 		require.Equal(t, http.StatusOK, w.Code, target)

@@ -614,7 +614,7 @@ func (q *Queries) DeleteWorkflowRunsCacheByRepo(ctx context.Context, arg DeleteW
 }
 
 const deleteWorkflowRunsCacheForHeadSHA = `-- name: DeleteWorkflowRunsCacheForHeadSHA :exec
-DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ? AND head_sha <> ''
 `
 
 type DeleteWorkflowRunsCacheForHeadSHAParams struct {
@@ -625,9 +625,27 @@ type DeleteWorkflowRunsCacheForHeadSHAParams struct {
 
 // DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
 // the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
-// snapshots survive.
+// snapshots survive, as do the sha-less LISTING rows (below).
 func (q *Queries) DeleteWorkflowRunsCacheForHeadSHA(ctx context.Context, arg DeleteWorkflowRunsCacheForHeadSHAParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
+	return err
+}
+
+const deleteWorkflowRunsCacheListings = `-- name: DeleteWorkflowRunsCacheListings :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ''
+`
+
+type DeleteWorkflowRunsCacheListingsParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteWorkflowRunsCacheListings drops a repo's sha-less LISTING snapshots
+// (every filter and page). A run entering or leaving `queued` changes an
+// answer that names no sha, so the per-sha flush above cannot reach these:
+// every run-state delivery for the repo flushes all of them.
+func (q *Queries) DeleteWorkflowRunsCacheListings(ctx context.Context, arg DeleteWorkflowRunsCacheListingsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheListings, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1191,24 +1209,26 @@ func (q *Queries) GetWorkflowJobsCache(ctx context.Context, arg GetWorkflowJobsC
 
 const getWorkflowRunsCache = `-- name: GetWorkflowRunsCache :one
 
-SELECT id, owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache
-WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?
+SELECT id, owner, repo, head_sha, filters, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache
+WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?
 `
 
 type GetWorkflowRunsCacheParams struct {
 	Owner   string
 	Repo    string
 	HeadSha string
+	Filters string
 	PerPage int64
 	Page    int64
 }
 
-// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=...) ----
+// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs) ----
 func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsCacheParams) (WorkflowRunsCache, error) {
 	row := q.db.QueryRowContext(ctx, getWorkflowRunsCache,
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.Filters,
 		arg.PerPage,
 		arg.Page,
 	)
@@ -1218,6 +1238,7 @@ func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsC
 		&i.Owner,
 		&i.Repo,
 		&i.HeadSha,
+		&i.Filters,
 		&i.PerPage,
 		&i.Page,
 		&i.Doc,
@@ -1761,7 +1782,7 @@ func (q *Queries) TouchWorkflowJobsCache(ctx context.Context, arg TouchWorkflowJ
 
 const touchWorkflowRunsCache = `-- name: TouchWorkflowRunsCache :exec
 UPDATE workflow_runs_cache SET last_used_at = ?
-WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?
+WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?
 `
 
 type TouchWorkflowRunsCacheParams struct {
@@ -1769,6 +1790,7 @@ type TouchWorkflowRunsCacheParams struct {
 	Owner      string
 	Repo       string
 	HeadSha    string
+	Filters    string
 	PerPage    int64
 	Page       int64
 }
@@ -1779,6 +1801,7 @@ func (q *Queries) TouchWorkflowRunsCache(ctx context.Context, arg TouchWorkflowR
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.Filters,
 		arg.PerPage,
 		arg.Page,
 	)
@@ -2415,9 +2438,9 @@ func (q *Queries) UpsertWorkflowJobsCache(ctx context.Context, arg UpsertWorkflo
 }
 
 const upsertWorkflowRunsCache = `-- name: UpsertWorkflowRunsCache :exec
-INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
+INSERT INTO workflow_runs_cache (owner, repo, head_sha, filters, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, head_sha, filters, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -2428,6 +2451,7 @@ type UpsertWorkflowRunsCacheParams struct {
 	Owner      string
 	Repo       string
 	HeadSha    string
+	Filters    string
 	PerPage    int64
 	Page       int64
 	Doc        string
@@ -2441,6 +2465,7 @@ func (q *Queries) UpsertWorkflowRunsCache(ctx context.Context, arg UpsertWorkflo
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.Filters,
 		arg.PerPage,
 		arg.Page,
 		arg.Doc,

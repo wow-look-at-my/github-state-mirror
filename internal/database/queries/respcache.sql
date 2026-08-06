@@ -424,16 +424,16 @@ DELETE FROM branches_list_cache WHERE id IN (
     SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
--- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=...) ----
+-- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs) ----
 
 -- name: GetWorkflowRunsCache :one
 SELECT * FROM workflow_runs_cache
-WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?;
 
 -- name: UpsertWorkflowRunsCache :exec
-INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
+INSERT INTO workflow_runs_cache (owner, repo, head_sha, filters, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, head_sha, filters, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -441,7 +441,7 @@ ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
 
 -- name: TouchWorkflowRunsCache :exec
 UPDATE workflow_runs_cache SET last_used_at = ?
-WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?;
 
 -- DeleteWorkflowRunsCacheByRepo drops a repo's workflow-runs snapshots --
 -- the repository webhook flush and the sha-less payload fallback.
@@ -450,9 +450,16 @@ DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
 
 -- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
 -- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
--- snapshots survive.
+-- snapshots survive, as do the sha-less LISTING rows (below).
 -- name: DeleteWorkflowRunsCacheForHeadSHA :exec
-DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ? AND head_sha <> '';
+
+-- DeleteWorkflowRunsCacheListings drops a repo's sha-less LISTING snapshots
+-- (every filter and page). A run entering or leaving `queued` changes an
+-- answer that names no sha, so the per-sha flush above cannot reach these:
+-- every run-state delivery for the repo flushes all of them.
+-- name: DeleteWorkflowRunsCacheListings :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = '';
 
 -- name: DeleteExpiredWorkflowRunsCache :exec
 DELETE FROM workflow_runs_cache WHERE expires_at <= ?;
