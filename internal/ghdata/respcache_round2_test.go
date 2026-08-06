@@ -21,91 +21,212 @@ func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "Org1", "Repo1", testSHA, "", 30, 1, `{"total_count":1}`, now, time.Hour))
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, `{"total_count":2}`, now, time.Hour))
-	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, `{"total_count":3}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "Org1", "Repo1", testSHA, 30, 1, `{"total_count":1}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, `{"total_count":2}`, now, time.Hour))
+	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, `{"total_count":3}`, now, time.Hour))
 
 	// Keys normalize (URL casing folds) and the pagination shape is part of
 	// the key: each shape is its own row.
-	doc, ok, err := s.GetCachedWorkflowRuns(ctx, "ORG1", "REPO1", testSHA, "", 30, 1, now)
+	doc, ok, err := s.GetCachedWorkflowRuns(ctx, "ORG1", "REPO1", testSHA, 30, 1, now)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, `{"total_count":1}`, doc)
-	doc, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, now)
+	doc, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, now)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, `{"total_count":2}`, doc)
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 100, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 100, 1, now)
 	require.NoError(t, err)
 	assert.False(t, ok, "an unstored pagination shape must miss")
 
 	// An expired row is a miss.
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, now.Add(2*time.Hour))
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 30, 1, now.Add(2*time.Hour))
 	require.NoError(t, err)
 	assert.False(t, ok, "an expired snapshot must miss")
 
 	// Per-sha invalidation drops both of the sha's pages, keeps the other sha.
 	require.NoError(t, s.InvalidateWorkflowRunsForHeadSHA(ctx, "org1", "repo1", testSHA))
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 50, 2, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, now)
 	require.NoError(t, err)
 	assert.False(t, ok, "the sha's pages must be gone")
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, now)
 	require.NoError(t, err)
 	assert.True(t, ok, "another sha's pages must survive a per-sha flush")
 
 	// Repo-wide invalidation drops the rest.
 	require.NoError(t, s.InvalidateWorkflowRunsCache(ctx, "org1", "repo1"))
-	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, "", 30, 1, now)
+	_, ok, err = s.GetCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, now)
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
 
-// TestCachedWorkflowRuns_ListingRowsFlushAlone: the sha-less LISTING rows and
-// the per-commit rows share the table but are invalidated apart. A run-state
-// delivery flushes every listing row for the repo (the queued-backlog answer
-// names no sha for a per-sha flush to match) while another commit's pages
-// survive; the per-sha flush leaves the listings alone.
-func TestCachedWorkflowRuns_ListingRowsFlushAlone(t *testing.T) {
+// TestWorkflowRuns_ApplyMovesOneRun is the property the whole listing design
+// rests on: applying a run's new state UPDATES THAT RUN and leaves every
+// other run answerable. Nothing is cleared, so the filtered view changes by
+// one row.
+func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	now := time.Now()
 
-	seed := func() {
-		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", "", "status=queued", 100, 1, `{"total_count":1}`, now, time.Hour))
-		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", "", "status=in_progress", 100, 1, `{"total_count":2}`, now, time.Hour))
-		require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, `{"total_count":3}`, now, time.Hour))
+	run := func(id int64, status, updated string) WorkflowRun {
+		return WorkflowRun{
+			Owner: "Org1", Repo: "Repo1", RunID: id, Name: "CI",
+			HeadSHA: testSHA, HeadBranch: "main", Status: status,
+			CreatedAt: "2026-07-01T10:00:0" + updated + "Z", UpdatedAt: "2026-07-01T10:00:0" + updated + "Z",
+		}
 	}
-	listingServed := func(filters string) bool {
-		_, ok, err := s.GetCachedWorkflowRuns(ctx, "org1", "repo1", "", filters, 100, 1, now)
+	queued := func() []WorkflowRun {
+		rows, _, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
+		require.NoError(t, err)
+		return rows
+	}
+
+	require.NoError(t, s.ApplyWorkflowRun(ctx, run(1, "queued", "1"), now))
+	require.NoError(t, s.ApplyWorkflowRun(ctx, run(2, "queued", "2"), now))
+	require.NoError(t, s.ApplyWorkflowRun(ctx, run(3, "queued", "3"), now))
+	require.Len(t, queued(), 3, "three runs are queued")
+
+	// One run starts. Only that run leaves the backlog; the other two are
+	// still served from the same rows, never re-fetched.
+	require.NoError(t, s.ApplyWorkflowRun(ctx, run(2, "in_progress", "4"), now))
+	rows := queued()
+	require.Len(t, rows, 2, "exactly one run left the backlog")
+	assert.Equal(t, []int64{3, 1}, []int64{rows[0].RunID, rows[1].RunID}, "newest first, GitHub's ordering")
+
+	running, total, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "in_progress"}, 100, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, total)
+	require.Len(t, running, 1)
+	assert.EqualValues(t, 2, running[0].RunID, "the moved run is now in the in_progress view")
+
+	// Filters compose, and owner/repo keys fold URL casing like every other
+	// table.
+	_, total, err = s.ListWorkflowRuns(ctx, "ORG1", "REPO1", WorkflowRunFilter{Status: "queued", HeadBranch: "main"}, 100, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, total)
+	_, total, err = s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued", HeadBranch: "other"}, 100, 1)
+	require.NoError(t, err)
+	assert.Zero(t, total, "a branch filter that matches nothing is empty, not unfiltered")
+}
+
+// TestWorkflowRuns_OutOfOrderAndJobFloor: an older answer never rolls a run
+// backwards, and a workflow_job delivery -- which carries no run-level status
+// -- may only establish identity and RAISE the floor, never settle a run.
+func TestWorkflowRuns_OutOfOrderAndJobFloor(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	status := func(id int64) (string, string) {
+		rows, _, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{}, 100, 1)
+		require.NoError(t, err)
+		for _, row := range rows {
+			if row.RunID == id {
+				return row.Status, row.Conclusion
+			}
+		}
+		return "", ""
+	}
+
+	require.NoError(t, s.ApplyWorkflowRun(ctx, WorkflowRun{
+		Owner: "org1", Repo: "repo1", RunID: 7, Name: "CI", HeadSHA: testSHA, HeadBranch: "main",
+		Status: "completed", Conclusion: "success",
+		CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:05:00Z",
+	}, now))
+
+	// A REPLAYED older delivery must not resurrect the run.
+	require.NoError(t, s.ApplyWorkflowRun(ctx, WorkflowRun{
+		Owner: "org1", Repo: "repo1", RunID: 7, HeadSHA: testSHA,
+		Status: "in_progress", UpdatedAt: "2026-07-01T10:01:00Z",
+	}, now))
+	st, concl := status(7)
+	assert.Equal(t, "completed", st, "an older answer must never roll a run backwards")
+	assert.Equal(t, "success", concl)
+
+	// A LATE job delivery for the settled run must not resurrect it either:
+	// one job's state says nothing about a run that already concluded.
+	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
+		Owner: "org1", Repo: "repo1", RunID: 7, Status: "in_progress", HeadSHA: testSHA,
+	}, now))
+	st, _ = status(7)
+	assert.Equal(t, "completed", st, "a job delivery must never un-settle its run")
+
+	// For an UNSEEN run, a job delivery is what creates the row -- a queued
+	// job means a queued run, which is exactly what the backlog must show.
+	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
+		Owner: "org1", Repo: "repo1", RunID: 8, RunAttempt: 1, WorkflowName: "CI",
+		Status: "queued", HeadSHA: testSHA, HeadBranch: "main",
+	}, now))
+	st, _ = status(8)
+	assert.Equal(t, "queued", st, "a queued job puts its run in the backlog")
+
+	// ...and a running job raises that run's floor without concluding it.
+	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
+		Owner: "org1", Repo: "repo1", RunID: 8, Status: "in_progress", HeadSHA: testSHA,
+	}, now))
+	st, concl = status(8)
+	assert.Equal(t, "in_progress", st, "a running job proves its run is running")
+	assert.Empty(t, concl, "a job delivery must never conclude a run")
+
+	// A COMPLETED job must not conclude the run either (other jobs may still
+	// be pending) -- only an authoritative writer settles a run.
+	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
+		Owner: "org1", Repo: "repo1", RunID: 8, Status: "completed", HeadSHA: testSHA,
+	}, now))
+	st, concl = status(8)
+	assert.Equal(t, "in_progress", st, "one completed job does not complete the run")
+	assert.Empty(t, concl)
+}
+
+// TestWorkflowRuns_CompletenessMarkerAndReconcile: rows alone never answer a
+// list. The marker is the proof, it expires, `repository` clears it, and the
+// reconcile drops rows a complete answer contradicted.
+func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	complete := func(at time.Time) bool {
+		ok, err := s.WorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", at)
 		require.NoError(t, err)
 		return ok
 	}
-	commitServed := func() bool {
-		_, ok, err := s.GetCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, "", 30, 1, now)
-		require.NoError(t, err)
-		return ok
+
+	assert.False(t, complete(now), "no marker means no completeness proof")
+	require.NoError(t, s.MarkWorkflowRunsListComplete(ctx, "Org1", "Repo1", "status=queued", now, time.Minute))
+	assert.True(t, complete(now), "a fresh marker vouches for the filter")
+	assert.False(t, complete(now.Add(2*time.Minute)), "an expired marker vouches for nothing")
+
+	otherFilter, err := s.WorkflowRunsListComplete(ctx, "org1", "repo1", "status=in_progress", now)
+	require.NoError(t, err)
+	assert.False(t, otherFilter, "a marker vouches for its own filter only")
+
+	// Reconcile: a short page-1 answer that omits a still-matching row proves
+	// that row moved, so it goes.
+	for _, id := range []int64{1, 2, 3} {
+		require.NoError(t, s.ApplyWorkflowRun(ctx, WorkflowRun{
+			Owner: "org1", Repo: "repo1", RunID: id, HeadSHA: testSHA, Status: "queued",
+			CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:00:00Z",
+		}, now))
 	}
+	require.NoError(t, s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, []int64{1, 3}))
+	_, total, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, total, "the omitted run is gone; the listed ones stay")
 
-	// The filters are part of the key: two listings coexist, and neither is
-	// the per-commit row.
-	seed()
-	assert.True(t, listingServed("status=queued"))
-	assert.True(t, listingServed("status=in_progress"))
-	assert.True(t, commitServed())
+	// An EMPTY complete answer means nothing matches any more -- not "keep
+	// everything" (NOT IN () is also a SQLite syntax error, so this is the
+	// sentinel path).
+	require.NoError(t, s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, nil))
+	_, total, err = s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
+	require.NoError(t, err)
+	assert.Zero(t, total, "an empty complete answer empties the filter's set")
 
-	// A per-sha flush must not reach the listings -- they carry head_sha ''
-	// and the flush is an exact match on a full-hex sha.
-	require.NoError(t, s.InvalidateWorkflowRunsForHeadSHA(ctx, "org1", "repo1", testSHA))
-	assert.False(t, commitServed(), "the sha's pages must be gone")
-	assert.True(t, listingServed("status=queued"), "a per-sha flush must not touch the listings")
-
-	// The listing flush is the mirror image: every filter goes, the
-	// per-commit rows stay.
-	seed()
-	require.NoError(t, s.InvalidateWorkflowRunsListings(ctx, "org1", "repo1"))
-	assert.False(t, listingServed("status=queued"), "every listing filter must be flushed")
-	assert.False(t, listingServed("status=in_progress"), "every listing filter must be flushed")
-	assert.True(t, commitServed(), "per-commit pages must survive a listing flush")
+	// repository events drop rows AND proofs together.
+	require.NoError(t, s.MarkWorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", now, time.Minute))
+	require.NoError(t, s.InvalidateWorkflowRunsTruth(ctx, "org1", "repo1"))
+	assert.False(t, complete(now), "a repository event clears the completeness proof")
 }
 
 // TestCachedGitCommitMiss_RoundTrip: put/get one 404 verdict, expiry as a

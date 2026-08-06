@@ -12,10 +12,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 22: workflow_runs_cache gains a filters column -- the
-// repo-wide runs LISTING (?status=&branch=) joins the per-commit shape in
-// the same table, keyed apart by (head_sha, filters) and flushed repo-wide
-// by every run-state delivery.
+// SchemaVersion 22: workflow_runs (global truth for Actions RUN state,
+// maintained per run by workflow_run/workflow_job deliveries) +
+// workflow_runs_list_cache (the completeness proof that lets the repo-wide
+// runs LISTING be rebuilt from those rows). The listing is NOT a snapshot:
+// clearing one on every job delivery would be invalidate-and-refetch.
 //
 // SchemaVersion 21: code_quality_setup_cache -- the cached Code Quality
 // enablement read. Config with no webhook: flushed by a PATCH the mirror

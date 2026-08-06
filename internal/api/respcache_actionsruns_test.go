@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -204,12 +206,12 @@ func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 	assert.Equal(t, int32(4), atomic.LoadInt32(&u.runsHits))
 }
 
-// TestCachedWorkflowRuns_ListingMissAbsorbHit: the repo-wide listing -- the
-// GHA runner coordinator's `?status=queued&per_page=100` backlog poll, the
-// largest single slice of forwarded traffic there has ever been -- absorbs
-// and serves like every other tier-2 shape. It carries no head_sha, so it is
-// stored under the sha-less listing key.
-func TestCachedWorkflowRuns_ListingMissAbsorbHit(t *testing.T) {
+// TestCachedWorkflowRuns_ListingFromTruth: the repo-wide listing -- the GHA
+// runner coordinator's `?status=queued&per_page=100` backlog poll, the
+// largest single slice of forwarded traffic there has ever been -- is served
+// from the workflow_runs TRUTH rows behind the completeness proof, NOT from a
+// snapshot. The short page-1 answer is what sets that proof.
+func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
 
@@ -224,19 +226,49 @@ func TestCachedWorkflowRuns_ListingMissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
 
-	// Stored under the sha-less key -- that is what the repo-wide listing
-	// flush matches on.
-	var headSHA, filters string
-	require.NoError(t, db.QueryRow(
-		`SELECT head_sha, filters FROM workflow_runs_cache`).Scan(&headSHA, &filters))
-	assert.Empty(t, headSHA, "a listing row carries no head_sha")
-	assert.Equal(t, "status=queued", filters)
+	// The listing is state, not a stored document: run rows plus one
+	// completeness marker, and NOTHING in the per-commit snapshot table.
+	var runs, markers, snapshots int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs`).Scan(&runs))
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_list_cache`).Scan(&markers))
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_cache`).Scan(&snapshots))
+	assert.Equal(t, 2, runs, "every listed run entered truth")
+	assert.Equal(t, 1, markers, "the short page-1 answer proved the filter's set complete")
+	assert.Zero(t, snapshots, "the listing must not store a response snapshot")
 }
 
-// TestCachedWorkflowRuns_ListingKeyedPerFilter: each distinct filter set is
-// its own snapshot, and the key is CANONICAL -- the same filters sent in a
-// different query-string order fold onto one row rather than minting a
-// second copy of the same answer.
+// TestCachedWorkflowRuns_ListingTracksAppliedRunState is the whole point of
+// the redesign: after a run's state is APPLIED (as a webhook does), the
+// backlog answer changes by that one run -- served from rows, with no
+// re-fetch and with every other run's answer intact.
+func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
+	router, store, _, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
+
+	// Prime: the fake upstream lists run 9001 completed and 9002 queued.
+	require.Equal(t, http.StatusOK, do(t, router, authedReq("GET", target, nil)).Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
+
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w.Header().Get(cacheHeader))
+	assert.Contains(t, w.Body.String(), `"total_count":1`, "one run is queued")
+	assert.Contains(t, w.Body.String(), `9002`)
+
+	// The queued run starts, exactly as a workflow_run delivery would apply.
+	require.NoError(t, store.ApplyWorkflowRun(context.Background(), ghdata.WorkflowRun{
+		Owner: "org1", Repo: "repo1", RunID: 9002, HeadSHA: shaTip, HeadBranch: "main",
+		Status: "in_progress", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:09:00Z",
+	}, time.Now()))
+
+	w = do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w.Header().Get(cacheHeader), "an applied state change must not force a re-fetch")
+	assert.Contains(t, w.Body.String(), `"total_count":0`, "the started run left the backlog")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "no upstream call: the row moved, the cache did not")
+}
+
+// TestCachedWorkflowRuns_ListingKeyedPerFilter: the completeness proof is per
+// filter set, and its key is CANONICAL -- the same filters sent in a
+// different query-string order are the same request, not a second proof.
 func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 
@@ -244,13 +276,12 @@ func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 		"/repos/org1/repo1/actions/runs?status=queued&per_page=100",
 		"/repos/org1/repo1/actions/runs?status=in_progress&per_page=100",
 		"/repos/org1/repo1/actions/runs?status=queued&per_page=100&branch=main",
-		"/repos/org1/repo1/actions/runs?status=queued&per_page=30",
 		"/repos/org1/repo1/actions/runs?per_page=100", // no filter at all
 	}
 	for _, target := range targets {
 		w := do(t, router, authedReq("GET", target, nil))
 		require.Equal(t, http.StatusOK, w.Code, target)
-		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each filter shape is its own key: %s", target)
+		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each filter needs its own proof: %s", target)
 	}
 	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits))
 
@@ -258,10 +289,10 @@ func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 		w := do(t, router, authedReq("GET", target, nil))
 		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
 	}
-	// Reordered filters are the same request, so they hit the row above.
+	// Reordered filters are the same request, so they hit the proof above.
 	w := do(t, router, authedReq("GET",
 		"/repos/org1/repo1/actions/runs?branch=main&per_page=100&status=queued", nil))
-	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "filter order must not mint a second row")
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "filter order must not mint a second proof")
 	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
 }
 

@@ -376,16 +376,40 @@ type WorkflowJobsCache struct {
 	LastUsedAt string
 }
 
+type WorkflowRun struct {
+	Owner        string
+	Repo         string
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	HeadSha      string
+	HeadBranch   string
+	Status       string
+	Conclusion   string
+	HtmlUrl      string
+	CreatedAt    string
+	UpdatedAt    string
+	RunStartedAt string
+	TouchedAt    string
+}
+
 type WorkflowRunsCache struct {
 	ID         int64
 	Owner      string
 	Repo       string
 	HeadSha    string
-	Filters    string
 	PerPage    int64
 	Page       int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
 	LastUsedAt string
+}
+
+type WorkflowRunsListCache struct {
+	Owner     string
+	Repo      string
+	Filters   string
+	FetchedAt string
+	ExpiresAt string
 }

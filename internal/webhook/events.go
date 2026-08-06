@@ -708,6 +708,80 @@ func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64)
 	return body.WorkflowRun.HeadSHA, body.WorkflowRun.ID
 }
 
+// WorkflowRunPayload is an Actions run's state parsed from a workflow_run
+// webhook -- the authoritative per-run signal, and the only one for a run
+// that creates no jobs at all (a startup_failure, or a run held by a
+// concurrency group). Empty string means the payload did not report the
+// field (Conclusion until completed, RunStartedAt until it starts).
+type WorkflowRunPayload struct {
+	Owner        string
+	Repo         string
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	HeadSHA      string
+	HeadBranch   string
+	Status       string
+	Conclusion   string
+	HTMLURL      string
+	CreatedAt    string
+	UpdatedAt    string
+	RunStartedAt string
+}
+
+// ParseWorkflowRunPayload extracts a run's whole state from a workflow_run
+// webhook. A payload missing the run or repository object is an error: the
+// dispatcher applies this to global truth, and a run with no identity is not
+// something to guess at.
+func ParseWorkflowRunPayload(raw json.RawMessage) (WorkflowRunPayload, error) {
+	var body struct {
+		WorkflowRun *struct {
+			ID           int64   `json:"id"`
+			RunAttempt   int64   `json:"run_attempt"`
+			Name         *string `json:"name"`
+			HeadSHA      string  `json:"head_sha"`
+			HeadBranch   *string `json:"head_branch"`
+			Status       string  `json:"status"`
+			Conclusion   *string `json:"conclusion"`
+			HTMLURL      string  `json:"html_url"`
+			CreatedAt    string  `json:"created_at"`
+			UpdatedAt    string  `json:"updated_at"`
+			RunStartedAt *string `json:"run_started_at"`
+		} `json:"workflow_run"`
+		Repository *struct {
+			Name  string `json:"name"`
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return WorkflowRunPayload{}, fmt.Errorf("parse workflow_run payload: %w", err)
+	}
+	if body.WorkflowRun == nil || body.Repository == nil {
+		return WorkflowRunPayload{}, fmt.Errorf("parse workflow_run payload: missing workflow_run/repository")
+	}
+	r := body.WorkflowRun
+	if r.ID <= 0 || r.Status == "" {
+		return WorkflowRunPayload{}, fmt.Errorf("parse workflow_run payload: run has no id or status")
+	}
+	return WorkflowRunPayload{
+		Owner:        body.Repository.Owner.Login,
+		Repo:         body.Repository.Name,
+		RunID:        r.ID,
+		RunAttempt:   r.RunAttempt,
+		Name:         strOrEmpty(r.Name),
+		HeadSHA:      r.HeadSHA,
+		HeadBranch:   strOrEmpty(r.HeadBranch),
+		Status:       r.Status,
+		Conclusion:   strOrEmpty(r.Conclusion),
+		HTMLURL:      r.HTMLURL,
+		CreatedAt:    r.CreatedAt,
+		UpdatedAt:    r.UpdatedAt,
+		RunStartedAt: strOrEmpty(r.RunStartedAt),
+	}, nil
+}
+
 func strOrEmpty(s *string) string {
 	if s == nil {
 		return ""

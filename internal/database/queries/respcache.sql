@@ -424,16 +424,16 @@ DELETE FROM branches_list_cache WHERE id IN (
     SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
 
--- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs) ----
+-- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=) ----
 
 -- name: GetWorkflowRunsCache :one
 SELECT * FROM workflow_runs_cache
-WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?;
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
 
 -- name: UpsertWorkflowRunsCache :exec
-INSERT INTO workflow_runs_cache (owner, repo, head_sha, filters, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, head_sha, filters, per_page, page) DO UPDATE SET
+INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -441,7 +441,7 @@ ON CONFLICT (owner, repo, head_sha, filters, per_page, page) DO UPDATE SET
 
 -- name: TouchWorkflowRunsCache :exec
 UPDATE workflow_runs_cache SET last_used_at = ?
-WHERE owner = ? AND repo = ? AND head_sha = ? AND filters = ? AND per_page = ? AND page = ?;
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
 
 -- DeleteWorkflowRunsCacheByRepo drops a repo's workflow-runs snapshots --
 -- the repository webhook flush and the sha-less payload fallback.
@@ -450,16 +450,118 @@ DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
 
 -- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
 -- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
--- snapshots survive, as do the sha-less LISTING rows (below).
+-- snapshots survive.
 -- name: DeleteWorkflowRunsCacheForHeadSHA :exec
-DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ? AND head_sha <> '';
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
 
--- DeleteWorkflowRunsCacheListings drops a repo's sha-less LISTING snapshots
--- (every filter and page). A run entering or leaving `queued` changes an
--- answer that names no sha, so the per-sha flush above cannot reach these:
--- every run-state delivery for the repo flushes all of them.
--- name: DeleteWorkflowRunsCacheListings :exec
-DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = '';
+-- ---- workflow_runs (truth) + workflow_runs_list_cache (completeness) ----
+
+-- UpsertWorkflowRunFull records a run from an AUTHORITATIVE source -- a
+-- workflow_run delivery or a REST absorb -- both of which carry the run's own
+-- status and conclusion. Out-of-order tolerant on the run's own updated_at:
+-- an older event never overwrites a newer one (a delivery replay, or a
+-- listing absorbed while a fresher delivery was in flight).
+-- name: UpsertWorkflowRunFull :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt    = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name           = CASE WHEN excluded.name <> '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha       = CASE WHEN excluded.head_sha <> '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch    = CASE WHEN excluded.head_branch <> '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status         = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.status ELSE workflow_runs.status END,
+    conclusion     = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.conclusion ELSE workflow_runs.conclusion END,
+    html_url       = CASE WHEN excluded.html_url <> '' THEN excluded.html_url ELSE workflow_runs.html_url END,
+    created_at     = CASE WHEN excluded.created_at <> '' THEN excluded.created_at ELSE workflow_runs.created_at END,
+    updated_at     = MAX(excluded.updated_at, workflow_runs.updated_at),
+    run_started_at = CASE WHEN excluded.run_started_at <> '' THEN excluded.run_started_at ELSE workflow_runs.run_started_at END,
+    touched_at     = excluded.touched_at;
+
+-- UpsertWorkflowRunFromJob records what a workflow_job delivery can prove
+-- about its RUN. A job payload names the run's identity but carries no
+-- run-level status, so this may only ever CREATE the row or RAISE its status
+-- floor: a job that is in_progress proves the run is in_progress. It must
+-- never conclude a run (the job set may be incomplete) and never regress one
+-- that a workflow_run delivery or a REST absorb already settled -- hence the
+-- status clause fires only when the stored status is 'queued' and the row was
+-- never given a conclusion.
+-- name: UpsertWorkflowRunFromJob :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name        = CASE WHEN workflow_runs.name = '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha    = CASE WHEN workflow_runs.head_sha = '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch = CASE WHEN workflow_runs.head_branch = '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status      = CASE WHEN workflow_runs.status = 'queued' AND workflow_runs.conclusion = '' AND excluded.status = 'in_progress'
+                       THEN 'in_progress' ELSE workflow_runs.status END,
+    touched_at  = excluded.touched_at;
+
+-- ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
+-- own ordering), optionally filtered by status and/or head branch and/or head
+-- sha. An empty filter argument means "no filter on this field".
+-- name: ListWorkflowRuns :many
+SELECT * FROM workflow_runs
+WHERE owner = ? AND repo = ?
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
+ORDER BY created_at DESC, run_id DESC
+LIMIT ? OFFSET ?;
+
+-- CountWorkflowRuns is the same filter without pagination -- the listing's
+-- total_count, exact because the completeness marker vouches for the set.
+-- name: CountWorkflowRuns :one
+SELECT COUNT(*) FROM workflow_runs
+WHERE owner = ? AND repo = ?
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha));
+
+-- DeleteWorkflowRunsNotIn drops the rows a reconciling absorb proved stale:
+-- runs that still MATCH the filter in truth but were absent from a short
+-- page-1 response for that same filter. Their state provably moved and the
+-- response did not say where to, so the row goes and the next read re-absorbs
+-- it. sqlc.slice expands to the run ids the response did contain.
+-- name: DeleteWorkflowRunsNotIn :exec
+DELETE FROM workflow_runs
+WHERE owner = ? AND repo = ?
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
+  AND run_id NOT IN (sqlc.slice(kept));
+
+-- name: DeleteWorkflowRunsByRepo :exec
+DELETE FROM workflow_runs WHERE owner = ? AND repo = ?;
+
+-- PruneSettledWorkflowRuns bounds the table: completed runs the mirror has
+-- not touched within the retention window are dropped. Runs still queued or
+-- in progress are never pruned.
+-- name: PruneSettledWorkflowRuns :exec
+DELETE FROM workflow_runs WHERE status = 'completed' AND touched_at < ?;
+
+-- name: GetWorkflowRunsListMarker :one
+SELECT * FROM workflow_runs_list_cache WHERE owner = ? AND repo = ? AND filters = ?;
+
+-- name: UpsertWorkflowRunsListMarker :exec
+INSERT INTO workflow_runs_list_cache (owner, repo, filters, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, filters) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at;
+
+-- DeleteWorkflowRunsListMarkers clears a repo's completeness proofs. Only
+-- repository events (and the expiry) do this -- a run delivery MAINTAINS the
+-- rows the marker vouches for, so it must never clear the marker.
+-- name: DeleteWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE expires_at <= ?;
 
 -- name: DeleteExpiredWorkflowRunsCache :exec
 DELETE FROM workflow_runs_cache WHERE expires_at <= ?;
