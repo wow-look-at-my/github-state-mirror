@@ -12,8 +12,8 @@ import (
 
 const countWorkflowRuns = `-- name: CountWorkflowRuns :one
 SELECT COUNT(*) FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (?3 = '' OR status = ?3)
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
   AND (?4 = '' OR head_branch = ?4)
   AND (?5 = '' OR head_sha = ?5)
 `
@@ -705,8 +705,8 @@ func (q *Queries) DeleteWorkflowRunsListMarkers(ctx context.Context, arg DeleteW
 
 const deleteWorkflowRunsNotIn = `-- name: DeleteWorkflowRunsNotIn :exec
 DELETE FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (?3 = '' OR status = ?3)
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
   AND (?4 = '' OR head_branch = ?4)
   AND (?5 = '' OR head_sha = ?5)
   AND run_id NOT IN (/*SLICE:kept*/?)
@@ -1368,12 +1368,12 @@ func (q *Queries) GetWorkflowRunsListMarker(ctx context.Context, arg GetWorkflow
 
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
 SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (?5 = '' OR status = ?5)
-  AND (?6 = '' OR head_branch = ?6)
-  AND (?7 = '' OR head_sha = ?7)
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
 ORDER BY created_at DESC, run_id DESC
-LIMIT ? OFFSET ?
+LIMIT ?7 OFFSET ?6
 `
 
 type ListWorkflowRunsParams struct {
@@ -1382,13 +1382,21 @@ type ListWorkflowRunsParams struct {
 	Status     interface{}
 	HeadBranch interface{}
 	HeadSha    interface{}
-	Limit      int64
-	Offset     int64
+	PageOffset int64
+	PageSize   int64
 }
 
 // ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
 // own ordering), optionally filtered by status and/or head branch and/or head
 // sha. An empty filter argument means "no filter on this field".
+// The `status` filter matches a run's status OR its CONCLUSION, because
+// GitHub's own filter does: ?status=success selects completed runs that
+// succeeded, while ?status=queued selects by status. Matching only the status
+// column would answer ?status=success with nothing.
+//
+// Every parameter here is NAMED on purpose: sqlc numbers `?` placeholders and
+// sqlc.arg() references in one shared sequence, so mixing the two silently
+// misaligns the bindings ("missing argument with index N" at run time).
 func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsParams) ([]WorkflowRun, error) {
 	rows, err := q.db.QueryContext(ctx, listWorkflowRuns,
 		arg.Owner,
@@ -1396,8 +1404,8 @@ func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsPara
 		arg.Status,
 		arg.HeadBranch,
 		arg.HeadSha,
-		arg.Limit,
-		arg.Offset,
+		arg.PageOffset,
+		arg.PageSize,
 	)
 	if err != nil {
 		return nil, err

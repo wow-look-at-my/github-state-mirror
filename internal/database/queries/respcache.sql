@@ -504,21 +504,29 @@ ON CONFLICT (owner, repo, run_id) DO UPDATE SET
 -- ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
 -- own ordering), optionally filtered by status and/or head branch and/or head
 -- sha. An empty filter argument means "no filter on this field".
+-- The `status` filter matches a run's status OR its CONCLUSION, because
+-- GitHub's own filter does: ?status=success selects completed runs that
+-- succeeded, while ?status=queued selects by status. Matching only the status
+-- column would answer ?status=success with nothing.
+--
+-- Every parameter here is NAMED on purpose: sqlc numbers `?` placeholders and
+-- sqlc.arg() references in one shared sequence, so mixing the two silently
+-- misaligns the bindings ("missing argument with index N" at run time).
 -- name: ListWorkflowRuns :many
 SELECT * FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
   AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
   AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
 ORDER BY created_at DESC, run_id DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- CountWorkflowRuns is the same filter without pagination -- the listing's
 -- total_count, exact because the completeness marker vouches for the set.
 -- name: CountWorkflowRuns :one
 SELECT COUNT(*) FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
   AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
   AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha));
 
@@ -529,8 +537,8 @@ WHERE owner = ? AND repo = ?
 -- it. sqlc.slice expands to the run ids the response did contain.
 -- name: DeleteWorkflowRunsNotIn :exec
 DELETE FROM workflow_runs
-WHERE owner = ? AND repo = ?
-  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status))
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
   AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
   AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
   AND run_id NOT IN (sqlc.slice(kept));

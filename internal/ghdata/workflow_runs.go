@@ -134,7 +134,7 @@ func (s *Store) ListWorkflowRuns(ctx context.Context, owner, repo string, f Work
 	rows, err := s.q.ListWorkflowRuns(ctx, dbgen.ListWorkflowRunsParams{
 		Owner: ownerKey, Repo: repoKey,
 		Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: shaKey,
-		Limit: int64(perPage), Offset: int64((page - 1) * perPage),
+		PageSize: int64(perPage), PageOffset: int64((page - 1) * perPage),
 	})
 	if err != nil {
 		return nil, 0, err

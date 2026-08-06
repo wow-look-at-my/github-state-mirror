@@ -80,12 +80,27 @@ func newWorkflowRunsUpstream() *workflowRunsUpstream {
 		if sha == "" {
 			sha = shaTip
 		}
+		// GitHub applies ?status= server-side, matching a run's status OR its
+		// conclusion -- so the fake must too, or the absorbed set would not be
+		// the set the filter describes.
+		runs := []any{
+			upstreamWorkflowRun(9001, "CI", sha, "completed", "success", "2026-07-01T10:00:30Z"),
+			upstreamWorkflowRun(9002, nil, sha, "queued", nil, nil),
+		}
+		total := int64(3)
+		if want := r.URL.Query().Get("status"); want != "" {
+			kept := []any{}
+			for _, run := range runs {
+				m := run.(map[string]any)
+				if m["status"] == want || m["conclusion"] == want {
+					kept = append(kept, run)
+				}
+			}
+			runs, total = kept, int64(len(kept))
+		}
 		servePRJSON(w, map[string]any{
-			"total_count": 3,
-			"workflow_runs": []any{
-				upstreamWorkflowRun(9001, "CI", sha, "completed", "success", "2026-07-01T10:00:30Z"),
-				upstreamWorkflowRun(9002, nil, sha, "queued", nil, nil),
-			},
+			"total_count":   total,
+			"workflow_runs": runs,
 		})
 	}
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +247,7 @@ func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs`).Scan(&runs))
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_list_cache`).Scan(&markers))
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_cache`).Scan(&snapshots))
-	assert.Equal(t, 2, runs, "every listed run entered truth")
+	assert.Equal(t, 1, runs, "the one run the filter matched entered truth")
 	assert.Equal(t, 1, markers, "the short page-1 answer proved the filter's set complete")
 	assert.Zero(t, snapshots, "the listing must not store a response snapshot")
 }
