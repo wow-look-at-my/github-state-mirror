@@ -498,17 +498,25 @@ CREATE UNIQUE INDEX idx_branches_list_cache_key ON branches_list_cache (owner, r
 CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
 
 -- Per-page snapshots for GET /repos/{owner}/{repo}/actions/runs?head_sha=...
--- (the workflow-runs listing filtered to one commit -- pr-minder's
+-- (the workflow-runs listing filtered to ONE COMMIT -- pr-minder's
 -- hasWorkflowRuns zombie probe, repeated per bot PR by the reconcile hook's
 -- fleet sweeps). Whole-doc snapshots per exact pagination shape, keyed by
 -- (owner, repo, head_sha, per_page, page); doc holds the ALREADY-TRIMMED
--- document as JSON. A sha's runs change when its CI moves, so
--- status/check_run/check_suite/workflow_job/workflow_run webhooks flush that
--- sha's rows (workflow_job is the precise signal -- its head_sha names the
--- row directly; workflow_run is the ONLY signal for a startup_failure run,
--- which creates no jobs, check runs, or statuses; repo-wide only when a
--- payload carries no sha) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries.
+-- document as JSON.
+--
+-- Only the per-commit shape lives here. The repo-wide listing
+-- (?status=&branch=) is NOT a snapshot at all -- it is rebuilt from the
+-- workflow_runs truth table above, because no per-sha signal can name a
+-- run entering or leaving `queued` and clearing a snapshot on every job
+-- delivery is invalidate-and-refetch, which the cache doctrine forbids.
+--
+-- A sha's runs change when its CI moves, so status/check_run/check_suite/
+-- workflow_job/workflow_run webhooks flush that sha's rows (workflow_job is
+-- the precise signal -- its head_sha names the row directly; workflow_run is
+-- the ONLY signal for a startup_failure run, which creates no jobs, check
+-- runs, or statuses; repo-wide only when a payload carries no sha) and
+-- repository events flush the whole repo; expires_at is the 24h TTL backstop
+-- for missed deliveries and for run DELETION, which GitHub never delivers.
 -- owner/repo lowercased like the other cached-route tables; head_sha
 -- lowercased full hex.
 CREATE TABLE workflow_runs_cache (
@@ -728,6 +736,83 @@ CREATE TABLE workflow_jobs (
 -- completed_at < cutoff) a single indexed scan of only the completed rows.
 CREATE INDEX idx_workflow_jobs_completed_at
     ON workflow_jobs (completed_at) WHERE status = 'completed';
+
+-- GitHub Actions RUN state -- global truth, maintained by webhooks the same
+-- way pull_requests is, and the state the repo-wide runs LISTING
+-- (GET /repos/{owner}/{repo}/actions/runs?status=&branch=) is rebuilt from.
+--
+-- This is a truth table, NOT a response snapshot: a delivery that moves one
+-- run UPDATES THAT RUN'S ROW and leaves every other run served. The listing
+-- is a filtered view over these rows, so a run entering or leaving `queued`
+-- changes the answer without anything being cleared and re-fetched.
+--
+-- Who writes it:
+--   * workflow_run deliveries -- the authoritative whole object (id, name,
+--     status, conclusion, timestamps). The only signal for a run that creates
+--     no jobs at all (a startup_failure, or one gated by a concurrency group).
+--   * workflow_job deliveries -- these name the RUN (run_id, head_sha,
+--     head_branch, workflow_name, run_attempt) but carry no run-level status,
+--     so they may only ever establish a run's identity and RAISE its status
+--     floor (a job in_progress proves its run is in_progress). They must
+--     never conclude a run: the job set may be incomplete.
+--   * REST absorbs -- every /actions/runs response upserts every run it
+--     listed.
+-- check_suite/check_run deliveries carry no run identity at all and
+-- deliberately do not touch this table.
+--
+-- Empty string means "not reported" (the workflow_jobs convention) and is
+-- rendered as JSON null: name, conclusion (until completed), and
+-- run_started_at (until it starts) are exactly that case.
+CREATE TABLE workflow_runs (
+    owner          TEXT NOT NULL,              -- lowercased
+    repo           TEXT NOT NULL,              -- lowercased
+    run_id         INTEGER NOT NULL,
+    run_attempt    INTEGER NOT NULL DEFAULT 0,
+    name           TEXT NOT NULL DEFAULT '',
+    head_sha       TEXT NOT NULL DEFAULT '',   -- lowercased full hex
+    head_branch    TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL,              -- queued | in_progress | completed | waiting | ...
+    conclusion     TEXT NOT NULL DEFAULT '',   -- success | failure | ... (completed only)
+    html_url       TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
+    updated_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
+    run_started_at TEXT NOT NULL DEFAULT '',   -- RFC3339, null while queued
+    touched_at     TEXT NOT NULL,              -- RFC3339: when the mirror last applied anything
+    PRIMARY KEY (owner, repo, run_id)
+);
+
+-- The listing's ordering (newest first, GitHub's own) and the status/branch
+-- filters it selects on.
+CREATE INDEX idx_workflow_runs_listing ON workflow_runs (owner, repo, created_at DESC, run_id DESC);
+CREATE INDEX idx_workflow_runs_head_sha ON workflow_runs (owner, repo, head_sha);
+-- Bounds the table: settled runs are pruned on write once they are older than
+-- the retention window (ghdata.workflowRunRetention).
+CREATE INDEX idx_workflow_runs_settled ON workflow_runs (touched_at) WHERE status = 'completed';
+
+-- The COMPLETENESS PROOF for serving the runs listing out of workflow_runs.
+--
+-- Rows alone cannot answer a list: truth holds the runs the mirror has seen,
+-- which is not the same as every run GitHub would return. One row per
+-- (owner, repo, canonical filter set) records that a page-1 response for
+-- EXACTLY that filter came back SHORT -- fewer items than per_page -- which
+-- proves truth then held every run matching it. Webhooks maintain the rows
+-- from that point on, so the marker is never touched by a run delivery; that
+-- is the whole point (the pulls_list_cache stance).
+--
+-- expires_at is deliberately SHORT. It bounds exactly one hole: a run that
+-- enters the filter's set without any delivery naming it -- which needs the
+-- App subscribed to workflow_run (see docs/webhooks/*), since a run with no
+-- jobs yet emits no workflow_job. A queued-backlog answer is what a runner
+-- coordinator provisions against, so that window is held to minutes.
+-- repository events clear it outright.
+CREATE TABLE workflow_runs_list_cache (
+    owner      TEXT NOT NULL,                  -- lowercased
+    repo       TEXT NOT NULL,                  -- lowercased
+    filters    TEXT NOT NULL,                  -- canonical "k=v&k=v" of the modeled filters, '' = unfiltered
+    fetched_at TEXT NOT NULL,                  -- RFC3339
+    expires_at TEXT NOT NULL,                  -- RFC3339
+    PRIMARY KEY (owner, repo, filters)
+);
 
 -- Snapshots for GET /repos/{owner}/{repo}/git/ref/{ref} -- the ref-to-tip
 -- lookup (heads/<branch>, tags/<tag>). One row per (owner, repo, verbatim

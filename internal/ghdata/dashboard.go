@@ -145,6 +145,53 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 	return s.q.PruneWebhookDeliveries(ctx, webhookDeliveryKeep)
 }
 
+// RequiredWebhookEvents is the set of GitHub App event subscriptions the
+// mirror's correctness depends on, each with what breaks without it. A
+// missing subscription degrades SILENTLY -- the affected caches simply
+// re-fetch forever, or serve within their TTL -- which is exactly the shape
+// of failure that never gets noticed, so the dashboard reports it instead.
+//
+// Keep this list honest: an entry belongs here only when a handler actually
+// consumes the event and something is measurably worse without it.
+var RequiredWebhookEvents = []struct {
+	Event  string
+	Effect string
+}{
+	{"push", "branch tips, pushed commits, and PR merge-field staleness stop updating"},
+	{"pull_request", "PR rows go stale and the open-PR list drifts"},
+	{"check_run", "commit CI rollups and per-sha workflow-run pages go stale"},
+	{"check_suite", "commit CI rollups go stale"},
+	{"status", "commit status rollups go stale"},
+	{"repository", "renames, deletions, and visibility changes are never applied"},
+	{"label", "PR label state drifts"},
+	{"workflow_job", "the workflow_jobs table stops filling and runs entering the backlog are missed"},
+	{"workflow_run", "runs with no jobs yet (startup_failure, concurrency-gated) never reach truth, so the runs listing re-fetches instead of serving from rows"},
+	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
+}
+
+// MissingWebhookSubscriptions reports which RequiredWebhookEvents do not
+// appear in the RETAINED delivery log. That is evidence, not proof: the log
+// is pruned to its most recent rows, so a very rare event could age out. It
+// is still the signal that matters -- a subscription that was never
+// configured never appears at all.
+func (s *Store) MissingWebhookSubscriptions(ctx context.Context) ([]string, error) {
+	seen, err := s.q.DistinctWebhookEventTypes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(seen))
+	for _, e := range seen {
+		have[e] = true
+	}
+	var missing []string
+	for _, req := range RequiredWebhookEvents {
+		if !have[req.Event] {
+			missing = append(missing, req.Event)
+		}
+	}
+	return missing, nil
+}
+
 // RecentWebhookDeliveries returns the most recent webhook deliveries, newest first.
 func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {
 	rows, err := s.q.ListRecentWebhookDeliveries(ctx, limit)

@@ -54,6 +54,13 @@ import (
 //     repo-installation answers (a suspended/deleted/re-scoped installation
 //     must not keep serving either).
 //
+// The repo-wide runs LISTING is deliberately absent from all of the above.
+// It is rebuilt from the workflow_runs TRUTH table, which the workflow_run
+// and workflow_job handlers maintain one run at a time -- so a delivery
+// moving one run leaves every other run's answer served. Only `repository`
+// invalidates it (below), because a rename/delete/visibility change is the
+// one event that makes the rows themselves wrong rather than stale.
+//
 // Git-commit rows are immutable and are deliberately never invalidated; the
 // git-commit 404 MISS markers are instead cleared by the absorb path itself
 // (every real commit upsert un-misses its sha -- ghdata.upsertGitCommit).
@@ -82,6 +89,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pulls list markers", scope, d.store.InvalidatePullsListMarkers(ctx, owner, repo))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullCache(ctx, owner, repo))
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
+		flush("workflow runs truth", scope, d.store.InvalidateWorkflowRunsTruth(ctx, owner, repo))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
 		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
@@ -284,6 +292,14 @@ func flush(what, scope string, err error) {
 // keys full-hex shas, so an empty sha would exact-match nothing (a silent
 // no-op) while the triggering payload still said SOME run in the repo
 // changed.
+//
+// This covers ONLY the per-commit snapshot shape. The repo-wide runs listing
+// is deliberately not invalidated by anything here: it is rebuilt from the
+// workflow_runs truth table, which the workflow_run and workflow_job
+// handlers MAINTAIN per run (onWorkflowRun / ApplyWorkflowRunFromJob). A
+// delivery that moved one run must leave every other run's answer served --
+// clearing the repo's listings on each job event would be
+// invalidate-and-refetch, which is exactly what the cache doctrine forbids.
 func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, owner, repo, sha string) {
 	if sha == "" {
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
