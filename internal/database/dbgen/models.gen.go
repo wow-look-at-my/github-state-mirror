@@ -327,6 +327,16 @@ type RepoInstallationCache struct {
 	LastUsedAt          string
 }
 
+type RestResponse struct {
+	Actor        string
+	ResourceKind string
+	ResourceKey  string
+	StatusCode   int64
+	ContentType  sql.NullString
+	Body         []byte
+	UpdatedAt    string
+}
+
 type SchemaVersion struct {
 	Version int64
 }
