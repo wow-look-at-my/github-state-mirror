@@ -9,6 +9,39 @@ import (
 	"context"
 )
 
+const distinctWebhookEventTypes = `-- name: DistinctWebhookEventTypes :many
+SELECT DISTINCT event_type FROM webhook_deliveries WHERE event_type <> ''
+`
+
+// DistinctWebhookEventTypes lists the event types present in the RETAINED
+// delivery log. The mirror's correctness depends on being subscribed to a
+// specific set of events, and a missing subscription is otherwise invisible:
+// the affected caches just quietly re-fetch forever. This is what turns that
+// silence into something the dashboard can show. Bounded by the log's own
+// prune, so absence means "not in the retained window", not "never sent".
+func (q *Queries) DistinctWebhookEventTypes(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, distinctWebhookEventTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var event_type string
+		if err := rows.Scan(&event_type); err != nil {
+			return nil, err
+		}
+		items = append(items, event_type)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertWebhookDelivery = `-- name: InsertWebhookDelivery :exec
 
 INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail)

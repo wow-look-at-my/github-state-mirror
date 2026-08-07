@@ -111,6 +111,8 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onLabel(ctx, event)
 	case "workflow_job":
 		return d.onWorkflowJob(ctx, event)
+	case "workflow_run":
+		return d.onWorkflowRun(ctx, event)
 	default:
 		return ignored("event type not tracked")
 	}
@@ -131,47 +133,6 @@ func (d *WebhookDispatcher) absorbRepoFromPayload(ctx context.Context, event web
 	if err := d.store.UpsertRepo(ctx, repo); err != nil {
 		slog.Warn("webhook: absorb repository object failed", "repo", event.RepoFullName(), "error", err)
 	}
-}
-
-// onWorkflowJob records GitHub Actions job state in the global workflow_jobs
-// table as it happens. Only in_progress and completed are tracked; the queued
-// and waiting actions are deliberately dropped (high-volume churn with no state
-// worth keeping). Nothing is invalidated on a bad payload -- no cached resource
-// depends on job state.
-func (d *WebhookDispatcher) onWorkflowJob(ctx context.Context, event webhook.Event) outcome {
-	if event.Action != "in_progress" && event.Action != "completed" {
-		return ignored("workflow_job action " + event.Action + " not tracked")
-	}
-	payload, err := webhook.ParseWorkflowJobPayload(event.Raw)
-	if err != nil {
-		slog.Warn("webhook: failed to parse workflow_job payload", "error", err)
-		return ignored("unparseable workflow_job payload")
-	}
-	if err := d.store.RecordWorkflowJob(ctx, ghdata.WorkflowJob{
-		Owner:        payload.Owner,
-		Repo:         payload.Repo,
-		JobID:        payload.JobID,
-		RunID:        payload.RunID,
-		RunAttempt:   payload.RunAttempt,
-		Name:         payload.Name,
-		WorkflowName: payload.WorkflowName,
-		Status:       payload.Status,
-		Conclusion:   payload.Conclusion,
-		HeadSHA:      payload.HeadSHA,
-		HeadBranch:   payload.HeadBranch,
-		HTMLURL:      payload.HTMLURL,
-		StartedAt:    payload.StartedAt,
-		CompletedAt:  payload.CompletedAt,
-		RunnerName:   payload.RunnerName,
-	}); err != nil {
-		slog.Warn("webhook: record workflow job failed", "repo", payload.Owner+"/"+payload.Repo, "job", payload.JobID, "error", err)
-		return errored("record workflow job failed")
-	}
-	detail := fmt.Sprintf("job %q %s", payload.Name, payload.Status)
-	if payload.Conclusion != "" {
-		detail += " (" + payload.Conclusion + ")"
-	}
-	return applied(detail)
 }
 
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {

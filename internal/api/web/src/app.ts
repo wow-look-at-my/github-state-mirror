@@ -13,7 +13,7 @@
 
 import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
-    WebhookDelivery, WebhooksResponse, BrowseRepo, BrowsePR, BrowseResponse,
+    WebhookDelivery, WebhooksResponse, MissingSubscription, BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
@@ -512,6 +512,9 @@ async function loadWebhooks(silent = false): Promise<void> {
         ? "Most recent " + deliveries.length + " webhook deliver" + (deliveries.length === 1 ? "y" : "ies") + ", newest first"
         : "Webhook deliveries and whether each one updated the cache";
 
+    const missing = data.missing_subscriptions ?? [];
+    if (missing.length > 0) body.appendChild(missingSubscriptionsBanner(missing));
+
     if (deliveries.length === 0) {
         body.appendChild(el("div", { class: "empty" },
             el("p", { text: "No webhook deliveries recorded yet." }),
@@ -529,6 +532,28 @@ const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
     ["ignored", "event/action not tracked"],
     ["error", "internal error (GitHub retries)"],
 ];
+
+// A missing event subscription degrades the mirror SILENTLY -- the caches
+// that depend on it just re-fetch forever -- so it gets a banner naming the
+// event and what it costs, not a log line nobody reads.
+function missingSubscriptionsBanner(missing: MissingSubscription[]): HTMLElement {
+    const banner = el("div", { class: "error-banner" },
+        el("strong", { text: "Missing webhook subscriptions" }),
+        el("p", {
+            class: "sub",
+            text: "These events have not appeared in the retained delivery log. Subscribe the GitHub App to them in its settings; until then the state below is degraded and nothing else will say so.",
+        }),
+    );
+    const list = el("ul", { class: "wh-missing" });
+    for (const m of missing) {
+        list.appendChild(el("li", {},
+            el("code", { text: m.event }),
+            el("span", { text: " — " + m.effect }),
+        ));
+    }
+    banner.appendChild(list);
+    return banner;
+}
 
 function webhookLegend(): HTMLElement {
     const legend = el("div", { class: "wh-legend" });
