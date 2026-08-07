@@ -352,30 +352,6 @@ func (d *dashboard) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-type webhooksResponse struct {
-	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`
-}
-
-// handleWebhooks returns the recent webhook deliveries and their dispositions.
-// The delivery log is global (it spans every repo/tenant), so — unlike the
-// per-scope cache stats — it is restricted to admins, consistent with the
-// admin-only "all scopes" view.
-func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
-	if _, ok := d.requireAdmin(w, r); !ok {
-		return
-	}
-	deliveries, err := d.store.RecentWebhookDeliveries(r.Context(), 100)
-	if err != nil {
-		slog.Warn("list webhook deliveries failed", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if deliveries == nil {
-		deliveries = []ghdata.WebhookDelivery{}
-	}
-	writeJSON(w, webhooksResponse{Deliveries: deliveries})
-}
-
 type jobsResponse struct {
 	Jobs []ghdata.WorkflowJob `json:"jobs"`
 }

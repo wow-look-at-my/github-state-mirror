@@ -18,12 +18,12 @@ import (
 // Passthrough DEBOUNCING — request coalescing for the reads the cache
 // deliberately cannot model (operator directive, 2026-07-26).
 //
-// These routes are UNCACHEABLE, and for good reasons (see the passthrough
-// reason vocabulary in requestlog.go): a filter like ?status=queued describes
-// a set that churns with every run in the repo, so no snapshot of it is
-// honest. But the callers poll them in tight fleet-wide sweeps, and N
-// identical polls arriving inside a few seconds do not need N round trips to
-// GitHub.
+// These are the reads NO cached route models YET (see the passthrough reason
+// vocabulary in requestlog.go). Every one of them is unfinished work rather
+// than a settled verdict, and coalescing is not a substitute for modeling it
+// -- the route groups' debounced/upstream_saved pair exists to say so out
+// loud. But while a shape is still forwarding, N identical polls arriving
+// inside a few seconds do not need N round trips to GitHub.
 //
 // So an eligible passthrough is HELD for a short window (default 5s) instead
 // of being forwarded immediately. Every identical request arriving during the
