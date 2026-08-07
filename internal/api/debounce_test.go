@@ -421,7 +421,7 @@ func TestDebounce_ThroughRouterRecordsStats(t *testing.T) {
 	s := newFullTestStackDebounced(t, svc, u.handler(), 100*time.Millisecond)
 
 	const n = 4
-	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
+	target := "/repos/org1/repo1/actions/runs?event=push&per_page=100"
 	recs := fireConcurrent(s.router, n, func(int) *http.Request { return authedReq("GET", target, nil) })
 	for i, w := range recs {
 		require.Equal(t, http.StatusOK, w.Code, "waiter %d", i)

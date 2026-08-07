@@ -72,9 +72,9 @@ checklist and the list of files a new route touches.
 
 The checklist is carried WITH the data on purpose: the output has to be
 actionable on its own rather than a pile of numbers. It mirrors CLAUDE.md's
-cache-contract section, including the case that matters most — when the honest
-answer is "don't cache it", because the response describes a set that changes
-continuously and no webhook names the change.
+cache-contract section, and it offers no "don't cache it" outcome: a route that
+still forwards is unfinished work, and a resource no delivery names today is a
+missing invalidation signal to go add, not a verdict to record.
 
 The JSON payload carries the same structure alongside the Markdown, so the
 endpoint is usable programmatically.

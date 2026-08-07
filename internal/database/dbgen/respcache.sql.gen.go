@@ -7,7 +7,39 @@ package dbgen
 
 import (
 	"context"
+	"strings"
 )
+
+const countWorkflowRuns = `-- name: CountWorkflowRuns :one
+SELECT COUNT(*) FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+`
+
+type CountWorkflowRunsParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+}
+
+// CountWorkflowRuns is the same filter without pagination -- the listing's
+// total_count, exact because the completeness marker vouches for the set.
+func (q *Queries) CountWorkflowRuns(ctx context.Context, arg CountWorkflowRunsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countWorkflowRuns,
+		arg.Owner,
+		arg.Repo,
+		arg.Status,
+		arg.HeadBranch,
+		arg.HeadSha,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const deleteBranchesListCacheByRepo = `-- name: DeleteBranchesListCacheByRepo :exec
 DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?
@@ -384,6 +416,15 @@ func (q *Queries) DeleteExpiredWorkflowRunsCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredWorkflowRunsListMarkers = `-- name: DeleteExpiredWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowRunsListMarkers(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowRunsListMarkers, expiresAt)
+	return err
+}
+
 const deleteGitCommitMiss = `-- name: DeleteGitCommitMiss :exec
 DELETE FROM git_commit_miss_cache WHERE owner = ? AND repo = ? AND sha = ?
 `
@@ -597,6 +638,20 @@ func (q *Queries) DeleteWorkflowJobsCacheForRun(ctx context.Context, arg DeleteW
 	return err
 }
 
+const deleteWorkflowRunsByRepo = `-- name: DeleteWorkflowRunsByRepo :exec
+DELETE FROM workflow_runs WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowRunsByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteWorkflowRunsByRepo(ctx context.Context, arg DeleteWorkflowRunsByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteWorkflowRunsCacheByRepo = `-- name: DeleteWorkflowRunsCacheByRepo :exec
 DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?
 `
@@ -628,6 +683,66 @@ type DeleteWorkflowRunsCacheForHeadSHAParams struct {
 // snapshots survive.
 func (q *Queries) DeleteWorkflowRunsCacheForHeadSHA(ctx context.Context, arg DeleteWorkflowRunsCacheForHeadSHAParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
+	return err
+}
+
+const deleteWorkflowRunsListMarkers = `-- name: DeleteWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowRunsListMarkersParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteWorkflowRunsListMarkers clears a repo's completeness proofs. Only
+// repository events (and the expiry) do this -- a run delivery MAINTAINS the
+// rows the marker vouches for, so it must never clear the marker.
+func (q *Queries) DeleteWorkflowRunsListMarkers(ctx context.Context, arg DeleteWorkflowRunsListMarkersParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsListMarkers, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteWorkflowRunsNotIn = `-- name: DeleteWorkflowRunsNotIn :exec
+DELETE FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+  AND run_id NOT IN (/*SLICE:kept*/?)
+`
+
+type DeleteWorkflowRunsNotInParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+	Kept       []int64
+}
+
+// DeleteWorkflowRunsNotIn drops the rows a reconciling absorb proved stale:
+// runs that still MATCH the filter in truth but were absent from a short
+// page-1 response for that same filter. Their state provably moved and the
+// response did not say where to, so the row goes and the next read re-absorbs
+// it. sqlc.slice expands to the run ids the response did contain.
+func (q *Queries) DeleteWorkflowRunsNotIn(ctx context.Context, arg DeleteWorkflowRunsNotInParams) error {
+	query := deleteWorkflowRunsNotIn
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Owner)
+	queryParams = append(queryParams, arg.Repo)
+	queryParams = append(queryParams, arg.Status)
+	queryParams = append(queryParams, arg.HeadBranch)
+	queryParams = append(queryParams, arg.HeadSha)
+	if len(arg.Kept) > 0 {
+		for _, v := range arg.Kept {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:kept*/?", strings.Repeat(",?", len(arg.Kept))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:kept*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }
 
@@ -1203,7 +1318,7 @@ type GetWorkflowRunsCacheParams struct {
 	Page    int64
 }
 
-// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=...) ----
+// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=) ----
 func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsCacheParams) (WorkflowRunsCache, error) {
 	row := q.db.QueryRowContext(ctx, getWorkflowRunsCache,
 		arg.Owner,
@@ -1226,6 +1341,106 @@ func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsC
 		&i.LastUsedAt,
 	)
 	return i, err
+}
+
+const getWorkflowRunsListMarker = `-- name: GetWorkflowRunsListMarker :one
+SELECT owner, repo, filters, fetched_at, expires_at FROM workflow_runs_list_cache WHERE owner = ? AND repo = ? AND filters = ?
+`
+
+type GetWorkflowRunsListMarkerParams struct {
+	Owner   string
+	Repo    string
+	Filters string
+}
+
+func (q *Queries) GetWorkflowRunsListMarker(ctx context.Context, arg GetWorkflowRunsListMarkerParams) (WorkflowRunsListCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowRunsListMarker, arg.Owner, arg.Repo, arg.Filters)
+	var i WorkflowRunsListCache
+	err := row.Scan(
+		&i.Owner,
+		&i.Repo,
+		&i.Filters,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const listWorkflowRuns = `-- name: ListWorkflowRuns :many
+SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+ORDER BY created_at DESC, run_id DESC
+LIMIT ?7 OFFSET ?6
+`
+
+type ListWorkflowRunsParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+	PageOffset int64
+	PageSize   int64
+}
+
+// ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
+// own ordering), optionally filtered by status and/or head branch and/or head
+// sha. An empty filter argument means "no filter on this field".
+// The `status` filter matches a run's status OR its CONCLUSION, because
+// GitHub's own filter does: ?status=success selects completed runs that
+// succeeded, while ?status=queued selects by status. Matching only the status
+// column would answer ?status=success with nothing.
+//
+// Every parameter here is NAMED on purpose: sqlc numbers `?` placeholders and
+// sqlc.arg() references in one shared sequence, so mixing the two silently
+// misaligns the bindings ("missing argument with index N" at run time).
+func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsParams) ([]WorkflowRun, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowRuns,
+		arg.Owner,
+		arg.Repo,
+		arg.Status,
+		arg.HeadBranch,
+		arg.HeadSha,
+		arg.PageOffset,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRun
+	for rows.Next() {
+		var i WorkflowRun
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.RunID,
+			&i.RunAttempt,
+			&i.Name,
+			&i.HeadSha,
+			&i.HeadBranch,
+			&i.Status,
+			&i.Conclusion,
+			&i.HtmlUrl,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RunStartedAt,
+			&i.TouchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneBranchesListCacheLRU = `-- name: PruneBranchesListCacheLRU :exec
@@ -1393,6 +1608,18 @@ DELETE FROM repo_installation_cache WHERE id IN (
 
 func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneRepoInstallationCacheLRU, offset)
+	return err
+}
+
+const pruneSettledWorkflowRuns = `-- name: PruneSettledWorkflowRuns :exec
+DELETE FROM workflow_runs WHERE status = 'completed' AND touched_at < ?
+`
+
+// PruneSettledWorkflowRuns bounds the table: completed runs the mirror has
+// not touched within the retention window are dropped. Runs still queued or
+// in progress are never pruned.
+func (q *Queries) PruneSettledWorkflowRuns(ctx context.Context, touchedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneSettledWorkflowRuns, touchedAt)
 	return err
 }
 
@@ -2414,6 +2641,119 @@ func (q *Queries) UpsertWorkflowJobsCache(ctx context.Context, arg UpsertWorkflo
 	return err
 }
 
+const upsertWorkflowRunFromJob = `-- name: UpsertWorkflowRunFromJob :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name        = CASE WHEN workflow_runs.name = '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha    = CASE WHEN workflow_runs.head_sha = '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch = CASE WHEN workflow_runs.head_branch = '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status      = CASE WHEN workflow_runs.status = 'queued' AND workflow_runs.conclusion = '' AND excluded.status = 'in_progress'
+                       THEN 'in_progress' ELSE workflow_runs.status END,
+    touched_at  = excluded.touched_at
+`
+
+type UpsertWorkflowRunFromJobParams struct {
+	Owner      string
+	Repo       string
+	RunID      int64
+	RunAttempt int64
+	Name       string
+	HeadSha    string
+	HeadBranch string
+	Status     string
+	TouchedAt  string
+}
+
+// UpsertWorkflowRunFromJob records what a workflow_job delivery can prove
+// about its RUN. A job payload names the run's identity but carries no
+// run-level status, so this may only ever CREATE the row or RAISE its status
+// floor: a job that is in_progress proves the run is in_progress. It must
+// never conclude a run (the job set may be incomplete) and never regress one
+// that a workflow_run delivery or a REST absorb already settled -- hence the
+// status clause fires only when the stored status is 'queued' and the row was
+// never given a conclusion.
+func (q *Queries) UpsertWorkflowRunFromJob(ctx context.Context, arg UpsertWorkflowRunFromJobParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunFromJob,
+		arg.Owner,
+		arg.Repo,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.Name,
+		arg.HeadSha,
+		arg.HeadBranch,
+		arg.Status,
+		arg.TouchedAt,
+	)
+	return err
+}
+
+const upsertWorkflowRunFull = `-- name: UpsertWorkflowRunFull :exec
+
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt    = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name           = CASE WHEN excluded.name <> '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha       = CASE WHEN excluded.head_sha <> '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch    = CASE WHEN excluded.head_branch <> '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status         = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.status ELSE workflow_runs.status END,
+    conclusion     = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.conclusion ELSE workflow_runs.conclusion END,
+    html_url       = CASE WHEN excluded.html_url <> '' THEN excluded.html_url ELSE workflow_runs.html_url END,
+    created_at     = CASE WHEN excluded.created_at <> '' THEN excluded.created_at ELSE workflow_runs.created_at END,
+    updated_at     = MAX(excluded.updated_at, workflow_runs.updated_at),
+    run_started_at = CASE WHEN excluded.run_started_at <> '' THEN excluded.run_started_at ELSE workflow_runs.run_started_at END,
+    touched_at     = excluded.touched_at
+`
+
+type UpsertWorkflowRunFullParams struct {
+	Owner        string
+	Repo         string
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	HeadSha      string
+	HeadBranch   string
+	Status       string
+	Conclusion   string
+	HtmlUrl      string
+	CreatedAt    string
+	UpdatedAt    string
+	RunStartedAt string
+	TouchedAt    string
+}
+
+// ---- workflow_runs (truth) + workflow_runs_list_cache (completeness) ----
+// UpsertWorkflowRunFull records a run from an AUTHORITATIVE source -- a
+// workflow_run delivery or a REST absorb -- both of which carry the run's own
+// status and conclusion. Out-of-order tolerant on the run's own updated_at:
+// an older event never overwrites a newer one (a delivery replay, or a
+// listing absorbed while a fresher delivery was in flight).
+func (q *Queries) UpsertWorkflowRunFull(ctx context.Context, arg UpsertWorkflowRunFullParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunFull,
+		arg.Owner,
+		arg.Repo,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.Name,
+		arg.HeadSha,
+		arg.HeadBranch,
+		arg.Status,
+		arg.Conclusion,
+		arg.HtmlUrl,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.RunStartedAt,
+		arg.TouchedAt,
+	)
+	return err
+}
+
 const upsertWorkflowRunsCache = `-- name: UpsertWorkflowRunsCache :exec
 INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2447,6 +2787,33 @@ func (q *Queries) UpsertWorkflowRunsCache(ctx context.Context, arg UpsertWorkflo
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertWorkflowRunsListMarker = `-- name: UpsertWorkflowRunsListMarker :exec
+INSERT INTO workflow_runs_list_cache (owner, repo, filters, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, filters) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at
+`
+
+type UpsertWorkflowRunsListMarkerParams struct {
+	Owner     string
+	Repo      string
+	Filters   string
+	FetchedAt string
+	ExpiresAt string
+}
+
+func (q *Queries) UpsertWorkflowRunsListMarker(ctx context.Context, arg UpsertWorkflowRunsListMarkerParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunsListMarker,
+		arg.Owner,
+		arg.Repo,
+		arg.Filters,
+		arg.FetchedAt,
+		arg.ExpiresAt,
 	)
 	return err
 }
