@@ -249,8 +249,9 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"5. **Explicit invalidation + TTL + pruning.** Name the webhook event that moves this resource " +
 	"and flush on it in `internal/sync/webhook.go` (per-resource where the payload names it, " +
 	"repo-wide otherwise), plus a TTL backstop for missed deliveries and LRU pruning against " +
-	"`ghdata.CacheMaxRows`. A route with no invalidation signal is not a candidate — say so instead " +
-	"of shipping it.\n" +
+	"`ghdata.CacheMaxRows`. When no delivery names this resource today, the MISSING SIGNAL is the " +
+	"thing to fix — subscribe the App to the event, widen an existing flush, or absorb only the " +
+	"answers some signal does cover. Leaving the route forwarding is not one of the options.\n" +
 	"6. **Only cacheable answers absorb.** A 200 whose body the model can hold, plus any " +
 	"authoritative verdict worth caching (a 404 \"absent\" answer often is). Transient failures " +
 	"(5xx, 429) relay unstored, every time.\n\n" +
@@ -274,11 +275,7 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"- `internal/sync/webhook.go` — the invalidation, wired into `invalidateResponseCaches` / " +
 	"`invalidateForPush`.\n" +
 	"- Tests: a hit/miss pair, the shape-guard passthroughs, the invalidation, and the no-URL-keys " +
-	"assertion. Then `npm run build && go-toolchain`.\n\n" +
-	"### When the answer is \"don't cache it\"\n\n" +
-	"A route whose response describes a set that changes continuously and has no webhook naming the " +
-	"change (a queued-work backlog, a live runner roster) is not a caching gap — it is the model " +
-	"working. Record that verdict in CLAUDE.md rather than shipping a TTL that serves wrong answers.\n"
+	"assertion. Then `npm run build && go-toolchain`.\n"
 
 // handleBrief renders the implementation brief (brief.go): every uncached
 // route joined to its captured request/response shape, plus the tier-2

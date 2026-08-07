@@ -95,13 +95,11 @@ func TestRequestLog_PassQuerySamplePrefersNonEmpty(t *testing.T) {
 }
 
 // TestPassthroughReasons_EndToEnd drives the REAL production traffic shapes
-// through the router and asserts each uncached forward records WHY. The
-// motivating case is first: the GHA runner coordinator's queued-backlog
-// reconciliation polls `?status=<s>&per_page=100`, which is 80%+ of the
-// actions/runs route's traffic and is deliberately unmodeled (an unfiltered
-// listing churns with every run in the repo). Before this, the dashboard
-// showed only "1140 passthrough" on a route that also hits 2207 times, and
-// telling the two apart meant reading the caller's source.
+// through the router and asserts each uncached forward records WHY. Before
+// this, the dashboard showed only "1140 passthrough" on a route that also
+// hits 2207 times, and telling the two apart meant reading the caller's
+// source -- which is how the runs route's dominant shape stayed unmodeled
+// for as long as it did.
 func TestPassthroughReasons_EndToEnd(t *testing.T) {
 	svc := configuredAuth(t)
 	u := newWorkflowRunsUpstream()
@@ -115,10 +113,10 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 		wantReason string
 		wantQuery  string
 	}{{
-		name:       "coordinator queued-backlog poll: an unmodeled filter",
-		target:     "/repos/org1/repo1/actions/runs?status=queued&per_page=100",
+		name:       "runs listing filtered by an unmodeled param",
+		target:     "/repos/org1/repo1/actions/runs?event=push&per_page=100",
 		wantReason: PassQuery,
-		wantQuery:  "per_page,status",
+		wantQuery:  "event,per_page",
 	}, {
 		name:       "non-default Accept",
 		target:     "/repos/org1/repo1/actions/runs?head_sha=" + shaTip,

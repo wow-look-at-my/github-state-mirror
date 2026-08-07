@@ -72,8 +72,14 @@ export interface WebhookDelivery {
     detail: string;
 }
 
+export interface MissingSubscription {
+    event: string;
+    effect: string;
+}
+
 export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
+    missing_subscriptions?: MissingSubscription[] | null;
 }
 
 // ---- request activity (cache hit/miss/passthrough/write) ----
