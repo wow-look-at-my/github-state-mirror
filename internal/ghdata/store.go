@@ -27,6 +27,14 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, q: dbgen.New(db)}
 }
 
+// Ping reports whether the cache database still answers. The update-liveness
+// probe uses it: a process serving HTTP over a dead SQLite file is exactly the
+// state a post-update health gate exists to catch, and an HTTP 200 alone
+// cannot see it.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // GrantTTL is how long an access grant stays valid without being re-earned.
 // Long enough that steady callers never notice (every list-sync and every
 // probe 2xx renews), short enough that revoked access ages out within a day

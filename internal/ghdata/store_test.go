@@ -533,3 +533,18 @@ func TestPRRowFresh(t *testing.T) {
 	assert.False(t, PRRowFresh(dbgen.PullRequest{}, now), "an empty touched_at is stale (fail to a re-fetch)")
 	assert.False(t, PRRowFresh(dbgen.PullRequest{TouchedAt: "garbage"}, now))
 }
+
+// Ping is what the update-liveness probe asserts beyond "the process answered
+// HTTP": a server still serving over a dead database is exactly the state a
+// post-update health gate exists to catch, and it has to fail loudly there.
+func TestPingFailsOnAClosedDatabase(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.Open(filepath.Join(dir, "test.db"))
+	require.Nil(t, err)
+	store := NewStore(db)
+
+	require.Nil(t, store.Ping(context.Background()))
+
+	require.Nil(t, db.Close())
+	assert.Error(t, store.Ping(context.Background()))
+}
