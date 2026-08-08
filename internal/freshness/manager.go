@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
@@ -21,6 +22,10 @@ type Manager struct {
 	// DB closes (a detached fetch outliving main's `defer db.Close()` would
 	// write to a closed DB).
 	inflight sync.WaitGroup
+	// inflightCount mirrors the WaitGroup for readers that must not block. A
+	// WaitGroup can only be waited on, and Busy() is asked by a probe that has
+	// to answer now.
+	inflightCount atomic.Int64
 }
 
 func NewManager(store *Store) *Manager {
@@ -29,6 +34,17 @@ func NewManager(store *Store) *Manager {
 		policies: make(map[string]Policy),
 		fetchers: make(map[string]Fetcher),
 	}
+}
+
+// Busy reports whether any detached fetch is running right now, without waiting
+// for one. Drain is the shutdown path and blocks by design; this is for callers
+// that must answer immediately, such as the pre-update probe deciding whether
+// replacing the container would abandon a fetch mid-flight.
+func (m *Manager) Busy() bool {
+	if m == nil {
+		return false
+	}
+	return m.inflightCount.Load() > 0
 }
 
 // Drain blocks until every in-flight fetch (and its metadata writes) has
@@ -200,7 +216,11 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	// for in-flight fetches via Drain (the inflight WaitGroup) instead of
 	// canceling them.
 	m.inflight.Add(1)
-	defer m.inflight.Done()
+	m.inflightCount.Add(1)
+	defer func() {
+		m.inflightCount.Add(-1)
+		m.inflight.Done()
+	}()
 	persistCtx := context.WithoutCancel(ctx)
 	fetchCtx, cancelFetch := context.WithTimeout(persistCtx, fetchSafetyTimeout)
 	defer cancelFetch()
