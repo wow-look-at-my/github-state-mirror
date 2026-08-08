@@ -243,6 +243,15 @@ func NewRouter(
 	// timeline ring (the dashboard's "Timeline" chart).
 	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline), notifier))
 
+	// The update-liveness contract docker-updater probes on the container's own
+	// port, reading only the status code. Outside requireAuth deliberately: the
+	// prober carries no bearer token, and an unregistered path here does not
+	// 404 -- it falls through to the GitHub passthrough, which answers 401 for a
+	// tokenless request. The contract reads any non-404 as "implemented", so
+	// leaving these unregistered reports the container as implemented and
+	// permanently unhealthy rather than unconfigured.
+	registerUpdateChecks(r, store, mgr)
+
 	// GitHub OAuth relays for browser clients. A purely client-side app cannot
 	// POST to github.com's login endpoints directly (they send no CORS
 	// headers); the mirror relays them with correct CORS. They carry no bearer
