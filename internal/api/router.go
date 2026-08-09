@@ -386,6 +386,18 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
 		r.Patch("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
 
+		// Cached single-label read (respcache_labels.go): the label
+		// DEFINITION pr-minder re-reads per repo per sweep. `label`
+		// deliveries flush the repo's rows -- the grain is the repo because
+		// a rename moves two names at once -- and the PATCH/DELETE on this
+		// same path are registered purely to flush before proxying, so a
+		// caller cannot read back its own stale write in the seconds before
+		// the delivery lands. A label name carrying a slash matches no route
+		// segment and keeps passing through; so does the labels LIST.
+		r.Get("/repos/{owner}/{repo}/labels/{name}", h.cachedLabel)
+		r.Patch("/repos/{owner}/{repo}/labels/{name}", h.writeLabel)
+		r.Delete("/repos/{owner}/{repo}/labels/{name}", h.writeLabel)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the
@@ -402,6 +414,32 @@ func NewRouter(
 		// push/repository webhooks flush repo-wide. The single-branch read
 		// /branches/{branch} is a different shape and stays passthrough.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+
+		// Cached installation-repositories listing
+		// (respcache_installationrepos.go): "which repos does the token I am
+		// holding cover". Keyed by the BEARER's fingerprint, not by the
+		// requireAuth principal -- the app:<id> principal is shared across
+		// every token of an app, including tokens of different installations,
+		// which see different repositories.
+		r.Get("/installation/repositories", h.cachedInstallationRepos)
+
+		// Cached webhook CONFIGURATION listings (respcache_hooks.go), for a
+		// repository and for an organization. Keyed by the BEARER's
+		// fingerprint, and here that is the security boundary rather than a
+		// convenience: these are ADMIN-only reads, while the reveal layer
+		// proves READ access and admits any principal on a public repo -- so a
+		// global row behind the ordinary gate would leak a repo's webhook
+		// endpoints to a read-only caller. The write verbs on the same paths
+		// are registered to flush before proxying, across every credential,
+		// because one caller's hook change moves everyone's answer.
+		r.Get("/repos/{owner}/{repo}/hooks", h.cachedRepoHooks)
+		r.Post("/repos/{owner}/{repo}/hooks", h.writeRepoHooks)
+		r.Patch("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)
+		r.Delete("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)
+		r.Get("/orgs/{org}/hooks", h.cachedOrgHooks)
+		r.Post("/orgs/{org}/hooks", h.writeOrgHooks)
+		r.Patch("/orgs/{org}/hooks/{hook_id}", h.writeOrgHooks)
+		r.Delete("/orgs/{org}/hooks/{hook_id}", h.writeOrgHooks)
 
 		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
 		// open-PR list is served from webhook-maintained pull_requests state
