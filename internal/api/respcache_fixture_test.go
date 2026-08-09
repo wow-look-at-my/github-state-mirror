@@ -54,6 +54,7 @@ type respCacheUpstream struct {
 	jobHits          int32
 	labelHits        int32
 	installReposHits int32
+	hooksHits        int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -80,6 +81,9 @@ type respCacheUpstream struct {
 	// installRepos answers GET /installation/repositories; settable per test
 	// (the per-credential test varies the body by bearer).
 	installRepos func(w http.ResponseWriter, r *http.Request)
+	// hooks answers the repo and org hook listings AND their write verbs;
+	// settable per test (the refusal test answers 403).
+	hooks func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -136,6 +140,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.codeQuality = defaultCodeQualityUpstream
 	u.label = defaultLabelUpstream
 	u.installRepos = defaultInstallationReposUpstream
+	u.hooks = defaultHooksUpstream
 	return u
 }
 
@@ -183,6 +188,17 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case r.URL.Path == "/installation/repositories":
 			atomic.AddInt32(&u.installReposHits, 1)
 			u.installRepos(w, r)
+		case strings.Contains(r.URL.Path, "/hooks"):
+			// Counts the READS only: a write is proxied, and counting it would
+			// make "a hit did not call upstream" unreadable in the flush tests.
+			if r.Method == http.MethodGet {
+				atomic.AddInt32(&u.hooksHits, 1)
+				u.hooks(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":12345678}`))
 		case strings.Contains(r.URL.Path, "/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
 			atomic.AddInt32(&u.runJobsHits, 1)
 			u.runJobs(w, r)

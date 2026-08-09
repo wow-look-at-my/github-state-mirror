@@ -423,6 +423,24 @@ func NewRouter(
 		// which see different repositories.
 		r.Get("/installation/repositories", h.cachedInstallationRepos)
 
+		// Cached webhook CONFIGURATION listings (respcache_hooks.go), for a
+		// repository and for an organization. Keyed by the BEARER's
+		// fingerprint, and here that is the security boundary rather than a
+		// convenience: these are ADMIN-only reads, while the reveal layer
+		// proves READ access and admits any principal on a public repo -- so a
+		// global row behind the ordinary gate would leak a repo's webhook
+		// endpoints to a read-only caller. The write verbs on the same paths
+		// are registered to flush before proxying, across every credential,
+		// because one caller's hook change moves everyone's answer.
+		r.Get("/repos/{owner}/{repo}/hooks", h.cachedRepoHooks)
+		r.Post("/repos/{owner}/{repo}/hooks", h.writeRepoHooks)
+		r.Patch("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)
+		r.Delete("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)
+		r.Get("/orgs/{org}/hooks", h.cachedOrgHooks)
+		r.Post("/orgs/{org}/hooks", h.writeOrgHooks)
+		r.Patch("/orgs/{org}/hooks/{hook_id}", h.writeOrgHooks)
+		r.Delete("/orgs/{org}/hooks/{hook_id}", h.writeOrgHooks)
+
 		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
 		// open-PR list is served from webhook-maintained pull_requests state
 		// behind a per-repo "list complete" marker; the single PR is served

@@ -836,3 +836,37 @@ DELETE FROM installation_repos_cache WHERE expires_at <= ?;
 DELETE FROM installation_repos_cache WHERE id IN (
     SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+
+-- name: GetHooksCache :one
+SELECT * FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertHooksCache :exec
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchHooksCache :exec
+UPDATE hooks_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- DeleteHooksCacheForTarget drops one target's listings across EVERY
+-- credential. A hook created, edited or deleted through the mirror changes
+-- what every caller sees, not just the one that wrote it -- so the write flush
+-- cannot be per-credential even though the rows are.
+-- name: DeleteHooksCacheForTarget :exec
+DELETE FROM hooks_cache WHERE scope = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteExpiredHooksCache :exec
+DELETE FROM hooks_cache WHERE expires_at <= ?;
+
+-- name: PruneHooksCacheLRU :exec
+DELETE FROM hooks_cache WHERE id IN (
+    SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

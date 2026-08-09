@@ -378,6 +378,15 @@ func (q *Queries) DeleteExpiredGitRefCache(ctx context.Context, expiresAt string
 	return err
 }
 
+const deleteExpiredHooksCache = `-- name: DeleteExpiredHooksCache :exec
+DELETE FROM hooks_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredHooksCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredHooksCache, expiresAt)
+	return err
+}
+
 const deleteExpiredInstallTokenCache = `-- name: DeleteExpiredInstallTokenCache :exec
 DELETE FROM install_token_cache WHERE expires_at <= ?
 `
@@ -528,6 +537,25 @@ type DeleteGitRefCacheForRefParams struct {
 // per-ref push flush (a push moves, creates, or deletes exactly one ref).
 func (q *Queries) DeleteGitRefCacheForRef(ctx context.Context, arg DeleteGitRefCacheForRefParams) error {
 	_, err := q.db.ExecContext(ctx, deleteGitRefCacheForRef, arg.Owner, arg.Repo, arg.Ref)
+	return err
+}
+
+const deleteHooksCacheForTarget = `-- name: DeleteHooksCacheForTarget :exec
+DELETE FROM hooks_cache WHERE scope = ? AND owner = ? AND repo = ?
+`
+
+type DeleteHooksCacheForTargetParams struct {
+	Scope string
+	Owner string
+	Repo  string
+}
+
+// DeleteHooksCacheForTarget drops one target's listings across EVERY
+// credential. A hook created, edited or deleted through the mirror changes
+// what every caller sees, not just the one that wrote it -- so the write flush
+// cannot be per-credential even though the rows are.
+func (q *Queries) DeleteHooksCacheForTarget(ctx context.Context, arg DeleteHooksCacheForTargetParams) error {
+	_, err := q.db.ExecContext(ctx, deleteHooksCacheForTarget, arg.Scope, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1160,6 +1188,48 @@ func (q *Queries) GetGitRefCache(ctx context.Context, arg GetGitRefCacheParams) 
 	return i, err
 }
 
+const getHooksCache = `-- name: GetHooksCache :one
+
+SELECT id, token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?
+`
+
+type GetHooksCacheParams struct {
+	TokenFp string
+	Scope   string
+	Owner   string
+	Repo    string
+	PerPage int64
+	Page    int64
+}
+
+// ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+func (q *Queries) GetHooksCache(ctx context.Context, arg GetHooksCacheParams) (HooksCache, error) {
+	row := q.db.QueryRowContext(ctx, getHooksCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i HooksCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Scope,
+		&i.Owner,
+		&i.Repo,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getInstallTokenCache = `-- name: GetInstallTokenCache :one
 
 SELECT id, actor, installation_id, body_hash, token, token_expires_at, permissions, repository_selection, fetched_at, expires_at, last_used_at FROM install_token_cache
@@ -1675,6 +1745,17 @@ func (q *Queries) PruneGitRefCacheLRU(ctx context.Context, offset int64) error {
 	return err
 }
 
+const pruneHooksCacheLRU = `-- name: PruneHooksCacheLRU :exec
+DELETE FROM hooks_cache WHERE id IN (
+    SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneHooksCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneHooksCacheLRU, offset)
+	return err
+}
+
 const pruneInstallTokenCacheLRU = `-- name: PruneInstallTokenCacheLRU :exec
 DELETE FROM install_token_cache WHERE id IN (
     SELECT id FROM install_token_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -2009,6 +2090,34 @@ func (q *Queries) TouchGitRefCache(ctx context.Context, arg TouchGitRefCachePara
 		arg.Owner,
 		arg.Repo,
 		arg.Ref,
+	)
+	return err
+}
+
+const touchHooksCache = `-- name: TouchHooksCache :exec
+UPDATE hooks_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?
+`
+
+type TouchHooksCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchHooksCache(ctx context.Context, arg TouchHooksCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchHooksCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
 	)
 	return err
 }
@@ -2584,6 +2693,45 @@ func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCachePa
 		arg.Repo,
 		arg.Ref,
 		arg.Status,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertHooksCache = `-- name: UpsertHooksCache :exec
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertHooksCacheParams struct {
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertHooksCache(ctx context.Context, arg UpsertHooksCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHooksCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.PerPage,
+		arg.Page,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

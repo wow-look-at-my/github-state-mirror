@@ -960,3 +960,41 @@ CREATE TABLE installation_repos_cache (
 
 CREATE UNIQUE INDEX idx_installation_repos_cache_key ON installation_repos_cache (token_fp, per_page, page);
 CREATE INDEX idx_installation_repos_cache_lru ON installation_repos_cache (last_used_at);
+
+-- Snapshots for the webhook CONFIGURATION listings:
+--   GET /repos/{owner}/{repo}/hooks  (scope 'repo')
+--   GET /orgs/{org}/hooks            (scope 'org', repo '')
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), like installation_repos_cache and for a stronger reason: these are
+-- ADMIN-only reads. The reveal layer proves READ access and its public fast
+-- path admits any authenticated principal, so a global row behind the ordinary
+-- gate would hand a read-only caller the repo's webhook URLs. Per-credential
+-- keying is self-gating -- a row is only ever replayed to the exact credential
+-- GitHub already answered it for -- and needs no new authorization machinery.
+-- What a GLOBAL row would need instead, and the arithmetic that decides
+-- whether it would pay, is in docs/cache/rest-routes.md.
+--
+-- Invalidation: the write verbs the mirror proxies on these paths flush the
+-- listing ACROSS ALL CREDENTIALS (a hook one caller creates changes what every
+-- caller sees), `repository` events flush a repo's rows, and the TTL is the
+-- primary bound -- GitHub's `meta` event is NOT a usable signal here: it is
+-- delivered only to the hook being deleted, so another hook's deletion is
+-- something the mirror never hears about.
+CREATE TABLE hooks_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- 'repo' | 'org'
+    owner        TEXT NOT NULL,              -- lowercased owner, or the org login
+    repo         TEXT NOT NULL,              -- lowercased repo; '' for scope 'org'
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed hooks document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, per_page, page);
+CREATE INDEX idx_hooks_cache_target ON hooks_cache (scope, owner, repo);
+CREATE INDEX idx_hooks_cache_lru ON hooks_cache (last_used_at);

@@ -204,6 +204,20 @@ type GitRefCache struct {
 	LastUsedAt string
 }
 
+type HooksCache struct {
+	ID         int64
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type InstallTokenCache struct {
 	ID                  int64
 	Actor               string

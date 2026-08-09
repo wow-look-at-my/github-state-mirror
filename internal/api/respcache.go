@@ -49,6 +49,9 @@ import (
 //   - GET /repos/{owner}/{repo}/labels/{name}       (respcache_labels.go)
 //   - GET /installation/repositories                (respcache_installationrepos.go;
 //     keyed by the BEARER, not the principal — that answer is one token's own)
+//   - GET /repos/{owner}/{repo}/hooks               (respcache_hooks.go)
+//   - GET /orgs/{org}/hooks                         (same file; both keyed by the
+//     BEARER because they are ADMIN-only reads and the reveal layer proves READ)
 //
 // The single-PR route was once deliberately passthrough because its body
 // carries the lazily-computed `mergeable` field that pr-minder polls for; it

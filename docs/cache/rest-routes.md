@@ -43,6 +43,14 @@ the traffic that is still uncached.
 
 - `GET /repos/{owner}/{repo}/labels/{name}` (`respcache_labels.go`) — one label DEFINITION ("does auto-pr-merge exist here, and what colour is it"), asked per repo per sweep by pr-minder's label reconciliation: 1313 forwards in one process, all of them 200s. Whole-doc rows in `label_cache` keyed by (owner, repo, **VERBATIM requested name**) — GitHub resolves label names case-insensitively and the mirror does not model that, so each spelling is its own row. Rebuild: `{id, node_id, name, color, default, description}` (GitHub's `label` schema minus its one `url`; `description` nullable-but-always-keyed). Shape guard: no query parameter and only the default JSON Accept; a label name carrying a slash matches no route segment and keeps passing through, as does the labels LIST. Invalidation is the exact signal, already subscribed and already applied to `pr_labels`: EVERY `label` delivery flushes the repo's rows — the grain is the REPO because an edit can RENAME (two names in one delivery) and one label answers under every requested spelling — plus `repository` events and a 24h TTL backstop. `PATCH`/`DELETE` on the same path are registered purely to flush BEFORE proxying (the Code Quality trick), so a caller cannot read back its own stale write in the seconds before the delivery lands. **Only the 200 is stored**: an absent-label verdict would let an ensure-then-create caller read its own stale 404 and create the label twice, and with essentially every observed answer a 200 it would buy nothing for that risk.
 
+- `GET /repos/{owner}/{repo}/hooks` + `GET /orgs/{org}/hooks` (`respcache_hooks.go`, one `hooks_cache` row space, scopes `repo`/`org`) — the webhook CONFIGURATION listings, together the largest genuinely unrouted slice after the runs listing (6045 and 2016 forwards in one process). GitHub answers both with the same hook object, so one flow serves both; the scope is part of the key, so a repo named like an org can never answer the other question.
+
+  **Keyed by the CREDENTIAL, and here that is the security boundary rather than a convenience.** These are ADMIN-only reads: GitHub refuses them to a caller who can merely READ the repository. The reveal layer proves exactly that READ access — and its public fast path admits ANY authenticated principal without asking GitHub anything — so a global row behind the ordinary gate would hand a read-only caller the repo's webhook endpoints. A row keyed by the bearer's SHA-256 fingerprint is self-gating: it can only ever be replayed to the exact credential GitHub already answered it for.
+
+  Rebuild: a JSON ARRAY of `{id, type?, name, active, events, config:{url?, content_type?, insecure_ssl?, secret?}, created_at, updated_at, last_response?}`. GitHub's API self-links (`url`, `test_url`, `ping_url`, `deliveries_url`) are dropped; **`config.url` is a pinned no-URL exception on grounds the others do not need** — it is not a link into GitHub's API but the hook's own DESTINATION, the field that says which hook this is, so a listing without it is not a trimmed answer but a broken one (no consumer survey substitutes for that; the endpoint's whole purpose is the config). `secret` preserves PRESENCE exactly (the PR-files stance): GitHub omits it when no secret is set and sends a fixed mask when one is, so the key's presence is itself the answer to "is a secret configured". `insecure_ssl` is documented as a string OR a number and rides as raw JSON rather than being coerced. `last_response` is kept and is honestly TTL-stale: it moves with every delivery and no webhook names the change, but omitting a key a consumer branches on is worse than serving it minutes old. Shape guard: `per_page` (1..100) and `page` (1..10) only. Only a 200 ARRAY absorbs; an empty array is a valid cacheable answer (it IS what a reconciliation sweep asks), and a **403 relays unstored and is deliberately not a cached verdict** — a permission grant is exactly the kind of thing that changes with no event reaching the mirror.
+
+  **Invalidation, and the signal that looks right and is not.** GitHub's `meta` event names a hook deletion but is delivered ONLY to the webhook being deleted, so another hook's removal is something the mirror never hears about — it is not a usable signal here, and an earlier version of this document suggested it was. What the mirror does see: a write it PROXIES on these paths (`POST /…/hooks`, `PATCH`/`DELETE /…/hooks/{id}` are registered purely to flush before forwarding, the Code Quality trick) and `repository` events. The write flush drops the target's listings **across every credential**, not just the writer's: a hook one caller creates changes what every caller sees, and a reconciler working from a listing that write invalidated would create a duplicate webhook. Everything else is bounded by the TTL, which is therefore 5 minutes and is the PRIMARY bound.
+
 - `GET /installation/repositories` (`respcache_installationrepos.go`) — "which repositories does the token I am holding cover": 2275 forwards in one process, each caller asking the same single-page question ~17 times. **Keyed by the CREDENTIAL** (a SHA-256 fingerprint of the bearer, never the bearer), not by the reveal-layer principal — the answer is one installation token's own view, and the `app:<id>` principal deliberately shares one bucket across every token of an app, INCLUDING tokens of different installations, which cover different repositories. Per-credential keying is also what gates the row without a reveal decision: a stored answer can only ever be replayed to the exact credential GitHub already answered it for (the token-mint route's stance — a per-credential answer is not shared truth). Rebuild: `{total_count, repository_selection, repositories:[{id, node_id, name, full_name, owner:{login,type}, private, visibility, default_branch, fork, archived, disabled}]}` — `visibility` nullable-but-always-keyed rather than defaulted (an answer that did not carry it must not read as "public"), and the dozens of `*_url` templates GitHub attaches dropped. Shape guard: `per_page` (1..100) and `page` (1..20) only. Only a 200 absorbs; a 401 (the token expired) relays unstored. Invalidation: `installation`/`installation_repositories` flush the WHOLE table (rows key a credential, so there is no installation id to match on, and the deliveries are rare) — but the mirror receives only its own App's, so the real bound is the 15-minute TTL, `installationReposTTL`. The route sits INSIDE `requireAuth`, a deliberate change for a path that used to skip it: a credential requireAuth rejects now gets the mirror's 401/503 rather than GitHub's own answer, which only affects calls that cannot succeed upstream anyway.
 - `GET /repos/{owner}/{repo}/pulls/{number}/commits` (`respcache_pullcommits.go`) — GitHub answers it with the SAME item shape as the repository commits list, so this route **reuses that storage whole**: the listed commits are upserted into the one global `git_commits_cache`, and the page's ordered shas become a `commits_list_cache` snapshot under the synthetic ref key `pull/<number>/commits`. That is the resource those rows already model (an ordered list of commits under a key), and it inherits the immutable-commit synergy, the hit gate (every listed sha must still resolve), the pruning, and the rebuild unchanged; a caller cannot collide with the key, which would require `?sha=pull/<n>/commits` on the repo commits list — a ref that resolves to nothing and is never stored. Reveal uses the single-PR route's deny kind and resource key (same resource, same authorization question). Shape guard: `per_page` (1..100) and `page` (1..10) only. Invalidation follows the PR-files route, which has the identical fork-head problem: every `pull_request`/`pull_request_review` delivery flushes that ONE PR, a `push` flushes the repo's PR-commit snapshots as the belt for a missed delivery, `repository` repo-wide, + the shared 24h TTL. The dispatcher restates the key literal (a sync -> api import would be a cycle); both sides pin it and an end-to-end flush test proves they meet.
 
@@ -89,31 +97,24 @@ above and is not repeated here.
   rebuild is only faithful for a job that has not started (`queued`/
   `waiting`, where `steps` is empty by construction); the `in_progress`
   phase needs its own answer, not the same row served with confidence.
-- `GET /repos/{owner}/{repo}/hooks` (6045) — a repo's webhook configuration.
-  Two things block it, and only one of them is the flush. **Authorization**:
-  this is an ADMIN-only read, while the reveal layer proves READ access and
-  its public fast path admits any authenticated principal, so serving it
-  under the ordinary gate would hand a read-only caller the repo's webhook
-  URLs. GitHub does have the oracle — `permissions.admin` on the
-  `GET /repos/{owner}/{repo}` object the reveal probe ALREADY fetches, and,
-  for an installation token, the installation's own permission set, which
-  the mirror already caches on the mint and repo-installation routes — but
-  either one is a new grant dimension, not a tweak. **And the arithmetic
-  has to be checked before building it**: the captured traffic is ~118
-  rotating credentials each reading each repo exactly once, so a
-  per-credential row saves nothing, while a global row gated on a
-  per-(credential, repo) probe costs the same upstream call it saves. Only a
-  proof that is earned ONCE PER CREDENTIAL — the installation's permission
-  set, not a per-repo probe — makes the global row pay. The flush is the
-  easy half: `meta` names hook deletion, and the mirror proxies the
-  create/edit calls itself (the Code Quality flush-then-forward trick).
-- `GET /orgs/{org}/hooks` (2016) — the same admin problem with no oracle at
-  all: there is no cheap "is this credential an org admin" probe for an
-  installation token (`GET /orgs/{org}/memberships/{username}` needs a user).
-  Unlike the repo listing, though, the arithmetic here favours the SAFE
-  design: each credential asks ~17 times across a handful of orgs, so a
-  per-credential row — self-gating, exactly like `/installation/repositories`
-  — would collapse most of it without any new authorization machinery.
+- **A SHARED row for the hook listings.** Both are cached now (above), but
+  per credential, so two credentials asking about the same repo each still
+  pay their own fetch. Sharing one row needs an admin oracle, and GitHub has
+  two: `permissions.admin` on the `GET /repos/{owner}/{repo}` object the
+  reveal probe ALREADY fetches, and — for an installation token — the
+  installation's own permission set, which the mirror already caches on the
+  mint and repo-installation routes. Either is a new grant dimension rather
+  than a tweak, **and the arithmetic decides whether it is worth one**: the
+  org listing is asked ~17 times per credential across a handful of orgs, so
+  the repeats the shared row would collect are the ones the per-credential
+  rows already collapse; the repo listing looks like ~118 rotating
+  credentials reading each repo exactly ONCE, and against that shape a
+  global row gated on a per-(credential, repo) probe costs precisely the
+  upstream call it saves. Only a proof earned ONCE PER CREDENTIAL — the
+  installation's permission set, never a per-repo probe — can pay there.
+  Measure the distinct-repo count from a fresh brief before building it; the
+  ~118×1 reading is inferred from caller counts, not from repo counts the
+  brief carries.
 - `GET /orgs/{org}/actions/runners` (2018) — the live runner roster. Needs an
   invalidation signal: GitHub delivers no runner-registration webhook, but
   `workflow_job` carries `runner_name`/`runner_id` on in_progress and

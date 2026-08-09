@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
@@ -39,6 +40,11 @@ import (
 //     TTL. The truth side has no workflow_run handler, so the delivery still
 //     records as ignored (invalidation precedes disposition, the queued
 //     workflow_job precedent).
+//   - repository additionally flushes the repo's cached hook listings. That
+//     is the ONLY delivery that reaches them: GitHub's `meta` event names a
+//     hook deletion but is sent only to the hook being deleted, so another
+//     hook's removal is invisible here. Their real bound is their short TTL,
+//     plus the write flush the mirror applies when it proxies a hook write.
 //   - label: the repo's cached label definitions, every action. A rename
 //     moves two names in one delivery and each requested spelling is its own
 //     row, so the grain is the repo.
@@ -102,6 +108,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
+		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
 	case "label":
 		// Every action, repo-wide: an edit can RENAME (two names in one
 		// delivery) and one label answers under every spelling a caller

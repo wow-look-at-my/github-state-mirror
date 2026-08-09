@@ -19,7 +19,10 @@ var schemaSQL string
 // label_cache holds the single-label read, flushed by `label` deliveries;
 // installation_repos_cache holds GET /installation/repositories keyed by the
 // BEARER's fingerprint, because that answer belongs to one installation token
-// rather than to the app principal its callers share.
+// rather than to the app principal its callers share; and hooks_cache holds
+// the repo and org webhook CONFIGURATION listings, keyed by the bearer for a
+// stronger reason -- they are ADMIN-only reads and the reveal layer only
+// proves READ access.
 //
 // SchemaVersion 22: workflow_runs (global truth for Actions RUN state,
 // maintained per run by workflow_run/workflow_job deliveries) +
