@@ -932,3 +932,31 @@ CREATE TABLE label_cache (
 
 CREATE UNIQUE INDEX idx_label_cache_key ON label_cache (owner, repo, name);
 CREATE INDEX idx_label_cache_lru ON label_cache (last_used_at);
+
+-- Snapshot for GET /installation/repositories -- "which repos does the token
+-- I am holding cover".
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), not by the reveal-layer principal. The answer belongs to one
+-- installation token, and the app:<id> principal deliberately shares one
+-- bucket across every token of an app -- including tokens of DIFFERENT
+-- installations, which see different repos. Per-credential keying is also
+-- what gates the row: it can only ever be replayed to the exact credential
+-- GitHub already answered.
+--
+-- Bounded primarily by its TTL (installationReposTTL): installation /
+-- installation_repositories deliveries flush the whole table, but the mirror
+-- only receives ITS OWN App's, and these callers are other apps.
+CREATE TABLE installation_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed listing document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_installation_repos_cache_key ON installation_repos_cache (token_fp, per_page, page);
+CREATE INDEX idx_installation_repos_cache_lru ON installation_repos_cache (last_used_at);

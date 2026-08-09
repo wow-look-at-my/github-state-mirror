@@ -12,9 +12,14 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 23: repo_installation_cache gains status/message, so the
+// SchemaVersion 23: three of the largest remaining uncached slices become
+// cached routes. repo_installation_cache gains status/message, so the
 // authoritative "not installed here" 404 becomes a cacheable VERDICT (bounded
-// by its own short TTL, since only OUR App's installation events reach us).
+// by its own short TTL, since only OUR App's installation events reach us);
+// label_cache holds the single-label read, flushed by `label` deliveries;
+// installation_repos_cache holds GET /installation/repositories keyed by the
+// BEARER's fingerprint, because that answer belongs to one installation token
+// rather than to the app principal its callers share.
 //
 // SchemaVersion 22: workflow_runs (global truth for Actions RUN state,
 // maintained per run by workflow_run/workflow_job deliveries) +

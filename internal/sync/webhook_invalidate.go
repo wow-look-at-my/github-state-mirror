@@ -56,7 +56,8 @@ import (
 //   - installation events: the installation's cached token mints AND cached
 //     repo-installation answers (a suspended/deleted/re-scoped installation
 //     must not keep serving either), plus every cached "not installed here"
-//     verdict, which carries no id for the by-id flush to match.
+//     verdict and every cached installation-repositories listing, neither of
+//     which carries an id for the by-id flush to match.
 //
 // The repo-wide runs LISTING is deliberately absent from all of the above.
 // It is rebuilt from the workflow_runs TRUTH table, which the workflow_run
@@ -201,6 +202,10 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// the news that an account's coverage changed. Dropped first, and
 		// regardless of whether the payload named an id.
 		flush("absent installation verdicts", "all apps", d.store.InvalidateAbsentRepoInstallations(ctx))
+		// The installation-repositories listings key a CREDENTIAL, so there
+		// is no installation id to match on either -- and what this delivery
+		// says is precisely that some installation's repository set moved.
+		flush("installation repos cache", "all credentials", d.store.InvalidateInstallationRepos(ctx))
 		if event.InstallationID == 0 {
 			return
 		}

@@ -803,3 +803,36 @@ DELETE FROM label_cache WHERE expires_at <= ?;
 DELETE FROM label_cache WHERE id IN (
     SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- installation_repos_cache (GET /installation/repositories) ----
+
+-- name: GetInstallationReposCache :one
+SELECT * FROM installation_repos_cache
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertInstallationReposCache :exec
+INSERT INTO installation_repos_cache (token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchInstallationReposCache :exec
+UPDATE installation_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- DeleteAllInstallationReposCache is the installation-event flush. Rows key a
+-- credential, not an installation id, so there is nothing finer to match on --
+-- and these deliveries are rare while the table holds one row per live token.
+-- name: DeleteAllInstallationReposCache :exec
+DELETE FROM installation_repos_cache;
+
+-- name: DeleteExpiredInstallationReposCache :exec
+DELETE FROM installation_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneInstallationReposCacheLRU :exec
+DELETE FROM installation_repos_cache WHERE id IN (
+    SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

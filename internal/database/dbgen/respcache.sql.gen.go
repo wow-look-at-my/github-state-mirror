@@ -54,6 +54,18 @@ func (q *Queries) DeleteAbsentRepoInstallationCache(ctx context.Context) error {
 	return err
 }
 
+const deleteAllInstallationReposCache = `-- name: DeleteAllInstallationReposCache :exec
+DELETE FROM installation_repos_cache
+`
+
+// DeleteAllInstallationReposCache is the installation-event flush. Rows key a
+// credential, not an installation id, so there is nothing finer to match on --
+// and these deliveries are rare while the table holds one row per live token.
+func (q *Queries) DeleteAllInstallationReposCache(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllInstallationReposCache)
+	return err
+}
+
 const deleteBranchesListCacheByRepo = `-- name: DeleteBranchesListCacheByRepo :exec
 DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?
 `
@@ -372,6 +384,15 @@ DELETE FROM install_token_cache WHERE expires_at <= ?
 
 func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredInstallTokenCache, expiresAt)
+	return err
+}
+
+const deleteExpiredInstallationReposCache = `-- name: DeleteExpiredInstallationReposCache :exec
+DELETE FROM installation_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredInstallationReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredInstallationReposCache, expiresAt)
 	return err
 }
 
@@ -1171,6 +1192,35 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 	return i, err
 }
 
+const getInstallationReposCache = `-- name: GetInstallationReposCache :one
+
+SELECT id, token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at FROM installation_repos_cache
+WHERE token_fp = ? AND per_page = ? AND page = ?
+`
+
+type GetInstallationReposCacheParams struct {
+	TokenFp string
+	PerPage int64
+	Page    int64
+}
+
+// ---- installation_repos_cache (GET /installation/repositories) ----
+func (q *Queries) GetInstallationReposCache(ctx context.Context, arg GetInstallationReposCacheParams) (InstallationReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getInstallationReposCache, arg.TokenFp, arg.PerPage, arg.Page)
+	var i InstallationReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getLabelCache = `-- name: GetLabelCache :one
 
 SELECT id, owner, repo, name, doc, fetched_at, expires_at, last_used_at FROM label_cache WHERE owner = ? AND repo = ? AND name = ?
@@ -1636,6 +1686,17 @@ func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) e
 	return err
 }
 
+const pruneInstallationReposCacheLRU = `-- name: PruneInstallationReposCacheLRU :exec
+DELETE FROM installation_repos_cache WHERE id IN (
+    SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneInstallationReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneInstallationReposCacheLRU, offset)
+	return err
+}
+
 const pruneLabelCacheLRU = `-- name: PruneLabelCacheLRU :exec
 DELETE FROM label_cache WHERE id IN (
     SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1948,6 +2009,28 @@ func (q *Queries) TouchGitRefCache(ctx context.Context, arg TouchGitRefCachePara
 		arg.Owner,
 		arg.Repo,
 		arg.Ref,
+	)
+	return err
+}
+
+const touchInstallationReposCache = `-- name: TouchInstallationReposCache :exec
+UPDATE installation_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND per_page = ? AND page = ?
+`
+
+type TouchInstallationReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchInstallationReposCache(ctx context.Context, arg TouchInstallationReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchInstallationReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.PerPage,
+		arg.Page,
 	)
 	return err
 }
@@ -2544,6 +2627,39 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.TokenExpiresAt,
 		arg.Permissions,
 		arg.RepositorySelection,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertInstallationReposCache = `-- name: UpsertInstallationReposCache :exec
+INSERT INTO installation_repos_cache (token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertInstallationReposCacheParams struct {
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertInstallationReposCache(ctx context.Context, arg UpsertInstallationReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertInstallationReposCache,
+		arg.TokenFp,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,

@@ -218,6 +218,17 @@ type InstallTokenCache struct {
 	LastUsedAt          string
 }
 
+type InstallationReposCache struct {
+	ID         int64
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type LabelCache struct {
 	ID         int64
 	Owner      string

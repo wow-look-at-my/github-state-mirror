@@ -42,17 +42,18 @@ const goodAppJWT = "good-app-jwt"
 // cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
 // tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
-	contentsHits    int32
-	commitHits      int32
-	mintHits        int32
-	probeHits       int32
-	pullFilesHits   int32
-	branchesHits    int32
-	gitRefHits      int32
-	runJobsHits     int32
-	codeQualityHits int32
-	jobHits         int32
-	labelHits       int32
+	contentsHits     int32
+	commitHits       int32
+	mintHits         int32
+	probeHits        int32
+	pullFilesHits    int32
+	branchesHits     int32
+	gitRefHits       int32
+	runJobsHits      int32
+	codeQualityHits  int32
+	jobHits          int32
+	labelHits        int32
+	installReposHits int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -76,6 +77,9 @@ type respCacheUpstream struct {
 	// label answers GET/PATCH/DELETE /repos/{o}/{r}/labels/{name}; settable
 	// per test (the write tests recolour it).
 	label func(w http.ResponseWriter, r *http.Request)
+	// installRepos answers GET /installation/repositories; settable per test
+	// (the per-credential test varies the body by bearer).
+	installRepos func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -131,6 +135,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.job = defaultJobUpstream
 	u.codeQuality = defaultCodeQualityUpstream
 	u.label = defaultLabelUpstream
+	u.installRepos = defaultInstallationReposUpstream
 	return u
 }
 
@@ -175,6 +180,9 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case strings.Contains(r.URL.Path, "/labels/"):
 			atomic.AddInt32(&u.labelHits, 1)
 			u.label(w, r)
+		case r.URL.Path == "/installation/repositories":
+			atomic.AddInt32(&u.installReposHits, 1)
+			u.installRepos(w, r)
 		case strings.Contains(r.URL.Path, "/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
 			atomic.AddInt32(&u.runJobsHits, 1)
 			u.runJobs(w, r)

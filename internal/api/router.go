@@ -415,6 +415,14 @@ func NewRouter(
 		// /branches/{branch} is a different shape and stays passthrough.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
 
+		// Cached installation-repositories listing
+		// (respcache_installationrepos.go): "which repos does the token I am
+		// holding cover". Keyed by the BEARER's fingerprint, not by the
+		// requireAuth principal -- the app:<id> principal is shared across
+		// every token of an app, including tokens of different installations,
+		// which see different repositories.
+		r.Get("/installation/repositories", h.cachedInstallationRepos)
+
 		// Cached PR routes (respcache_pulls.go + respcache_pullfiles.go): the
 		// open-PR list is served from webhook-maintained pull_requests state
 		// behind a per-repo "list complete" marker; the single PR is served
