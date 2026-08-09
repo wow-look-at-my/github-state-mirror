@@ -375,6 +375,15 @@ func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredLabelCache = `-- name: DeleteExpiredLabelCache :exec
+DELETE FROM label_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredLabelCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredLabelCache, expiresAt)
+	return err
+}
+
 const deleteExpiredPullDiff406Cache = `-- name: DeleteExpiredPullDiff406Cache :exec
 DELETE FROM pull_diff406_cache WHERE expires_at <= ?
 `
@@ -520,6 +529,23 @@ DELETE FROM install_token_cache WHERE token = ?
 // keep serving (its grants no longer match GitHub's).
 func (q *Queries) DeleteInstallTokenCacheByToken(ctx context.Context, token string) error {
 	_, err := q.db.ExecContext(ctx, deleteInstallTokenCacheByToken, token)
+	return err
+}
+
+const deleteLabelCacheByRepo = `-- name: DeleteLabelCacheByRepo :exec
+DELETE FROM label_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteLabelCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteLabelCacheByRepo is the ONLY flush grain: a label event names one
+// label, but a rename names two, and every requested spelling of a name is
+// its own row. Label events are rare and a repo holds few labels.
+func (q *Queries) DeleteLabelCacheByRepo(ctx context.Context, arg DeleteLabelCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteLabelCacheByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1145,6 +1171,34 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 	return i, err
 }
 
+const getLabelCache = `-- name: GetLabelCache :one
+
+SELECT id, owner, repo, name, doc, fetched_at, expires_at, last_used_at FROM label_cache WHERE owner = ? AND repo = ? AND name = ?
+`
+
+type GetLabelCacheParams struct {
+	Owner string
+	Repo  string
+	Name  string
+}
+
+// ---- label_cache (GET /repos/{owner}/{repo}/labels/{name}) ----
+func (q *Queries) GetLabelCache(ctx context.Context, arg GetLabelCacheParams) (LabelCache, error) {
+	row := q.db.QueryRowContext(ctx, getLabelCache, arg.Owner, arg.Repo, arg.Name)
+	var i LabelCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Name,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getPullDiff406Cache = `-- name: GetPullDiff406Cache :one
 
 SELECT id, owner, repo, number, doc, fetched_at, expires_at, last_used_at FROM pull_diff406_cache
@@ -1582,6 +1636,17 @@ func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) e
 	return err
 }
 
+const pruneLabelCacheLRU = `-- name: PruneLabelCacheLRU :exec
+DELETE FROM label_cache WHERE id IN (
+    SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneLabelCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneLabelCacheLRU, offset)
+	return err
+}
+
 const prunePullDiff406CacheLRU = `-- name: PrunePullDiff406CacheLRU :exec
 DELETE FROM pull_diff406_cache WHERE id IN (
     SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1883,6 +1948,27 @@ func (q *Queries) TouchGitRefCache(ctx context.Context, arg TouchGitRefCachePara
 		arg.Owner,
 		arg.Repo,
 		arg.Ref,
+	)
+	return err
+}
+
+const touchLabelCache = `-- name: TouchLabelCache :exec
+UPDATE label_cache SET last_used_at = ? WHERE owner = ? AND repo = ? AND name = ?
+`
+
+type TouchLabelCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Name       string
+}
+
+func (q *Queries) TouchLabelCache(ctx context.Context, arg TouchLabelCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchLabelCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
 	)
 	return err
 }
@@ -2458,6 +2544,39 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.TokenExpiresAt,
 		arg.Permissions,
 		arg.RepositorySelection,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertLabelCache = `-- name: UpsertLabelCache :exec
+INSERT INTO label_cache (owner, repo, name, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, name) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertLabelCacheParams struct {
+	Owner      string
+	Repo       string
+	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertLabelCache(ctx context.Context, arg UpsertLabelCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertLabelCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,

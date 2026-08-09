@@ -903,3 +903,32 @@ CREATE TABLE code_quality_setup_cache (
 
 CREATE UNIQUE INDEX idx_code_quality_setup_cache_key ON code_quality_setup_cache (owner, repo);
 CREATE INDEX idx_code_quality_setup_cache_lru ON code_quality_setup_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/labels/{name} -- one label
+-- definition. The name is the VERBATIM requested path segment (GitHub label
+-- names carry spaces and punctuation), so a differently-cased spelling of the
+-- same label is its own row; every flush here is repo-wide, which is what
+-- makes that safe.
+--
+-- Only the 200 is stored. The absent answer deliberately is not: a caller's
+-- ensure-then-create pass would read its own stale 404 in the seconds before
+-- the `label` delivery lands, and in this fleet's traffic essentially every
+-- answer is a 200 anyway, so the verdict would buy nothing for that risk.
+--
+-- Invalidation: EVERY `label` delivery (created/edited/deleted -- a rename
+-- moves two names at once, so the grain is the repo, and these events are
+-- rare), the write verbs the mirror proxies on the same path, `repository`
+-- events, + a 24h TTL backstop.
+CREATE TABLE label_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    name         TEXT NOT NULL,              -- VERBATIM requested label name
+    doc          TEXT NOT NULL,              -- trimmed label document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_label_cache_key ON label_cache (owner, repo, name);
+CREATE INDEX idx_label_cache_lru ON label_cache (last_used_at);

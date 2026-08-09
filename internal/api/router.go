@@ -386,6 +386,18 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
 		r.Patch("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
 
+		// Cached single-label read (respcache_labels.go): the label
+		// DEFINITION pr-minder re-reads per repo per sweep. `label`
+		// deliveries flush the repo's rows -- the grain is the repo because
+		// a rename moves two names at once -- and the PATCH/DELETE on this
+		// same path are registered purely to flush before proxying, so a
+		// caller cannot read back its own stale write in the seconds before
+		// the delivery lands. A label name carrying a slash matches no route
+		// segment and keeps passing through; so does the labels LIST.
+		r.Get("/repos/{owner}/{repo}/labels/{name}", h.cachedLabel)
+		r.Patch("/repos/{owner}/{repo}/labels/{name}", h.writeLabel)
+		r.Delete("/repos/{owner}/{repo}/labels/{name}", h.writeLabel)
+
 		// Cached bare-repo read (respcache_repo.go): rebuilt from the repos
 		// TRUTH row itself -- no snapshot table and no per-row TTL, mirroring
 		// how tier 1 serves truth (repository webhooks, fleet sync, and the

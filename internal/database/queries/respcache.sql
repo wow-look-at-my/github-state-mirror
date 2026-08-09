@@ -772,3 +772,34 @@ DELETE FROM code_quality_setup_cache WHERE expires_at <= ?;
 DELETE FROM code_quality_setup_cache WHERE id IN (
     SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- label_cache (GET /repos/{owner}/{repo}/labels/{name}) ----
+
+-- name: GetLabelCache :one
+SELECT * FROM label_cache WHERE owner = ? AND repo = ? AND name = ?;
+
+-- name: UpsertLabelCache :exec
+INSERT INTO label_cache (owner, repo, name, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, name) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchLabelCache :exec
+UPDATE label_cache SET last_used_at = ? WHERE owner = ? AND repo = ? AND name = ?;
+
+-- DeleteLabelCacheByRepo is the ONLY flush grain: a label event names one
+-- label, but a rename names two, and every requested spelling of a name is
+-- its own row. Label events are rare and a repo holds few labels.
+-- name: DeleteLabelCacheByRepo :exec
+DELETE FROM label_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredLabelCache :exec
+DELETE FROM label_cache WHERE expires_at <= ?;
+
+-- name: PruneLabelCacheLRU :exec
+DELETE FROM label_cache WHERE id IN (
+    SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

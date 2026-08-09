@@ -39,6 +39,9 @@ import (
 //     TTL. The truth side has no workflow_run handler, so the delivery still
 //     records as ignored (invalidation precedes disposition, the queued
 //     workflow_job precedent).
+//   - label: the repo's cached label definitions, every action. A rename
+//     moves two names in one delivery and each requested spelling is its own
+//     row, so the grain is the repo.
 //   - pull_request/pull_request_review: that one PR's files pages, closed-PR
 //     doc, and pull-diff-406 verdict (head pushed/synchronize -- including
 //     fork heads whose pushes we never see -- base retargets, reopens).
@@ -97,6 +100,18 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
 		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
+		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
+	case "label":
+		// Every action, repo-wide: created clears nothing but costs nothing,
+		// edited can RENAME (two names in one delivery), and one label
+		// answers under every spelling a caller might have requested. Runs
+		// before the disposition logic, so the created action onLabel drops
+		// as ignored still flushes.
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return
+		}
+		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {

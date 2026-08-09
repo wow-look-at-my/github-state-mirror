@@ -218,6 +218,17 @@ type InstallTokenCache struct {
 	LastUsedAt          string
 }
 
+type LabelCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type PrLabel struct {
 	Owner    string
 	Repo     string
