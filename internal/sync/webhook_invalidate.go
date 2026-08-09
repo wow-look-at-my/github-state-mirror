@@ -103,11 +103,11 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
 	case "label":
-		// Every action, repo-wide: created clears nothing but costs nothing,
-		// edited can RENAME (two names in one delivery), and one label
-		// answers under every spelling a caller might have requested. Runs
-		// before the disposition logic, so the created action onLabel drops
-		// as ignored still flushes.
+		// Every action, repo-wide: an edit can RENAME (two names in one
+		// delivery) and one label answers under every spelling a caller
+		// might have requested, so matching the payload's name would miss
+		// rows. Runs before the disposition logic, so the `created` action
+		// onLabel drops as ignored still flushes.
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
 			return

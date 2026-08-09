@@ -69,9 +69,10 @@ func TestCachedLabel_NullDescriptionKeepsItsKey(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"description":null`)
 }
 
-// Every `label` delivery flushes the repo's labels, whatever the action: a
-// rename moves two names in one delivery, and `created` is what makes a name
-// that did not resolve a moment ago start resolving.
+// Every `label` delivery flushes the repo's labels, whatever the action: an
+// edit can RENAME (two names in one delivery) and each requested spelling of
+// a name is its own row, so the flush is unconditional and repo-wide rather
+// than trying to match the name the payload happens to carry.
 func TestCachedLabel_EveryLabelEventFlushes(t *testing.T) {
 	for _, action := range []string{"created", "edited", "deleted"} {
 		t.Run(action, func(t *testing.T) {
