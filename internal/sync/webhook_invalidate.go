@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
@@ -39,6 +40,14 @@ import (
 //     TTL. The truth side has no workflow_run handler, so the delivery still
 //     records as ignored (invalidation precedes disposition, the queued
 //     workflow_job precedent).
+//   - repository additionally flushes the repo's cached hook listings. That
+//     is the ONLY delivery that reaches them: GitHub's `meta` event names a
+//     hook deletion but is sent only to the hook being deleted, so another
+//     hook's removal is invisible here. Their real bound is their short TTL,
+//     plus the write flush the mirror applies when it proxies a hook write.
+//   - label: the repo's cached label definitions, every action. A rename
+//     moves two names in one delivery and each requested spelling is its own
+//     row, so the grain is the repo.
 //   - pull_request/pull_request_review: that one PR's files pages, closed-PR
 //     doc, and pull-diff-406 verdict (head pushed/synchronize -- including
 //     fork heads whose pushes we never see -- base retargets, reopens).
@@ -52,7 +61,9 @@ import (
 //     git-commit 404 miss markers.
 //   - installation events: the installation's cached token mints AND cached
 //     repo-installation answers (a suspended/deleted/re-scoped installation
-//     must not keep serving either).
+//     must not keep serving either), plus every cached "not installed here"
+//     verdict and every cached installation-repositories listing, neither of
+//     which carries an id for the by-id flush to match.
 //
 // The repo-wide runs LISTING is deliberately absent from all of the above.
 // It is rebuilt from the workflow_runs TRUTH table, which the workflow_run
@@ -96,6 +107,19 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
 		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
+		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
+		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
+	case "label":
+		// Every action, repo-wide: an edit can RENAME (two names in one
+		// delivery) and one label answers under every spelling a caller
+		// might have requested, so matching the payload's name would miss
+		// rows. Runs before the disposition logic, so the `created` action
+		// onLabel drops as ignored still flushes.
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return
+		}
+		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -180,6 +204,15 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
+		// The "not installed here" verdicts carry no installation id, so the
+		// by-id flush below cannot reach them -- and this delivery is exactly
+		// the news that an account's coverage changed. Dropped first, and
+		// regardless of whether the payload named an id.
+		flush("absent installation verdicts", "all apps", d.store.InvalidateAbsentRepoInstallations(ctx))
+		// The installation-repositories listings key a CREDENTIAL, so there
+		// is no installation id to match on either -- and what this delivery
+		// says is precisely that some installation's repository set moved.
+		flush("installation repos cache", "all credentials", d.store.InvalidateInstallationRepos(ctx))
 		if event.InstallationID == 0 {
 			return
 		}

@@ -284,9 +284,11 @@ SELECT * FROM repo_installation_cache
 WHERE actor = ? AND owner = ? AND repo = ?;
 
 -- name: UpsertRepoInstallationCache :exec
-INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO repo_installation_cache (actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    status = excluded.status,
+    message = excluded.message,
     installation_id = excluded.installation_id,
     account_login = excluded.account_login,
     account_type = excluded.account_type,
@@ -304,6 +306,13 @@ WHERE actor = ? AND owner = ? AND repo = ?;
 
 -- name: DeleteRepoInstallationCacheByInstallation :exec
 DELETE FROM repo_installation_cache WHERE installation_id = ?;
+
+-- DeleteAbsentRepoInstallationCache drops every "not installed" VERDICT row.
+-- Those carry installation_id 0, so the by-id flush above cannot reach them,
+-- and an installation event means some account gained (or lost) an install --
+-- exactly what a verdict claims is absent.
+-- name: DeleteAbsentRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE status <> 200;
 
 -- name: DeleteExpiredRepoInstallationCache :exec
 DELETE FROM repo_installation_cache WHERE expires_at <= ?;
@@ -762,4 +771,102 @@ DELETE FROM code_quality_setup_cache WHERE expires_at <= ?;
 -- name: PruneCodeQualitySetupCacheLRU :exec
 DELETE FROM code_quality_setup_cache WHERE id IN (
     SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- label_cache (GET /repos/{owner}/{repo}/labels/{name}) ----
+
+-- name: GetLabelCache :one
+SELECT * FROM label_cache WHERE owner = ? AND repo = ? AND name = ?;
+
+-- name: UpsertLabelCache :exec
+INSERT INTO label_cache (owner, repo, name, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, name) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchLabelCache :exec
+UPDATE label_cache SET last_used_at = ? WHERE owner = ? AND repo = ? AND name = ?;
+
+-- DeleteLabelCacheByRepo is the ONLY flush grain: a label event names one
+-- label, but a rename names two, and every requested spelling of a name is
+-- its own row. Label events are rare and a repo holds few labels.
+-- name: DeleteLabelCacheByRepo :exec
+DELETE FROM label_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredLabelCache :exec
+DELETE FROM label_cache WHERE expires_at <= ?;
+
+-- name: PruneLabelCacheLRU :exec
+DELETE FROM label_cache WHERE id IN (
+    SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- installation_repos_cache (GET /installation/repositories) ----
+
+-- name: GetInstallationReposCache :one
+SELECT * FROM installation_repos_cache
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertInstallationReposCache :exec
+INSERT INTO installation_repos_cache (token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchInstallationReposCache :exec
+UPDATE installation_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- DeleteAllInstallationReposCache is the installation-event flush. Rows key a
+-- credential, not an installation id, so there is nothing finer to match on --
+-- and these deliveries are rare while the table holds one row per live token.
+-- name: DeleteAllInstallationReposCache :exec
+DELETE FROM installation_repos_cache;
+
+-- name: DeleteExpiredInstallationReposCache :exec
+DELETE FROM installation_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneInstallationReposCacheLRU :exec
+DELETE FROM installation_repos_cache WHERE id IN (
+    SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+
+-- name: GetHooksCache :one
+SELECT * FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertHooksCache :exec
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchHooksCache :exec
+UPDATE hooks_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- DeleteHooksCacheForTarget drops one target's listings across EVERY
+-- credential. A hook created, edited or deleted through the mirror changes
+-- what every caller sees, not just the one that wrote it -- so the write flush
+-- cannot be per-credential even though the rows are.
+-- name: DeleteHooksCacheForTarget :exec
+DELETE FROM hooks_cache WHERE scope = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteExpiredHooksCache :exec
+DELETE FROM hooks_cache WHERE expires_at <= ?;
+
+-- name: PruneHooksCacheLRU :exec
+DELETE FROM hooks_cache WHERE id IN (
+    SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );

@@ -204,6 +204,20 @@ type GitRefCache struct {
 	LastUsedAt string
 }
 
+type HooksCache struct {
+	ID         int64
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type InstallTokenCache struct {
 	ID                  int64
 	Actor               string
@@ -216,6 +230,28 @@ type InstallTokenCache struct {
 	FetchedAt           string
 	ExpiresAt           string
 	LastUsedAt          string
+}
+
+type InstallationReposCache struct {
+	ID         int64
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type LabelCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type PrLabel struct {
@@ -315,6 +351,8 @@ type RepoInstallationCache struct {
 	Actor               string
 	Owner               string
 	Repo                string
+	Status              int64
+	Message             string
 	InstallationID      int64
 	AccountLogin        string
 	AccountType         string
