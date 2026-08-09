@@ -131,8 +131,7 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            // Ask git what is TRACKED (not what is on disk) — the build step
-            // above just wrote the ignored .js files into the working tree.
+            // ask git what is TRACKED, not what is on disk -- the build step above just wrote the ignored .js files into the working tree
             const res = await exec.getExecOutput(
               "git", ["ls-files", "--", "internal/api/web/assets/*.js"], { silent: true });
             const tracked = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -197,8 +196,7 @@ jobs:
             const dist = "dist";
             fs.mkdirSync(`${dist}/assets`, { recursive: true });
 
-            // Inject the preview-only demo-data.js before app.js so the page
-            // renders canned data instead of calling the (absent) backend.
+            // inject the preview-only demo-data.js before app.js so the page renders canned data instead of calling the (absent) backend
             const appTag = '<script type="module" src="assets/app.js"></script>';
             const demoTag = '<script type="module" src="assets/demo-data.js"></script>';
             let html = fs.readFileSync(`${webDir}/index.html`, "utf8");
@@ -209,8 +207,7 @@ jobs:
               fs.copyFileSync(`${webDir}/assets/${f}`, `${dist}/assets/${f}`);
             }
 
-            // buildhost serves sites under a single path segment, so the branch
-            // name must not contain '/'. Flatten anything outside [A-Za-z0-9._-].
+            // buildhost serves sites under a single path segment: flatten anything outside [A-Za-z0-9._-]
             const raw = github.ref_name || "preview";
             const branch = raw.replace(/[^A-Za-z0-9._-]/g, "-");
             core.setOutput("branch", branch);
