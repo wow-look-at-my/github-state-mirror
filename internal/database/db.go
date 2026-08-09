@@ -12,6 +12,18 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 23: three of the largest remaining uncached slices become
+// cached routes. repo_installation_cache gains status/message, so the
+// authoritative "not installed here" 404 becomes a cacheable VERDICT (bounded
+// by its own short TTL, since only OUR App's installation events reach us);
+// label_cache holds the single-label read, flushed by `label` deliveries;
+// installation_repos_cache holds GET /installation/repositories keyed by the
+// BEARER's fingerprint, because that answer belongs to one installation token
+// rather than to the app principal its callers share; and hooks_cache holds
+// the repo and org webhook CONFIGURATION listings, keyed by the bearer for a
+// stronger reason -- they are ADMIN-only reads and the reveal layer only
+// proves READ access.
+//
 // SchemaVersion 22: workflow_runs (global truth for Actions RUN state,
 // maintained per run by workflow_run/workflow_job deliveries) +
 // workflow_runs_list_cache (the completeness proof that lets the repo-wide
@@ -74,7 +86,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 22
+const SchemaVersion = 23
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
