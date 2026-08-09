@@ -37,7 +37,21 @@ the traffic that is still uncached.
 
 - `GET /repos/{owner}/{repo}/git/ref/{ref...}` (`respcache_gitrefs.go`) — the ref-to-tip lookup ("where does this branch point right now"), the largest UNROUTED slice of the request log before it existed: fleet reconcile passes ask it per branch, forever. The wildcard is greedy (a ref path is at least `heads/<name>` and branch names carry slashes) and the ref is stored **VERBATIM, never resolved** — `heads/main` and `refs/heads/main` are distinct requests, so each is its own row and the push flush covers every spelling (`refSpellings`). Rebuild: `{ref, node_id, object:{sha, type}}` — the canonical ref name GitHub reported, a stable identifier, and the object trimmed to sha + type; `url` and `object.url` dropped. Shape guard: no query parameter changes this answer so any is unmodeled, and the ref must be a fully-qualified two-part ref (`heads/<name>`, `tags/<name>`, with or without the `refs/` prefix) — GitHub answers a PARTIAL ref (`heads`) with an ARRAY, a different shape this route does not hold. The **404 is absorbed as a VERDICT** on the compare route's precedent (sweeps re-poll deleted heads — a merged PR's head — forever), and it cannot outlive the ref: ref creation arrives as a push for that exact ref, which drops the row. Invalidation: per-ref (every spelling) by `push`, repo-wide by `repository` and by a push whose payload names no usable ref, + 24h TTL.
 - `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs` + `GET /repos/{owner}/{repo}/actions/jobs/{job_id}` (`respcache_workflowjobs.go`, one `workflow_jobs_cache` row space, kinds `run_jobs`/`job`) — **only TERMINAL answers are stored**: a jobs page whose every job has `completed`, or a single completed job. A queued/in_progress job is a LIVE value the GHA runner coordinator provisions against — serving one even seconds stale could over- or under-provision runners — and no TTL short enough to be safe there would be long enough to be worth having, so those always reach GitHub (recorded `unmodeled-response`). One in-flight job makes the WHOLE page live: the page is the answer. What this kills is the fleet re-reading SETTLED runs forever — the closed-PR cache's stance applied to Actions. A finished run can still change, because a **RE-RUN replaces its jobs under the same run id**, so both kinds carry the owning `run_id` and `workflow_job`/`workflow_run` deliveries flush every row under that run (repo-wide when the payload names none); `repository` flushes repo-wide; 24h TTL. Rebuild: `{total_count, jobs:[…]}` / one job of `{id, run_id, run_attempt, workflow_name, head_branch, head_sha, name, status, conclusion, created_at, started_at, completed_at, labels, runner_name, steps:[{name,status,conclusion,number,started_at,completed_at}]}` — nullables always keyed, every URL field dropped (no consumer survey has pinned one here). Shape guard: `per_page` (1..100) and `page` (1..10) only — `filter=latest|all` selects a DIFFERENT job set for a re-run and stays unmodeled.
-- `GET /orgs/{org}/installation` + `GET /users/{username}/installation` (`respcache_installation.go`) — the OWNER-level installation lookups answer the same object as the repo-level one for an account rather than a repository, on the same App-JWT terms (registered OUTSIDE `requireAuth`, bearer self-verified, keyed by the verified app id). They reuse that route's absorb, rebuild, row space, and invalidation: a row is keyed (app actor, owner, repo), so an owner-level answer is stored under a **sentinel repo value** no real repository can collide with (`*org` / `*user` — `*` is illegal in a GitHub repo name). Two sentinels because they are two questions: an account can answer one and 404 the other. 404 ("not installed") is never stored — an app can be installed a moment later. Invalidated by `installation`/`installation_repositories` on the stored installation id, + 24h TTL.
+- `GET /orgs/{org}/installation` + `GET /users/{username}/installation` (`respcache_installation.go`) — the OWNER-level installation lookups answer the same object as the repo-level one for an account rather than a repository, on the same App-JWT terms (registered OUTSIDE `requireAuth`, bearer self-verified, keyed by the verified app id). They reuse that route's absorb, rebuild, row space, and invalidation: a row is keyed (app actor, owner, repo), so an owner-level answer is stored under a **sentinel repo value** no real repository can collide with (`*org` / `*user` — `*` is illegal in a GitHub repo name). Two sentinels because they are two questions: an account can answer one and 404 the other. Invalidated by `installation`/`installation_repositories` on the stored installation id, + 24h TTL.
+
+  **The 404 "not installed here" VERDICT is cached too** (both the owner and repo spellings), on the contents/compare/git-ref precedent: 2015 forwards in one process were authoritative 404s relayed unstored, a fleet sweep re-asking the same accounts forever. `repo_installation_cache` carries `status`/`message` for it; a verdict row has `installation_id` 0, so the by-id flush cannot reach it and the same deliveries additionally sweep every verdict away (`InvalidateAbsentRepoInstallations`). That sweep only covers the mirror's OWN App — a consumer App gaining an installation emits nothing the mirror ever sees — so the REAL bound is the verdict's own TTL, `installationAbsentTTL` (5 minutes), not the 24h a real installation object gets.
+
+- `GET /repos/{owner}/{repo}/labels/{name}` (`respcache_labels.go`) — one label DEFINITION ("does auto-pr-merge exist here, and what colour is it"), asked per repo per sweep by pr-minder's label reconciliation: 1313 forwards in one process, all of them 200s. Whole-doc rows in `label_cache` keyed by (owner, repo, **VERBATIM requested name**) — GitHub resolves label names case-insensitively and the mirror does not model that, so each spelling is its own row. Rebuild: `{id, node_id, name, color, default, description}` (GitHub's `label` schema minus its one `url`; `description` nullable-but-always-keyed). Shape guard: no query parameter and only the default JSON Accept; a label name carrying a slash matches no route segment and keeps passing through, as does the labels LIST. Invalidation is the exact signal, already subscribed and already applied to `pr_labels`: EVERY `label` delivery flushes the repo's rows — the grain is the REPO because an edit can RENAME (two names in one delivery) and one label answers under every requested spelling — plus `repository` events and a 24h TTL backstop. `PATCH`/`DELETE` on the same path are registered purely to flush BEFORE proxying (the Code Quality trick), so a caller cannot read back its own stale write in the seconds before the delivery lands. **Only the 200 is stored**: an absent-label verdict would let an ensure-then-create caller read its own stale 404 and create the label twice, and with essentially every observed answer a 200 it would buy nothing for that risk.
+
+- `GET /repos/{owner}/{repo}/hooks` + `GET /orgs/{org}/hooks` (`respcache_hooks.go`, one `hooks_cache` row space, scopes `repo`/`org`) — the webhook CONFIGURATION listings, together the largest genuinely unrouted slice after the runs listing (6045 and 2016 forwards in one process). GitHub answers both with the same hook object, so one flow serves both; the scope is part of the key, so a repo named like an org can never answer the other question.
+
+  **Keyed by the CREDENTIAL, and here that is the security boundary rather than a convenience.** These are ADMIN-only reads: GitHub refuses them to a caller who can merely READ the repository. The reveal layer proves exactly that READ access — and its public fast path admits ANY authenticated principal without asking GitHub anything — so a global row behind the ordinary gate would hand a read-only caller the repo's webhook endpoints. A row keyed by the bearer's SHA-256 fingerprint is self-gating: it can only ever be replayed to the exact credential GitHub already answered it for.
+
+  Rebuild: a JSON ARRAY of `{id, type?, name, active, events, config:{url?, content_type?, insecure_ssl?, secret?}, created_at, updated_at, last_response?}`. GitHub's API self-links (`url`, `test_url`, `ping_url`, `deliveries_url`) are dropped; **`config.url` is a pinned no-URL exception on grounds the others do not need** — it is not a link into GitHub's API but the hook's own DESTINATION, the field that says which hook this is, so a listing without it is not a trimmed answer but a broken one (no consumer survey substitutes for that; the endpoint's whole purpose is the config). `secret` preserves PRESENCE exactly (the PR-files stance): GitHub omits it when no secret is set and sends a fixed mask when one is, so the key's presence is itself the answer to "is a secret configured". `insecure_ssl` is documented as a string OR a number and rides as raw JSON rather than being coerced. `last_response` is kept and is honestly TTL-stale: it moves with every delivery and no webhook names the change, but omitting a key a consumer branches on is worse than serving it minutes old. Shape guard: `per_page` (1..100) and `page` (1..10) only. Only a 200 ARRAY absorbs; an empty array is a valid cacheable answer (it IS what a reconciliation sweep asks), and a **403 relays unstored and is deliberately not a cached verdict** — a permission grant is exactly the kind of thing that changes with no event reaching the mirror.
+
+  **Invalidation, and the signal that looks right and is not.** GitHub's `meta` event names a hook deletion but is delivered ONLY to the webhook being deleted, so another hook's removal is something the mirror never hears about — it is not a usable signal here, and an earlier version of this document suggested it was. What the mirror does see: a write it PROXIES on these paths (`POST /…/hooks`, `PATCH`/`DELETE /…/hooks/{id}` are registered purely to flush before forwarding, the Code Quality trick) and `repository` events. The write flush drops the target's listings **across every credential**, not just the writer's: a hook one caller creates changes what every caller sees, and a reconciler working from a listing that write invalidated would create a duplicate webhook. Everything else is bounded by the TTL, which is therefore 5 minutes and is the PRIMARY bound.
+
+- `GET /installation/repositories` (`respcache_installationrepos.go`) — "which repositories does the token I am holding cover": 2275 forwards in one process, each caller asking the same single-page question ~17 times. **Keyed by the CREDENTIAL** (a SHA-256 fingerprint of the bearer, never the bearer), not by the reveal-layer principal — the answer is one installation token's own view, and the `app:<id>` principal deliberately shares one bucket across every token of an app, INCLUDING tokens of different installations, which cover different repositories. Per-credential keying is also what gates the row without a reveal decision: a stored answer can only ever be replayed to the exact credential GitHub already answered it for (the token-mint route's stance — a per-credential answer is not shared truth). Rebuild: `{total_count, repository_selection, repositories:[{id, node_id, name, full_name, owner:{login,type}, private, visibility, default_branch, fork, archived, disabled}]}` — `visibility` nullable-but-always-keyed rather than defaulted (an answer that did not carry it must not read as "public"), and the dozens of `*_url` templates GitHub attaches dropped. Shape guard: `per_page` (1..100) and `page` (1..20) only. Only a 200 absorbs; a 401 (the token expired) relays unstored. Invalidation: `installation`/`installation_repositories` flush the WHOLE table (rows key a credential, so there is no installation id to match on, and the deliveries are rare) — but the mirror receives only its own App's, so the real bound is the 15-minute TTL, `installationReposTTL`. The route sits INSIDE `requireAuth`, a deliberate change for a path that used to skip it: a credential requireAuth rejects now gets the mirror's 401/503 rather than GitHub's own answer, which only affects calls that cannot succeed upstream anyway.
 - `GET /repos/{owner}/{repo}/pulls/{number}/commits` (`respcache_pullcommits.go`) — GitHub answers it with the SAME item shape as the repository commits list, so this route **reuses that storage whole**: the listed commits are upserted into the one global `git_commits_cache`, and the page's ordered shas become a `commits_list_cache` snapshot under the synthetic ref key `pull/<number>/commits`. That is the resource those rows already model (an ordered list of commits under a key), and it inherits the immutable-commit synergy, the hit gate (every listed sha must still resolve), the pruning, and the rebuild unchanged; a caller cannot collide with the key, which would require `?sha=pull/<n>/commits` on the repo commits list — a ref that resolves to nothing and is never stored. Reveal uses the single-PR route's deny kind and resource key (same resource, same authorization question). Shape guard: `per_page` (1..100) and `page` (1..10) only. Invalidation follows the PR-files route, which has the identical fork-head problem: every `pull_request`/`pull_request_review` delivery flushes that ONE PR, a `push` flushes the repo's PR-commit snapshots as the belt for a missed delivery, `repository` repo-wide, + the shared 24h TTL. The dispatcher restates the key literal (a sync -> api import would be a cycle); both sides pin it and an end-to-end flush test proves they meet.
 
 - `GET /repos/{owner}/{repo}/code-quality/setup` (`respcache_codequality.go`) — GitHub Code Quality's per-repo enablement configuration, a large uncached slice of the request log (a fleet sweep asking "is this repo enrolled", per repo). Modeled from GitHub's OpenAPI description (schema `code-quality-setup`, public preview — [docs](https://docs.github.com/en/rest/code-quality/code-quality#get-a-code-quality-setup-configuration)) rather than from a captured sample. The endpoint takes no query parameters, so the repo is the whole key; the rebuild is the whole documented record — `{state, languages, runner_type, runner_label, updated_at, schedule, ai_findings_option}` — because the schema carries no URL field to drop, with every nullable keyed and `languages` always an array. `state: not-configured` is a real cacheable verdict (it IS what the sweep asks). Non-200s (403 "not available here", 404, 503) relay unstored and are deliberately NOT cached as verdicts: unlike a missing git ref, nothing observable says when the feature becomes available.
@@ -60,31 +74,80 @@ webhook naming the change". It did: `check_suite`/`check_run`/`workflow_job`
 deliver both edges of `queued`, and the shape is cached now (above). Read the
 rest with that in mind.
 
+Volumes below are from the 2026-08-09 implementation brief (915,259 requests
+in one process; 191,547 of them passthroughs). That capture predates the
+repo-wide runs listing landing, so its largest entry — 152,581 forwards of
+`/actions/runs` under `unmodeled-query` — is already closed by the route
+above and is not repeated here.
+
+- `GET /repos/{owner}/{repo}/actions/runs/{id}/jobs` (8722 forwards) and
+  `/actions/jobs/{id}` (9125) while a job is queued or in progress — by far
+  the largest remaining slice, and the routes exist but store only terminal
+  answers. The state IS arriving: `workflow_job` deliveries carry the whole
+  job object on every transition, and the runs listing proved that a
+  webhook-maintained truth table beats a snapshot for exactly this shape.
+  What blocks it is that `workflow_jobs` — the truth table those deliveries
+  already feed — cannot answer these routes yet. It deliberately drops the
+  `queued`/`waiting` actions ("queued/waiting churn is deliberately not
+  recorded"), which is precisely the state being polled, and it models
+  neither `steps` nor `labels`. So the work is: record the queued edge, add
+  those two columns, and add the runs-listing style completeness marker the
+  jobs PAGE would need — then rebuild from rows. One caveat to design around
+  rather than ignore: a job's `steps` advance mid-run with NO delivery, so a
+  rebuild is only faithful for a job that has not started (`queued`/
+  `waiting`, where `steps` is empty by construction); the `in_progress`
+  phase needs its own answer, not the same row served with confidence.
+- **A SHARED row for the hook listings.** Both are cached now (above), but
+  per credential, so two credentials asking about the same repo each still
+  pay their own fetch. Sharing one row needs an admin oracle, and GitHub has
+  two: `permissions.admin` on the `GET /repos/{owner}/{repo}` object the
+  reveal probe ALREADY fetches, and — for an installation token — the
+  installation's own permission set, which the mirror already caches on the
+  mint and repo-installation routes. Either is a new grant dimension rather
+  than a tweak, **and the arithmetic decides whether it is worth one**: the
+  org listing is asked ~17 times per credential across a handful of orgs, so
+  the repeats the shared row would collect are the ones the per-credential
+  rows already collapse; the repo listing looks like ~118 rotating
+  credentials reading each repo exactly ONCE, and against that shape a
+  global row gated on a per-(credential, repo) probe costs precisely the
+  upstream call it saves. Only a proof earned ONCE PER CREDENTIAL — the
+  installation's permission set, never a per-repo probe — can pay there.
+  Measure the distinct-repo count from a fresh brief before building it; the
+  ~118×1 reading is inferred from caller counts, not from repo counts the
+  brief carries.
+- `GET /orgs/{org}/actions/runners` (2018) — the live runner roster. Needs an
+  invalidation signal: GitHub delivers no runner-registration webhook, but
+  `workflow_job` carries `runner_name`/`runner_id` on in_progress and
+  completed, which names a runner the mirror has seen alive. Model that (or
+  hold the roster short) rather than forwarding it. The per-credential shape
+  above applies here too (~17 reads per credential).
+- `GET /app` (1376) — NOT a modeling gap: the answer is small and static,
+  but every caller presents a FRESH App JWT (1376 forwards, ~1376 distinct
+  credentials, all 200s), and the only way to know which app is asking is to
+  verify that JWT — which is itself one `GET /app` upstream call, the same
+  call the passthrough already makes. Caching the document changes nothing
+  until the mirror can verify an App JWT offline, which needs GitHub to
+  publish app public keys. Keying by the JWT's unverified `iss` claim would
+  close the gap and is forgeable; do not.
 - `GET /repos/{owner}/{repo}/actions/runs` filtered by `event`/`actor`/
   `created` — the same route, the same invalidation; these filters simply
   have no observed traffic to survey, so they are not in the key yet. Adding
   one is a validator plus a key component.
-- `GET /orgs/{org}/actions/runners` — the live runner roster. Needs an
-  invalidation signal: GitHub delivers no runner-registration webhook, but
-  `workflow_job` carries `runner_name`/`runner_id` on in_progress and
-  completed, which names a runner the mirror has seen alive. Model that (or
-  hold the roster short) rather than forwarding it.
-- `GET /repos/{owner}/{repo}/actions/runs/{id}/jobs` and `/actions/jobs/{id}`
-  while any job is queued or in progress — the routes exist and store only
-  terminal answers. The open question is the live phase: `workflow_job`
-  deliveries carry the job's own state transitions, so the state is
-  arriving; what is missing is absorbing it into the jobs rows instead of
-  only invalidating them.
-- `GET /repos/{owner}/{repo}/hooks`, `GET /orgs/{org}/hooks` — webhook
-  configuration lists. Needs a consumer survey (a consumer reconciling hooks
-  off a stale listing would create duplicates) and a flush; GitHub's `meta`
-  event names hook deletion, and the mirror proxies the create/edit calls
-  themselves, which is the same flush-then-forward trick the Code Quality
-  `setup` route already uses for config with no webhook.
-- `GET /installation/repositories`, `GET /repos/{owner}/{repo}/labels/{name}`
-  — both have clean signals available already (`installation_repositories`
-  and `label` events respectively); neither has been modeled yet.
-- `GET /orgs/{org}/installation` answering **404** — the route exists and
-  caches 200s, but 1085 forwards in one process were authoritative 404s
-  relayed unstored. An authoritative absent answer is cacheable on the
-  contents/compare/git-ref precedent, flushed by `installation` events.
+- `GET /repos/{owner}/{repo}/commits/{ref}/status` answering **403** (1659,
+  every one of them pr-minder's, every one a 403) — the route exists and the
+  reveal gate passes (the repo is readable); the 403 is GitHub refusing the
+  SUB-RESOURCE to that credential's permission set. That is an authoritative
+  verdict and cacheable per principal, but it is also a caller bug worth
+  fixing at the source first: 1659 identical refusals means a token is
+  missing a scope it is asked for on every sweep.
+- `GET /search/issues` (516), `GET /app/hook/deliveries` (306),
+  `GET /app/installations` (129) — App-level lists with no per-resource
+  invalidation modeled. `/app/installations` has the clean signal
+  (`installation` deliveries) and is small enough to be a straightforward
+  per-app row; the other two need a stance on how stale a search answer and
+  a delivery log may be.
+- `GET /repos/{owner}/{repo}/git/matching-refs/heads/…` (107) — the array
+  form of the ref lookup, which `respcache_gitrefs.go` explicitly declines
+  today ("a partial ref makes it answer an ARRAY, a different shape this
+  route does not hold"). Same push invalidation, same row space if the
+  array's shape gets its own kind.
