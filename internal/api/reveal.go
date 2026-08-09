@@ -62,6 +62,7 @@ const (
 	denyKindRunJobs      = "run_jobs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
 	denyKindWorkflowJob  = "workflow_job"  // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 	denyKindCodeQuality  = "code_quality"  // GET /repos/{owner}/{repo}/code-quality/setup
+	denyKindLabel        = "label"         // GET /repos/{owner}/{repo}/labels/{name}
 )
 
 // revealOutcome is the reveal decision for one request.

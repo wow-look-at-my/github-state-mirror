@@ -638,11 +638,21 @@ CREATE INDEX idx_pulls_list_cache_lru ON pulls_list_cache (last_used_at);
 -- by app identity, deliberately outside the global-truth model. Invalidated by
 -- installation/installation_repositories events for the stored installation
 -- id, plus the TTL backstop. owner/repo lowercased.
+--
+-- status distinguishes the two absorbed answers: 200 rows carry a real
+-- installation, 404 rows are the "not installed here" VERDICT and carry
+-- installation_id 0, so the by-installation-id flush cannot reach them --
+-- DeleteAbsentRepoInstallationCache is what clears those. A verdict's TTL is
+-- deliberately much shorter than a 200's (installationAbsentTTL): the mirror
+-- only receives ITS OWN App's installation webhooks, so a consumer App being
+-- installed somewhere emits no signal the mirror can see.
 CREATE TABLE repo_installation_cache (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     actor                TEXT NOT NULL,             -- "app:<verified app id>"
     owner                TEXT NOT NULL,             -- lowercased
     repo                 TEXT NOT NULL,             -- lowercased
+    status               INTEGER NOT NULL DEFAULT 200, -- 200 installed | 404 absent verdict
+    message              TEXT NOT NULL DEFAULT '',  -- GitHub's message, 404 rows only
     installation_id      INTEGER NOT NULL,
     account_login        TEXT NOT NULL DEFAULT '',
     account_type         TEXT NOT NULL DEFAULT '',  -- Organization | User
@@ -658,6 +668,7 @@ CREATE TABLE repo_installation_cache (
 CREATE UNIQUE INDEX idx_repo_installation_cache_key ON repo_installation_cache (actor, owner, repo);
 CREATE INDEX idx_repo_installation_cache_install ON repo_installation_cache (installation_id);
 CREATE INDEX idx_repo_installation_cache_lru ON repo_installation_cache (last_used_at);
+CREATE INDEX idx_repo_installation_cache_status ON repo_installation_cache (status);
 
 -- ============================================================================
 -- Principal Identities (dashboard only)
@@ -892,3 +903,98 @@ CREATE TABLE code_quality_setup_cache (
 
 CREATE UNIQUE INDEX idx_code_quality_setup_cache_key ON code_quality_setup_cache (owner, repo);
 CREATE INDEX idx_code_quality_setup_cache_lru ON code_quality_setup_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/labels/{name} -- one label
+-- definition. The name is the VERBATIM requested path segment (GitHub label
+-- names carry spaces and punctuation), so a differently-cased spelling of the
+-- same label is its own row; every flush here is repo-wide, which is what
+-- makes that safe.
+--
+-- Only the 200 is stored. The absent answer deliberately is not: a caller's
+-- ensure-then-create pass would read its own stale 404 in the seconds before
+-- the `label` delivery lands, and in this fleet's traffic essentially every
+-- answer is a 200 anyway, so the verdict would buy nothing for that risk.
+--
+-- Invalidation: EVERY `label` delivery (created/edited/deleted -- a rename
+-- moves two names at once, so the grain is the repo, and these events are
+-- rare), the write verbs the mirror proxies on the same path, `repository`
+-- events, + a 24h TTL backstop.
+CREATE TABLE label_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    name         TEXT NOT NULL,              -- VERBATIM requested label name
+    doc          TEXT NOT NULL,              -- trimmed label document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_label_cache_key ON label_cache (owner, repo, name);
+CREATE INDEX idx_label_cache_lru ON label_cache (last_used_at);
+
+-- Snapshot for GET /installation/repositories -- "which repos does the token
+-- I am holding cover".
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), not by the reveal-layer principal. The answer belongs to one
+-- installation token, and the app:<id> principal deliberately shares one
+-- bucket across every token of an app -- including tokens of DIFFERENT
+-- installations, which see different repos. Per-credential keying is also
+-- what gates the row: it can only ever be replayed to the exact credential
+-- GitHub already answered.
+--
+-- Bounded primarily by its TTL (installationReposTTL): installation /
+-- installation_repositories deliveries flush the whole table, but the mirror
+-- only receives ITS OWN App's, and these callers are other apps.
+CREATE TABLE installation_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed listing document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_installation_repos_cache_key ON installation_repos_cache (token_fp, per_page, page);
+CREATE INDEX idx_installation_repos_cache_lru ON installation_repos_cache (last_used_at);
+
+-- Snapshots for the webhook CONFIGURATION listings:
+--   GET /repos/{owner}/{repo}/hooks  (scope 'repo')
+--   GET /orgs/{org}/hooks            (scope 'org', repo '')
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), like installation_repos_cache and for a stronger reason: these are
+-- ADMIN-only reads. The reveal layer proves READ access and its public fast
+-- path admits any authenticated principal, so a global row behind the ordinary
+-- gate would hand a read-only caller the repo's webhook URLs. Per-credential
+-- keying is self-gating -- a row is only ever replayed to the exact credential
+-- GitHub already answered it for -- and needs no new authorization machinery.
+-- What a GLOBAL row would need instead, and the arithmetic that decides
+-- whether it would pay, is in docs/cache/rest-routes.md.
+--
+-- Invalidation: the write verbs the mirror proxies on these paths flush the
+-- listing ACROSS ALL CREDENTIALS (a hook one caller creates changes what every
+-- caller sees), `repository` events flush a repo's rows, and the TTL is the
+-- primary bound -- GitHub's `meta` event is NOT a usable signal here: it is
+-- delivered only to the hook being deleted, so another hook's deletion is
+-- something the mirror never hears about.
+CREATE TABLE hooks_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- 'repo' | 'org'
+    owner        TEXT NOT NULL,              -- lowercased owner, or the org login
+    repo         TEXT NOT NULL,              -- lowercased repo; '' for scope 'org'
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed hooks document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, per_page, page);
+CREATE INDEX idx_hooks_cache_target ON hooks_cache (scope, owner, repo);
+CREATE INDEX idx_hooks_cache_lru ON hooks_cache (last_used_at);
