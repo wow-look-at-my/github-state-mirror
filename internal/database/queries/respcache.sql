@@ -284,9 +284,11 @@ SELECT * FROM repo_installation_cache
 WHERE actor = ? AND owner = ? AND repo = ?;
 
 -- name: UpsertRepoInstallationCache :exec
-INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO repo_installation_cache (actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    status = excluded.status,
+    message = excluded.message,
     installation_id = excluded.installation_id,
     account_login = excluded.account_login,
     account_type = excluded.account_type,
@@ -304,6 +306,13 @@ WHERE actor = ? AND owner = ? AND repo = ?;
 
 -- name: DeleteRepoInstallationCacheByInstallation :exec
 DELETE FROM repo_installation_cache WHERE installation_id = ?;
+
+-- DeleteAbsentRepoInstallationCache drops every "not installed" VERDICT row.
+-- Those carry installation_id 0, so the by-id flush above cannot reach them,
+-- and an installation event means some account gained (or lost) an install --
+-- exactly what a verdict claims is absent.
+-- name: DeleteAbsentRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE status <> 200;
 
 -- name: DeleteExpiredRepoInstallationCache :exec
 DELETE FROM repo_installation_cache WHERE expires_at <= ?;

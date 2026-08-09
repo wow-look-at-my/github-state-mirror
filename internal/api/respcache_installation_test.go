@@ -117,6 +117,70 @@ func TestCachedOwnerInstallation_ScopesAreIndependent(t *testing.T) {
 	}
 }
 
+// The authoritative "not installed here" 404 is a cacheable VERDICT: replayed
+// under its own status without touching GitHub, and cleared by an installation
+// event (verdict rows carry no installation id, so the by-id flush cannot
+// reach them — a separate sweep must).
+func TestCachedOwnerInstallation_AbsentVerdictCachedAndFlushed(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.install = notInstalled
+
+	get := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/orgs/org1/installation", nil)
+		req.Header.Set("Authorization", "Bearer "+goodAppJWT)
+		return do(t, router, req)
+	}
+
+	w1 := get()
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.JSONEq(t, `{"message":"Not Found","status":"404"}`, w1.Body.String())
+	assertNoURLKeys(t, w1.Body.Bytes())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits))
+
+	w2 := get()
+	require.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits), "a cached verdict must not call GitHub")
+
+	// The app gets installed. The delivery names an id no verdict row carries,
+	// so only the absent-verdict sweep can clear it.
+	u.install = newPullsCacheUpstream().install
+	postWebhook(t, router, "installation", `{"action":"created","installation":{"id":42}}`)
+
+	w3 := get()
+	require.Equal(t, http.StatusOK, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "an installation event must clear the absent verdict")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.installHits))
+}
+
+// A verdict is scoped like every other row here: per app, per account, per
+// question. One account's 404 must never answer another's, and the org and
+// user questions stay distinct even for the same login.
+func TestCachedOwnerInstallation_AbsentVerdictIsScoped(t *testing.T) {
+	router, _, _, u := pullsCacheStack(t)
+	u.install = notInstalled
+
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("Authorization", "Bearer "+goodAppJWT)
+		return do(t, router, req)
+	}
+
+	targets := []string{"/orgs/org1/installation", "/users/org1/installation", "/orgs/org2/installation"}
+	for i, target := range targets {
+		w := get(target)
+		require.Equal(t, http.StatusNotFound, w.Code, target)
+		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "%s must not be answered by another scope's verdict", target)
+		assert.Equal(t, int32(i+1), atomic.LoadInt32(&u.installHits))
+	}
+	for _, target := range targets {
+		assert.Equal(t, "hit", get(target).Header().Get(cacheHeader), "%s must serve its own verdict", target)
+	}
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.installHits))
+}
+
 // An unverifiable bearer forwards unchanged, uncached — GitHub answers the
 // caller itself, exactly as on the repo-level route.
 func TestCachedOwnerInstallation_UnverifiedForwards(t *testing.T) {

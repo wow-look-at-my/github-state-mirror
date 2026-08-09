@@ -52,7 +52,8 @@ import (
 //     git-commit 404 miss markers.
 //   - installation events: the installation's cached token mints AND cached
 //     repo-installation answers (a suspended/deleted/re-scoped installation
-//     must not keep serving either).
+//     must not keep serving either), plus every cached "not installed here"
+//     verdict, which carries no id for the by-id flush to match.
 //
 // The repo-wide runs LISTING is deliberately absent from all of the above.
 // It is rebuilt from the workflow_runs TRUTH table, which the workflow_run
@@ -180,6 +181,11 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
+		// The "not installed here" verdicts carry no installation id, so the
+		// by-id flush below cannot reach them -- and this delivery is exactly
+		// the news that an account's coverage changed. Dropped first, and
+		// regardless of whether the payload named an id.
+		flush("absent installation verdicts", "all apps", d.store.InvalidateAbsentRepoInstallations(ctx))
 		if event.InstallationID == 0 {
 			return
 		}

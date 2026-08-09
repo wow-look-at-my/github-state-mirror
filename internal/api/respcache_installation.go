@@ -12,9 +12,20 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// repoInstallationCacheTTL is the TTL backstop on cached
-// GET /repos/{o}/{r}/installation answers; installation events flush sooner.
-const repoInstallationCacheTTL = 24 * time.Hour
+const (
+	// repoInstallationCacheTTL is the TTL backstop on a cached installation
+	// ANSWER; installation events flush sooner.
+	repoInstallationCacheTTL = 24 * time.Hour
+
+	// installationAbsentTTL bounds a cached "not installed here" VERDICT, and
+	// unlike the TTL above it is the PRIMARY bound rather than a backstop: the
+	// mirror receives only its OWN App's installation webhooks, so a consumer
+	// App gaining an installation is a change it never hears about. Held to
+	// minutes for that reason -- long enough to collapse a fleet sweep asking
+	// the same account over and over, short enough that a fresh install is
+	// visible on the next cycle.
+	installationAbsentTTL = 5 * time.Minute
+)
 
 // ---- GET /repos/{owner}/{repo}/installation ----
 
@@ -74,11 +85,22 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
+	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, installationTTL(c)); err != nil {
 		slog.Warn("repo installation cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
 	h.serveRepoInstallation(w, c, false)
+}
+
+// installationTTL picks how long an absorbed answer may be served: an
+// installation object gets the long backstop (installation events flush it by
+// id much sooner), a "not installed" verdict gets the short primary bound (no
+// event names it for a consumer App).
+func installationTTL(c ghdata.CachedRepoInstallation) time.Duration {
+	if c.Status == http.StatusNotFound {
+		return installationAbsentTTL
+	}
+	return repoInstallationCacheTTL
 }
 
 // repoInstallationJSON is the trimmed rebuild: GitHub's installation object
@@ -99,6 +121,15 @@ type repoInstallAccountJSON struct {
 }
 
 func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedRepoInstallation, hit bool) {
+	if c.Status == http.StatusNotFound {
+		body, err := marshalTrimmed(notFoundJSON{Message: c.Message, Status: "404"})
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeRebuilt(w, http.StatusNotFound, body, hit)
+		return
+	}
 	body, err := marshalTrimmed(repoInstallationJSON{
 		ID:                  c.InstallationID,
 		Account:             repoInstallAccountJSON{Login: c.AccountLogin, Type: c.AccountType},
@@ -114,10 +145,22 @@ func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedR
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// absorbRepoInstallation parses an upstream repo-installation response. Only
-// a well-formed 200 is absorbed; 404 ("app not installed on this repo") is
-// replayed unstored -- the app can be installed a moment later.
+// absorbRepoInstallation parses an upstream installation response into either
+// a well-formed 200 or the authoritative 404 VERDICT ("not installed here").
+// Anything else -- a 401 the JWT earned, a 5xx -- reports false and is
+// replayed unstored.
+//
+// The verdict is cacheable on the contents/compare/git-ref precedent: it is
+// GitHub's own authoritative answer, and a fleet sweep re-asks it per account
+// forever (2015 forwards in one process, every one a 404). What keeps it
+// honest is its short TTL, NOT a webhook -- see installationAbsentTTL.
 func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata.CachedRepoInstallation, bool) {
+	if status == http.StatusNotFound {
+		return ghdata.CachedRepoInstallation{
+			Owner: owner, Repo: repo,
+			Status: http.StatusNotFound, Message: upstreamErrorMessage(body),
+		}, true
+	}
 	if status != http.StatusOK {
 		return ghdata.CachedRepoInstallation{}, false
 	}
@@ -136,7 +179,7 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 		return ghdata.CachedRepoInstallation{}, false
 	}
 	c := ghdata.CachedRepoInstallation{
-		Owner: owner, Repo: repo, InstallationID: g.ID,
+		Owner: owner, Repo: repo, Status: http.StatusOK, InstallationID: g.ID,
 		RepositorySelection: g.RepositorySelection,
 		AppID:               g.AppID, AppSlug: g.AppSlug, TargetType: g.TargetType,
 	}
@@ -158,7 +201,8 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 // account can answer one and 404 the other.
 //
 // Invalidation rides the same signal: installation / installation_repositories
-// events flush by the stored installation id, which owner rows carry too.
+// events flush by the stored installation id, which owner rows carry too, and
+// additionally drop every 404 verdict (those carry no id to match on).
 const (
 	ownerInstallScopeOrg  = "*org"
 	ownerInstallScopeUser = "*user"
@@ -212,12 +256,10 @@ func (h *handlers) cachedOwnerInstallation(scope, ownerParam string) http.Handle
 
 		c, absorbed := absorbRepoInstallation(owner, scope, resp.StatusCode, body)
 		if overflow || !absorbed {
-			// Includes the 404 "not installed for this account": the app can
-			// be installed a moment later, so that answer is never stored.
 			h.replayUnstored(w, r, resp, body)
 			return
 		}
-		if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
+		if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, installationTTL(c)); err != nil {
 			slog.Warn("owner installation cache write failed", "owner", owner, "scope", scope, "error", err)
 		}
 		h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)

@@ -41,6 +41,19 @@ func (q *Queries) CountWorkflowRuns(ctx context.Context, arg CountWorkflowRunsPa
 	return count, err
 }
 
+const deleteAbsentRepoInstallationCache = `-- name: DeleteAbsentRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE status <> 200
+`
+
+// DeleteAbsentRepoInstallationCache drops every "not installed" VERDICT row.
+// Those carry installation_id 0, so the by-id flush above cannot reach them,
+// and an installation event means some account gained (or lost) an install --
+// exactly what a verdict claims is absent.
+func (q *Queries) DeleteAbsentRepoInstallationCache(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAbsentRepoInstallationCache)
+	return err
+}
+
 const deleteBranchesListCacheByRepo = `-- name: DeleteBranchesListCacheByRepo :exec
 DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?
 `
@@ -1228,7 +1241,7 @@ func (q *Queries) GetPullsListMarker(ctx context.Context, arg GetPullsListMarker
 
 const getRepoInstallationCache = `-- name: GetRepoInstallationCache :one
 
-SELECT id, actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at FROM repo_installation_cache
+SELECT id, actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at FROM repo_installation_cache
 WHERE actor = ? AND owner = ? AND repo = ?
 `
 
@@ -1247,6 +1260,8 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 		&i.Actor,
 		&i.Owner,
 		&i.Repo,
+		&i.Status,
+		&i.Message,
 		&i.InstallationID,
 		&i.AccountLogin,
 		&i.AccountType,
@@ -2549,9 +2564,11 @@ func (q *Queries) UpsertPullsListMarker(ctx context.Context, arg UpsertPullsList
 }
 
 const upsertRepoInstallationCache = `-- name: UpsertRepoInstallationCache :exec
-INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO repo_installation_cache (actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    status = excluded.status,
+    message = excluded.message,
     installation_id = excluded.installation_id,
     account_login = excluded.account_login,
     account_type = excluded.account_type,
@@ -2568,6 +2585,8 @@ type UpsertRepoInstallationCacheParams struct {
 	Actor               string
 	Owner               string
 	Repo                string
+	Status              int64
+	Message             string
 	InstallationID      int64
 	AccountLogin        string
 	AccountType         string
@@ -2585,6 +2604,8 @@ func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRep
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+		arg.Status,
+		arg.Message,
 		arg.InstallationID,
 		arg.AccountLogin,
 		arg.AccountType,

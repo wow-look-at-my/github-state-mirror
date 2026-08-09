@@ -108,6 +108,7 @@ type pullsCacheUpstream struct {
 	probeHits   int32
 	list        func(w http.ResponseWriter, r *http.Request)
 	single      func(w http.ResponseWriter, r *http.Request)
+	install     func(w http.ResponseWriter, r *http.Request)
 }
 
 func servePRJSON(w http.ResponseWriter, v any) {
@@ -145,7 +146,32 @@ func newPullsCacheUpstream() *pullsCacheUpstream {
 		pr["deletions"] = 2
 		servePRJSON(w, pr)
 	}
+	u.install = func(w http.ResponseWriter, r *http.Request) {
+		servePRJSON(w, map[string]any{
+			"id": 42,
+			"account": map[string]any{
+				"login": "org1", "id": 9000, "type": "Organization",
+				"url": "https://api.github.com/orgs/org1", "avatar_url": "https://a", "html_url": "https://github.com/org1",
+			},
+			"repository_selection": "all",
+			"access_tokens_url":    "https://api.github.com/app/installations/42/access_tokens",
+			"repositories_url":     "https://api.github.com/installation/repositories",
+			"html_url":             "https://github.com/organizations/org1/settings/installations/42",
+			"app_id":               777, "app_slug": "testapp",
+			"target_id": 9000, "target_type": "Organization",
+			"permissions": map[string]any{"pull_requests": "write"},
+			"events":      []any{"pull_request"},
+		})
+	}
 	return u
+}
+
+// notInstalled makes the fake answer every installation lookup with GitHub's
+// real "not installed" 404.
+func notInstalled(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}`))
 }
 
 func (u *pullsCacheUpstream) handler() http.Handler {
@@ -166,21 +192,7 @@ func (u *pullsCacheUpstream) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 777, "slug": "testapp"})
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			atomic.AddInt32(&u.installHits, 1)
-			servePRJSON(w, map[string]any{
-				"id": 42,
-				"account": map[string]any{
-					"login": "org1", "id": 9000, "type": "Organization",
-					"url": "https://api.github.com/orgs/org1", "avatar_url": "https://a", "html_url": "https://github.com/org1",
-				},
-				"repository_selection": "all",
-				"access_tokens_url":    "https://api.github.com/app/installations/42/access_tokens",
-				"repositories_url":     "https://api.github.com/installation/repositories",
-				"html_url":             "https://github.com/organizations/org1/settings/installations/42",
-				"app_id":               777, "app_slug": "testapp",
-				"target_id": 9000, "target_type": "Organization",
-				"permissions": map[string]any{"pull_requests": "write"},
-				"events":      []any{"pull_request"},
-			})
+			u.install(w, r)
 		case strings.Contains(r.URL.Path, "/pulls/"):
 			atomic.AddInt32(&u.singleHits, 1)
 			u.single(w, r)

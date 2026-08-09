@@ -638,11 +638,21 @@ CREATE INDEX idx_pulls_list_cache_lru ON pulls_list_cache (last_used_at);
 -- by app identity, deliberately outside the global-truth model. Invalidated by
 -- installation/installation_repositories events for the stored installation
 -- id, plus the TTL backstop. owner/repo lowercased.
+--
+-- status distinguishes the two absorbed answers: 200 rows carry a real
+-- installation, 404 rows are the "not installed here" VERDICT and carry
+-- installation_id 0, so the by-installation-id flush cannot reach them --
+-- DeleteAbsentRepoInstallationCache is what clears those. A verdict's TTL is
+-- deliberately much shorter than a 200's (installationAbsentTTL): the mirror
+-- only receives ITS OWN App's installation webhooks, so a consumer App being
+-- installed somewhere emits no signal the mirror can see.
 CREATE TABLE repo_installation_cache (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     actor                TEXT NOT NULL,             -- "app:<verified app id>"
     owner                TEXT NOT NULL,             -- lowercased
     repo                 TEXT NOT NULL,             -- lowercased
+    status               INTEGER NOT NULL DEFAULT 200, -- 200 installed | 404 absent verdict
+    message              TEXT NOT NULL DEFAULT '',  -- GitHub's message, 404 rows only
     installation_id      INTEGER NOT NULL,
     account_login        TEXT NOT NULL DEFAULT '',
     account_type         TEXT NOT NULL DEFAULT '',  -- Organization | User
@@ -658,6 +668,7 @@ CREATE TABLE repo_installation_cache (
 CREATE UNIQUE INDEX idx_repo_installation_cache_key ON repo_installation_cache (actor, owner, repo);
 CREATE INDEX idx_repo_installation_cache_install ON repo_installation_cache (installation_id);
 CREATE INDEX idx_repo_installation_cache_lru ON repo_installation_cache (last_used_at);
+CREATE INDEX idx_repo_installation_cache_status ON repo_installation_cache (status);
 
 -- ============================================================================
 -- Principal Identities (dashboard only)
