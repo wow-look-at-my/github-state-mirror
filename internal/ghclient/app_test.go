@@ -138,3 +138,38 @@ func TestNewAppAuthenticator_Errors(t *testing.T) {
 	_, err = NewAppAuthenticator("42", []byte("not a pem"), New())
 	assert.Error(t, err, "garbage key must error")
 }
+
+// SubscribedEvents asks GitHub what the App is actually configured for, over
+// the App's own JWT. This is the only sound answer to "is this event
+// subscribed" -- traffic can show an event arrived, never that a silent one is
+// unconfigured rather than idle.
+func TestAppAuthenticator_SubscribedEvents(t *testing.T) {
+	key := testKey(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/app", r.URL.Path)
+		claims := verifyJWT(t, r.Header.Get("Authorization"), &key.PublicKey)
+		assert.Equal(t, "42", claims["iss"])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 42, "slug": "mirror",
+			"events": []string{"push", "pull_request", "label"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	app, err := NewAppAuthenticator("42", pkcs1PEM(key), NewWithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	events, err := app.SubscribedEvents(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"push", "pull_request", "label"}, events)
+}
+
+// The events GitHub delivers to every App are never in that list, so a caller
+// diffing against it must not read their absence as "unsubscribed".
+func TestAlwaysDeliveredEvents(t *testing.T) {
+	assert.True(t, AlwaysDeliveredEvents["installation"])
+	assert.True(t, AlwaysDeliveredEvents["installation_repositories"])
+	assert.False(t, AlwaysDeliveredEvents["push"], "push is a real subscription and must be diffable")
+	assert.False(t, AlwaysDeliveredEvents["label"])
+}

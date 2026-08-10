@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
@@ -70,9 +71,14 @@ type dashboard struct {
 	// shapes is the captured request/response shape of uncached traffic
 	// (shapes.go) behind the admin-only GET /api/brief. Nil-safe.
 	shapes *shapeStore
+	// appEvents reports the event types the GitHub App is subscribed to,
+	// straight from GitHub. It is what the Webhooks tab's missing-subscription
+	// check reads; nil (no App configured) means the check reports nothing
+	// rather than guessing from traffic.
+	appEvents func(context.Context) ([]string, error)
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error)) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -107,13 +113,14 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
-		reqlog:   reqlog,
-		checker:  checker,
-		meter:    meter,
-		notifier: notifier,
-		dbPath:   dbPath,
-		timeline: timeline,
-		shapes:   shapes,
+		reqlog:    reqlog,
+		checker:   checker,
+		meter:     meter,
+		notifier:  notifier,
+		dbPath:    dbPath,
+		timeline:  timeline,
+		shapes:    shapes,
+		appEvents: appEvents,
 	}
 }
 

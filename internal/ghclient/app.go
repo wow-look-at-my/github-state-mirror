@@ -75,6 +75,38 @@ func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, e
 	}
 }
 
+// AlwaysDeliveredEvents are the event types GitHub sends to every App
+// regardless of configuration. They never appear in the App's `events` list
+// because there is nothing to subscribe to, so a caller diffing against
+// SubscribedEvents must treat them as always present rather than missing.
+var AlwaysDeliveredEvents = map[string]bool{
+	"installation":              true,
+	"installation_repositories": true,
+	"github_app_authorization":  true,
+}
+
+// SubscribedEvents reports the event types this App is subscribed to, as
+// GitHub itself states them (GET /app, authenticated by the App's own JWT).
+//
+// This is the ONLY sound answer to "is this event configured". Traffic cannot
+// answer it: a delivery log can prove an event ARRIVED, never that a silent
+// event type is unsubscribed rather than merely idle, and the low-frequency
+// events are exactly the ones a bounded log never contains.
+func (a *AppAuthenticator) SubscribedEvents(ctx context.Context) ([]string, error) {
+	jwt, err := a.mintJWT(time.Now())
+	if err != nil {
+		return nil, err
+	}
+	ctx = WithToken(ctx, jwt)
+	var out struct {
+		Events []string `json:"events"`
+	}
+	if err := a.client.doJSON(ctx, "GET", "/app", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
+}
+
 // InstallationToken mints a short-lived (~1h) access token for one installation.
 func (a *AppAuthenticator) InstallationToken(ctx context.Context, installID int64) (string, error) {
 	jwt, err := a.mintJWT(time.Now())
