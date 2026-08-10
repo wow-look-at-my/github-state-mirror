@@ -30,7 +30,7 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 
 	// PR closed/merged -> delete (we only cache open PRs).
 	if payload.PR.State == "CLOSED" {
-		if err := d.store.DeletePR(ctx, owner, repo, payload.PR.Number); err != nil {
+		if err := d.store.DeletePR(ctx, owner, repo, payload.PR.Number, payload.PR.UpdatedAt, time.Now()); err != nil {
 			slog.Warn("webhook: failed to delete PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
 			return errored("delete closed PR failed")
 		}

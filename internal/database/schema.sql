@@ -165,6 +165,27 @@ CREATE TABLE pr_labels (
     PRIMARY KEY (owner, repo, pr_number, name)
 );
 
+-- The record that a PR left the cache because it closed. Only OPEN PRs are
+-- retained, so closing DELETES the row -- and once the row is gone there is
+-- nothing for a later write carrying OLDER state to lose against: it simply
+-- re-inserts the PR as open, and nothing afterwards restates the close.
+-- A delivery's payload is the state at the moment the event happened, so any
+-- delivery that arrives late (redelivered, or merely out of order -- GitHub
+-- delivers concurrently) can be that write. This table is what lets the open
+-- write paths refuse one. Keyed lowercase (NormalizeRepoKey), pruned at
+-- ghdata.PRClosureRetention, and dropped the moment a write proves it
+-- postdates the close (a genuine reopen).
+CREATE TABLE pr_closures (
+    owner       TEXT NOT NULL,     -- lowercased
+    repo        TEXT NOT NULL,     -- lowercased
+    number      INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL,     -- the closing view's pull_request.updated_at
+    recorded_at TEXT NOT NULL,     -- RFC3339, for retention pruning
+    PRIMARY KEY (owner, repo, number)
+);
+
+CREATE INDEX idx_pr_closures_recorded ON pr_closures (recorded_at);
+
 -- Per-check state for a commit, fed by status/check_run/check_suite webhooks.
 -- We aggregate these into the PR's last_commit_status rollup without re-fetching
 -- from GitHub. context is the status context or check name (latest state wins).
