@@ -350,6 +350,30 @@ DELETE FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?;
 DELETE FROM pull_requests WHERE owner = ? AND repo = ?;
 
 -- ============================================================================
+-- PR closures (the tombstone a deleted open row leaves behind)
+-- ============================================================================
+
+-- RecordPRClosure remembers that a PR closed, and the updated_at of the view
+-- that said so. A later write must beat this timestamp to re-open the PR.
+-- A closure already recorded keeps the NEWER updated_at: two views of the
+-- same close can disagree, and the later one is the stronger bar.
+-- name: RecordPRClosure :exec
+INSERT INTO pr_closures (owner, repo, number, updated_at, recorded_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    updated_at  = MAX(pr_closures.updated_at, excluded.updated_at),
+    recorded_at = excluded.recorded_at;
+
+-- name: GetPRClosure :one
+SELECT * FROM pr_closures WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeletePRClosure :exec
+DELETE FROM pr_closures WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: PrunePRClosures :exec
+DELETE FROM pr_closures WHERE recorded_at < ?;
+
+-- ============================================================================
 -- PR Labels (global truth)
 -- ============================================================================
 

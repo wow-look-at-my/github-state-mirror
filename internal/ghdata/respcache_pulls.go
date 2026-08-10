@@ -313,8 +313,12 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 	fetched := make(map[int64]bool, len(prs))
 	for _, pr := range prs {
 		fetched[pr.Number] = true
-		if err := upsertPRTx(ctx, q, pr, touched); err != nil {
+		applied, err := upsertPRTx(ctx, q, pr, touched)
+		if err != nil {
 			return err
+		}
+		if !applied {
+			continue
 		}
 		if err := replacePRLabelsTx(ctx, q, pr.Owner, pr.Repo, pr.Number, labelsByPR[pr.Number]); err != nil {
 			return err
@@ -347,6 +351,13 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 			}); err != nil {
 				return err
 			}
+			// No closure recorded: this delete is inferred from ABSENCE from
+			// an eventually-consistent list, which is exactly why the grace
+			// window above exists. A closure from a wrong inference would
+			// refuse the PR's real deliveries for a day; a wrong delete costs
+			// one refetch. Only a statement that the PR closed -- the closed
+			// delivery, or a single-PR fetch answering non-open -- records
+			// one.
 		}
 		if err := q.UpsertPullsListMarker(ctx, dbgen.UpsertPullsListMarkerParams{
 			Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
@@ -410,8 +421,12 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 	staleRejected = err == nil && staleShaOffered(existing, pr.MergeCommitSha, now) &&
 		!pushProvenPostPush(existing, pr) && !conflictingPastReplicaLag(existing, pr, now)
 
-	if err := upsertPRTx(ctx, q, pr, rfc3339(now)); err != nil {
+	applied, err := upsertPRTx(ctx, q, pr, rfc3339(now))
+	if err != nil {
 		return false, err
+	}
+	if !applied {
+		return false, tx.Commit()
 	}
 	mergeable := pr.Mergeable
 	if staleRejected {

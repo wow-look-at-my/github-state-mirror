@@ -20,9 +20,11 @@ func (s *Store) ListOpenPRsByRepo(ctx context.Context, owner, repo string) ([]db
 }
 
 // UpsertPR merges one source's view of a PR into truth (see the query comment
-// for the COALESCE semantics), stamping touched_at.
+// for the COALESCE semantics), stamping touched_at. A view that cannot prove
+// it postdates a recorded close is refused (see prClosureBlocks).
 func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Time) error {
-	return upsertPRTx(ctx, s.q, pr, rfc3339(now))
+	_, err := upsertPRTx(ctx, s.q, pr, rfc3339(now))
+	return err
 }
 
 // UpsertPRWithChecks upserts a PR plus its labels and re-derives
@@ -39,8 +41,12 @@ func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, la
 	defer tx.Rollback()
 	q := s.q.WithTx(tx)
 
-	if err := upsertPRTx(ctx, q, pr, rfc3339(now)); err != nil {
+	applied, err := upsertPRTx(ctx, q, pr, rfc3339(now))
+	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	if pr.HeadRefOid.Valid && pr.HeadRefOid.String != "" {
 		states, err := q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{
@@ -66,8 +72,12 @@ func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, la
 	return tx.Commit()
 }
 
-// DeletePR removes a PR and its labels (a closed/merged PR leaves the cache).
-func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) error {
+// DeletePR removes a PR and its labels (a closed/merged PR leaves the cache)
+// and records the closure, at closedUpdatedAt -- the updated_at of the view
+// that reported the close. Without that record the deleted row is simply
+// absent, and absent loses to a later write carrying OLDER state: the PR
+// comes back open and nothing restates the close.
+func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, closedUpdatedAt string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -81,7 +91,13 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64) 
 	if err := q.DeletePullRequest(ctx, dbgen.DeletePullRequestParams{Owner: owner, Repo: repo, Number: number}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := recordPRClosureTx(ctx, q, owner, repo, number, closedUpdatedAt, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.q.PrunePRClosures(ctx, rfc3339(now.Add(-PRClosureRetention)))
 }
 
 // zeroSHA is git's null object id -- what a push payload's after reads for a

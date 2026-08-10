@@ -85,6 +85,12 @@ Storage and authorization are **separate axes**:
   re-send what never arrived — once per delivery id, 24h lookback, 25 per cycle, logged; and `compare_cache.base_tip_sha`
   records the base tip GitHub says an answer was computed against, so a read can refuse it whatever happened to the flush. Never
   answer a gap with a shorter TTL: that hides the window, it does not close it. docs/webhooks/delivery-gaps.md.
+- **A DELIVERY IS A VIEW OF ITS OWN MOMENT, SO A LATE ONE CAN OVERWRITE A NEWER TRUTH.** Idempotence does not help: applying an
+  old payload is a correct, repeatable write of superseded state. A merged PR came back OPEN 82 seconds after its merge, from a
+  redelivered pre-merge payload, and stayed open for 44 minutes — only open PRs are retained, so the close had DELETED the row,
+  and a deleted row has nothing to lose a comparison against. Every close now leaves one (`pr_closures` + the closing view's
+  `updated_at`), and every open-PR write path refuses a view that cannot prove it postdates it. Fix this class at the WRITE, never
+  in the replayer: ordinary out-of-order delivery does the same damage. docs/webhooks/delivery-gaps.md.
 - **App-identity principal (opt-in, for trusted first-party app callers)** — a *request*-time caller may send a **GitHub App JWT** in the `X-Mirror-Identity` header. `requireAuth` verifies it via `ghclient.VerifyAppIdentity` (`GET /app` — GitHub only 200s if the RS256 signature checks out against the app's public key, so it's unforgeable; cached per-JWT) and resolves that caller to the principal `app:<id>`, skipping the per-user/fingerprint resolution entirely (installation tokens cannot call `/user`). This exists because such a caller's installation tokens rotate hourly — fingerprint principals would lose their earned grants every hour; the app principal keeps **one stable grant set** across all the app's tokens. The `Authorization` token is still injected into the context for upstream fetches/probes/passthrough, so per-repo authorization against GitHub is unchanged. No identity header → the default per-user/fingerprint resolution above.
 - **The cache contract (three tiers)** — every data route is exactly one of: (1) the GraphQL org-repos query, byte-identical and
   identity-test-locked; (2) a cached REST route, whose state is absorbed and whose response is REBUILT with every URL field

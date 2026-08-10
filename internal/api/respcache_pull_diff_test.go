@@ -255,8 +255,11 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 		pr["merged"] = false
 		servePRJSON(w, pr)
 	}
-	postWebhook(t, router, "pull_request",
-		prEvent("reopened", upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")))
+	reopenedPR := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+	// A reopen postdates the close it undoes -- GitHub stamps updated_at on
+	// both -- and the closure record makes the mirror require that.
+	reopenedPR["updated_at"] = "2026-07-03T10:00:00Z"
+	postWebhook(t, router, "pull_request", prEvent("reopened", reopenedPR))
 
 	w3 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
