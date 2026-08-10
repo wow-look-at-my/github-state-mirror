@@ -27,6 +27,13 @@ import (
 // and asks for every delivery it has not already asked for. The replay
 // arrives as an ordinary delivery through the ordinary handler.
 //
+// A replay is an OLD view, not a fresh one: GitHub re-sends the payload it
+// built when the event happened. Applying it after the resource has moved on
+// writes state that is wrong now -- a merged PR came back open exactly this
+// way. Refusing that is the WRITE's job, not this file's (see ghdata's PR
+// closure record): an ordinary late delivery does the same damage, and no
+// amount of care here would catch one.
+//
 // What this does NOT cover, stated plainly: a delivery GitHub records as
 // SUCCESSFUL but that this mirror failed to act on (a handler error, a write
 // that lost a race). Those are the dispatcher's own dispositions and are

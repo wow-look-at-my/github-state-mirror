@@ -201,8 +201,12 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 		fetched := make(map[int64]bool, len(prs))
 		for _, pr := range prs {
 			fetched[pr.Number] = true
-			if err := upsertPRTx(ctx, q, pr, touched); err != nil {
+			applied, err := upsertPRTx(ctx, q, pr, touched)
+			if err != nil {
 				return err
+			}
+			if !applied {
+				continue
 			}
 			if err := replacePRLabelsTx(ctx, q, r.Owner, r.Name, pr.Number, labelsByNumber[pr.Number]); err != nil {
 				return err
@@ -227,6 +231,12 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 			if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: r.Owner, Repo: r.Name, PrNumber: row.Number}); err != nil {
 				return err
 			}
+			// No closure recorded: this delete is inferred from ABSENCE, and
+			// a list read is eventually consistent -- the grace window above
+			// exists because a just-opened PR really can be missing from a
+			// snapshot taken moments later. A closure record from a wrong
+			// inference would refuse the PR's real deliveries for a day. The
+			// sweep runs again and re-deletes if it was right.
 		}
 	}
 
@@ -393,10 +403,21 @@ func (s *Store) maybePruneAccessControl(ctx context.Context, now time.Time) {
 
 // ---- shared helpers ----
 
-func upsertPRTx(ctx context.Context, q *dbgen.Queries, pr dbgen.PullRequest, touchedAt string) error {
+// upsertPRTx merges one source's view of a PR into truth, stamping
+// touched_at, and reports whether the write was applied. It is the ONE place
+// every open-PR write passes through, which is why the closure guard lives
+// here rather than at the four call sites.
+func upsertPRTx(ctx context.Context, q *dbgen.Queries, pr dbgen.PullRequest, touchedAt string) (bool, error) {
+	blocked, err := prClosureBlocks(ctx, q, pr)
+	if err != nil || blocked {
+		return false, err
+	}
 	p := prToParams(pr)
 	p.TouchedAt = touchedAt
-	return q.UpsertPullRequest(ctx, p)
+	if err := q.UpsertPullRequest(ctx, p); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func replacePRLabelsTx(ctx context.Context, q *dbgen.Queries, owner, repo string, prNumber int64, labels []dbgen.PrLabel) error {

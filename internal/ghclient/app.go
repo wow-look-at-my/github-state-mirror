@@ -150,9 +150,15 @@ func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDeli
 
 // RedeliverHook asks GitHub to send one delivery again
 // (POST /app/hook/deliveries/{id}/attempts). The replay arrives as an ordinary
-// delivery, through the ordinary handler, and every handler it can reach is
-// idempotent -- a replayed event applies the same state it would have applied
-// the first time.
+// delivery, through the ordinary handler.
+//
+// It carries the ORIGINAL payload -- the state at the moment the event
+// happened, not now. Idempotence is not the property that makes that safe:
+// applying an old view over a newer one is a correct, repeatable write of the
+// wrong state. What makes it safe is the write paths refusing a view they can
+// see is stale (ghdata's PR closure record is the one that had to be built
+// after a merged PR came back open this way). An ordinary late delivery is
+// the same hazard; a replay just makes it routine.
 func (a *AppAuthenticator) RedeliverHook(ctx context.Context, deliveryID int64) error {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {

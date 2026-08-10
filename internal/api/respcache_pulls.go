@@ -372,7 +372,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		// Closed/merged: the truth table retains open PRs only, so drop any
 		// stale row -- and absorb GitHub's answer as a rendered whole-doc
 		// snapshot, served rebuilt (hit and miss byte-identical).
-		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
+		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number, pr.UpdatedAt, time.Now()); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
 		doc, mErr := marshalTrimmed(renderClosedPull(pr, labels, raw.Merged != nil && *raw.Merged))
