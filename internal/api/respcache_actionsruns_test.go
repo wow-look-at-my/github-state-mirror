@@ -162,19 +162,23 @@ func TestCachedWorkflowRuns_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
 	assertNoURLKeys(t, w1.Body.Bytes(), "html_url")
-	assert.JSONEq(t, fmt.Sprintf(`{
+	assert.JSONEq(t, mustJSONString(map[string]any{
 		"total_count": 3,
-		"workflow_runs": [
-			{"id": 9001, "name": "CI", "head_sha": %q, "status": "completed",
-			 "conclusion": "success", "html_url": "https://github.com/org1/repo1/actions/runs/9001",
-			 "created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
-			 "run_started_at": "2026-07-01T10:00:30Z"},
-			{"id": 9002, "name": null, "head_sha": %q, "status": "queued",
-			 "conclusion": null, "html_url": "https://github.com/org1/repo1/actions/runs/9002",
-			 "created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
-			 "run_started_at": null}
-		]
-	}`, shaTip, shaTip), w1.Body.String())
+		"workflow_runs": []any{
+			map[string]any{
+				"id": 9001, "name": "CI", "head_sha": shaTip, "status": "completed",
+				"conclusion": "success", "html_url": "https://github.com/org1/repo1/actions/runs/9001",
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+				"run_started_at": "2026-07-01T10:00:30Z",
+			},
+			map[string]any{
+				"id": 9002, "name": nil, "head_sha": shaTip, "status": "queued",
+				"conclusion": nil, "html_url": "https://github.com/org1/repo1/actions/runs/9002",
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+				"run_started_at": nil,
+			},
+		},
+	}), w1.Body.String())
 	assert.NotContains(t, w1.Body.String(), "octocat", "the actor object must be dropped")
 	assert.NotContains(t, w1.Body.String(), "full_name", "the repository object must be dropped")
 	assert.NotContains(t, w1.Body.String(), "jobs_url", "run-scoped API URLs must be dropped")
@@ -400,9 +404,13 @@ func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 	// A queued workflow_job for shaTip: dropped as ignored by the dispatcher,
 	// but the sha's runs pages flush regardless.
 	seed(t)
-	postWebhook(t, router, "workflow_job", fmt.Sprintf(`{"action":"queued",
-		"workflow_job":{"id":1,"run_id":9001,"name":"build","status":"queued","head_sha":%q},
-		"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip))
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action": "queued",
+		"workflow_job": map[string]any{
+			"id": 1, "run_id": 9001, "name": "build", "status": "queued", "head_sha": shaTip,
+		},
+		"repository": fixtureRepo(),
+	})
 	w := do(t, router, authedReq("GET", tipTarget, nil))
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a queued workflow_job must flush its sha's runs pages")
 	w = do(t, router, authedReq("GET", midTarget, nil))
@@ -410,10 +418,14 @@ func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 
 	// A check_run event names its head sha the same way.
 	seed(t)
-	postWebhook(t, router, "check_run", fmt.Sprintf(`{"action":"created",
-		"check_run":{"head_sha":%q,"status":"queued","name":"build",
-			"check_suite":{"head_branch":"main"}},
-		"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip))
+	postWebhookJSON(t, router, "check_run", map[string]any{
+		"action": "created",
+		"check_run": map[string]any{
+			"head_sha": shaTip, "status": "queued", "name": "build",
+			"check_suite": map[string]any{"head_branch": "main"},
+		},
+		"repository": fixtureRepo(),
+	})
 	w = do(t, router, authedReq("GET", tipTarget, nil))
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a check_run event must flush its sha's runs pages")
 	w = do(t, router, authedReq("GET", midTarget, nil))

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -16,20 +15,22 @@ import (
 
 func defaultLabelUpstream(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{
+	writeGitHubJSON(w, map[string]any{
 		"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
-		"url": "https://api.github.com/repos/org1/repo1/labels/%s",
-		"name": %q, "color": "f29513", "default": true,
-		"description": "Something isn't working"
-	}`, name, name)
+		"url":  "https://api.github.com/repos/org1/repo1/labels/" + name,
+		"name": name, "color": "f29513", "default": true,
+		"description": "Something isn't working",
+	})
 }
 
 const labelTarget = "/repos/org1/repo1/labels/auto-pr-merge"
 
-func labelEvent(action, name string) string {
-	return fmt.Sprintf(`{"action":%q,"label":{"name":%q,"color":"f29513"},
-		"repository":{"name":"repo1","owner":{"login":"org1"}}}`, action, name)
+func labelEvent(action, name string) map[string]any {
+	return map[string]any{
+		"action":     action,
+		"label":      map[string]any{"name": name, "color": "f29513"},
+		"repository": fixtureRepo(),
+	}
 }
 
 func TestCachedLabel_MissAbsorbHit(t *testing.T) {
@@ -83,7 +84,7 @@ func TestCachedLabel_EveryLabelEventFlushes(t *testing.T) {
 
 			// The delivery names a DIFFERENT label on purpose: the flush grain
 			// is the repo, so the cached row must go regardless.
-			postWebhook(t, router, "label", labelEvent(action, "some-other-label"))
+			postWebhookJSON(t, router, "label", labelEvent(action, "some-other-label"))
 
 			w := do(t, router, authedReq("GET", labelTarget, nil))
 			assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a label delivery must flush the repo's labels")

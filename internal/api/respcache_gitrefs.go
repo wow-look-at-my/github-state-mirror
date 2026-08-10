@@ -18,9 +18,10 @@ import (
 //
 // "Where does this branch point right now?" -- the single hottest UNROUTED
 // path in the request log before this route existed, run per branch per sweep
-// by the fleet's reconcile passes. The answer is one sha, and every event that
-// can change it (create, delete, tip-move) arrives as a push naming the ref,
-// which is the cleanest invalidation signal any route here has.
+// by the fleet's reconcile passes. The answer is one sha, and a push STATES
+// it (`after`), so a push APPLIES the new tip to the row rather than dropping
+// it (ghdata.ApplyPushedRefTip); the delete is the fallback for what a push
+// cannot answer. This route holds nothing a delivery has to be refetched for.
 //
 // The wildcard is greedy: a ref path is at least two segments ("heads/main")
 // and branch names carry slashes ("heads/claude/some-branch"). It is stored
@@ -33,12 +34,12 @@ import (
 // fresh upstream 404. It stays honest because ref CREATION arrives as a push
 // for that exact ref, which drops the verdict row.
 
-const (
-	// gitRefCacheTTL bounds how long a MISSED push delivery could leave a
-	// stale tip (or a stale absent-verdict) being served. Pushes flush sooner;
-	// this is the backstop.
-	gitRefCacheTTL = 24 * time.Hour
-)
+// gitRefCacheTTL bounds how long a MISSED push delivery could leave a stale
+// tip (or a stale absent-verdict) being served. A delivered push does not
+// wait for it: the push APPLIES its own `after` tip to the row
+// (ghdata.ApplyPushedRefTip), so this is only the backstop for a delivery
+// that never landed. Shared with that writer so both clocks agree.
+const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and
 // absorbing on a miss.

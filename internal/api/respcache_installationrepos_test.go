@@ -80,12 +80,16 @@ func TestCachedInstallationRepos_MissAbsorbHit(t *testing.T) {
 func TestCachedInstallationRepos_KeyedByCredential(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.installRepos = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{"total_count":1,"repository_selection":"selected","repositories":[
-			{"id":1,"node_id":"R_1","name":"r","full_name":%q,"owner":{"login":"org1","type":"Organization"},
-			 "private":true,"visibility":"private","default_branch":"main","fork":false,
-			 "archived":false,"disabled":false,"url":"https://api.github.com/x"}]}`,
-			"org1/"+r.Header.Get("Authorization"))
+		writeGitHubJSON(w, map[string]any{
+			"total_count": 1, "repository_selection": "selected",
+			"repositories": []any{map[string]any{
+				"id": 1, "node_id": "R_1", "name": "r",
+				"full_name": "org1/" + r.Header.Get("Authorization"),
+				"owner":     map[string]any{"login": "org1", "type": "Organization"},
+				"private":   true, "visibility": "private", "default_branch": "main", "fork": false,
+				"archived": false, "disabled": false, "url": "https://api.github.com/x",
+			}},
+		})
 	}
 
 	first := do(t, router, installationReposReq(installationReposTarget, "tok-a"))

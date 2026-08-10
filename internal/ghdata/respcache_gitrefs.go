@@ -3,7 +3,10 @@ package ghdata
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -20,6 +23,29 @@ import (
 // what was absorbed -- 200 for a real ref, 404 for the absent-ref VERDICT --
 // so the route can replay the answer under its own status. WHO may read a row
 // is the reveal layer's job (internal/api).
+
+// IsFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex
+// object id. It lives in the storage layer because that is where a written
+// sha has to be trustworthy -- an all-zeros push tip (a deletion) and a
+// truncated id are both rejected here rather than at each caller.
+func IsFullHexSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// GitRefCacheTTL bounds a stored ref answer. It lives here rather than in the
+// route because BOTH writers need it: the fetch-on-miss path and the push
+// that applies its own `after` tip (ApplyPushedRefTip) -- an applied tip is
+// exactly as fresh as a fetched one, so it gets the same clock.
+const GitRefCacheTTL = 24 * time.Hour
 
 // CachedGitRef is one stored ref answer.
 type CachedGitRef struct {
@@ -66,9 +92,74 @@ func (s *Store) PutCachedGitRef(ctx context.Context, c CachedGitRef, now time.Ti
 	return s.q.PruneGitRefCacheLRU(ctx, CacheMaxRows)
 }
 
+// storedGitRefDoc is the stored ref document, declared here so a push can
+// REWRITE the tip inside it. Field order is the wire order and must match the
+// api package's render exactly -- hit and miss serve identical bytes, and a
+// tip applied from a push has to be indistinguishable from a fetched one.
+// TestCachedGitRef_PushAppliesTipToEverySpelling (internal/api) pins that by
+// byte-comparing an applied answer against the fetched one it replaced.
+type storedGitRefDoc struct {
+	Ref    string `json:"ref"`
+	NodeID string `json:"node_id"`
+	Object struct {
+		SHA  string `json:"sha"`
+		Type string `json:"type"`
+	} `json:"object"`
+}
+
+// ApplyPushedRefTip writes a push's OWN answer into the cached ref rows: the
+// payload states the ref's exact new tip (`after`), so there is nothing to go
+// ask GitHub for. This is the apply-don't-invalidate rule (CLAUDE.md,
+// docs/webhooks/dispatch.md) on the one route whose whole answer a push
+// carries -- deleting the row instead spends a needless GET on the next
+// reader and leaves the tip unknown until someone pays for it.
+//
+// Applies only to an existing 200 row, per spelling. A 404 verdict row is
+// LEFT for the caller to delete: promoting it to a real answer would need the
+// ref's node_id, which no push payload carries, and inventing one would put a
+// fabricated field on the wire. A missing row stays missing -- there is no
+// stale answer to correct, and caching a ref nobody asked for is not this
+// function's job.
+func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSHA string, now time.Time, ttl time.Duration) (bool, error) {
+	// The all-zeros oid is valid hex and means "no such ref": a deletion. It
+	// must never be WRITTEN as a tip -- that would serve a zero sha as the
+	// branch head -- so it falls through to the caller's delete.
+	if !IsFullHexSHA(afterSHA) || strings.Trim(afterSHA, "0") == "" {
+		return false, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.Status != http.StatusOK {
+		return false, nil // absent-ref verdict: the caller's delete owns it
+	}
+	var doc storedGitRefDoc
+	if err := json.Unmarshal([]byte(row.Doc), &doc); err != nil {
+		return false, nil // unreadable row: let the caller drop it
+	}
+	if doc.Object.SHA == afterSHA {
+		return true, nil // already current (a replayed delivery)
+	}
+	doc.Object.SHA = afterSHA
+	patched, err := json.Marshal(doc)
+	if err != nil {
+		return false, nil
+	}
+	return true, s.PutCachedGitRef(ctx, CachedGitRef{
+		Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Status: http.StatusOK, Doc: string(patched),
+	}, now, ttl)
+}
+
 // InvalidateGitRefForRef drops ONE requested spelling of a ref -- the per-ref
-// push flush. A push moves, creates, or deletes exactly one ref, and creation
-// is what clears a cached 404 verdict.
+// push flush, and the LAST RESORT for this table (see ApplyPushedRefTip: a
+// push that states a real tip updates the row instead). Still the right
+// answer for a deletion, a 404-verdict row a creation must clear, and the
+// repository events that make the rows wrong rather than stale.
 func (s *Store) InvalidateGitRefForRef(ctx context.Context, owner, repo, ref string) error {
 	return s.q.DeleteGitRefCacheForRef(ctx, dbgen.DeleteGitRefCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,

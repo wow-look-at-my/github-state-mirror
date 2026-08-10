@@ -209,17 +209,6 @@ func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.C
 	}, true
 }
 
-// isFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex
-// object id.
-func isFullHexSHA(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
+// isFullHexSHA is ghdata's, aliased so the routes and the storage layer that
+// validates what they write agree on what a sha is. See ghdata.IsFullHexSHA.
+var isFullHexSHA = ghdata.IsFullHexSHA
