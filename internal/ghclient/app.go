@@ -107,6 +107,62 @@ func (a *AppAuthenticator) SubscribedEvents(ctx context.Context) ([]string, erro
 	return out.Events, nil
 }
 
+// HookDelivery is one entry of the App's own webhook delivery log.
+type HookDelivery struct {
+	ID          int64     `json:"id"`
+	GUID        string    `json:"guid"`
+	DeliveredAt time.Time `json:"delivered_at"`
+	Redelivery  bool      `json:"redelivery"`
+	Status      string    `json:"status"`
+	StatusCode  int       `json:"status_code"`
+	Event       string    `json:"event"`
+	Action      string    `json:"action"`
+}
+
+// hookDeliveriesPerPage is GitHub's maximum page size for the delivery log.
+const hookDeliveriesPerPage = 100
+
+// FailedHookDeliveries lists the deliveries GitHub could not hand to this
+// mirror, newest first (GET /app/hook/deliveries?status=failure).
+//
+// This is the only record that a delivery EXISTED and never arrived. GitHub
+// does not re-send one on its own, so without reading this log a missed
+// delivery is indistinguishable from an event that never happened -- the
+// mirror keeps serving what it last absorbed, for the full TTL, with nothing
+// anywhere reporting a gap.
+//
+// One page is deliberately the whole of it. The log is read on a short cycle,
+// so a page of the most recent failures is what a cycle can act on; paging
+// deeper would only widen a burst into a redelivery flood.
+func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDelivery, error) {
+	jwt, err := a.mintJWT(time.Now())
+	if err != nil {
+		return nil, err
+	}
+	ctx = WithToken(ctx, jwt)
+	var out []HookDelivery
+	path := fmt.Sprintf("/app/hook/deliveries?per_page=%d&status=failure", hookDeliveriesPerPage)
+	if err := a.client.doJSON(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RedeliverHook asks GitHub to send one delivery again
+// (POST /app/hook/deliveries/{id}/attempts). The replay arrives as an ordinary
+// delivery, through the ordinary handler, and every handler it can reach is
+// idempotent -- a replayed event applies the same state it would have applied
+// the first time.
+func (a *AppAuthenticator) RedeliverHook(ctx context.Context, deliveryID int64) error {
+	jwt, err := a.mintJWT(time.Now())
+	if err != nil {
+		return err
+	}
+	ctx = WithToken(ctx, jwt)
+	path := fmt.Sprintf("/app/hook/deliveries/%d/attempts", deliveryID)
+	return a.client.doJSON(ctx, "POST", path, nil, nil)
+}
+
 // InstallationToken mints a short-lived (~1h) access token for one installation.
 func (a *AppAuthenticator) InstallationToken(ctx context.Context, installID int64) (string, error) {
 	jwt, err := a.mintJWT(time.Now())

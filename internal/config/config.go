@@ -19,6 +19,13 @@ const defaultCacheMaxRows int64 = 1_000_000
 // REFRESH_INTERVAL).
 const defaultRefreshInterval = 6 * time.Hour
 
+// defaultReplayInterval is the default cadence for the delivery-gap replayer
+// (see WEBHOOK_REPLAY_INTERVAL). Minutes, not hours: the window between a
+// lost delivery and its replay is a window in which the mirror serves an
+// answer it would not have served, and one of those answers is what stops a
+// PR from ever being updated.
+const defaultReplayInterval = 5 * time.Minute
+
 // defaultPassthroughDebounce / maxPassthroughDebounce bound the uncacheable-read
 // coalescing window (see PASSTHROUGH_DEBOUNCE). The max must stay in step with
 // internal/api's DebounceMaxWindow, which TestDebounceWindowBoundMatchesAPI
@@ -40,6 +47,7 @@ type Config struct {
 	SubscriptionsDBPath string
 	AllowedOrigins      []string
 	RefreshInterval     time.Duration
+	ReplayInterval      time.Duration
 
 	// PassthroughDebounce is how long an eligible uncacheable (passthrough) READ
 	// is held so identical concurrent requests can share one upstream call
@@ -81,6 +89,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	replayInterval, err := parseReplayInterval(os.Getenv("WEBHOOK_REPLAY_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
 	refreshInterval, err := parseRefreshInterval(os.Getenv("REFRESH_INTERVAL"))
 	if err != nil {
 		return Config{}, err
@@ -96,6 +108,7 @@ func Load() (Config, error) {
 		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
 		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
 		RefreshInterval:     refreshInterval,
+		ReplayInterval:      replayInterval,
 		PassthroughDebounce: debounce,
 		CacheMaxRows:        cacheMaxRows,
 
@@ -145,6 +158,25 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("invalid REFRESH_INTERVAL %q: must be positive", s)
+	}
+	return d, nil
+}
+
+// parseReplayInterval parses the WEBHOOK_REPLAY_INTERVAL override for the
+// delivery-gap replayer. Absent/empty keeps the default; an explicit 0
+// disables the replayer entirely, which means accepting that a delivery
+// GitHub could not hand over stays missed. Unparseable or negative is an
+// error the server refuses to start on.
+func parseReplayInterval(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultReplayInterval, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: must not be negative", s)
 	}
 	return d, nil
 }
