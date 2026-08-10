@@ -158,7 +158,11 @@ func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 }
 
 // TestTimeline_PassthroughRecorded: a request the passthrough proxy forwards
-// is timed into the ring under its normalized route lane.
+// puts BOTH legs on the chart — the inbound request the mirror served, and
+// the mirror→GitHub call it made to serve it. The outbound leg is its own
+// event for the same reason a cached-route miss's fetch is: it is a real
+// request against real rate-limit budget, and under debouncing the two counts
+// stop matching (many inbound bars, one call to GitHub inside them).
 func TestTimeline_PassthroughRecorded(t *testing.T) {
 	s := newFullTestStack(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -169,8 +173,14 @@ func TestTimeline_PassthroughRecorded(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	snap := s.timeline.Snapshot(0)
-	require.Len(t, snap.Events, 1)
-	e := snap.Events[0]
+	require.Len(t, snap.Events, 2)
+
+	upstream := eventsWhere(snap, dispUpstream)
+	require.Len(t, upstream, 1, "the forwarded call to GitHub is an event of its own")
+	assert.Equal(t, "GET /repos/{owner}/{repo}/git/refs/heads/…", upstream[0].Lane)
+	assert.Equal(t, http.StatusOK, upstream[0].Status)
+
+	e := eventsWhere(snap, DispPassthrough)[0]
 	assert.Equal(t, reqtimeline.KindRequest, e.Kind)
 	assert.Equal(t, http.MethodGet, e.Method)
 	assert.Equal(t, "/repos/{owner}/{repo}/git/refs/heads/…", e.Route)

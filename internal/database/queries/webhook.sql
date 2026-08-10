@@ -30,3 +30,24 @@ WHERE id <= (
     ORDER BY id DESC
     LIMIT 1 OFFSET ?
 );
+
+-- ============================================================================
+-- Webhook replay requests (delivery-gap recovery)
+-- ============================================================================
+
+-- WebhookReplayRequested reports whether this delivery id has already been
+-- asked for. GitHub's failure log keeps a failed delivery listed forever, so
+-- without this the replayer would re-request the same one every cycle.
+-- name: WebhookReplayRequested :one
+SELECT EXISTS(SELECT 1 FROM webhook_replays WHERE delivery_id = ?);
+
+-- name: RecordWebhookReplay :exec
+INSERT INTO webhook_replays (delivery_id, guid, event_type, delivered_at, requested_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (delivery_id) DO NOTHING;
+
+-- PruneWebhookReplays drops rows older than the replayer's lookback window --
+-- past it a delivery is never re-requested again, so remembering it costs
+-- rows for nothing.
+-- name: PruneWebhookReplays :exec
+DELETE FROM webhook_replays WHERE requested_at < ?;
