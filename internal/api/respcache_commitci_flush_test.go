@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -24,12 +23,17 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 	assertNoURLKeys(t, w1.Body.Bytes(), "target_url")
-	assert.Equal(t, fmt.Sprintf(`[{"context":"ci/build","state":"success","description":"2/2 builds passed",`+
-		`"target_url":"https://rbm.example.com/b/org1/repo1/%s",`+
-		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"},`+
-		`{"context":"ci/build","state":"pending","description":null,"target_url":null,`+
-		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"}]`, shaTip),
-		w1.Body.String(), "order preserved newest-first; null keys always emitted")
+	assert.JSONEq(t, mustJSONString([]any{
+		map[string]any{
+			"context": "ci/build", "state": "success", "description": "2/2 builds passed",
+			"target_url": rbmTargetURL(shaTip),
+			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+		},
+		map[string]any{
+			"context": "ci/build", "state": "pending", "description": nil, "target_url": nil,
+			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+		},
+	}), w1.Body.String(), "order preserved newest-first; null keys always emitted")
 	assert.NotContains(t, w1.Body.String(), "octocat", "the creator user object must be dropped")
 	assert.NotContains(t, w1.Body.String(), "node_id", "per-status ids must be dropped")
 
@@ -48,9 +52,7 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 
 	// A status event flushes the statuses-list snapshot like the other kinds
 	// (one commit_ci_cache table, one flush matrix).
-	postWebhook(t, router, "status", fmt.Sprintf(`{"sha":%q,"state":"success","context":"ci/build",
-		"branches":[{"name":"main"}],
-		"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip))
+	postWebhookJSON(t, router, "status", statusDelivery(shaTip))
 	w4 := do(t, router, authedReq("GET", alias, nil))
 	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a status event must flush the statuses-list snapshot")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusesHits))
@@ -79,8 +81,10 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 // write, never swallowed by the cache.
 func TestStatusPublishPassthrough(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
-	body := fmt.Sprintf(`{"state":"success","context":"all-builds","description":"2/2 builds passed",`+
-		`"target_url":"https://rbm.example.com/b/org1/repo1/%s"}`, shaTip)
+	body := mustJSONString(map[string]any{
+		"state": "success", "context": "all-builds", "description": "2/2 builds passed",
+		"target_url": rbmTargetURL(shaTip),
+	})
 
 	req := authedReq("POST", "/repos/org1/repo1/statuses/"+shaTip, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -114,23 +118,32 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 		}
 	}
 
-	for _, tc := range []struct{ event, body string }{
-		{"status", fmt.Sprintf(`{"sha":%q,"state":"success","context":"ci/build",
-			"branches":[{"name":"main"}],
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip)},
-		{"check_run", fmt.Sprintf(`{"action":"completed",
-			"check_run":{"head_sha":%q,"status":"completed","conclusion":"success","name":"build",
-				"check_suite":{"head_branch":"main"}},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip)},
-		{"check_suite", fmt.Sprintf(`{"action":"completed",
-			"check_suite":{"head_sha":%q,"head_branch":"main","status":"completed","conclusion":"success"},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`, shaTip)},
-		{"push", `{"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
-		{"repository", `{"action":"privatized","repository":{"name":"repo1","owner":{"login":"org1"}}}`},
+	for _, tc := range []struct {
+		event   string
+		payload map[string]any
+	}{
+		{"status", statusDelivery(shaTip)},
+		{"check_run", map[string]any{
+			"action": "completed",
+			"check_run": map[string]any{
+				"head_sha": shaTip, "status": "completed", "conclusion": "success", "name": "build",
+				"check_suite": map[string]any{"head_branch": "main"},
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		}},
+		{"check_suite", map[string]any{
+			"action": "completed",
+			"check_suite": map[string]any{
+				"head_sha": shaTip, "head_branch": "main", "status": "completed", "conclusion": "success",
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		}},
+		{"push", map[string]any{"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}}},
+		{"repository", map[string]any{"action": "privatized", "repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}}},
 	} {
 		seed(t)
 		before := [2]int32{atomic.LoadInt32(&u.statusHits), atomic.LoadInt32(&u.checkRunsHits)}
-		postWebhook(t, router, tc.event, tc.body)
+		postWebhookJSON(t, router, tc.event, tc.payload)
 
 		w := do(t, router, authedReq("GET", statusTarget, nil))
 		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a %s event must flush the status snapshot", tc.event)
@@ -217,4 +230,21 @@ func TestCachedCommitCI_RevealDenied(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.statusHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.checkRunsHits))
+}
+
+// rbmTargetURL is the required-builds-manager link the fake statuses upstream
+// attaches to a status. It is built here so the URL is placed into the JSON by
+// %q rather than pasted between the literal's own quotes.
+func rbmTargetURL(sha string) string {
+	return "https://rbm.example.com/b/org1/repo1/" + sha
+}
+
+// statusDelivery is GitHub's `status` payload for a build on main: the
+// branches array is what makes the flush per-ref rather than repo-wide.
+func statusDelivery(sha string) map[string]any {
+	return map[string]any{
+		"sha": sha, "state": "success", "context": "ci/build",
+		"branches":   []any{map[string]any{"name": "main"}},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	}
 }

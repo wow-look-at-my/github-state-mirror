@@ -97,38 +97,42 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u := &respCacheUpstream{tokenExpiry: time.Now().Add(time.Hour)}
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{
-			"name": %q, "full_name": %q, "private": true, "visibility": "private",
-			"html_url": "https://github.com/%s", "default_branch": "main",
-			"owner": {"login": %q, "avatar_url": "https://a", "html_url": "https://github.com/%s"}
-		}`, parts[1], parts[0]+"/"+parts[1], parts[0]+"/"+parts[1], parts[0], parts[0])
+		writeGitHubJSON(w, map[string]any{
+			"name": parts[1], "full_name": parts[0] + "/" + parts[1],
+			"private": true, "visibility": "private",
+			"html_url":       "https://github.com/" + parts[0] + "/" + parts[1],
+			"default_branch": "main",
+			"owner": map[string]any{
+				"login": parts[0], "avatar_url": "https://a",
+				"html_url": "https://github.com/" + parts[0],
+			},
+		})
 	}
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.LoadInt32(&u.contentsHits)
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{
+		writeGitHubJSON(w, map[string]any{
 			"type": "file", "encoding": "base64", "size": 5,
 			"name": "cfg.jsonc", "path": ".github/cfg.jsonc",
-			"content": "aGVsbG8=\n", "sha": %q,
+			"content": "aGVsbG8=\n", "sha": fmt.Sprintf("%040d", n),
 			"url": "https://api.github.com/x", "git_url": "https://api.github.com/y",
 			"html_url": "https://github.com/z", "download_url": "https://raw.github.com/w",
-			"_links": {"self": "https://api.github.com/x"}
-		}`, fmt.Sprintf("%040d", n))
+			"_links": map[string]any{"self": "https://api.github.com/x"},
+		})
 	}
 	u.gitCommit = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{
-			"sha": %q, "node_id": "C_kwAE",
-			"url": "https://api.github.com/repos/org1/repo1/git/commits/x",
-			"html_url": "https://github.com/org1/repo1/commit/x",
-			"author": {"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
-			"committer": {"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
-			"tree": {"sha": %q, "url": "https://api.github.com/trees/x"},
-			"message": "fix: a thing <with> & symbols",
-			"parents": [{"sha": %q, "url": "https://api.github.com/parent", "html_url": "https://github.com/parent"}],
-			"verification": {"verified": false, "reason": "unsigned"}
-		}`, shaCommit, shaTree1, shaBase)
+		writeGitHubJSON(w, map[string]any{
+			"sha": shaCommit, "node_id": "C_kwAE",
+			"url":       "https://api.github.com/repos/org1/repo1/git/commits/x",
+			"html_url":  "https://github.com/org1/repo1/commit/x",
+			"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+			"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+			"tree":      map[string]any{"sha": shaTree1, "url": "https://api.github.com/trees/x"},
+			"message":   "fix: a thing <with> & symbols",
+			"parents": []any{map[string]any{
+				"sha": shaBase, "url": "https://api.github.com/parent", "html_url": "https://github.com/parent",
+			}},
+			"verification": map[string]any{"verified": false, "reason": "unsigned"},
+		})
 	}
 	// The URL-stuffed default bodies live next to their route tests:
 	// respcache_pullfiles_test.go / respcache_branches_test.go.
@@ -213,13 +217,13 @@ func (u *respCacheUpstream) handler() http.Handler {
 			u.gitCommit(w, r)
 		case strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			n := atomic.AddInt32(&u.mintHits, 1)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{
-				"token": "ghs_minted%d", "expires_at": %q,
-				"permissions": {"contents": "read", "metadata": "read"},
-				"repository_selection": "all"
-			}`, n, u.tokenExpiry.UTC().Format(time.RFC3339))
+			writeGitHubJSON(w, map[string]any{
+				"token":                fmt.Sprintf("ghs_minted%d", n),
+				"expires_at":           u.tokenExpiry.UTC().Format(time.RFC3339),
+				"permissions":          map[string]any{"contents": "read", "metadata": "read"},
+				"repository_selection": "all",
+			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
@@ -241,6 +245,53 @@ func do(t *testing.T, router http.Handler, req *http.Request) *httptest.Response
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
+}
+
+// writeJSON renders a fake-GitHub body. Every fixture builds its document as
+// a Go value and marshals it: JSON text is never assembled from string pieces,
+// because nothing about + or a format verb escapes what the value contains
+// (internal/guards' marshalling check fails the build over it).
+func writeGitHubJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+// mustJSONString marshals a document a test needs as a string: an expected
+// body, a request body, a raw delivery. It panics rather than returning an
+// error because most callers are fake-upstream closures with no *testing.T in
+// scope, and a fixture that cannot marshal is a broken test either way.
+func mustJSONString(v any) string {
+	body, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}
+
+// postWebhookJSON delivers a webhook whose payload is MARSHALLED from a Go
+// value. Prefer it whenever a delivery carries a runtime value: splicing one
+// between a JSON literal's own quotes escapes nothing (internal/guards'
+// json-splice check fails the build over it), and a map literal reads as
+// clearly as the document it becomes.
+func postWebhookJSON(t *testing.T, router http.Handler, event string, payload map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	postWebhook(t, router, event, string(body))
+}
+
+// fixtureRepo is the `repository` object every fixture delivery carries.
+func fixtureRepo() map[string]any {
+	return map[string]any{
+		"name":           "repo1",
+		"owner":          map[string]any{"login": "org1"},
+		"default_branch": "main",
+	}
 }
 
 // postWebhook delivers a signed webhook to the router.

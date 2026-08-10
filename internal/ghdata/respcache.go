@@ -1,8 +1,10 @@
 package ghdata
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -35,6 +37,22 @@ var CacheMaxRows int64 = 1_000_000
 // prunes) matches chronological order.
 func rfc3339(t time.Time) string {
 	return t.UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+// MarshalCacheDoc renders a stored cached-route document. A hit replays these
+// bytes and a miss renders them fresh, so both sides must produce the same
+// bytes for the same value -- which is why this lives here and not in the API
+// layer alone: a push that rewrites a doc in place (ApplyPushedBranchTip) has
+// to be indistinguishable from the fetch it saved. HTML escaping stays off
+// because GitHub does not escape, and a branch named `a&b` must round-trip.
+func MarshalCacheDoc(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // NormalizeRepoKey lowercases an owner or repo name for cache keying. GitHub
