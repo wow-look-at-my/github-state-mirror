@@ -381,6 +381,14 @@ type WebhookDelivery struct {
 	Detail      string
 }
 
+type WebhookReplay struct {
+	DeliveryID  int64
+	Guid        string
+	EventType   string
+	DeliveredAt string
+	RequestedAt string
+}
+
 type WorkflowJob struct {
 	Owner        string
 	Repo         string

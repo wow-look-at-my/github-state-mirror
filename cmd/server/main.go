@@ -117,6 +117,19 @@ func main() {
 	}
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
+	// Delivery-gap recovery. GitHub never retries a delivery it could not
+	// hand over, and a missed one leaves every cache it would have moved
+	// serving a stale answer with nothing reporting the gap. Needs the App
+	// (the failure log is a JWT-authenticated app-level endpoint); without
+	// one the replayer is inert and says so.
+	replayer := syncpkg.NewDeliveryReplayer(app, store, cfg.ReplayInterval)
+	switch {
+	case app == nil:
+		slog.Warn("GITHUB_APP_ID not set; deliveries GitHub fails to hand over cannot be recovered and will stay missed")
+	case cfg.ReplayInterval == 0:
+		slog.Warn("WEBHOOK_REPLAY_INTERVAL=0; deliveries GitHub fails to hand over will stay missed")
+	}
+
 	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
 	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, app)
@@ -152,6 +165,10 @@ func main() {
 
 	// Start periodic refresher.
 	go refresher.Start(ctx)
+
+	// Recover deliveries GitHub could not hand over. A restart is itself such
+	// a window, so the first cycle runs now rather than an interval from now.
+	go replayer.Start(ctx)
 
 	// Start HTTP server.
 	srv := &http.Server{
