@@ -37,8 +37,12 @@ type CachedCompare struct {
 	Basehead string // raw base...head path tail, exact
 	BaseRef  string // basehead's base side (before the "...")
 	HeadRef  string // basehead's head side (after the "...")
-	Status   int    // 200, or 404 (unknown-ref miss marker)
-	Doc      string // rendered document as JSON (trimmed compare, or the 404 body)
+	// BaseTipSha is base_commit.sha from the answer GitHub gave: the exact
+	// base-side tip this comparison was computed against. Empty when the
+	// upstream body did not state one (and on a 404 verdict row).
+	BaseTipSha string
+	Status     int    // 200, or 404 (unknown-ref miss marker)
+	Doc        string // rendered document as JSON (trimmed compare, or the 404 body)
 }
 
 // GetCachedCompare returns the cached comparison, or (zero, false) on a miss
@@ -57,14 +61,57 @@ func (s *Store) GetCachedCompare(ctx context.Context, owner, repo, basehead stri
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return CachedCompare{}, false, nil
 	}
+	if moved, err := s.baseBranchMoved(ctx, ownerKey, repoKey, row.BaseRef, row.BaseTipSha, now); err != nil {
+		return CachedCompare{}, false, err
+	} else if moved {
+		return CachedCompare{}, false, nil
+	}
 	_ = s.q.TouchCompareCache(ctx, dbgen.TouchCompareCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Basehead: basehead,
 	})
 	return CachedCompare{
 		Owner: row.Owner, Repo: row.Repo, Basehead: row.Basehead,
-		BaseRef: row.BaseRef, HeadRef: row.HeadRef, Status: int(row.Status),
-		Doc: row.Doc,
+		BaseRef: row.BaseRef, HeadRef: row.HeadRef, BaseTipSha: row.BaseTipSha,
+		Status: int(row.Status), Doc: row.Doc,
 	}, true, nil
+}
+
+// baseBranchMoved reports whether the base branch has moved off the tip this
+// row was computed against -- a row we can PROVE is stale, whatever happened
+// to the flush that should have dropped it.
+//
+// The flush is still the primary mechanism, and it is not going anywhere.
+// This is the belt for the case that actually bit: a `behind_by` answer
+// outlives the push that changed it, and the consumer reading it (pr-minder's
+// "does this PR need its branch updated?" gate) concludes there is nothing to
+// do. Nothing about that failure is self-correcting -- the wrong answer is
+// what stops the work that would produce a new one -- so it sits until the
+// 24h TTL. GitHub hands us the way out in the answer itself: base_commit.sha
+// says which base tip the comparison describes, and git_ref_cache says which
+// tip the branch is on NOW, because a push APPLIES its own `after` there
+// (ApplyPushedRefTip). Two facts we already hold, compared on read.
+//
+// Unknown beats guessing in only one direction here. A row with no stated
+// base tip, a base side that is a sha (immutable -- nothing to move), or a
+// branch whose tip we have never observed all fall through to the existing
+// contract: flush, then TTL. Refusing to serve those would not make one of
+// them fresher; it would just turn every first comparison into a permanent
+// miss. What this rejects is the narrow, provable case: we know the tip, and
+// it is not the one in the row.
+//
+// The HEAD side gets no equivalent check. GitHub states no head tip, and
+// deriving one from the last element of `commits` is wrong the moment a
+// comparison exceeds GitHub's 250-commit cap -- a silently truncated list
+// whose tail is not the head. The head side keeps the flush and the TTL.
+func (s *Store) baseBranchMoved(ctx context.Context, owner, repo, baseRef, baseTipSha string, now time.Time) (bool, error) {
+	if baseTipSha == "" || IsFullHexSHA(baseRef) {
+		return false, nil
+	}
+	tip, known, err := s.KnownBranchTip(ctx, owner, repo, baseRef, now)
+	if err != nil || !known {
+		return false, err
+	}
+	return tip != baseTipSha, nil
 }
 
 // PutCachedCompare absorbs one fetched comparison: the compare's commits are

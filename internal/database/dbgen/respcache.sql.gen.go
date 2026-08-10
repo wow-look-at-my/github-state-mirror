@@ -1009,7 +1009,7 @@ func (q *Queries) GetCommitsListCache(ctx context.Context, arg GetCommitsListCac
 
 const getCompareCache = `-- name: GetCompareCache :one
 
-SELECT id, owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at FROM compare_cache
+SELECT id, owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at FROM compare_cache
 WHERE owner = ? AND repo = ? AND basehead = ?
 `
 
@@ -1030,6 +1030,7 @@ func (q *Queries) GetCompareCache(ctx context.Context, arg GetCompareCacheParams
 		&i.Basehead,
 		&i.BaseRef,
 		&i.HeadRef,
+		&i.BaseTipSha,
 		&i.Status,
 		&i.Doc,
 		&i.FetchedAt,
@@ -2526,11 +2527,12 @@ func (q *Queries) UpsertCommitsListCache(ctx context.Context, arg UpsertCommitsL
 }
 
 const upsertCompareCache = `-- name: UpsertCompareCache :exec
-INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, basehead) DO UPDATE SET
     base_ref = excluded.base_ref,
     head_ref = excluded.head_ref,
+    base_tip_sha = excluded.base_tip_sha,
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
@@ -2544,6 +2546,7 @@ type UpsertCompareCacheParams struct {
 	Basehead   string
 	BaseRef    string
 	HeadRef    string
+	BaseTipSha string
 	Status     int64
 	Doc        string
 	FetchedAt  string
@@ -2558,6 +2561,7 @@ func (q *Queries) UpsertCompareCache(ctx context.Context, arg UpsertCompareCache
 		arg.Basehead,
 		arg.BaseRef,
 		arg.HeadRef,
+		arg.BaseTipSha,
 		arg.Status,
 		arg.Doc,
 		arg.FetchedAt,

@@ -345,7 +345,11 @@ CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
 -- never invent or drop it. A comparison depends on both refs' tips, so a
 -- push flushes the pushed ref's rows (base_ref or head_ref match; repo-wide
 -- when the ref is unknown) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries. The compare's
+-- expires_at is the 24h TTL backstop for missed deliveries. base_tip_sha is
+-- what makes a MISSED flush survivable on the side that matters: GitHub
+-- states the base tip it computed against, so a row whose base branch has
+-- since moved can be recognized as stale on read instead of being served.
+-- The compare's
 -- commits are also upserted into git_commits_cache on absorb (synergy with
 -- the single-commit and commits-list routes); the doc is self-contained, so
 -- a hit never depends on those rows. owner/repo lowercased like the other
@@ -357,6 +361,7 @@ CREATE TABLE compare_cache (
     basehead     TEXT NOT NULL,              -- raw base...head path tail, exact
     base_ref     TEXT NOT NULL,              -- basehead's base side (before the '...')
     head_ref     TEXT NOT NULL,              -- basehead's head side (after the '...')
+    base_tip_sha TEXT NOT NULL DEFAULT '',   -- base_commit.sha: the base tip this answer was computed against ('' = not stated)
     status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
     doc          TEXT NOT NULL,              -- rendered document as JSON (trimmed compare, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339

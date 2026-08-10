@@ -125,6 +125,7 @@ type CompareCache struct {
 	Basehead   string
 	BaseRef    string
 	HeadRef    string
+	BaseTipSha string
 	Status     int64
 	Doc        string
 	FetchedAt  string
