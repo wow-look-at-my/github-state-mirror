@@ -126,7 +126,12 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 // (GET /repos/{owner}/{repo} with their token) and records the answer.
 func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind, resourceKey string) (revealOutcome, ghdata.DenyVerdict, bool) {
 	ctx := r.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.gh.BaseURL()+"/repos/"+owner+"/"+repo, nil)
+	// A probe is a real mirror→GitHub exchange and goes on the chart under
+	// its own disposition; the client's transport does the recording (see
+	// TimelineUpstreamObserver), including the failure case, where no
+	// response arrives at all.
+	req, err := http.NewRequestWithContext(withUpstreamDisposition(ctx, dispProbe),
+		http.MethodGet, h.gh.BaseURL()+"/repos/"+owner+"/"+repo, nil)
 	if err != nil {
 		return revealError, ghdata.DenyVerdict{}, false
 	}
@@ -135,17 +140,12 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		req.Header.Set("Authorization", auth)
 	}
 
-	// The probe is a real mirror→GitHub exchange: time it onto the chart
-	// (disposition "probe"; a transport failure records as an error).
 	who := callerLabel(r)
-	start := time.Now()
 	resp, err := h.upstream.Do(req)
 	if err != nil {
-		h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), 0, DispError, who.Key, who.Name)
 		slog.Warn("reveal probe failed", "repo", owner+"/"+repo, "error", err)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
-	h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), resp.StatusCode, dispProbe, who.Key, who.Name)
 	defer resp.Body.Close()
 	// Passively record the X-RateLimit-* headers the probe response carries.
 	h.meter.Observe(who.Key, who.Name, resp)

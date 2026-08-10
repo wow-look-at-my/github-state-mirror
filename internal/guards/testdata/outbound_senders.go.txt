@@ -1,0 +1,26 @@
+package fixture
+
+// Every shape that can put a request on the wire, so the guard's detector is
+// pinned against something rather than against the repo happening to be
+// clean. Not compiled (.go.txt) -- the repo walk must not see these.
+
+import (
+	"net/http"
+	"net/http/httputil"
+	"time"
+)
+
+// A bare client: nothing observes what it sends.
+var bare = &http.Client{Timeout: 5 * time.Second}
+
+// A reverse proxy sends through its own transport.
+func proxy() *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{}
+}
+
+// The package-level senders use http.DefaultClient, which has no transport to
+// wrap -- always a hole, never excusable.
+func packageLevel() {
+	_, _ = http.Get("https://api.github.com/user")
+	_, _ = http.DefaultClient.Get("https://api.github.com/user")
+}

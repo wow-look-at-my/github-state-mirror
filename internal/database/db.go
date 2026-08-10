@@ -12,6 +12,15 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 24: compare_cache.base_tip_sha -- base_commit.sha, the base
+// tip GitHub says a comparison was computed against. A cached `behind_by` is
+// the one stale answer that stops its own correction (pr-minder reads it to
+// decide whether a PR needs its branch updated, so a stale "not behind" ends
+// the work that would refresh it), and it used to sit until the 24h TTL if
+// the push flush missed it. With the tip recorded, a read can compare it
+// against what git_ref_cache says the branch is on now -- which a push keeps
+// current by applying its own `after` -- and refuse the row.
+//
 // SchemaVersion 23: three of the largest remaining uncached slices become
 // cached routes. repo_installation_cache gains status/message, so the
 // authoritative "not installed here" 404 becomes a cacheable VERDICT (bounded
@@ -86,7 +95,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 23
+const SchemaVersion = 24
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

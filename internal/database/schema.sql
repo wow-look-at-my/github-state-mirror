@@ -358,7 +358,11 @@ CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
 -- never invent or drop it. A comparison depends on both refs' tips, so a
 -- push flushes the pushed ref's rows (base_ref or head_ref match; repo-wide
 -- when the ref is unknown) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries. The compare's
+-- expires_at is the 24h TTL backstop for missed deliveries. base_tip_sha is
+-- what makes a MISSED flush survivable on the side that matters: GitHub
+-- states the base tip it computed against, so a row whose base branch has
+-- since moved can be recognized as stale on read instead of being served.
+-- The compare's
 -- commits are also upserted into git_commits_cache on absorb (synergy with
 -- the single-commit and commits-list routes); the doc is self-contained, so
 -- a hit never depends on those rows. owner/repo lowercased like the other
@@ -370,6 +374,7 @@ CREATE TABLE compare_cache (
     basehead     TEXT NOT NULL,              -- raw base...head path tail, exact
     base_ref     TEXT NOT NULL,              -- basehead's base side (before the '...')
     head_ref     TEXT NOT NULL,              -- basehead's head side (after the '...')
+    base_tip_sha TEXT NOT NULL DEFAULT '',   -- base_commit.sha: the base tip this answer was computed against ('' = not stated)
     status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
     doc          TEXT NOT NULL,              -- rendered document as JSON (trimmed compare, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339
@@ -724,6 +729,26 @@ CREATE TABLE webhook_deliveries (
     disposition  TEXT NOT NULL,              -- applied | invalidated | ignored | error
     detail       TEXT NOT NULL DEFAULT ''    -- human summary, e.g. "upserted PR #42"
 );
+
+-- Deliveries this mirror has already asked GitHub to send again. GitHub keeps
+-- its own log of deliveries it could not hand over and will re-send one on
+-- request, but it never retries by itself -- so a delivery lost to a restart
+-- or a blip is simply gone, and every cache that delivery would have moved
+-- serves its last absorbed answer for the full TTL with nothing reporting a
+-- gap. The replayer (internal/sync) reads that log and requests the missing
+-- ones; this table is how it asks exactly once per delivery, across restarts.
+-- One row per GitHub delivery id (a redelivery gets its own id, so a replay
+-- that also fails is a new, separately-requestable delivery). Bounded by
+-- pruning rows past the replayer's own lookback window.
+CREATE TABLE webhook_replays (
+    delivery_id  INTEGER PRIMARY KEY,        -- GitHub's numeric delivery id
+    guid         TEXT NOT NULL DEFAULT '',   -- the X-GitHub-Delivery UUID it will arrive under
+    event_type   TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's original attempt
+    requested_at TEXT NOT NULL               -- RFC3339, when this mirror asked
+);
+
+CREATE INDEX idx_webhook_replays_requested ON webhook_replays (requested_at);
 
 -- ============================================================================
 -- Workflow jobs (webhook-fed Actions job state)

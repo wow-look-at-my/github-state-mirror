@@ -155,6 +155,45 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 	}, now, ttl)
 }
 
+// KnownBranchTip reports the tip this mirror currently believes a branch is
+// on, read out of the cached ref answers. It is the freshest thing available
+// without asking GitHub: a push APPLIES its own `after` into these rows
+// (ApplyPushedRefTip), so the tip a delivery states is readable here the
+// moment it lands.
+//
+// name is any spelling of the branch the routes accept ("main", "heads/main",
+// "refs/heads/main"); rows key the verbatim requested spelling, so all three
+// are consulted and the first live 200 row answers. known=false means exactly
+// that -- nobody has asked for this ref, or the answer expired -- and callers
+// must treat it as no information rather than as a mismatch.
+//
+// Tags are deliberately out of scope: an annotated tag's ref object is the
+// TAG object, not the commit it points at, so its sha would never equal a
+// commit-side tip and every comparison against a tag would read as moved.
+func (s *Store) KnownBranchTip(ctx context.Context, owner, repo, name string, now time.Time) (string, bool, error) {
+	short := strings.TrimPrefix(strings.TrimPrefix(name, "refs/"), "heads/")
+	if short == "" || strings.HasPrefix(name, "refs/tags/") || strings.HasPrefix(name, "tags/") {
+		return "", false, nil
+	}
+	for _, ref := range []string{short, "heads/" + short, "refs/heads/" + short} {
+		c, ok, err := s.GetCachedGitRef(ctx, owner, repo, ref, now)
+		if err != nil {
+			return "", false, err
+		}
+		if !ok || c.Status != http.StatusOK {
+			continue
+		}
+		var doc storedGitRefDoc
+		if err := json.Unmarshal([]byte(c.Doc), &doc); err != nil {
+			continue
+		}
+		if IsFullHexSHA(doc.Object.SHA) {
+			return doc.Object.SHA, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // InvalidateGitRefForRef drops ONE requested spelling of a ref -- the per-ref
 // push flush, and the LAST RESORT for this table (see ApplyPushedRefTip: a
 // push that states a real tip updates the row instead). Still the right

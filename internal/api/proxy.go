@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghjson"
+	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 )
 
@@ -31,7 +32,16 @@ import (
 // forwarded responses are never cached.
 // onResponse (nil-safe) observes every proxied upstream response after the
 // rate meter; the router wires the auth-failure mint invalidation there.
-func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*http.Response)) http.Handler {
+//
+// observe (nil-safe) charts the mirror→GitHub leg. It is installed on the
+// TRANSPORT rather than in ModifyResponse for two reasons: a request that
+// dies before a response (the ErrorHandler path) is still a real request and
+// still belongs on the chart, and the transport is the one place every
+// proxied byte must pass through. This is also the choke point for the
+// DEBOUNCED reads, whose N inbound bars share exactly one call here -- the
+// debouncer used to record that leg itself, which was one manual call site
+// away from the batch path being the only observed one.
+func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*http.Response), observe httpobs.Observer) http.Handler {
 	target, err := url.Parse(baseURL)
 	if err != nil {
 		// baseURL is operator-controlled configuration, not caller input, so an
@@ -41,6 +51,7 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*htt
 	}
 
 	rp := &httputil.ReverseProxy{
+		Transport: httpobs.Transport(nil, observe),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// SetURL routes the outbound request to target's scheme/host and
 			// rewrites the Host header to match; the inbound path and query are
