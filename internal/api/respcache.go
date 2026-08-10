@@ -449,15 +449,9 @@ func writeRebuilt(w http.ResponseWriter, status int, body []byte, hit bool) {
 	_, _ = w.Write(body)
 }
 
-// marshalTrimmed encodes a rebuilt body without HTML escaping (GitHub does
-// not escape <, >, & in JSON, and commit messages routinely contain them) and
-// without a trailing newline.
+// marshalTrimmed encodes a rebuilt body. It delegates to the storage layer's
+// renderer because a stored doc a webhook rewrote in place must be byte-equal
+// to the one this layer would render (ghdata.MarshalCacheDoc).
 func marshalTrimmed(v interface{}) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+	return ghdata.MarshalCacheDoc(v)
 }

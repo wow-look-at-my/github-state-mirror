@@ -145,7 +145,7 @@ func main() {
 
 	// Build router. cfg.DBPath is only statted (the dashboard's DB-size stat);
 	// all data access goes through the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

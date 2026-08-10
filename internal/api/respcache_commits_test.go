@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -128,22 +127,28 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`[
-		{"sha": %q,
-		 "commit": {
-			"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-			"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-			"message": "fix: a thing <with> & symbols",
-			"tree": {"sha": %q}},
-		 "parents": [{"sha": %q}]},
-		{"sha": %q,
-		 "commit": {
-			"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-			"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-			"message": "feat: mid",
-			"tree": {"sha": %q}},
-		 "parents": [{"sha": %q}]}
-	]`, shaTip, shaTree2, shaMid, shaMid, shaTree1, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString([]any{
+		map[string]any{
+			"sha": shaTip,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "fix: a thing <with> & symbols",
+				"tree":      map[string]any{"sha": shaTree2},
+			},
+			"parents": []any{map[string]any{"sha": shaMid}},
+		},
+		map[string]any{
+			"sha": shaMid,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "feat: mid",
+				"tree":      map[string]any{"sha": shaTree1},
+			},
+			"parents": []any{map[string]any{"sha": shaBase}},
+		},
+	}), w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)

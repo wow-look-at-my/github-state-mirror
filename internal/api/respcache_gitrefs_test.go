@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -18,13 +17,15 @@ import (
 // fields, so the tests can prove the rebuild drops them.
 func defaultGitRefUpstream(w http.ResponseWriter, r *http.Request) {
 	ref := strings.TrimPrefix(r.URL.Path, "/repos/org1/repo1/git/ref/")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{
-		"ref": "refs/%s", "node_id": "REF_kwAE",
-		"url": "https://api.github.com/repos/org1/repo1/git/refs/%s",
-		"object": {"sha": %q, "type": "commit",
-		           "url": "https://api.github.com/repos/org1/repo1/git/commits/%s"}
-	}`, strings.TrimPrefix(ref, "refs/"), ref, shaTip, shaTip)
+	writeGitHubJSON(w, map[string]any{
+		"ref":     "refs/" + strings.TrimPrefix(ref, "refs/"),
+		"node_id": "REF_kwAE",
+		"url":     "https://api.github.com/repos/org1/repo1/git/refs/" + ref,
+		"object": map[string]any{
+			"sha": shaTip, "type": "commit",
+			"url": "https://api.github.com/repos/org1/repo1/git/commits/" + shaTip,
+		},
+	})
 }
 
 // The core flow: fetch + absorb (miss), then serve the byte-identical stored
@@ -38,10 +39,10 @@ func TestCachedGitRef_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
+	assert.JSONEq(t, mustJSONString(map[string]any{
 		"ref": "refs/heads/main", "node_id": "REF_kwAE",
-		"object": {"sha": %q, "type": "commit"}
-	}`, shaTip), w1.Body.String())
+		"object": map[string]any{"sha": shaTip, "type": "commit"},
+	}), w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
@@ -66,28 +67,64 @@ func TestCachedGitRef_SlashedBranchName(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 }
 
-// A push naming the ref flushes it — in EVERY spelling, since rows key the
-// verbatim requested ref and callers may send any of the three.
-func TestCachedGitRef_PushFlushesEverySpelling(t *testing.T) {
+// A push APPLIES its own tip to every spelling of the ref, and costs ZERO
+// upstream calls doing it. The payload states `after` outright, so a flush
+// here would delete a row only to buy the identical sha back over HTTP on the
+// next read -- the apply-don't-invalidate rule (CLAUDE.md). Rows key the
+// verbatim requested ref, so all three spellings must move together.
+func TestCachedGitRef_PushAppliesTipToEverySpelling(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	spellings := []string{
 		"/repos/org1/repo1/git/ref/heads/main",
 		"/repos/org1/repo1/git/ref/refs/heads/main",
 	}
+	fetched := map[string]string{}
 	for _, target := range spellings {
 		do(t, router, authedReq("GET", target, nil))
-		require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, "hit", w.Header().Get(cacheHeader))
+		fetched[target] = w.Body.String()
 	}
 	before := atomic.LoadInt32(&u.gitRefHits)
 
-	postWebhook(t, router, "push", `{"ref":"refs/heads/main","after":"`+shaTip+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	// The fake upstream answers shaTip, so pushing shaCommit proves the served
+	// sha came from the PAYLOAD and not from a refetch.
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "after": shaCommit, "repository": fixtureRepo(),
+	})
 
 	for _, target := range spellings {
 		w := do(t, router, authedReq("GET", target, nil))
-		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "push must flush %s", target)
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the applied tip must serve from cache: %s", target)
+		assert.Contains(t, w.Body.String(), shaCommit, "%s must serve the pushed tip", target)
+		assert.NotContains(t, w.Body.String(), shaTip, "%s must not still serve the pre-push tip", target)
+		// Byte-identical to the fetched answer but for the sha: the applied
+		// doc is re-marshalled in the storage layer, so a field-order drift
+		// between there and the route's render would surface right here.
+		assert.Equal(t, strings.Replace(fetched[target], shaTip, shaCommit, 1), w.Body.String(),
+			"an applied tip must be byte-indistinguishable from a fetched one: %s", target)
 	}
-	assert.Equal(t, before+2, atomic.LoadInt32(&u.gitRefHits))
+	assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits),
+		"applying the payload's own tip must cost no upstream calls")
+}
+
+// A DELETION states no tip (all-zeros `after`), so there is nothing to apply
+// and the row must go -- invalidation is still correct where the payload
+// cannot answer.
+func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	postWebhook(t, router, "push", `{"ref":"refs/heads/main","deleted":true,
+		"after":"0000000000000000000000000000000000000000",
+		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+		"a deletion carries no tip to apply, so the row must be dropped")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 }
 
 // A push to a DIFFERENT branch must not flush this one: the whole point of
@@ -97,8 +134,9 @@ func TestCachedGitRef_OtherBranchPushKeepsHit(t *testing.T) {
 	target := "/repos/org1/repo1/git/ref/heads/main"
 
 	do(t, router, authedReq("GET", target, nil))
-	postWebhook(t, router, "push", `{"ref":"refs/heads/other","after":"`+shaMid+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/other", "after": shaMid, "repository": fixtureRepo(),
+	})
 
 	w := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "an unrelated branch's push must not flush this ref")
@@ -127,8 +165,9 @@ func TestCachedGitRef_AbsentVerdictCachedThenClearedByCreate(t *testing.T) {
 
 	// The branch is created: the push carrying that ref must drop the verdict.
 	u.gitRef = defaultGitRefUpstream
-	postWebhook(t, router, "push", `{"ref":"refs/heads/gone","after":"`+shaTip+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/gone", "after": shaTip, "repository": fixtureRepo(),
+	})
 
 	w3 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w3.Code, "the verdict must not outlive the ref's creation")

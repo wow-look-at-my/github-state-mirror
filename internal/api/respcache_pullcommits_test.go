@@ -60,10 +60,15 @@ func TestCachedPullCommits_PullRequestEventFlushesThatPR(t *testing.T) {
 	require.Equal(t, "hit", do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/commits", nil)).Header().Get(cacheHeader))
 	require.Equal(t, "hit", do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/8/commits", nil)).Header().Get(cacheHeader))
 
-	postWebhook(t, router, "pull_request", `{"action":"synchronize","number":7,
-		"pull_request":{"number":7,"state":"open","title":"t","head":{"ref":"feature","sha":"`+shaTip+`"},
-		"base":{"ref":"main","sha":"`+shaBase+`"}},
-		"repository":{"name":"repo1","owner":{"login":"org1"}}}`)
+	postWebhookJSON(t, router, "pull_request", map[string]any{
+		"action": "synchronize", "number": 7,
+		"pull_request": map[string]any{
+			"number": 7, "state": "open", "title": "t",
+			"head": map[string]any{"ref": "feature", "sha": shaTip},
+			"base": map[string]any{"ref": "main", "sha": shaBase},
+		},
+		"repository": fixtureRepo(),
+	})
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/commits", nil)).Header().Get(cacheHeader),
 		"the synchronized PR's commits must be flushed")
@@ -79,8 +84,9 @@ func TestCachedPullCommits_PushFlushesPRSnapshots(t *testing.T) {
 	do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/commits", nil))
 	require.Equal(t, "hit", do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/commits", nil)).Header().Get(cacheHeader))
 
-	postWebhook(t, router, "push", `{"ref":"refs/heads/feature","after":"`+shaTip+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/feature", "after": shaTip, "repository": fixtureRepo(),
+	})
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/commits", nil)).Header().Get(cacheHeader))
 }
