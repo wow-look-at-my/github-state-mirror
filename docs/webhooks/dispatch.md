@@ -40,10 +40,21 @@ creation must clear (promoting it would need a `node_id` no push carries, and in
 wire), or an unreadable row. An applied answer is byte-identical to a fetched one, pinned by
 `TestCachedGitRef_PushAppliesTipToEverySpelling`, and costs **zero** upstream calls where the old flush cost one per spelling.
 
+### The second one: `branches_list_cache`
+
+A branches page lists one entry per branch, and a tip-move changes exactly that entry's sha — not the page's membership, not its
+ordering (GitHub sorts by name). The push states the sha, so `ghdata.ApplyPushedBranchTip` rewrites every cached page that
+already lists the branch and the pages keep serving. Only what a page cannot be edited into falls back to the repo-wide flush:
+a create (no page lists the branch yet) and a delete (all-zeros `after`), both of which move membership. A **tag** push touches
+neither — it is not in the listing — so it now does nothing here instead of flushing the repo's pages.
+
+This one is worth more than the ref route it copies: pr-minder's fork-point detection lists every branch of a repo, so the old
+flush re-listed the whole repo after every push to it. `TestCachedBranchesList_PushAppliesTip` pins the applied page as
+byte-identical to the fetched one, which is why `marshalTrimmed` delegates to `ghdata.MarshalCacheDoc` — a doc rewritten in the
+storage layer and a doc rendered in the API layer must be the same bytes, and one renderer is the only way to guarantee that.
+
 ### Still to do
 
-- **`branches_list_cache` — candidate.** A push names one ref and the listing holds many, but the moved entry is stated; the
-  listing could be edited in place rather than dropped repo-wide.
 - **Legitimately invalidated** (step 3 genuinely applies): `contents_cache` and `commits_list_cache` (a push names changed
   PATHS, never their contents), `compare_cache` (a comparison is computed by GitHub, not stated), and the PR merge fields
   (GitHub recomputes `mergeable` asynchronously and never webhooks the result — the un-resolve, plus its stale-sha proof, IS

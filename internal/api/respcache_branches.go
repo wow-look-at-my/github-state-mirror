@@ -31,18 +31,17 @@ import (
 //
 // A listing moves whenever a branch is created, deleted, or its tip
 // advances -- all of which arrive as push events (a delete carries
-// deleted=true) -- so push/repository webhooks flush a repo's snapshots
-// repo-wide, with the 24h TTL as the missed-delivery backstop. There is no
+// deleted=true). A tip-move is applied into the stored pages from the push's
+// own `after` (ghdata.ApplyPushedBranchTip); only the membership changes flush
+// the repo's snapshots, with the 24h TTL as the missed-delivery backstop.
+// Because a page can be rewritten in place, its render must be reproducible
+// byte-for-byte outside this package -- hence marshalTrimmed delegating to
+// ghdata.MarshalCacheDoc. There is no
 // doc-size cap: the item shape has no unbounded field, and the 8 MiB
 // fetchUpstream cap bounds the raw body. The single-branch read
 // /branches/{branch} is a different shape and stays passthrough.
 
 const (
-	// branchesCacheTTL bounds how long a MISSED push delivery could leave a
-	// stale listing being served. Webhooks flush sooner; this is the
-	// backstop.
-	branchesCacheTTL = 24 * time.Hour
-
 	// branchesDefaultPerPage is GitHub's default page size for the branches
 	// list when the request does not send per_page.
 	branchesDefaultPerPage = 30
@@ -132,7 +131,7 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedBranchesList(r.Context(), owner, repo, int64(perPage), int64(page), doc, now, branchesCacheTTL); err != nil {
+	if err := h.store.PutCachedBranchesList(r.Context(), owner, repo, int64(perPage), int64(page), doc, now, ghdata.BranchesCacheTTL); err != nil {
 		slog.Warn("branches list cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)

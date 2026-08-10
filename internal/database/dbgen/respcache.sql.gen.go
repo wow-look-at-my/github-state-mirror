@@ -1555,6 +1555,51 @@ func (q *Queries) GetWorkflowRunsListMarker(ctx context.Context, arg GetWorkflow
 	return i, err
 }
 
+const listBranchesListCacheByRepo = `-- name: ListBranchesListCacheByRepo :many
+SELECT id, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at FROM branches_list_cache WHERE owner = ? AND repo = ?
+`
+
+type ListBranchesListCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListBranchesListCacheByRepo returns a repo's cached pages so a push can
+// rewrite the tip it states inside each one (ApplyPushedBranchTip) instead of
+// dropping the listing.
+func (q *Queries) ListBranchesListCacheByRepo(ctx context.Context, arg ListBranchesListCacheByRepoParams) ([]BranchesListCache, error) {
+	rows, err := q.db.QueryContext(ctx, listBranchesListCacheByRepo, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BranchesListCache
+	for rows.Next() {
+		var i BranchesListCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
 SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
 WHERE owner = ?1 AND repo = ?2

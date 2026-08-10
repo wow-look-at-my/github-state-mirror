@@ -21,8 +21,9 @@ import (
 //
 //   - push: the pushed ref's contents/commits-list/compare/commit-CI rows
 //     flush by ref (see invalidateForPush for the exact grain decisions,
-//     incl. the empty-ref default-branch spelling); PR-files, branches-list,
-//     and pull-diff-406 rows stay repo-wide (no per-ref signal); a payload
+//     incl. the empty-ref default-branch spelling); the branches pages are
+//     REWRITTEN from the payload's own tip rather than flushed; PR-files and
+//     pull-diff-406 rows stay repo-wide (no per-ref signal); a payload
 //     without a usable ref keeps the old conservative whole-repo flush.
 //   - status/check_run/check_suite: the payload's head branch(es) + sha name
 //     exactly which verbatim-ref commit-CI snapshots moved, and the sha names
@@ -309,19 +310,46 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		}
 	}
 
+	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
+
 	// No per-ref grain for the rest, parseable or not: PR-files pages (a
 	// base push moves merge-base-relative file lists with no per-PR signal
-	// -- the belt for missed pull_request deliveries), branches listings
-	// (any push edits the listing: create, delete, tip-move), and
-	// pull-diff-406 verdicts (a base push can move a PR's three-dot diff
-	// across the 406 size boundary in either direction).
+	// -- the belt for missed pull_request deliveries) and pull-diff-406
+	// verdicts (a base push can move a PR's three-dot diff across the 406
+	// size boundary in either direction).
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
-	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 	// A PR's commit list moves when its head moves, and a fork head's pushes
 	// never reach us -- pull_request deliveries carry the per-PR signal, and
 	// this is the repo-wide belt for a missed one (the PR-files stance).
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
+}
+
+// applyOrFlushBranchesList settles a push's effect on the cached branches
+// pages. A page lists one entry per branch, and a tip-move changes only that
+// entry's sha -- which the push STATES in `after` -- so the pages are
+// rewritten in place rather than dropped (CLAUDE.md's apply-the-payload rule);
+// dropping them re-lists every branch of the repo on the next reader, which
+// for pr-minder's per-repo fork-point detection is the whole listing back over
+// HTTP for a sha we were handed. Only what the pages cannot be edited into
+// falls back to the flush: a create or a delete, which move page MEMBERSHIP,
+// and a payload naming no ref.
+func (d *WebhookDispatcher) applyOrFlushBranchesList(ctx context.Context, scope, owner, repo, refName, after string, isTag bool) {
+	// A tag is not a branch: it never appears in the listing, so a tag push
+	// leaves the pages correct and there is nothing to do either way.
+	if isTag {
+		return
+	}
+	if refName != "" {
+		applied, err := d.store.ApplyPushedBranchTip(ctx, owner, repo, refName, after, time.Now(), ghdata.BranchesCacheTTL)
+		if err != nil {
+			flush("branches list tip apply", scope, err)
+		}
+		if applied {
+			return
+		}
+	}
+	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 }
 
 // flush logs one best-effort cache invalidation's failure; it never fails

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -147,4 +148,83 @@ func TestCachedBranchesList_EmptyArrayCacheable(t *testing.T) {
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a page past the end is a valid cacheable answer")
 	assert.Equal(t, w1.Body.String(), w2.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.branchesHits))
+}
+
+// A tip-move is APPLIED into the stored pages from the push's own `after`,
+// costing zero upstream calls: the payload states the branch's new sha, so
+// flushing here would re-list every branch of the repo to buy that same sha
+// back over HTTP (CLAUDE.md's apply-don't-invalidate rule).
+func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/branches"
+
+	do(t, router, authedReq("GET", target, nil))
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w1.Header().Get(cacheHeader))
+	fetched := w1.Body.String()
+	before := atomic.LoadInt32(&u.branchesHits)
+
+	// The fake upstream still answers shaTip for main, so serving shaCommit
+	// proves the sha came from the PAYLOAD rather than from a refetch.
+	postWebhook(t, router, "push", `{"ref":"refs/heads/main","after":"`+shaCommit+`",
+		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "an applied tip must keep serving from cache")
+	assert.Equal(t, before, atomic.LoadInt32(&u.branchesHits),
+		"applying the payload's own tip must cost no upstream calls")
+	// Byte-identical to the fetched page but for the one sha: the applied doc
+	// is re-marshalled in the storage layer, so a field-order or escaping
+	// drift between there and the route's render would surface right here.
+	assert.Equal(t, strings.Replace(fetched, shaTip, shaCommit, 1), w2.Body.String(),
+		"an applied tip must be byte-indistinguishable from a fetched page")
+	assert.Contains(t, w2.Body.String(), shaMid, "the unpushed branch's tip must be untouched")
+}
+
+// What the pages cannot be edited into still flushes: a create and a delete
+// both move page MEMBERSHIP, which no in-place tip rewrite can express.
+func TestCachedBranchesList_MembershipChangesFlush(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+	}{
+		{"create", `{"ref":"refs/heads/brand-new","created":true,"after":"` + shaCommit + `",
+			"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`},
+		{"delete", `{"ref":"refs/heads/main","deleted":true,
+			"after":"0000000000000000000000000000000000000000",
+			"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, _, _, u := respCacheStack(t)
+			target := "/repos/org1/repo1/branches"
+			do(t, router, authedReq("GET", target, nil))
+			require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+			before := atomic.LoadInt32(&u.branchesHits)
+
+			postWebhook(t, router, "push", tc.payload)
+
+			assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+				"a membership change has no tip to apply, so the pages must be dropped")
+			assert.Equal(t, before+1, atomic.LoadInt32(&u.branchesHits))
+		})
+	}
+}
+
+// A tag never appears in a branches listing, so a tag push leaves the pages
+// correct -- it must neither rewrite nor flush them.
+func TestCachedBranchesList_TagPushLeavesPagesAlone(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/branches"
+
+	do(t, router, authedReq("GET", target, nil))
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w1.Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.branchesHits)
+
+	postWebhook(t, router, "push", `{"ref":"refs/tags/v1.2.3","after":"`+shaCommit+`",
+		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a tag push must not flush the branches pages")
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "a tag push must not rewrite them either")
+	assert.Equal(t, before, atomic.LoadInt32(&u.branchesHits))
 }
