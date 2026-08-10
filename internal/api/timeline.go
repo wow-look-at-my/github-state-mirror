@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
+	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -48,18 +49,30 @@ func requestStartFrom(ctx context.Context) (time.Time, bool) {
 //   - requestLog.observe/observeStatus (requestlog.go): every inbound
 //     data-API request the mirror serves — hits, misses, passthroughs,
 //     writes, errors — timed end-to-end from the router's receipt stamp;
-//   - fetchUpstream (respcache.go): the mirror→GitHub leg of every
-//     cached-route miss (disposition "upstream");
-//   - probeRepoAccess (reveal.go): every reveal probe (disposition "probe");
+//   - the API layer's own client, at its TRANSPORT (TimelineUpstreamObserver
+//     below): cached-route miss fetches ("upstream") and reveal probes
+//     ("probe"), told apart by the disposition the call site puts in the
+//     request context;
+//   - the passthrough proxy, at its TRANSPORT (TimelineProxyObserver below):
+//     the mirror→GitHub leg of every forwarded request, batched or not
+//     (disposition "upstream");
 //   - ghclient's transport observer (TimelineExchangeObserver below): every
 //     call the mirror's own GitHub client makes — identity resolution, app
 //     verification, token mints, fleet-refresh and consistency-check
-//     GraphQL, rate-limit polls — one event per real attempt (disposition
-//     "internal");
+//     GraphQL, rate-limit polls, webhook-delivery replays — one event per
+//     real attempt (disposition "internal");
+//   - internal/auth's client, at its TRANSPORT (TimelineLoginObserver
+//     below): the two GitHub calls a dashboard sign-in makes (disposition
+//     "login");
 //   - relayGitHubLogin (oauth.go): the github.com login relays (disposition
 //     "relay");
 //   - the subscriber notifier (internal/notify): every outbound delivery
-//     attempt on the "⇒ notify" lane.
+//     attempt on the "⇒ notify" lane, per attempt, with its terminal flag.
+//
+// Four of those hang off a TRANSPORT rather than a call site, and that is the
+// difference between charting the calls someone remembered and charting the
+// calls. internal/guards.TestEveryOutboundClientIsObserved fails the build on
+// an outbound client that has not been declared with what makes it visible.
 //
 // The dashboard's own UI endpoints (/api/*, the login pages, assets) are the
 // one surface not charted: the chart polling itself would recursively fill
@@ -74,7 +87,73 @@ const (
 	dispProbe    = "probe"    // a reveal-layer authorization probe
 	dispInternal = "internal" // the mirror's own ghclient exchange
 	dispRelay    = "relay"    // a github.com login relay
+	dispLogin    = "login"    // a dashboard sign-in's own GitHub calls
 )
+
+// upstreamDispKey carries which KIND of upstream call a request is, from the
+// call site that knows to the transport observer that charts it. The
+// disposition is the only thing a transport cannot work out for itself, and
+// carrying it beats leaving each call site to do its own recording -- that is
+// what made a third caller of the upstream client invisible by default.
+type upstreamDispKey struct{}
+
+// withUpstreamDisposition labels an outbound request for the chart.
+func withUpstreamDisposition(ctx context.Context, disp string) context.Context {
+	return context.WithValue(ctx, upstreamDispKey{}, disp)
+}
+
+// TimelineUpstreamObserver charts every call the API layer's own client makes
+// -- cached-route miss fetches and reveal probes today, and anything added
+// later without a line of its own, which is the point.
+func TimelineUpstreamObserver(tl *reqtimeline.Recorder) httpobs.Observer {
+	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
+		who := callerLabel(req)
+		disp, _ := req.Context().Value(upstreamDispKey{}).(string)
+		if disp == "" {
+			disp = dispUpstream
+		}
+		if status == 0 {
+			disp = DispError
+		}
+		tl.RecordRequest(start, dur, req.Method, normalizeRoute(req.URL.Path), status, disp, who.Key, who.Name)
+	}
+}
+
+// TimelineProxyObserver charts the mirror→GitHub leg of the passthrough
+// proxy, including the debounced batches that share one call between many
+// waiters. Identity comes from the outbound request, which carries the
+// inbound one's context, so it lands under the same label the request log
+// used for the inbound side.
+func TimelineProxyObserver(tl *reqtimeline.Recorder) httpobs.Observer {
+	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
+		who := callerLabel(req)
+		disp := dispUpstream
+		if status == 0 {
+			disp = DispError
+		}
+		tl.RecordRequest(start, dur, req.Method, normalizeRoute(req.URL.Path), status, disp, who.Key, who.Name)
+	}
+}
+
+// TimelineLoginObserver charts the two GitHub calls a dashboard sign-in makes
+// (internal/auth): the OAuth code-for-token exchange and GET /user.
+//
+// The dashboard's own INBOUND endpoints stay off the chart on purpose --
+// polling the chart would fill it with the act of looking at it. That
+// exclusion never covered these: they are outbound requests to GitHub,
+// spending the same budget as everything else here, and a sign-in happens
+// once rather than on every poll. There is no principal yet at sign-in time
+// (resolving the login is what these calls are FOR), so they are labeled
+// anonymous.
+func TimelineLoginObserver(tl *reqtimeline.Recorder) httpobs.Observer {
+	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
+		disp := dispLogin
+		if status == 0 {
+			disp = DispError
+		}
+		tl.RecordRequest(start, dur, req.Method, normalizeRoute(req.URL.Path), status, disp, "anonymous", "")
+	}
+}
 
 // deliveryTimeline adapts the reqtimeline recorder to the webhook package's
 // DeliveryRecorder seam (internal/webhook must not import internal/reqtimeline

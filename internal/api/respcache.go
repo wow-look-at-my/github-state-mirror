@@ -344,25 +344,22 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, rd)
+	// The real mirror→GitHub leg is charted by the client's own transport
+	// (TimelineUpstreamObserver), distinct from the inbound miss the route
+	// records end-to-end via observeStatus: both exchanges are real, so both
+	// are on the chart. The context says which kind of call this is; the
+	// transport does the rest, so a future caller of h.upstream is charted
+	// without having to remember to be.
+	ctx := withUpstreamDisposition(r.Context(), dispUpstream)
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, rd)
 	if err != nil {
 		return nil, nil, false, err
 	}
 	copyForwardHeaders(req.Header, r.Header)
 
-	// Time the real mirror→GitHub leg (headers through buffered body) into
-	// the timeline ring as its own "upstream" event, distinct from the
-	// inbound miss the route records end-to-end via observeStatus: both
-	// exchanges are real, so both are on the chart.
 	who := callerLabel(r)
-	start := time.Now()
-	recordFetch := func(status int, disp string) {
-		h.timeline.RecordRequest(start, time.Since(start), r.Method, normalizeRoute(r.URL.Path), status, disp, who.Key, who.Name)
-	}
-
 	resp, err := h.upstream.Do(req)
 	if err != nil {
-		recordFetch(0, DispError)
 		return nil, nil, false, err
 	}
 	// Passively record the X-RateLimit-* headers on every cached-route miss
@@ -371,11 +368,9 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	invalidateMintOnAuthFailure(r.Context(), h.store, bearerToken(r), resp)
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxAbsorbBodyBytes+1))
 	if err != nil {
-		recordFetch(resp.StatusCode, DispError)
 		resp.Body.Close()
 		return nil, nil, false, err
 	}
-	recordFetch(resp.StatusCode, dispUpstream)
 	overflow := false
 	if len(buf) > maxAbsorbBodyBytes {
 		overflow = true

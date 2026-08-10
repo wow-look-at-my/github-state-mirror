@@ -140,6 +140,9 @@ func main() {
 		ClientSecret: cfg.OAuthClientSecret,
 		SessionKey:   cfg.SessionSecret,
 		AdminLogins:  cfg.AdminLogins,
+		// Sign-in's own GitHub calls go on the Timeline like everything else
+		// this service sends.
+		Observer: api.TimelineLoginObserver(timeline),
 	})
 	if !authSvc.Configured() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
