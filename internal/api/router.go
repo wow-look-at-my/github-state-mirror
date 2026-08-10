@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -222,14 +223,17 @@ func NewRouter(
 		if resp.Request != nil {
 			invalidateMintOnAuthFailure(resp.Request.Context(), store, bearerToken(resp.Request), resp)
 		}
-	})), reqlog, shapes)
+	}, TimelineProxyObserver(timeline))), reqlog, shapes)
 
 	// One debounced principal->name recorder shared by requireAuth and the
 	// self-verifying app-JWT routes (token mint, repo installation), so every
 	// GitHub-verified identity lands in actor_identities.
 	recordIdentity := newIdentityRecorder(store)
 
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: &http.Client{}, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes}
+	// The API layer's own client is observed at its transport, so every call
+	// it makes is charted whether or not the caller remembered to say so.
+	upstream := httpobs.Client(0, TimelineUpstreamObserver(timeline))
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: upstream, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes}
 
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.

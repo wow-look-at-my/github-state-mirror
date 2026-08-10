@@ -133,11 +133,12 @@ SELECT * FROM compare_cache
 WHERE owner = ? AND repo = ? AND basehead = ?;
 
 -- name: UpsertCompareCache :exec
-INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, basehead) DO UPDATE SET
     base_ref = excluded.base_ref,
     head_ref = excluded.head_ref,
+    base_tip_sha = excluded.base_tip_sha,
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,

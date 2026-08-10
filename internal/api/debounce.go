@@ -254,14 +254,12 @@ func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel 
 	d.mu.Unlock()
 
 	bw := &bufferingWriter{header: make(http.Header), status: http.StatusOK, limit: debounceMaxBodyBytes}
-	who := callerLabel(req)
-	start := time.Now()
+	// The batch's one mirror→GitHub leg goes on the chart from the proxy's
+	// own transport (TimelineProxyObserver), which is where every passthrough
+	// call passes whether or not it was batched. Recording it here as well
+	// would double-count exactly the batched ones — and recording it ONLY
+	// here is how the unbatched majority stayed off the chart.
 	next.ServeHTTP(bw, req)
-	// The batch's mirror→GitHub leg is a real exchange and goes on the chart
-	// as its own "upstream" event — exactly like a cached-route miss's fetch.
-	// Without it the Timeline would show N long inbound bars and no sign that
-	// only ONE call to GitHub happened inside them.
-	d.timeline.RecordRequest(start, time.Since(start), req.Method, normalizeRoute(req.URL.Path), bw.status, dispUpstream, who.Key, who.Name)
 
 	if bw.overflow {
 		slog.Warn("debounce: upstream response too large to share; waiters will refetch individually",

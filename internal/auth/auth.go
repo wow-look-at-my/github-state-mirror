@@ -1,7 +1,9 @@
 // Package auth implements GitHub OAuth login and signed-cookie sessions for the
-// web dashboard. It is deliberately self-contained (stdlib only) and knows
-// nothing about the cache: it answers "who is this browser?" and "is this login
-// an admin?", and leaves all cache access to the caller.
+// web dashboard. It knows nothing about the cache: it answers "who is this
+// browser?" and "is this login an admin?", and leaves all cache access to the
+// caller. Its only non-stdlib import is internal/httpobs, itself a stdlib leaf,
+// so the two GitHub calls a sign-in makes reach the dashboard's chart like
+// every other request this service sends.
 //
 // The dashboard's authorization model is distinct from the data API's. The data
 // API isolates by an opaque token fingerprint (see internal/api/router.go); the
@@ -24,6 +26,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
 )
 
 const (
@@ -49,6 +53,14 @@ type Config struct {
 	APIBaseURL   string // GitHub REST API base (for GET /user)
 
 	HTTPClient *http.Client
+
+	// Observer charts the two GitHub calls a sign-in makes: the OAuth
+	// code-for-token exchange against github.com, and GET /user against the
+	// API. They are real requests against real rate-limit budget and they
+	// were the mirror's only unobserved outbound path -- the dashboard could
+	// not show traffic it was itself generating. Applied to the default
+	// client; an explicit HTTPClient is the caller's to instrument.
+	Observer httpobs.Observer
 }
 
 // Service performs the OAuth handshake and signs/verifies session cookies.
@@ -73,7 +85,7 @@ func New(cfg Config) *Service {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = httpobs.Client(15*time.Second, cfg.Observer)
 	}
 	return &Service{cfg: cfg, client: client}
 }
