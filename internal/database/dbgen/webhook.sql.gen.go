@@ -128,3 +128,58 @@ func (q *Queries) PruneWebhookDeliveries(ctx context.Context, offset int64) erro
 	_, err := q.db.ExecContext(ctx, pruneWebhookDeliveries, offset)
 	return err
 }
+
+const pruneWebhookReplays = `-- name: PruneWebhookReplays :exec
+DELETE FROM webhook_replays WHERE requested_at < ?
+`
+
+// PruneWebhookReplays drops rows older than the replayer's lookback window --
+// past it a delivery is never re-requested again, so remembering it costs
+// rows for nothing.
+func (q *Queries) PruneWebhookReplays(ctx context.Context, requestedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneWebhookReplays, requestedAt)
+	return err
+}
+
+const recordWebhookReplay = `-- name: RecordWebhookReplay :exec
+INSERT INTO webhook_replays (delivery_id, guid, event_type, delivered_at, requested_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (delivery_id) DO NOTHING
+`
+
+type RecordWebhookReplayParams struct {
+	DeliveryID  int64
+	Guid        string
+	EventType   string
+	DeliveredAt string
+	RequestedAt string
+}
+
+func (q *Queries) RecordWebhookReplay(ctx context.Context, arg RecordWebhookReplayParams) error {
+	_, err := q.db.ExecContext(ctx, recordWebhookReplay,
+		arg.DeliveryID,
+		arg.Guid,
+		arg.EventType,
+		arg.DeliveredAt,
+		arg.RequestedAt,
+	)
+	return err
+}
+
+const webhookReplayRequested = `-- name: WebhookReplayRequested :one
+
+SELECT EXISTS(SELECT 1 FROM webhook_replays WHERE delivery_id = ?)
+`
+
+// ============================================================================
+// Webhook replay requests (delivery-gap recovery)
+// ============================================================================
+// WebhookReplayRequested reports whether this delivery id has already been
+// asked for. GitHub's failure log keeps a failed delivery listed forever, so
+// without this the replayer would re-request the same one every cycle.
+func (q *Queries) WebhookReplayRequested(ctx context.Context, deliveryID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, webhookReplayRequested, deliveryID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}

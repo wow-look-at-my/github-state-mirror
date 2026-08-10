@@ -125,6 +125,7 @@ type CompareCache struct {
 	Basehead   string
 	BaseRef    string
 	HeadRef    string
+	BaseTipSha string
 	Status     int64
 	Doc        string
 	FetchedAt  string
@@ -378,6 +379,14 @@ type WebhookDelivery struct {
 	ReceivedAt  string
 	Disposition string
 	Detail      string
+}
+
+type WebhookReplay struct {
+	DeliveryID  int64
+	Guid        string
+	EventType   string
+	DeliveredAt string
+	RequestedAt string
 }
 
 type WorkflowJob struct {
