@@ -19,10 +19,10 @@ func defaultLabelUpstream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	fmt.Fprintf(w, `{
 		"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
-		"url": "https://api.github.com/repos/org1/repo1/labels/%s",
+		"url": %q,
 		"name": %q, "color": "f29513", "default": true,
 		"description": "Something isn't working"
-	}`, name, name)
+	}`, "https://api.github.com/repos/org1/repo1/labels/"+name, name)
 }
 
 const labelTarget = "/repos/org1/repo1/labels/auto-pr-merge"

@@ -193,7 +193,7 @@ func TestWebhookDeliveryNotifiesSubscriber(t *testing.T) {
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
 
 	// A signed push delivery through the real /webhook route.
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-GitHub-Delivery", "gh-guid-e2e")
@@ -245,7 +245,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
 		Visibility: ghdata.VisibilityPublic,
 	}))
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	wh := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	wh.Header.Set("X-GitHub-Event", "push")
 	wh.Header.Set("X-GitHub-Delivery", "gh-guid-admin")
@@ -288,4 +288,17 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NotEmpty(t, resp.Recent, "the driven delivery must appear in the activity ring")
 	assert.Equal(t, "user:42", resp.Recent[0].Principal)
 	assert.Equal(t, "octocat", resp.Recent[0].PrincipalName, "attempts are decorated with the recorded login")
+}
+
+// pushPayloadJSON marshals a push delivery for my-org/open. Marshalling rather
+// than splicing the shas into a literal is what internal/guards' json-splice
+// check requires -- and what makes the body correct for any value.
+func pushPayloadJSON(t *testing.T, before, after string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"ref": "refs/heads/master", "before": before, "after": after,
+		"repository": map[string]any{"name": "open", "owner": map[string]any{"login": "my-org"}},
+	})
+	require.NoError(t, err)
+	return string(body)
 }

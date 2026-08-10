@@ -24,16 +24,27 @@ func defaultHooksUpstream(w http.ResponseWriter, r *http.Request) {
 		"events": ["push", "pull_request"],
 		"config": {
 			"content_type": "json", "insecure_ssl": "0",
-			"url": "https://hooks.example.com/ingest%s",
+			"url": %q,
 			"secret": "********"
 		},
 		"updated_at": "2026-08-01T00:00:00Z", "created_at": "2026-07-01T00:00:00Z",
-		"url": "https://api.github.com%s/12345678",
-		"test_url": "https://api.github.com%s/12345678/test",
-		"ping_url": "https://api.github.com%s/12345678/pings",
-		"deliveries_url": "https://api.github.com%s/12345678/deliveries",
+		"url": %q,
+		"test_url": %q,
+		"ping_url": %q,
+		"deliveries_url": %q,
 		"last_response": {"code": 200, "status": "active", "message": "OK"}
-	}]`, r.URL.Path, r.URL.Path, r.URL.Path, r.URL.Path, r.URL.Path)
+	}]`,
+		"https://hooks.example.com/ingest"+r.URL.Path,
+		hookAPIURL(r.URL.Path, ""),
+		hookAPIURL(r.URL.Path, "/test"),
+		hookAPIURL(r.URL.Path, "/pings"),
+		hookAPIURL(r.URL.Path, "/deliveries"))
+}
+
+// hookAPIURL is one of the hook object's API self-links, built here rather
+// than inside the JSON so the value is placed by %q and escaped.
+func hookAPIURL(path, suffix string) string {
+	return "https://api.github.com" + path + "/12345678" + suffix
 }
 
 const (

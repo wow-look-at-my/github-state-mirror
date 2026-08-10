@@ -1,0 +1,14 @@
+package fixture
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+func marshalled(sha string) ([]byte, error) {
+	return json.Marshal(map[string]any{"after": sha})
+}
+
+func quoted(sha string) string {
+	return fmt.Sprintf(`{"after":%q}`, sha)
+}

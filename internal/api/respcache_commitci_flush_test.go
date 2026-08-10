@@ -25,10 +25,10 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 	assertNoURLKeys(t, w1.Body.Bytes(), "target_url")
 	assert.Equal(t, fmt.Sprintf(`[{"context":"ci/build","state":"success","description":"2/2 builds passed",`+
-		`"target_url":"https://rbm.example.com/b/org1/repo1/%s",`+
+		`"target_url":%q,`+
 		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"},`+
 		`{"context":"ci/build","state":"pending","description":null,"target_url":null,`+
-		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"}]`, shaTip),
+		`"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:05:00Z"}]`, rbmTargetURL(shaTip)),
 		w1.Body.String(), "order preserved newest-first; null keys always emitted")
 	assert.NotContains(t, w1.Body.String(), "octocat", "the creator user object must be dropped")
 	assert.NotContains(t, w1.Body.String(), "node_id", "per-status ids must be dropped")
@@ -80,7 +80,7 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 func TestStatusPublishPassthrough(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	body := fmt.Sprintf(`{"state":"success","context":"all-builds","description":"2/2 builds passed",`+
-		`"target_url":"https://rbm.example.com/b/org1/repo1/%s"}`, shaTip)
+		`"target_url":%q}`, rbmTargetURL(shaTip))
 
 	req := authedReq("POST", "/repos/org1/repo1/statuses/"+shaTip, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -217,4 +217,11 @@ func TestCachedCommitCI_RevealDenied(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.statusHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.checkRunsHits))
+}
+
+// rbmTargetURL is the required-builds-manager link the fake statuses upstream
+// attaches to a status. It is built here so the URL is placed into the JSON by
+// %q rather than pasted between the literal's own quotes.
+func rbmTargetURL(sha string) string {
+	return "https://rbm.example.com/b/org1/repo1/" + sha
 }

@@ -1,0 +1,23 @@
+package fixture
+
+import "fmt"
+
+// The flagged shape: the verb sits inside the string's quotes.
+func bad(sha string) string {
+	return fmt.Sprintf(`{"commit":{"url":"https://api.github.com/commits/%s"}}`, sha)
+}
+
+// Not flagged: %q supplies and escapes its own quotes.
+func okQuoted(sha string) string {
+	return fmt.Sprintf(`{"commit":{"sha":%q}}`, sha)
+}
+
+// Not flagged: a non-string slot.
+func okRaw(n int, conclusion string) string {
+	return fmt.Sprintf(`{"number":%d,"conclusion":%s}`, n, conclusion)
+}
+
+// Not flagged: a percent escape in a URL is not a verb.
+func okPercentEscape() string {
+	return `{"url":"https://example.com/a%20b"}`
+}

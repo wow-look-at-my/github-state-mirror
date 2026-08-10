@@ -19,20 +19,21 @@ import (
 // protection_url, and _links must all be dropped by the rebuild.
 func defaultBranchesUpstream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	commitURL := func(sha string) string { return "https://api.github.com/repos/org1/repo1/commits/" + sha }
 	fmt.Fprintf(w, `[
 		{"name": "main",
-		 "commit": {"sha": %q, "url": "https://api.github.com/repos/org1/repo1/commits/%s"},
+		 "commit": {"sha": %q, "url": %q},
 		 "protected": true,
 		 "protection": {"enabled": true, "required_status_checks": {"enforcement_level": "non_admins", "contexts": ["ci"]}},
 		 "protection_url": "https://api.github.com/repos/org1/repo1/branches/main/protection",
 		 "_links": {"self": "https://api.github.com/repos/org1/repo1/branches/main"}},
 		{"name": "claude/feature-branch",
-		 "commit": {"sha": %q, "url": "https://api.github.com/repos/org1/repo1/commits/%s"},
+		 "commit": {"sha": %q, "url": %q},
 		 "protected": false,
 		 "protection": {"enabled": false, "required_status_checks": {"enforcement_level": "off", "contexts": []}},
 		 "protection_url": "https://api.github.com/repos/org1/repo1/branches/claude/feature-branch/protection",
 		 "_links": {"self": "https://api.github.com/repos/org1/repo1/branches/claude/feature-branch"}}
-	]`, shaTip, shaTip, shaMid, shaMid)
+	]`, shaTip, commitURL(shaTip), shaMid, commitURL(shaMid))
 }
 
 // TestCachedBranchesList_MissAbsorbHit covers the core flow: the first read
@@ -166,8 +167,9 @@ func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 
 	// The fake upstream still answers shaTip for main, so serving shaCommit
 	// proves the sha came from the PAYLOAD rather than from a refetch.
-	postWebhook(t, router, "push", `{"ref":"refs/heads/main","after":"`+shaCommit+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "after": shaCommit, "repository": fixtureRepo(),
+	})
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "an applied tip must keep serving from cache")
@@ -185,13 +187,16 @@ func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 // both move page MEMBERSHIP, which no in-place tip rewrite can express.
 func TestCachedBranchesList_MembershipChangesFlush(t *testing.T) {
 	for _, tc := range []struct {
-		name, payload string
+		name    string
+		payload map[string]any
 	}{
-		{"create", `{"ref":"refs/heads/brand-new","created":true,"after":"` + shaCommit + `",
-			"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`},
-		{"delete", `{"ref":"refs/heads/main","deleted":true,
-			"after":"0000000000000000000000000000000000000000",
-			"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`},
+		{"create", map[string]any{
+			"ref": "refs/heads/brand-new", "created": true, "after": shaCommit, "repository": fixtureRepo(),
+		}},
+		{"delete", map[string]any{
+			"ref": "refs/heads/main", "deleted": true,
+			"after": "0000000000000000000000000000000000000000", "repository": fixtureRepo(),
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router, _, _, u := respCacheStack(t)
@@ -200,7 +205,7 @@ func TestCachedBranchesList_MembershipChangesFlush(t *testing.T) {
 			require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 			before := atomic.LoadInt32(&u.branchesHits)
 
-			postWebhook(t, router, "push", tc.payload)
+			postWebhookJSON(t, router, "push", tc.payload)
 
 			assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
 				"a membership change has no tip to apply, so the pages must be dropped")
@@ -220,8 +225,9 @@ func TestCachedBranchesList_TagPushLeavesPagesAlone(t *testing.T) {
 	require.Equal(t, "hit", w1.Header().Get(cacheHeader))
 	before := atomic.LoadInt32(&u.branchesHits)
 
-	postWebhook(t, router, "push", `{"ref":"refs/tags/v1.2.3","after":"`+shaCommit+`",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/tags/v1.2.3", "after": shaCommit, "repository": fixtureRepo(),
+	})
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a tag push must not flush the branches pages")

@@ -100,9 +100,10 @@ func newRespCacheUpstream() *respCacheUpstream {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		fmt.Fprintf(w, `{
 			"name": %q, "full_name": %q, "private": true, "visibility": "private",
-			"html_url": "https://github.com/%s", "default_branch": "main",
-			"owner": {"login": %q, "avatar_url": "https://a", "html_url": "https://github.com/%s"}
-		}`, parts[1], parts[0]+"/"+parts[1], parts[0]+"/"+parts[1], parts[0], parts[0])
+			"html_url": %q, "default_branch": "main",
+			"owner": {"login": %q, "avatar_url": "https://a", "html_url": %q}
+		}`, parts[1], parts[0]+"/"+parts[1],
+			"https://github.com/"+parts[0]+"/"+parts[1], parts[0], "https://github.com/"+parts[0])
 	}
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.LoadInt32(&u.contentsHits)
@@ -216,10 +217,10 @@ func (u *respCacheUpstream) handler() http.Handler {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{
-				"token": "ghs_minted%d", "expires_at": %q,
+				"token": %q, "expires_at": %q,
 				"permissions": {"contents": "read", "metadata": "read"},
 				"repository_selection": "all"
-			}`, n, u.tokenExpiry.UTC().Format(time.RFC3339))
+			}`, fmt.Sprintf("ghs_minted%d", n), u.tokenExpiry.UTC().Format(time.RFC3339))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
@@ -241,6 +242,27 @@ func do(t *testing.T, router http.Handler, req *http.Request) *httptest.Response
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
+}
+
+// postWebhookJSON delivers a webhook whose payload is MARSHALLED from a Go
+// value. Prefer it whenever a delivery carries a runtime value: splicing one
+// between a JSON literal's own quotes escapes nothing (internal/guards'
+// json-splice check fails the build over it), and a map literal reads as
+// clearly as the document it becomes.
+func postWebhookJSON(t *testing.T, router http.Handler, event string, payload map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	postWebhook(t, router, event, string(body))
+}
+
+// fixtureRepo is the `repository` object every fixture delivery carries.
+func fixtureRepo() map[string]any {
+	return map[string]any{
+		"name":           "repo1",
+		"owner":          map[string]any{"login": "org1"},
+		"default_branch": "main",
+	}
 }
 
 // postWebhook delivers a signed webhook to the router.

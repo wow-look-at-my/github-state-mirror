@@ -276,12 +276,14 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 	s.seedWorkflowRuns(r2SHA)
 	s.seedWorkflowRuns(r2OtherSHA)
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", []byte(`{
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
 		"action": "completed",
-		"check_run": {"head_sha": "`+r2SHA+`", "status": "completed", "conclusion": "success",
-			"name": "build", "check_suite": {"head_branch": "feat"}},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
+		"check_run": map[string]any{
+			"head_sha": r2SHA, "status": "completed", "conclusion": "success",
+			"name": "build", "check_suite": map[string]any{"head_branch": "feat"},
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
 
 	assert.False(t, s.commitCIServe(r2SHA), "the head sha's commit-CI snapshots must flush")
 	assert.False(t, s.commitCIServe("feat"), "the head branch's commit-CI snapshots must flush")

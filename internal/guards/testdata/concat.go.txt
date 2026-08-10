@@ -1,0 +1,21 @@
+package fixture
+
+import "fmt"
+
+// The flagged shape: the value lands between quotes the literal supplies, so
+// nothing escapes it.
+func bad(sha string) string {
+	return `{"ref":"refs/heads/main","after":"` + sha + `"}`
+}
+
+// Not flagged: the value has its own slot, no quotes around it.
+func ok(fragment string) string {
+	return `{"conclusion":` + fragment + `}`
+}
+
+// Not flagged: not JSON.
+func notJSON(name string) string {
+	return "assets/" + name + ".js"
+}
+
+var _ = fmt.Sprint

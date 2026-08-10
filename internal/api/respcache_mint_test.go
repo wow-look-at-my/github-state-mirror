@@ -88,8 +88,8 @@ func TestMintInvalidatedByProxiedAuthFailure(t *testing.T) {
 			n := mintCount.Add(1)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"token": "ghs_minted%d", "expires_at": %q}`,
-				n, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			fmt.Fprintf(w, `{"token": %q, "expires_at": %q}`,
+				fmt.Sprintf("ghs_minted%d", n), time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 		case r.URL.Path == "/repos/org1/repo1/collaborators":
 			forbidCount.Add(1)
 			w.WriteHeader(http.StatusForbidden)

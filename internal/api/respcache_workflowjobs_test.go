@@ -29,14 +29,18 @@ func jobBody(status, conclusion string) string {
 		"created_at": "2026-08-01T10:00:00Z", "started_at": "2026-08-01T10:00:05Z",
 		"completed_at": "2026-08-01T10:04:00Z",
 		"labels": ["ubuntu-latest"], "runner_name": "runner-1",
-		"url": "https://api.github.com/repos/org1/repo1/actions/jobs/%d",
-		"html_url": "https://github.com/org1/repo1/actions/runs/%d/job/%d",
-		"run_url": "https://api.github.com/repos/org1/repo1/actions/runs/%d",
+		"url": %q,
+		"html_url": %q,
+		"run_url": %q,
 		"check_run_url": "https://api.github.com/repos/org1/repo1/check-runs/1",
 		"node_id": "CR_kwAE",
 		"steps": [{"name": "Set up job", "status": %q, "conclusion": %s, "number": 1,
 		           "started_at": "2026-08-01T10:00:05Z", "completed_at": "2026-08-01T10:00:07Z"}]
-	}`, testJobID, testRunID, shaTip, status, concl, testJobID, testRunID, testJobID, testRunID, status, concl)
+	}`, testJobID, testRunID, shaTip, status, concl,
+		fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/jobs/%d", testJobID),
+		fmt.Sprintf("https://github.com/org1/repo1/actions/runs/%d/job/%d", testRunID, testJobID),
+		fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d", testRunID),
+		status, concl)
 }
 
 func defaultRunJobsUpstream(w http.ResponseWriter, _ *http.Request) {
