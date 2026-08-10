@@ -419,6 +419,12 @@ ON CONFLICT (owner, repo, per_page, page) DO UPDATE SET
 UPDATE branches_list_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?;
 
+-- ListBranchesListCacheByRepo returns a repo's cached pages so a push can
+-- rewrite the tip it states inside each one (ApplyPushedBranchTip) instead of
+-- dropping the listing.
+-- name: ListBranchesListCacheByRepo :many
+SELECT * FROM branches_list_cache WHERE owner = ? AND repo = ?;
+
 -- DeleteBranchesListCacheByRepo drops a repo's branches snapshots -- the
 -- push/repository webhook flush (branch create, delete, and tip-move all
 -- arrive as pushes).

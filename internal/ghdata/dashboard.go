@@ -169,28 +169,13 @@ var RequiredWebhookEvents = []struct {
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
 }
 
-// MissingWebhookSubscriptions reports which RequiredWebhookEvents do not
-// appear in the RETAINED delivery log. That is evidence, not proof: the log
-// is pruned to its most recent rows, so a very rare event could age out. It
-// is still the signal that matters -- a subscription that was never
-// configured never appears at all.
-func (s *Store) MissingWebhookSubscriptions(ctx context.Context) ([]string, error) {
-	seen, err := s.q.DistinctWebhookEventTypes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	have := make(map[string]bool, len(seen))
-	for _, e := range seen {
-		have[e] = true
-	}
-	var missing []string
-	for _, req := range RequiredWebhookEvents {
-		if !have[req.Event] {
-			missing = append(missing, req.Event)
-		}
-	}
-	return missing, nil
-}
+// Which of these the App is actually subscribed to is answered by the App
+// itself (ghclient.AppAuthenticator.SubscribedEvents), diffed in
+// internal/api/dashboard_webhooks.go. It is deliberately NOT inferred from
+// the delivery log: that reads "this event has not arrived lately" as "this
+// event is not configured", and on a CI-heavy fleet the retained log spans
+// minutes, so every low-frequency required event here (repository, label)
+// would be reported missing forever while correctly subscribed.
 
 // RecentWebhookDeliveries returns the most recent webhook deliveries, newest first.
 func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -28,12 +29,13 @@ func TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA(t *testing.T) {
 	s.seedWorkflowRuns(r2SHA)
 	s.seedWorkflowRuns(r2OtherSHA)
 
-	result := dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_run", []byte(`{
+	result := dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_run", mustJSON(t, map[string]any{
 		"action": "completed",
-		"workflow_run": {"id": 99, "head_sha": "`+r2SHA+`", "status": "completed",
-			"conclusion": "startup_failure"},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
+		"workflow_run": map[string]any{
+			"id": 99, "head_sha": r2SHA, "status": "completed", "conclusion": "startup_failure",
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
 
 	assert.Equal(t, webhook.DispApplied, result.Disposition, "the run's own state is applied to truth")
 	assert.False(t, s.workflowRunsServe(r2SHA), "the run's head sha's workflow-runs pages must flush")
@@ -51,15 +53,17 @@ func TestDispatch_WorkflowRun_AppliesRunState(t *testing.T) {
 	s.seedRun(1, "queued")
 	s.seedRun(2, "queued")
 
-	result := dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_run", []byte(`{
+	result := dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_run", mustJSON(t, map[string]any{
 		"action": "in_progress",
-		"workflow_run": {"id": 2, "run_attempt": 1, "name": "CI", "head_sha": "`+r2SHA+`",
-			"head_branch": "feat", "status": "in_progress", "conclusion": null,
-			"html_url": "https://github.com/org1/repo1/actions/runs/2",
+		"workflow_run": map[string]any{
+			"id": 2, "run_attempt": 1, "name": "CI", "head_sha": r2SHA,
+			"head_branch": "feat", "status": "in_progress", "conclusion": nil,
+			"html_url":   "https://github.com/org1/repo1/actions/runs/2",
 			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:06:00Z",
-			"run_started_at": "2026-07-01T10:06:00Z"},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
+			"run_started_at": "2026-07-01T10:06:00Z",
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
 
 	assert.Equal(t, webhook.DispApplied, result.Disposition,
 		"a workflow_run delivery maintains truth; it is not an ignored flush signal")
@@ -75,13 +79,15 @@ func TestDispatch_WorkflowRunRequested_EntersTheBacklog(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	s := r2Seeder{t: t, store: store, now: time.Now()}
 
-	dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_run", []byte(`{
+	dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_run", mustJSON(t, map[string]any{
 		"action": "requested",
-		"workflow_run": {"id": 5, "name": "CI", "head_sha": "`+r2SHA+`", "head_branch": "feat",
-			"status": "queued", "conclusion": null, "created_at": "2026-07-01T10:00:00Z",
-			"updated_at": "2026-07-01T10:00:00Z", "run_started_at": null},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
+		"workflow_run": map[string]any{
+			"id": 5, "name": "CI", "head_sha": r2SHA, "head_branch": "feat",
+			"status": "queued", "conclusion": nil, "created_at": "2026-07-01T10:00:00Z",
+			"updated_at": "2026-07-01T10:00:00Z", "run_started_at": nil,
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
 
 	assert.Equal(t, map[int64]string{5: "queued"}, s.runStatuses())
 }
@@ -118,32 +124,41 @@ func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
 func TestDispatch_RunStateEvents_NeverClearTheListing(t *testing.T) {
 	for _, tc := range []struct {
 		name, event string
-		payload     string
+		payload     json.RawMessage
 	}{{
 		name:  "check_run completed",
 		event: "check_run",
-		payload: `{"action": "completed",
-			"check_run": {"head_sha": "` + r2SHA + `", "status": "completed", "conclusion": "success",
-				"name": "build", "check_suite": {"head_branch": "feat"}},
-			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+		payload: mustJSON(t, map[string]any{
+			"action": "completed",
+			"check_run": map[string]any{
+				"head_sha": r2SHA, "status": "completed", "conclusion": "success",
+				"name": "build", "check_suite": map[string]any{"head_branch": "feat"},
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		}),
 	}, {
 		name:  "check_suite requested",
 		event: "check_suite",
-		payload: `{"action": "requested",
-			"check_suite": {"head_sha": "` + r2SHA + `", "status": "queued", "head_branch": "feat"},
-			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+		payload: mustJSON(t, map[string]any{
+			"action":      "requested",
+			"check_suite": map[string]any{"head_sha": r2SHA, "status": "queued", "head_branch": "feat"},
+			"repository":  map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		}),
 	}, {
-		name:    "workflow_job queued",
-		event:   "workflow_job",
-		payload: "",
+		name:  "workflow_job queued",
+		event: "workflow_job",
 	}, {
 		name:  "workflow_run completed",
 		event: "workflow_run",
-		payload: `{"action": "completed",
-			"workflow_run": {"id": 99, "head_sha": "` + r2SHA + `", "status": "completed",
+		payload: mustJSON(t, map[string]any{
+			"action": "completed",
+			"workflow_run": map[string]any{
+				"id": 99, "head_sha": r2SHA, "status": "completed",
 				"conclusion": "success", "created_at": "2026-07-01T10:00:00Z",
-				"updated_at": "2026-07-01T10:05:00Z"},
-			"repository": {"name": "repo1", "owner": {"login": "org1"}}}`,
+				"updated_at": "2026-07-01T10:05:00Z",
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		}),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			dispatcher, _, _, store := setupDispatcher(t)
@@ -152,7 +167,7 @@ func TestDispatch_RunStateEvents_NeverClearTheListing(t *testing.T) {
 			s.seedRun(1, "queued")
 			require.NoError(t, store.MarkWorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", s.now, time.Minute))
 
-			raw := []byte(tc.payload)
+			raw := tc.payload
 			if tc.event == "workflow_job" {
 				raw = makeWorkflowJobPayload(t, "queued", "org1", "repo1", 42, "build", "queued", "")
 			}

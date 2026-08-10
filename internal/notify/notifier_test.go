@@ -93,17 +93,25 @@ func newTestNotifier(t *testing.T, access AccessChecker, mutate func(*Config)) (
 
 // prEvent builds a parsed pull_request event the way the webhook handler does.
 func prEvent(owner, repo string, num int, headSHA string) webhook.Event {
-	raw := fmt.Sprintf(`{"action":"opened","pull_request":{"number":%d,"head":{"sha":%q,"ref":"feature"}},"repository":{"name":%q,"owner":{"login":%q}}}`,
-		num, headSHA, repo, owner)
-	e := webhook.ParseEvent("pull_request", []byte(raw))
+	raw := mustJSON(map[string]any{
+		"action": "opened",
+		"pull_request": map[string]any{
+			"number": num,
+			"head":   map[string]any{"sha": headSHA, "ref": "feature"},
+		},
+		"repository": map[string]any{"name": repo, "owner": map[string]any{"login": owner}},
+	})
+	e := webhook.ParseEvent("pull_request", raw)
 	e.DeliveryID = "mirror-received-guid"
 	return e
 }
 
 func pushEvent(owner, repo, ref, after string) webhook.Event {
-	raw := fmt.Sprintf(`{"ref":%q,"after":%q,"repository":{"name":%q,"owner":{"login":%q}}}`,
-		ref, after, repo, owner)
-	e := webhook.ParseEvent("push", []byte(raw))
+	raw := mustJSON(map[string]any{
+		"ref": ref, "after": after,
+		"repository": map[string]any{"name": repo, "owner": map[string]any{"login": owner}},
+	})
+	e := webhook.ParseEvent("push", raw)
 	e.DeliveryID = "mirror-received-guid-push"
 	return e
 }
@@ -375,3 +383,13 @@ func TestNotifierEventAndRepoFilterFanOut(t *testing.T) {
 
 // TestNotifierNonBlocking proves NotifyIngest returns while the subscriber
 // endpoint is still holding the connection open.
+
+// mustJSON marshals a delivery body. JSON text is produced by marshalling,
+// never assembled from string pieces (internal/guards).
+func mustJSON(payload map[string]any) []byte {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return body
+}

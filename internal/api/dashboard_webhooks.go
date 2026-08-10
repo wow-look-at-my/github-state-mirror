@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
@@ -16,10 +17,12 @@ import (
 type webhooksResponse struct {
 	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`
 	// MissingSubscriptions names the event subscriptions the mirror depends
-	// on that have not appeared in the retained delivery log, each with what
-	// is degraded without it. A missing subscription is otherwise invisible
-	// -- the affected caches just re-fetch forever -- so it is reported
-	// rather than left to be discovered.
+	// on that the App is NOT subscribed to, per GitHub's own answer, each
+	// with what is degraded without it. A missing subscription is otherwise
+	// invisible -- the affected caches just re-fetch forever -- so it is
+	// reported rather than left to be discovered. Omitted entirely when the
+	// App cannot be asked: "I could not determine this" must never render as
+	// "these are missing".
 	MissingSubscriptions []missingSubscription `json:"missing_subscriptions,omitempty"`
 }
 
@@ -45,20 +48,34 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 	if deliveries == nil {
 		deliveries = []ghdata.WebhookDelivery{}
 	}
-	// Best-effort: a failed check must not hide the deliveries themselves,
-	// but it is logged rather than swallowed.
-	var missing []missingSubscription
-	if names, err := d.store.MissingWebhookSubscriptions(r.Context()); err != nil {
-		slog.Warn("check webhook subscriptions failed", "error", err)
-	} else {
-		for _, name := range names {
-			for _, req := range ghdata.RequiredWebhookEvents {
-				if req.Event == name {
-					missing = append(missing, missingSubscription{Event: req.Event, Effect: req.Effect})
-					break
-				}
-			}
-		}
+	writeJSON(w, webhooksResponse{Deliveries: deliveries, MissingSubscriptions: d.missingSubscriptions(r)})
+}
+
+// missingSubscriptions asks the App which events it is subscribed to and
+// reports the required ones it lacks. Returns nil -- the panel disappears --
+// whenever the answer cannot be obtained (no App configured, or the call
+// failed), because the alternative is asserting a configuration problem the
+// mirror has no evidence for.
+func (d *dashboard) missingSubscriptions(r *http.Request) []missingSubscription {
+	if d.appEvents == nil {
+		return nil // no App credential: unknowable, so claim nothing
 	}
-	writeJSON(w, webhooksResponse{Deliveries: deliveries, MissingSubscriptions: missing})
+	subscribed, err := d.appEvents(r.Context())
+	if err != nil {
+		// Loud, but never fatal to the tab: the deliveries below still render.
+		slog.Warn("read app event subscriptions failed; not reporting subscription state", "error", err)
+		return nil
+	}
+	have := make(map[string]bool, len(subscribed))
+	for _, e := range subscribed {
+		have[e] = true
+	}
+	var missing []missingSubscription
+	for _, req := range ghdata.RequiredWebhookEvents {
+		if have[req.Event] || ghclient.AlwaysDeliveredEvents[req.Event] {
+			continue
+		}
+		missing = append(missing, missingSubscription{Event: req.Event, Effect: req.Effect})
+	}
+	return missing
 }
