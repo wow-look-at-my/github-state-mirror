@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -128,9 +127,10 @@ func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
 	// Push to the PR's base branch ("main").
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "a base-branch push must un-resolve mergeable")
@@ -167,9 +167,10 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
 	// The PR's base branch moves.
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 
 	// GitHub's recompute lags: it re-offers the SAME sha, still "resolved".
 	// The mirror rejects it -- miss, served unresolved, stored unresolved.
@@ -236,9 +237,10 @@ func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 
 	// ...then the LATE push delivery lands and wrongly marks the fresh sha
 	// (the push whose after IS the base tip the answer already reported).
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 
 	// The next poll re-offers the SAME sha -- with the base tip equal to the
 	// push's after: post-push proof, accepted, served RESOLVED.

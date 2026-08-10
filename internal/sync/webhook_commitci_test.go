@@ -47,23 +47,36 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 
 	// The CI events name refs: both named spellings (branch + sha) flush,
 	// the unnamed ref survives.
-	for _, tc := range []struct{ event, body string }{
-		{"status", `{"sha":"` + sha + `","state":"success","context":"ci/build",
-			"branches":[{"name":"main"}],
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
-		{"check_run", `{"action":"completed",
-			"check_run":{"head_sha":"` + sha + `","status":"completed","conclusion":"success","name":"build",
-				"check_suite":{"head_branch":"main"}},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
-		{"check_suite", `{"action":"completed",
-			"check_suite":{"head_sha":"` + sha + `","head_branch":"main","status":"completed","conclusion":"success"},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
+	for _, tc := range []struct {
+		event string
+		body  json.RawMessage
+	}{
+		{"status", mustJSON(t, map[string]any{
+			"sha": sha, "state": "success", "context": "ci/build",
+			"branches":   []any{map[string]any{"name": "main"}},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
+		{"check_run", mustJSON(t, map[string]any{
+			"action": "completed",
+			"check_run": map[string]any{
+				"head_sha": sha, "status": "completed", "conclusion": "success", "name": "build",
+				"check_suite": map[string]any{"head_branch": "main"},
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
+		{"check_suite", mustJSON(t, map[string]any{
+			"action": "completed",
+			"check_suite": map[string]any{
+				"head_sha": sha, "head_branch": "main", "status": "completed", "conclusion": "success",
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
 	} {
 		seedRef("repo1", "main")
 		seedRef("repo1", sha)
 		seedRef("repo1", "claude/dev")
 		seedRef("other-repo", "main")
-		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, []byte(tc.body)))
+		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, tc.body))
 		for _, kind := range []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindCheckRuns} {
 			assert.False(t, serves("repo1", "main", kind),
 				"a %s event must flush the named branch's %s snapshots", tc.event, kind)
@@ -176,9 +189,14 @@ func TestDispatch_CheckSuite_PendingIgnored(t *testing.T) {
 
 	// A PENDING check_run still applies -- real pending state rides run events,
 	// which is exactly why dropping pending SUITES loses nothing.
-	res := dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", []byte(`{"action":"created",
-		"check_run":{"head_sha":"`+sha+`","status":"queued","name":"build","check_suite":{"head_branch":"main"}},
-		"repository":{"name":"my-repo","owner":{"login":"my-org"}}}`)))
+	res := dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
+		"action": "created",
+		"check_run": map[string]any{
+			"head_sha": sha, "status": "queued", "name": "build",
+			"check_suite": map[string]any{"head_branch": "main"},
+		},
+		"repository": map[string]any{"name": "my-repo", "owner": map[string]any{"login": "my-org"}},
+	})))
 	assert.Equal(t, webhook.DispApplied, res.Disposition, "a queued check_run is real pending state and must apply")
 	pr, err := store.GetPullRequest(ctx, "my-org", "my-repo", 7)
 	require.NoError(t, err)

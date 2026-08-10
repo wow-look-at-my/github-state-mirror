@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,10 @@ func TestTimelineClientRefusesJSON(t *testing.T) {
 		"fetchTimelineBytes ACCEPTED a JSON answer (%s) — the chart would silently take "+
 			"the ~10x-slower decode. The endpoint may serve JSON to curl only "+
 			"because the client refuses it.", got)
-	require.Contains(t, got, `"sentAccept":"`+timelineWireType+`"`,
+	var result struct {
+		SentAccept string `json:"sentAccept"`
+	}
+	require.NoError(t, json.Unmarshal(out, &result), "harness output must be JSON: %s", got)
+	require.Equal(t, timelineWireType, result.SentAccept,
 		"the client must ask for the wire type by exact media type, got %s", got)
 }

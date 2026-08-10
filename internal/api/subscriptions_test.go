@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +67,10 @@ func TestSubscriptionsCRUD(t *testing.T) {
 
 	// Create.
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q,"repos":["My-Org"],"events":["push","pull_request"]}`, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": "https://example.com/hook", "secret": testSubSecret,
+			"repos": []any{"My-Org"}, "events": []any{"push", "pull_request"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, "create: %s", w.Body.String())
 	assert.NotContains(t, w.Body.String(), testSubSecret, "the secret must never appear in a response")
 	var created subscriptionJSON
@@ -159,7 +161,7 @@ func TestSubscriptionsPerPrincipalCap(t *testing.T) {
 	}
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q}`, testSubSecret))
+		mustJSONString(map[string]any{"url": "https://example.com/hook", "secret": testSubSecret}))
 	assert.Equal(t, http.StatusConflict, w.Code, "the per-principal cap answers 409")
 }
 
@@ -189,11 +191,13 @@ func TestWebhookDeliveryNotifiesSubscriber(t *testing.T) {
 	defer receiver.Close()
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":%q,"secret":%q,"events":["push"]}`, receiver.URL, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": receiver.URL, "secret": testSubSecret, "events": []any{"push"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
 
 	// A signed push delivery through the real /webhook route.
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-GitHub-Delivery", "gh-guid-e2e")
@@ -245,7 +249,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
 		Visibility: ghdata.VisibilityPublic,
 	}))
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	wh := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	wh.Header.Set("X-GitHub-Event", "push")
 	wh.Header.Set("X-GitHub-Delivery", "gh-guid-admin")
@@ -288,4 +292,17 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NotEmpty(t, resp.Recent, "the driven delivery must appear in the activity ring")
 	assert.Equal(t, "user:42", resp.Recent[0].Principal)
 	assert.Equal(t, "octocat", resp.Recent[0].PrincipalName, "attempts are decorated with the recorded login")
+}
+
+// pushPayloadJSON marshals a push delivery for my-org/open. Marshalling rather
+// than splicing the shas into a literal is what internal/guards' json-splice
+// check requires -- and what makes the body correct for any value.
+func pushPayloadJSON(t *testing.T, before, after string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"ref": "refs/heads/master", "before": before, "after": after,
+		"repository": map[string]any{"name": "open", "owner": map[string]any{"login": "my-org"}},
+	})
+	require.NoError(t, err)
+	return string(body)
 }

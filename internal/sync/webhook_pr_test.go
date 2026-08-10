@@ -473,3 +473,14 @@ func TestDispatch_RepositoryLifecycle(t *testing.T) {
 	_, err = store.GetRepo(ctx, "my-org", "r1-new")
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
+
+// mustJSON marshals a delivery body. Every payload in this package's tests is
+// built this way rather than spliced into a JSON literal: a value between the
+// literal's own quotes is escaped by nothing, and internal/guards' json-splice
+// check fails the build over it.
+func mustJSON(t *testing.T, payload map[string]any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	return data
+}

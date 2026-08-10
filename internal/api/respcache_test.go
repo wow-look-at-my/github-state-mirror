@@ -126,9 +126,11 @@ func TestCachedContents_DirListing(t *testing.T) {
 func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{"type":"file","encoding":"base64","size":1,"name":"f","path":"f","content":%q,"sha":"s-%s"}`,
-			"ref="+r.URL.Query().Get("ref"), r.URL.Query().Get("ref"))
+		writeGitHubJSON(w, map[string]any{
+			"type": "file", "encoding": "base64", "size": 1, "name": "f", "path": "f",
+			"content": "ref=" + r.URL.Query().Get("ref"),
+			"sha":     "s-" + r.URL.Query().Get("ref"),
+		})
 	}
 
 	wa := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/f?ref=branch-a", nil))

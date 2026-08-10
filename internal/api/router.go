@@ -176,6 +176,7 @@ func NewRouter(
 	dbPath string,
 	timeline *reqtimeline.Recorder,
 	debouncer *Debouncer,
+	app *ghclient.AppAuthenticator,
 ) http.Handler {
 	r := chi.NewRouter()
 	// First: stamp every request's receipt time, so any record site can put a
@@ -233,7 +234,14 @@ func NewRouter(
 	// Web dashboard: static page, GitHub OAuth login, and the cache-stats API.
 	// Authorized by session cookie (login), distinct from the data API below.
 	// dbPath (DB_PATH) lets the Requests view report the DB's on-disk size.
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes).routes(r)
+	// The subscription check reads the App's own answer, so it exists only
+	// when an App is configured; nil leaves the Webhooks tab reporting the
+	// deliveries and nothing about subscriptions.
+	var appEvents func(context.Context) ([]string, error)
+	if app != nil {
+		appEvents = app.SubscribedEvents
+	}
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each
