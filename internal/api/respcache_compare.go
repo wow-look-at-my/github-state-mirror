@@ -39,11 +39,40 @@ import (
 // verdict) depends on both refs' tips/existence, so a push flushes every row
 // naming the pushed ref on EITHER side (stage 1's per-ref grain; a payload
 // without a usable ref falls back repo-wide), repository events flush
-// repo-wide, and the 24h TTL backstops.
+// repo-wide, and the TTL backstops.
 
-// compareCacheTTL bounds how long a MISSED push delivery could leave a stale
-// comparison being served. Webhooks flush sooner; this is the backstop.
+// compareCacheTTL is the TTL for a comparison whose BOTH sides are full shas:
+// the answer describes two immutable commits, so no push can invalidate it and
+// a long window is free. A basehead naming a branch on either side takes
+// mutableRefCacheTTL instead (compareTTLFor) -- that row's only freshness
+// signal is the push flush.
 const compareCacheTTL = 24 * time.Hour
+
+// compareTTLFor picks a stored comparison's TTL from the shape of its key.
+// Anything that is not a full 40-hex sha on BOTH sides -- a branch, a tag, an
+// abbreviated sha -- is treated as mutable: conservative on purpose, since the
+// cost of a wrong "immutable" call is a full day of serving a comparison whose
+// merge base has moved.
+func compareTTLFor(baseRef, headRef string) time.Duration {
+	if isFullSHA(baseRef) && isFullSHA(headRef) {
+		return compareCacheTTL
+	}
+	return mutableRefCacheTTL
+}
+
+// isFullSHA reports whether s is a full 40-character hex object name.
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 // compareBaseheadCacheable reports whether a basehead path tail is a shape
 // the cache models: a three-dot base...head with both sides non-empty and no
@@ -116,7 +145,7 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 		// by design. It stays honest the same way a 200 row does: ref
 		// creation/deletion arrives as a push event and the per-ref compare
 		// flush (base_ref/head_ref match) clears the verdict, renames flush
-		// repo-wide via repository events, and the 24h TTL backstops.
+		// repo-wide via repository events, and the TTL backstops.
 		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
 			doc, commits, absorbed, status = string(doc404), nil, true, http.StatusNotFound
 		}
@@ -134,7 +163,7 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 		Owner: owner, Repo: repo, Basehead: basehead,
 		BaseRef: baseRef, HeadRef: headRef, Status: status,
 		Doc: doc,
-	}, commits, now, compareCacheTTL); err != nil {
+	}, commits, now, compareTTLFor(baseRef, headRef)); err != nil {
 		slog.Warn("compare cache write failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)

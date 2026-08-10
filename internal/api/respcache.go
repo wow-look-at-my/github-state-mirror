@@ -65,6 +65,16 @@ const (
 	// have no TTL; token mints expire with the token.
 	contentsCacheTTL = 24 * time.Hour
 
+	// mutableRefCacheTTL is the TTL for a row whose KEY names a mutable ref
+	// (a branch/tag, not a sha). Such a row has exactly one freshness signal
+	// -- the push flush -- so a delivery that never lands pins it for the
+	// whole window, and nothing else in the system contradicts it. Minutes,
+	// not the day a sha-keyed row gets: a lost push then costs one short
+	// window instead of a full day of confidently wrong answers, while the
+	// hourly reconcile sweeps these routes exist to collapse still spend
+	// ~one upstream call per ref.
+	mutableRefCacheTTL = 5 * time.Minute
+
 	// mintExpiryBuffer is subtracted from a minted token's expires_at to get
 	// the serve-until time: a cached mint is never served within 10 minutes of
 	// the token's real expiry, so callers always have usable lifetime left.

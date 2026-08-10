@@ -33,12 +33,10 @@ import (
 // fresh upstream 404. It stays honest because ref CREATION arrives as a push
 // for that exact ref, which drops the verdict row.
 
-const (
-	// gitRefCacheTTL bounds how long a MISSED push delivery could leave a
-	// stale tip (or a stale absent-verdict) being served. Pushes flush sooner;
-	// this is the backstop.
-	gitRefCacheTTL = 24 * time.Hour
-)
+// A ref row is ALWAYS keyed by a mutable name, so it always takes the
+// mutable-ref TTL (respcache.go) -- there is no sha-keyed shape here to hold
+// longer.
+const gitRefCacheTTL = mutableRefCacheTTL
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and
 // absorbing on a miss.

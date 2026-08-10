@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -182,4 +183,24 @@ func TestGitRefCacheable(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, gitRefCacheable(tc.ref), "ref %q", tc.ref)
 	}
+}
+
+// A ref row is keyed by a MUTABLE name, so the push flush is its only
+// freshness signal and a lost delivery pins it for the whole window. Pin the
+// short TTL: at 24h one dropped push served a wrong branch tip for a day, and
+// every consumer that resolves "where does this branch point" read the lie.
+func TestCachedGitRef_MutableRefTTL(t *testing.T) {
+	router, _, db, _ := respCacheStack(t)
+
+	do(t, router, authedReq("GET", "/repos/org1/repo1/git/ref/heads/main", nil))
+
+	var raw string
+	require.NoError(t, db.QueryRow(`SELECT expires_at FROM git_ref_cache`).Scan(&raw))
+	exp, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	assert.True(t, exp.After(now), "a freshly stored ref row must not already be expired")
+	assert.True(t, exp.Before(now.Add(mutableRefTTLCeiling)),
+		"a ref row must expire within %s, not a day out; got %s", mutableRefTTLCeiling, raw)
 }
