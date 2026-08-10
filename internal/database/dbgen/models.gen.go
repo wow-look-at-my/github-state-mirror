@@ -255,6 +255,14 @@ type LabelCache struct {
 	LastUsedAt string
 }
 
+type PrClosure struct {
+	Owner      string
+	Repo       string
+	Number     int64
+	UpdatedAt  string
+	RecordedAt string
+}
+
 type PrLabel struct {
 	Owner    string
 	Repo     string
