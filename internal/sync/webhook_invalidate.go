@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -232,9 +233,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 // repo-wide only when it does not.
 func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook.Event, owner, repo string) {
 	scope := owner + "/" + repo
-	refName, defaultBranch, isTag := "", "", false
+	refName, defaultBranch, after, isTag := "", "", "", false
 	if payload, err := webhook.ParsePushPayload(event.Raw); err == nil {
-		refName, defaultBranch = payload.RefName, payload.DefaultBranch
+		refName, defaultBranch, after = payload.RefName, payload.DefaultBranch, payload.After
 		isTag = strings.HasPrefix(payload.Ref, "refs/tags/")
 	}
 	// (onPush re-parses the payload for the apply side; the parse is a few
@@ -290,10 +291,21 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			// immutable commit, and the push's brand-new shas have no rows
 			// yet).
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
-			// The ref's own tip: a push IS the move, and a push that creates
-			// the ref is what clears a cached absent-ref verdict. Rows key
+			// The ref's own tip is the one answer a push STATES outright, so
+			// it is APPLIED, not invalidated (CLAUDE.md's apply-the-payload
+			// rule): `after` is exactly what a later GET would return, and
+			// dropping the row instead would buy that same sha back over
+			// HTTP. Falls through to the delete only where the payload
+			// cannot answer -- a deletion (all-zeros tip), a cached 404
+			// verdict a creation must clear, or an unreadable row. Rows key
 			// the verbatim requested spelling, hence one call per spelling.
-			flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, ref))
+			applied, err := d.store.ApplyPushedRefTip(ctx, owner, repo, ref, after, time.Now(), ghdata.GitRefCacheTTL)
+			if err != nil {
+				flush("git ref tip apply", scope, err)
+			}
+			if !applied {
+				flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, ref))
+			}
 		}
 	}
 

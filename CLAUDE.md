@@ -42,11 +42,18 @@ Storage and authorization are **separate axes**:
   principal's own token. Fail-closed rules that must not regress: unknown visibility = private; only authoritative denials are
   cached; grants expire; list-sync REPLACE-syncs. docs/reveal-layer.md — principal resolution, the App-identity path, and the
   background App credential.
-- **Webhooks always apply (the whole point)** — the dispatcher applies payloads DIRECTLY to global truth, so high-frequency
-  events never trigger a re-fetch and a delivery for a repo nobody ever fetched still lands. Invalidation is only a fallback for
-  structural events with unparseable payloads. Do NOT regress this into invalidate-and-refetch, and do NOT add a "who has this
-  cached?" gate. docs/webhooks/dispatch.md — the per-event matrix and the COALESCE rules that keep a webhook from blanking
-  known state.
+- **APPLY THE PAYLOAD. INVALIDATION IS THE LAST RESORT.** This is the single most-violated rule in this repo, and every
+  violation looks the same: GitHub hands us the new value in the delivery, we THROW IT AWAY, delete a row, and buy the same
+  fact back with a second HTTP request we did not need. A webhook is not a cache-busting ping. It is the answer.
+  **The procedure, for every handler and every cached route, in order:** (1) does the payload carry the new value? WRITE IT.
+  (2) does it carry enough to DERIVE it? Derive it and write that. (3) only if neither — an unparseable body, or a change whose
+  result the payload genuinely does not state (a rename, a recomputed `mergeable`) — may you invalidate, and then say in a
+  comment WHY the payload could not answer. "Invalidate, the next reader will refetch" is a bug report, not a design.
+  A push alone hands you `ref` + `after` (the branch's exact new tip), `before`, `created`/`deleted`/`forced`, `base_ref`,
+  `repository.default_branch`, and up to 2,048 full commit objects — see docs/webhooks/dispatch.md for what each event carries,
+  the per-event matrix, the COALESCE rules that keep a webhook from blanking known state, and the routes still violating this.
+  Also non-negotiable: a delivery applies unconditionally — never add a "who has this cached?" gate, and never make a webhook
+  trigger a fetch.
 - **App-identity principal (opt-in, for trusted first-party app callers)** — a *request*-time caller may send a **GitHub App JWT** in the `X-Mirror-Identity` header. `requireAuth` verifies it via `ghclient.VerifyAppIdentity` (`GET /app` — GitHub only 200s if the RS256 signature checks out against the app's public key, so it's unforgeable; cached per-JWT) and resolves that caller to the principal `app:<id>`, skipping the per-user/fingerprint resolution entirely (installation tokens cannot call `/user`). This exists because such a caller's installation tokens rotate hourly — fingerprint principals would lose their earned grants every hour; the app principal keeps **one stable grant set** across all the app's tokens. The `Authorization` token is still injected into the context for upstream fetches/probes/passthrough, so per-repo authorization against GitHub is unchanged. No identity header → the default per-user/fingerprint resolution above.
 - **The cache contract (three tiers)** — every data route is exactly one of: (1) the GraphQL org-repos query, byte-identical and
   identity-test-locked; (2) a cached REST route, whose state is absorbed and whose response is REBUILT with every URL field
