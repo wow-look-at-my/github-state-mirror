@@ -134,7 +134,8 @@ func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits [
 	}
 	if err := q.UpsertCompareCache(ctx, dbgen.UpsertCompareCacheParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Basehead: c.Basehead,
-		BaseRef: c.BaseRef, HeadRef: c.HeadRef, Status: int64(c.Status),
+		BaseRef: c.BaseRef, HeadRef: c.HeadRef, BaseTipSha: c.BaseTipSha,
+		Status:    int64(c.Status),
 		Doc:       c.Doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
