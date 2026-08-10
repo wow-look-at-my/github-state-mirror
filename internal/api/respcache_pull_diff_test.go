@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -134,9 +133,10 @@ func TestCachedPullDiff_PushFlushesRepoWide(t *testing.T) {
 	require.Equal(t, "hit", w.Header().Get(cacheHeader))
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/main","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/main", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 
 	w2 := do(t, router, diffReq())
 	assert.Equal(t, "miss", w2.Header().Get(cacheHeader), "a push must flush the repo's 406 verdicts")
@@ -183,9 +183,10 @@ func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	// The known-mergeable row still hits until some signal moves it; a base
 	// push (the usual close companion) or TTL would; simulate the direct
 	// re-read after a push un-resolves it.
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/feature","before":%q,"after":%q,"repository":{"name":"repo1","owner":{"login":"org1"}}}`,
-		shaCommit, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/feature", "before": shaCommit, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 
 	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)

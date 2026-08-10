@@ -15,42 +15,48 @@ import (
 
 const testRunID, testJobID = 9001, 55501
 
-// jobBody renders one GitHub-shaped job object with the given status, full of
-// URL fields so the tests can prove the rebuild drops them.
-func jobBody(status, conclusion string) string {
-	concl := "null"
+// jobDoc is one GitHub-shaped job object with the given status, full of URL
+// fields so the tests can prove the rebuild drops them. An empty conclusion
+// means the job has not settled, which the encoder writes as null.
+func jobDoc(status, conclusion string) map[string]any {
+	var concl any
 	if conclusion != "" {
-		concl = fmt.Sprintf("%q", conclusion)
+		concl = conclusion
 	}
-	return fmt.Sprintf(`{
-		"id": %d, "run_id": %d, "run_attempt": 1,
-		"workflow_name": "CI", "head_branch": "main", "head_sha": %q,
-		"name": "build", "status": %q, "conclusion": %s,
+	return map[string]any{
+		"id": testJobID, "run_id": testRunID, "run_attempt": 1,
+		"workflow_name": "CI", "head_branch": "main", "head_sha": shaTip,
+		"name": "build", "status": status, "conclusion": concl,
 		"created_at": "2026-08-01T10:00:00Z", "started_at": "2026-08-01T10:00:05Z",
 		"completed_at": "2026-08-01T10:04:00Z",
-		"labels": ["ubuntu-latest"], "runner_name": "runner-1",
-		"url": %q,
-		"html_url": %q,
-		"run_url": %q,
+		"labels":       []any{"ubuntu-latest"}, "runner_name": "runner-1",
+		"url":           fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/jobs/%d", testJobID),
+		"html_url":      fmt.Sprintf("https://github.com/org1/repo1/actions/runs/%d/job/%d", testRunID, testJobID),
+		"run_url":       fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d", testRunID),
 		"check_run_url": "https://api.github.com/repos/org1/repo1/check-runs/1",
-		"node_id": "CR_kwAE",
-		"steps": [{"name": "Set up job", "status": %q, "conclusion": %s, "number": 1,
-		           "started_at": "2026-08-01T10:00:05Z", "completed_at": "2026-08-01T10:00:07Z"}]
-	}`, testJobID, testRunID, shaTip, status, concl,
-		fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/jobs/%d", testJobID),
-		fmt.Sprintf("https://github.com/org1/repo1/actions/runs/%d/job/%d", testRunID, testJobID),
-		fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d", testRunID),
-		status, concl)
+		"node_id":       "CR_kwAE",
+		"steps": []any{map[string]any{
+			"name": "Set up job", "status": status, "conclusion": concl, "number": 1,
+			"started_at": "2026-08-01T10:00:05Z", "completed_at": "2026-08-01T10:00:07Z",
+		}},
+	}
+}
+
+// jobsPage wraps job documents in the runs-jobs listing envelope.
+func jobsPage(jobs ...map[string]any) map[string]any {
+	items := make([]any, 0, len(jobs))
+	for _, j := range jobs {
+		items = append(items, j)
+	}
+	return map[string]any{"total_count": len(items), "jobs": items}
 }
 
 func defaultRunJobsUpstream(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"total_count": 1, "jobs": [%s]}`, jobBody("completed", "success"))
+	writeGitHubJSON(w, jobsPage(jobDoc("completed", "success")))
 }
 
 func defaultJobUpstream(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprint(w, jobBody("completed", "success"))
+	writeGitHubJSON(w, jobDoc("completed", "success"))
 }
 
 func runJobsTarget() string {
@@ -71,17 +77,19 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runJobsHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{"total_count": 1, "jobs": [{
-		"id": %d, "run_id": %d, "run_attempt": 1,
-		"workflow_name": "CI", "head_branch": "main", "head_sha": %q,
+	assert.JSONEq(t, mustJSONString(map[string]any{"total_count": 1, "jobs": []any{map[string]any{
+		"id": testJobID, "run_id": testRunID, "run_attempt": 1,
+		"workflow_name": "CI", "head_branch": "main", "head_sha": shaTip,
 		"name": "build", "status": "completed", "conclusion": "success",
 		"created_at": "2026-08-01T10:00:00Z", "started_at": "2026-08-01T10:00:05Z",
 		"completed_at": "2026-08-01T10:04:00Z",
-		"labels": ["ubuntu-latest"], "runner_name": "runner-1",
-		"steps": [{"name": "Set up job", "status": "completed", "conclusion": "success",
-		           "number": 1, "started_at": "2026-08-01T10:00:05Z",
-		           "completed_at": "2026-08-01T10:00:07Z"}]
-	}]}`, testJobID, testRunID, shaTip), w1.Body.String())
+		"labels":       []any{"ubuntu-latest"}, "runner_name": "runner-1",
+		"steps": []any{map[string]any{
+			"name": "Set up job", "status": "completed", "conclusion": "success",
+			"number": 1, "started_at": "2026-08-01T10:00:05Z",
+			"completed_at": "2026-08-01T10:00:07Z",
+		}},
+	}}}), w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", runJobsTarget(), nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -95,8 +103,7 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 func TestCachedRunJobs_LiveJobNeverCached(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{"total_count": 1, "jobs": [%s]}`, jobBody("in_progress", ""))
+		writeGitHubJSON(w, jobsPage(jobDoc("in_progress", "")))
 	}
 
 	for i := 1; i <= 3; i++ {
@@ -117,9 +124,7 @@ func TestCachedRunJobs_LiveJobNeverCached(t *testing.T) {
 func TestCachedRunJobs_MixedPageNotCached(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		fmt.Fprintf(w, `{"total_count": 2, "jobs": [%s, %s]}`,
-			jobBody("completed", "success"), jobBody("queued", ""))
+		writeGitHubJSON(w, jobsPage(jobDoc("completed", "success"), jobDoc("queued", "")))
 	}
 
 	do(t, router, authedReq("GET", runJobsTarget(), nil))
@@ -154,12 +159,14 @@ func TestCachedWorkflowJobs_RerunFlushesRunAndJobRows(t *testing.T) {
 	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
 	require.Equal(t, "hit", do(t, router, authedReq("GET", jobTarget(), nil)).Header().Get(cacheHeader))
 
-	postWebhook(t, router, "workflow_job", fmt.Sprintf(`{
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
 		"action": "completed",
-		"workflow_job": {"id": %d, "run_id": %d, "run_attempt": 2, "name": "build",
-		                 "status": "completed", "conclusion": "success", "head_sha": %q},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`, testJobID, testRunID, shaTip))
+		"workflow_job": map[string]any{
+			"id": testJobID, "run_id": testRunID, "run_attempt": 2, "name": "build",
+			"status": "completed", "conclusion": "success", "head_sha": shaTip,
+		},
+		"repository": fixtureRepo(),
+	})
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader),
 		"the run's jobs page must be flushed")
@@ -176,11 +183,11 @@ func TestCachedWorkflowJobs_WorkflowRunFlushes(t *testing.T) {
 	do(t, router, authedReq("GET", runJobsTarget(), nil))
 	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
 
-	postWebhook(t, router, "workflow_run", fmt.Sprintf(`{
-		"action": "completed",
-		"workflow_run": {"id": %d, "head_sha": %q},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`, testRunID, shaTip))
+	postWebhookJSON(t, router, "workflow_run", map[string]any{
+		"action":       "completed",
+		"workflow_run": map[string]any{"id": testRunID, "head_sha": shaTip},
+		"repository":   fixtureRepo(),
+	})
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
 }

@@ -1,14 +1,13 @@
 package fixture
 
-import (
-	"encoding/json"
-	"fmt"
-)
+import "encoding/json"
 
-func marshalled(sha string) ([]byte, error) {
-	return json.Marshal(map[string]any{"after": sha})
+// The only way to produce JSON text.
+func marshalled(sha string, n int) ([]byte, error) {
+	return json.Marshal(map[string]any{"after": sha, "number": n})
 }
 
-func quoted(sha string) string {
-	return fmt.Sprintf(`{"after":%q}`, sha)
+// A constant document needs no encoder.
+func constant() string {
+	return `{"conclusion":null,"number":1}`
 }

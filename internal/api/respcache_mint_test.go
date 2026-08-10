@@ -86,10 +86,11 @@ func TestMintInvalidatedByProxiedAuthFailure(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id": 777, "slug": "testapp"}`))
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
 			n := mintCount.Add(1)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"token": %q, "expires_at": %q}`,
-				fmt.Sprintf("ghs_minted%d", n), time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			writeGitHubJSON(w, map[string]any{
+				"token":      fmt.Sprintf("ghs_minted%d", n),
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
 		case r.URL.Path == "/repos/org1/repo1/collaborators":
 			forbidCount.Add(1)
 			w.WriteHeader(http.StatusForbidden)

@@ -10,42 +10,43 @@ import (
 	"strings"
 )
 
-// THE JSON-SPLICE CHECK.
+// JSON TEXT IS PRODUCED BY MARSHALLING. FULL STOP.
 //
-// A value dropped between a JSON string literal's own quotes is escaped by
-// nothing. `"sha":"` + sha + `"` is valid JSON only because today's value
-// happens to contain no quote, backslash, newline or control character, and
-// the day it does the document silently becomes something else -- the same
-// defect as an SQL string built with +, and the same one the jq rule
-// (--arg, never shell interpolation) exists to prevent.
+// Every other way of building it is a guess about what the values contain. A
+// concatenation escapes nothing at all -- `"sha":"` + sha + `"` is valid JSON
+// only while sha holds no quote, backslash or control character, and
+// `{"conclusion":` + fragment + `}` is worse, because a fragment carrying a
+// quote or a backslash reshapes the document rather than one string. A format
+// verb is no better: %s is raw, %d assumes the value is a number, and even %q
+// is GO quoting, not JSON -- it emits \a, \v, \xNN and \UNNNNNNNN, none of
+// which JSON accepts. Each of those is safe only by luck about today's inputs.
 //
-// The rule this enforces: a runtime value may not sit inside a JSON string's
-// quotes. Put it there with a verb that supplies and escapes its own quotes
-// (%q), give it its own non-string slot (%d for a number, %s for a raw
-// null/true/nested fragment), or marshal the document from a Go value.
+// So the rule has no exceptions to remember: if a string literal is JSON, it
+// is a CONSTANT. The moment a runtime value belongs in the document, the
+// document is built from a Go value and handed to encoding/json.
 //
-// The check reads a Go source file and reports each place where a value lands
-// inside JSON string quotes, by either route:
+// This check reads a Go source file and reports both ways a value can reach a
+// JSON literal:
 //
-//   - CONCATENATION: a + chain whose literal parts look like JSON, with a
-//     non-literal operand spliced in while the scan is inside a string.
-//   - A FORMAT VERB: a format string (the first literal argument of a
-//     ...f-suffixed call) that looks like JSON, with a verb inside a string.
+//   - CONCATENATION: a + chain whose literal parts look like JSON, with any
+//     non-literal operand.
+//   - A FORMAT VERB: a JSON-looking format string (the literal argument of a
+//     ...f-suffixed call) containing any verb.
 //
-// Both routes run through one scanner, which is why %q needs no special case:
-// %q sits OUTSIDE the quotes it produces, so the scan is not in a string when
-// it reaches it.
+// Restricting the format case to ...f-suffixed calls is what keeps a percent
+// escape in an ordinary literal (a %20 in a URL) from reading as a verb.
 
 // splicePlaceholder marks where a non-literal operand joins a + chain. It is a
 // character no Go source literal can contain unescaped, so it cannot collide
 // with real content.
 const splicePlaceholder = '\x00'
 
-// verbPattern matches a printf verb. The letter is required, so a percent
-// escape in a URL (%20) is not mistaken for one.
+// verbPattern matches a printf verb. The letter is required, so %20 in a URL
+// is not mistaken for one.
 var verbPattern = regexp.MustCompile(`%[-+# 0-9.*\[\]]*[a-zA-Z]`)
 
-// Finding is one place a value lands inside JSON string quotes.
+// Finding is one place JSON text is built from something other than a
+// marshaller.
 type Finding struct {
 	File string
 	Line int
@@ -54,10 +55,10 @@ type Finding struct {
 }
 
 func (f Finding) String() string {
-	return fmt.Sprintf("%s:%d: value spliced into JSON string quotes by %s: %s", f.File, f.Line, f.How, f.Text)
+	return fmt.Sprintf("%s:%d: JSON built by %s, not marshalled: %s", f.File, f.Line, f.How, f.Text)
 }
 
-// CheckFile parses Go source and reports every JSON splice in it.
+// CheckFile parses Go source and reports every hand-built JSON document in it.
 func CheckFile(fset *token.FileSet, name string, src []byte) ([]Finding, error) {
 	file, err := parser.ParseFile(fset, name, src, 0)
 	if err != nil {
@@ -71,7 +72,7 @@ func CheckFile(fset *token.FileSet, name string, src []byte) ([]Finding, error) 
 				return true
 			}
 			// Only the outermost + of a chain: an inner one would report the
-			// same splice again.
+			// same document again.
 			return !checkConcat(fset, node, &out)
 		case *ast.CallExpr:
 			checkFormatCall(fset, node, &out)
@@ -81,8 +82,9 @@ func CheckFile(fset *token.FileSet, name string, src []byte) ([]Finding, error) 
 	return out, nil
 }
 
-// checkConcat reports splices in a + chain and returns whether the chain is a
-// string concatenation it fully handled (so the caller stops descending).
+// checkConcat reports a JSON document assembled with +, and returns whether
+// the chain was a string concatenation it fully handled (so the caller stops
+// descending into it).
 func checkConcat(fset *token.FileSet, expr *ast.BinaryExpr, out *[]Finding) bool {
 	parts := flattenAdd(expr)
 	var b strings.Builder
@@ -100,24 +102,20 @@ func checkConcat(fset *token.FileSet, expr *ast.BinaryExpr, out *[]Finding) bool
 		return false // numeric addition, or a chain of non-literals
 	}
 	if sawNonLiteral && looksLikeJSON(b.String()) {
-		for _, at := range insideStringQuotes(b.String()) {
-			if at.isPlaceholder {
-				*out = append(*out, Finding{
-					File: fset.Position(expr.Pos()).Filename,
-					Line: fset.Position(expr.Pos()).Line,
-					How:  "concatenation",
-					Text: excerpt(b.String(), at.offset),
-				})
-			}
-		}
+		at := strings.IndexByte(b.String(), splicePlaceholder)
+		*out = append(*out, Finding{
+			File: fset.Position(expr.Pos()).Filename,
+			Line: fset.Position(expr.Pos()).Line,
+			How:  "concatenation",
+			Text: excerpt(b.String(), at),
+		})
 	}
 	return true
 }
 
-// checkFormatCall reports verbs sitting inside JSON string quotes in the
-// format argument of a ...f-suffixed call (Sprintf, Fprintf, Errorf, ...).
-// Restricting it to those calls is what keeps a stray percent in an ordinary
-// literal from reading as a verb.
+// checkFormatCall reports a JSON document assembled by a ...f-suffixed call
+// (Sprintf, Fprintf, Errorf, ...). Any verb counts: %q is Go quoting rather
+// than JSON quoting, and %s/%d place a value the encoder never sees.
 func checkFormatCall(fset *token.FileSet, call *ast.CallExpr, out *[]Finding) {
 	name := ""
 	switch fn := call.Fun.(type) {
@@ -133,15 +131,13 @@ func checkFormatCall(fset *token.FileSet, call *ast.CallExpr, out *[]Finding) {
 	if !ok || !looksLikeJSON(format) {
 		return
 	}
-	for _, at := range insideStringQuotes(format) {
-		if at.isVerb {
-			*out = append(*out, Finding{
-				File: fset.Position(pos).Filename,
-				Line: fset.Position(pos).Line,
-				How:  "format verb",
-				Text: excerpt(format, at.offset),
-			})
-		}
+	if loc := verbPattern.FindStringIndex(format); loc != nil {
+		*out = append(*out, Finding{
+			File: fset.Position(pos).Filename,
+			Line: fset.Position(pos).Line,
+			How:  "format verb",
+			Text: excerpt(format, loc[0]),
+		})
 	}
 }
 
@@ -200,57 +196,20 @@ func stringLit(e ast.Expr) (string, bool) {
 }
 
 // looksLikeJSON reports whether a literal is a JSON document or fragment
-// rather than prose that merely contains quotes. A key-value separator or an
-// object/array opening immediately followed by a key is the signature.
+// rather than prose that merely contains quotes. An object or array opening
+// immediately followed by a string is decisive on its own; a bare key-value
+// separator is not, because ordinary prose has them too -- `Get "x": %w` is an
+// error message, and flagging it would teach the reader to skim this guard's
+// output. So that weaker signal needs a brace or bracket somewhere as well.
 func looksLikeJSON(s string) bool {
-	return strings.Contains(s, `":`) || strings.Contains(s, `{"`) || strings.Contains(s, `["`)
-}
-
-type siteAt struct {
-	offset        int
-	isPlaceholder bool
-	isVerb        bool
-}
-
-// insideStringQuotes walks a JSON template and reports every placeholder and
-// every printf verb that occurs while the scan is INSIDE a JSON string. It
-// tracks the string state itself rather than pattern-matching around the
-// interesting characters, which is what makes `"k": %q` (outside, fine) and
-// `"k": "v/%s"` (inside, not fine) come out different.
-func insideStringQuotes(s string) []siteAt {
-	var out []siteAt
-	inString := false
-	for i := 0; i < len(s); {
-		c := s[i]
-		switch {
-		case inString && c == '\\':
-			i += 2 // an escape, whatever it escapes, never ends the string
-			continue
-		case c == '"':
-			inString = !inString
-		case c == splicePlaceholder:
-			if inString {
-				out = append(out, siteAt{offset: i, isPlaceholder: true})
-			}
-			// A spliced value can itself open or close a quote, so the state
-			// after it is unknowable. Assume it is balanced: the reported
-			// finding is the point either way.
-		case c == '%':
-			if loc := verbPattern.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
-				if inString {
-					out = append(out, siteAt{offset: i, isVerb: true})
-				}
-				i += loc[1]
-				continue
-			}
-		}
-		i++
+	if strings.Contains(s, `{"`) || strings.Contains(s, `["`) {
+		return true
 	}
-	return out
+	return strings.Contains(s, `":`) && strings.ContainsAny(s, "{}[]")
 }
 
 // excerpt quotes a window around the offending site so the failure names the
-// exact spot rather than dumping a whole fixture body.
+// exact spot rather than dumping a whole document.
 func excerpt(s string, at int) string {
 	const window = 28
 	lo, hi := at-window, at+window

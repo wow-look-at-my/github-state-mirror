@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -18,22 +17,26 @@ import (
 // two branches, one protected -- commit.url, the protection object,
 // protection_url, and _links must all be dropped by the rebuild.
 func defaultBranchesUpstream(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	commitURL := func(sha string) string { return "https://api.github.com/repos/org1/repo1/commits/" + sha }
-	fmt.Fprintf(w, `[
-		{"name": "main",
-		 "commit": {"sha": %q, "url": %q},
-		 "protected": true,
-		 "protection": {"enabled": true, "required_status_checks": {"enforcement_level": "non_admins", "contexts": ["ci"]}},
-		 "protection_url": "https://api.github.com/repos/org1/repo1/branches/main/protection",
-		 "_links": {"self": "https://api.github.com/repos/org1/repo1/branches/main"}},
-		{"name": "claude/feature-branch",
-		 "commit": {"sha": %q, "url": %q},
-		 "protected": false,
-		 "protection": {"enabled": false, "required_status_checks": {"enforcement_level": "off", "contexts": []}},
-		 "protection_url": "https://api.github.com/repos/org1/repo1/branches/claude/feature-branch/protection",
-		 "_links": {"self": "https://api.github.com/repos/org1/repo1/branches/claude/feature-branch"}}
-	]`, shaTip, commitURL(shaTip), shaMid, commitURL(shaMid))
+	branch := func(name, sha string, protected bool, level string, contexts []any) map[string]any {
+		return map[string]any{
+			"name": name,
+			"commit": map[string]any{
+				"sha": sha,
+				"url": "https://api.github.com/repos/org1/repo1/commits/" + sha,
+			},
+			"protected": protected,
+			"protection": map[string]any{
+				"enabled":                protected,
+				"required_status_checks": map[string]any{"enforcement_level": level, "contexts": contexts},
+			},
+			"protection_url": "https://api.github.com/repos/org1/repo1/branches/" + name + "/protection",
+			"_links":         map[string]any{"self": "https://api.github.com/repos/org1/repo1/branches/" + name},
+		}
+	}
+	writeGitHubJSON(w, []any{
+		branch("main", shaTip, true, "non_admins", []any{"ci"}),
+		branch("claude/feature-branch", shaMid, false, "off", []any{}),
+	})
 }
 
 // TestCachedBranchesList_MissAbsorbHit covers the core flow: the first read
@@ -50,10 +53,10 @@ func TestCachedBranchesList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.branchesHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`[
-		{"name": "main", "commit": {"sha": %q}, "protected": true},
-		{"name": "claude/feature-branch", "commit": {"sha": %q}, "protected": false}
-	]`, shaTip, shaMid), w1.Body.String(), "exact trimmed shape: the protection object must be gone")
+	assert.JSONEq(t, mustJSONString([]any{
+		map[string]any{"name": "main", "commit": map[string]any{"sha": shaTip}, "protected": true},
+		map[string]any{"name": "claude/feature-branch", "commit": map[string]any{"sha": shaMid}, "protected": false},
+	}), w1.Body.String(), "exact trimmed shape: the protection object must be gone")
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)

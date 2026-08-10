@@ -2,22 +2,34 @@ package fixture
 
 import "fmt"
 
-// The flagged shape: the verb sits inside the string's quotes.
-func bad(sha string) string {
+// Flagged: a raw value inside the string's quotes.
+func badRaw(sha string) string {
 	return fmt.Sprintf(`{"commit":{"url":"https://api.github.com/commits/%s"}}`, sha)
 }
 
-// Not flagged: %q supplies and escapes its own quotes.
-func okQuoted(sha string) string {
+// Flagged: %q is GO quoting, not JSON -- it emits \a, \v, \xNN and
+// \UNNNNNNNN, none of which JSON accepts.
+func badQuoted(sha string) string {
 	return fmt.Sprintf(`{"commit":{"sha":%q}}`, sha)
 }
 
-// Not flagged: a non-string slot.
-func okRaw(n int, conclusion string) string {
-	return fmt.Sprintf(`{"number":%d,"conclusion":%s}`, n, conclusion)
+// Flagged: a non-string slot still bypasses the encoder.
+func badNumeric(n int) string {
+	return fmt.Sprintf(`{"number":%d}`, n)
 }
 
 // Not flagged: a percent escape in a URL is not a verb.
 func okPercentEscape() string {
 	return `{"url":"https://example.com/a%20b"}`
+}
+
+// Not flagged: the format string is not JSON.
+func okNonJSON(sha string) string {
+	return fmt.Sprintf("https://api.github.com/commits/%s", sha)
+}
+
+// Not flagged: an error message is not a JSON document, even though the quoted
+// operand puts a quote next to a colon.
+func okErrorMessage(err error) error {
+	return fmt.Errorf("Get \"x\": %w", err)
 }

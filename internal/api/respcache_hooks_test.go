@@ -18,27 +18,21 @@ import (
 // has something to drop -- and with config.url present, which it must KEEP.
 
 func defaultHooksUpstream(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `[{
+	writeGitHubJSON(w, []any{map[string]any{
 		"type": "Repository", "id": 12345678, "name": "web", "active": true,
-		"events": ["push", "pull_request"],
-		"config": {
+		"events": []any{"push", "pull_request"},
+		"config": map[string]any{
 			"content_type": "json", "insecure_ssl": "0",
-			"url": %q,
-			"secret": "********"
+			"url":    "https://hooks.example.com/ingest" + r.URL.Path,
+			"secret": "********",
 		},
 		"updated_at": "2026-08-01T00:00:00Z", "created_at": "2026-07-01T00:00:00Z",
-		"url": %q,
-		"test_url": %q,
-		"ping_url": %q,
-		"deliveries_url": %q,
-		"last_response": {"code": 200, "status": "active", "message": "OK"}
-	}]`,
-		"https://hooks.example.com/ingest"+r.URL.Path,
-		hookAPIURL(r.URL.Path, ""),
-		hookAPIURL(r.URL.Path, "/test"),
-		hookAPIURL(r.URL.Path, "/pings"),
-		hookAPIURL(r.URL.Path, "/deliveries"))
+		"url":            hookAPIURL(r.URL.Path, ""),
+		"test_url":       hookAPIURL(r.URL.Path, "/test"),
+		"ping_url":       hookAPIURL(r.URL.Path, "/pings"),
+		"deliveries_url": hookAPIURL(r.URL.Path, "/deliveries"),
+		"last_response":  map[string]any{"code": 200, "status": "active", "message": "OK"},
+	}})
 }
 
 // hookAPIURL is one of the hook object's API self-links, built here rather

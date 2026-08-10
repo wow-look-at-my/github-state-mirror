@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -18,16 +17,15 @@ import (
 // fields, so the tests can prove the rebuild drops them.
 func defaultGitRefUpstream(w http.ResponseWriter, r *http.Request) {
 	ref := strings.TrimPrefix(r.URL.Path, "/repos/org1/repo1/git/ref/")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{
-		"ref": %q, "node_id": "REF_kwAE",
-		"url": %q,
-		"object": {"sha": %q, "type": "commit", "url": %q}
-	}`,
-		"refs/"+strings.TrimPrefix(ref, "refs/"),
-		"https://api.github.com/repos/org1/repo1/git/refs/"+ref,
-		shaTip,
-		"https://api.github.com/repos/org1/repo1/git/commits/"+shaTip)
+	writeGitHubJSON(w, map[string]any{
+		"ref":     "refs/" + strings.TrimPrefix(ref, "refs/"),
+		"node_id": "REF_kwAE",
+		"url":     "https://api.github.com/repos/org1/repo1/git/refs/" + ref,
+		"object": map[string]any{
+			"sha": shaTip, "type": "commit",
+			"url": "https://api.github.com/repos/org1/repo1/git/commits/" + shaTip,
+		},
+	})
 }
 
 // The core flow: fetch + absorb (miss), then serve the byte-identical stored
@@ -41,10 +39,10 @@ func TestCachedGitRef_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
+	assert.JSONEq(t, mustJSONString(map[string]any{
 		"ref": "refs/heads/main", "node_id": "REF_kwAE",
-		"object": {"sha": %q, "type": "commit"}
-	}`, shaTip), w1.Body.String())
+		"object": map[string]any{"sha": shaTip, "type": "commit"},
+	}), w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)

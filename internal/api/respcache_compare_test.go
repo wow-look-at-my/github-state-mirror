@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -136,27 +135,30 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"status": "ahead",
-		"ahead_by": 1,
-		"behind_by": 0,
-		"total_commits": 1,
-		"merge_base_commit": {"sha": %q},
-		"commits": [
-			{"sha": %q,
-			 "commit": {
-				"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-				"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-				"message": "tip of main...dev",
-				"tree": {"sha": %q}},
-			 "parents": [{"sha": %q}]}
-		],
-		"files": [
-			{"filename": "main.go", "status": "modified", "additions": 10, "deletions": 2, "changes": 12},
-			{"filename": "renamed.go", "status": "renamed", "additions": 0, "deletions": 0, "changes": 0,
-			 "previous_filename": "old.go"}
-		]
-	}`, shaBase, shaCommit, shaTree2, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"status":            "ahead",
+		"ahead_by":          1,
+		"behind_by":         0,
+		"total_commits":     1,
+		"merge_base_commit": map[string]any{"sha": shaBase},
+		"commits": []any{map[string]any{
+			"sha": shaCommit,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "tip of main...dev",
+				"tree":      map[string]any{"sha": shaTree2},
+			},
+			"parents": []any{map[string]any{"sha": shaBase}},
+		}},
+		"files": []any{
+			map[string]any{"filename": "main.go", "status": "modified", "additions": 10, "deletions": 2, "changes": 12},
+			map[string]any{
+				"filename": "renamed.go", "status": "renamed", "additions": 0, "deletions": 0, "changes": 0,
+				"previous_filename": "old.go",
+			},
+		},
+	}), w1.Body.String())
 	assert.NotContains(t, w1.Body.String(), "never stored", "the per-file patch must be dropped")
 	assert.NotContains(t, w1.Body.String(), "base commit", "the base_commit object must be dropped")
 
@@ -425,20 +427,20 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 
 	// A push naming an UNRELATED ref leaves the verdict alone (the per-ref
 	// grain)...
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/unrelated","before":%q,"after":%q,`+
-			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/unrelated", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 	w3 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "a push to an unrelated ref must not flush the verdict")
 
 	// ...while a push CREATING the missing head ref flushes it, and the next
 	// read fetches the now-real comparison.
 	u.compare = newCompareCacheUpstream().compare
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/ghostbranch","before":%q,"after":%q,`+
-			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/ghostbranch", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 	w4 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w4.Code, "the created ref's comparison must be refetched")
 	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a push naming the missing ref must flush the 404 verdict")

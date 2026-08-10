@@ -252,17 +252,21 @@ func TestCachedCommitStatus_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"state": "success",
-		"sha": %q,
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"state":       "success",
+		"sha":         shaTip,
 		"total_count": 2,
-		"statuses": [
-			{"context": "ci/main", "state": "success", "description": "2/2 builds passed",
-			 "created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z"},
-			{"context": "lint", "state": "success", "description": null,
-			 "created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z"}
-		]
-	}`, shaTip), w1.Body.String())
+		"statuses": []any{
+			map[string]any{
+				"context": "ci/main", "state": "success", "description": "2/2 builds passed",
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+			},
+			map[string]any{
+				"context": "lint", "state": "success", "description": nil,
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+			},
+		},
+	}), w1.Body.String())
 	assert.NotContains(t, w1.Body.String(), "rbm.example.com", "the per-status target_url must be dropped")
 	assert.NotContains(t, w1.Body.String(), "full_name", "the repository object must be dropped")
 
@@ -289,23 +293,27 @@ func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits))
 	assertNoURLKeys(t, w1.Body.Bytes(), "details_url", "html_url")
-	assert.JSONEq(t, fmt.Sprintf(`{
+	assert.JSONEq(t, mustJSONString(map[string]any{
 		"total_count": 2,
-		"check_runs": [
-			{"id": 101, "head_sha": %q, "name": "build/main", "status": "completed",
-			 "conclusion": "success", "started_at": "2026-07-01T10:00:00Z",
-			 "completed_at": "2026-07-01T10:04:00Z", "app": {"id": 777},
-			 "output": {"title": "Build report"},
-			 "details_url": "https://ci.example.com/builds/1",
-			 "html_url": "https://github.com/org1/repo1/runs/101"},
-			{"id": 102, "head_sha": %q, "name": "test/main", "status": "in_progress",
-			 "conclusion": null, "started_at": "2026-07-01T10:01:00Z",
-			 "completed_at": null, "app": {"id": 777},
-			 "output": {"title": "Build report"},
-			 "details_url": "https://ci.example.com/builds/1",
-			 "html_url": "https://github.com/org1/repo1/runs/102"}
-		]
-	}`, shaTip, shaTip), w1.Body.String())
+		"check_runs": []any{
+			map[string]any{
+				"id": 101, "head_sha": shaTip, "name": "build/main", "status": "completed",
+				"conclusion": "success", "started_at": "2026-07-01T10:00:00Z",
+				"completed_at": "2026-07-01T10:04:00Z", "app": map[string]any{"id": 777},
+				"output":      map[string]any{"title": "Build report"},
+				"details_url": "https://ci.example.com/builds/1",
+				"html_url":    "https://github.com/org1/repo1/runs/101",
+			},
+			map[string]any{
+				"id": 102, "head_sha": shaTip, "name": "test/main", "status": "in_progress",
+				"conclusion": nil, "started_at": "2026-07-01T10:01:00Z",
+				"completed_at": nil, "app": map[string]any{"id": 777},
+				"output":      map[string]any{"title": "Build report"},
+				"details_url": "https://ci.example.com/builds/1",
+				"html_url":    "https://github.com/org1/repo1/runs/102",
+			},
+		},
+	}), w1.Body.String())
 	assert.NotContains(t, w1.Body.String(), "never stored", "output.summary must be dropped")
 	assert.NotContains(t, w1.Body.String(), "annotations", "output's annotation fields must be dropped")
 	assert.NotContains(t, w1.Body.String(), "check_suite", "the check_suite object must be dropped")

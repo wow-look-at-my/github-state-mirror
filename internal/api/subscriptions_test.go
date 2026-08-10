@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +67,10 @@ func TestSubscriptionsCRUD(t *testing.T) {
 
 	// Create.
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q,"repos":["My-Org"],"events":["push","pull_request"]}`, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": "https://example.com/hook", "secret": testSubSecret,
+			"repos": []any{"My-Org"}, "events": []any{"push", "pull_request"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, "create: %s", w.Body.String())
 	assert.NotContains(t, w.Body.String(), testSubSecret, "the secret must never appear in a response")
 	var created subscriptionJSON
@@ -159,7 +161,7 @@ func TestSubscriptionsPerPrincipalCap(t *testing.T) {
 	}
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q}`, testSubSecret))
+		mustJSONString(map[string]any{"url": "https://example.com/hook", "secret": testSubSecret}))
 	assert.Equal(t, http.StatusConflict, w.Code, "the per-principal cap answers 409")
 }
 
@@ -189,7 +191,9 @@ func TestWebhookDeliveryNotifiesSubscriber(t *testing.T) {
 	defer receiver.Close()
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":%q,"secret":%q,"events":["push"]}`, receiver.URL, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": receiver.URL, "secret": testSubSecret, "events": []any{"push"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
 
 	// A signed push delivery through the real /webhook route.

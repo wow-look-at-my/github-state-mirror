@@ -60,11 +60,13 @@ Storage and authorization are **separate axes**:
   `docs/webhooks/payload-unused/<event>.md`. Checked both ways, so an excuse cannot outlive its reason: teaching a handler to use
   its payload fails the build until that doc is deleted in the same change. Two exceptions exist today, `organization` and
   `membership` — the mirror stores no membership state for either payload to land in.
-- **Never splice a value into JSON string quotes** — `` `"sha":"` + sha + `"` `` and `"url": "https://x/%s"` are valid JSON only
-  while the value happens to contain no quote, backslash or control character. Place it with `%q` (which supplies and escapes its
-  own quotes), give it its own non-string slot (`%d`, or `%s` for a raw `null`/nested fragment), or marshal the document from a Go
-  value. `internal/guards` (`TestNoJSONSplices`) walks every `.go` file in the repo and fails the build on either shape; its file
-  header is the full rule. In tests, `postWebhookJSON`/`fixtureRepo` (api) and `mustJSON` (sync) are the marshalling path.
+- **JSON text is produced by MARSHALLING — a JSON literal is a constant, or it is a bug.** Every other way of building it guesses
+  about the values: `+` escapes nothing (`` `"sha":"` + sha + `"` ``, and `` `{"conclusion":` + frag + `}` `` is worse — a quote or
+  backslash in `frag` reshapes the document, not one string), `%s` is raw, `%d` assumes a number, and even `%q` is GO quoting, not
+  JSON (it emits `\a`, `\v`, `\xNN`, `\UNNNNNNNN`, none of which JSON accepts). The moment a runtime value belongs in a document,
+  the document is a Go value handed to `encoding/json`. `internal/guards` (`TestNoJSONSplices`) walks every `.go` file in the repo
+  and fails the build on either shape; its file header is the full rule. In tests, the marshalling path is `writeGitHubJSON` /
+  `mustJSONString` / `postWebhookJSON` / `fixtureRepo` (api) and `mustJSON` (sync, notify).
 - **App-identity principal (opt-in, for trusted first-party app callers)** — a *request*-time caller may send a **GitHub App JWT** in the `X-Mirror-Identity` header. `requireAuth` verifies it via `ghclient.VerifyAppIdentity` (`GET /app` — GitHub only 200s if the RS256 signature checks out against the app's public key, so it's unforgeable; cached per-JWT) and resolves that caller to the principal `app:<id>`, skipping the per-user/fingerprint resolution entirely (installation tokens cannot call `/user`). This exists because such a caller's installation tokens rotate hourly — fingerprint principals would lose their earned grants every hour; the app principal keeps **one stable grant set** across all the app's tokens. The `Authorization` token is still injected into the context for upstream fetches/probes/passthrough, so per-repo authorization against GitHub is unchanged. No identity header → the default per-user/fingerprint resolution above.
 - **The cache contract (three tiers)** — every data route is exactly one of: (1) the GraphQL org-repos query, byte-identical and
   identity-test-locked; (2) a cached REST route, whose state is absorbed and whose response is REBUILT with every URL field

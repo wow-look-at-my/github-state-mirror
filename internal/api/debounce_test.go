@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -46,7 +45,7 @@ func (u *countingUpstream) handler() http.Handler {
 			_, _ = w.Write([]byte(u.body(r)))
 			return
 		}
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"call":%d}`, n)))
+		_, _ = w.Write([]byte(mustJSONString(map[string]any{"call": n})))
 	})
 }
 
@@ -106,7 +105,9 @@ func TestDebounce_CoalescesIdenticalReads(t *testing.T) {
 // look. Different tokens = different batches = different upstream calls.
 func TestDebounce_NeverSharesAcrossCredentials(t *testing.T) {
 	u := &countingUpstream{body: func(r *http.Request) string {
-		return fmt.Sprintf(`{"seen_token":%q}`, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		return mustJSONString(map[string]any{
+			"seen_token": strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+		})
 	}}
 	d := NewDebouncer(80 * time.Millisecond)
 	t.Cleanup(func() { d.Drain(2 * time.Second) })
@@ -120,7 +121,7 @@ func TestDebounce_NeverSharesAcrossCredentials(t *testing.T) {
 
 	assert.Equal(t, 2, u.count(), "one upstream call per DISTINCT credential, never one for both")
 	for i, w := range recs {
-		assert.Equal(t, fmt.Sprintf(`{"seen_token":%q}`, tokens[i]),
+		assert.Equal(t, mustJSONString(map[string]any{"seen_token": tokens[i]}),
 			w.Body.String(), "request %d must be answered with ITS OWN credential's response", i)
 	}
 }
