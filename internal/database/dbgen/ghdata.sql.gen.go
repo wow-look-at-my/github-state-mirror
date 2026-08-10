@@ -148,6 +148,21 @@ func (q *Queries) DeleteListSyncGrants(ctx context.Context, arg DeleteListSyncGr
 	return err
 }
 
+const deletePRClosure = `-- name: DeletePRClosure :exec
+DELETE FROM pr_closures WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type DeletePRClosureParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+func (q *Queries) DeletePRClosure(ctx context.Context, arg DeletePRClosureParams) error {
+	_, err := q.db.ExecContext(ctx, deletePRClosure, arg.Owner, arg.Repo, arg.Number)
+	return err
+}
+
 const deletePRLabels = `-- name: DeletePRLabels :exec
 DELETE FROM pr_labels WHERE owner = ? AND repo = ? AND pr_number = ?
 `
@@ -336,6 +351,29 @@ func (q *Queries) GetOpenPullRequestNoCase(ctx context.Context, arg GetOpenPullR
 		&i.MergeStaleRef,
 		&i.MergeStaleAfter,
 		&i.TouchedAt,
+	)
+	return i, err
+}
+
+const getPRClosure = `-- name: GetPRClosure :one
+SELECT owner, repo, number, updated_at, recorded_at FROM pr_closures WHERE owner = ? AND repo = ? AND number = ?
+`
+
+type GetPRClosureParams struct {
+	Owner  string
+	Repo   string
+	Number int64
+}
+
+func (q *Queries) GetPRClosure(ctx context.Context, arg GetPRClosureParams) (PrClosure, error) {
+	row := q.db.QueryRowContext(ctx, getPRClosure, arg.Owner, arg.Repo, arg.Number)
+	var i PrClosure
+	err := row.Scan(
+		&i.Owner,
+		&i.Repo,
+		&i.Number,
+		&i.UpdatedAt,
+		&i.RecordedAt,
 	)
 	return i, err
 }
@@ -1106,6 +1144,50 @@ func (q *Queries) NullPRMergeableForPR(ctx context.Context, arg NullPRMergeableF
 		arg.Owner,
 		arg.Repo,
 		arg.Number,
+	)
+	return err
+}
+
+const prunePRClosures = `-- name: PrunePRClosures :exec
+DELETE FROM pr_closures WHERE recorded_at < ?
+`
+
+func (q *Queries) PrunePRClosures(ctx context.Context, recordedAt string) error {
+	_, err := q.db.ExecContext(ctx, prunePRClosures, recordedAt)
+	return err
+}
+
+const recordPRClosure = `-- name: RecordPRClosure :exec
+
+INSERT INTO pr_closures (owner, repo, number, updated_at, recorded_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    updated_at  = MAX(pr_closures.updated_at, excluded.updated_at),
+    recorded_at = excluded.recorded_at
+`
+
+type RecordPRClosureParams struct {
+	Owner      string
+	Repo       string
+	Number     int64
+	UpdatedAt  string
+	RecordedAt string
+}
+
+// ============================================================================
+// PR closures (the tombstone a deleted open row leaves behind)
+// ============================================================================
+// RecordPRClosure remembers that a PR closed, and the updated_at of the view
+// that said so. A later write must beat this timestamp to re-open the PR.
+// A closure already recorded keeps the NEWER updated_at: two views of the
+// same close can disagree, and the later one is the stronger bar.
+func (q *Queries) RecordPRClosure(ctx context.Context, arg RecordPRClosureParams) error {
+	_, err := q.db.ExecContext(ctx, recordPRClosure,
+		arg.Owner,
+		arg.Repo,
+		arg.Number,
+		arg.UpdatedAt,
+		arg.RecordedAt,
 	)
 	return err
 }

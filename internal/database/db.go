@@ -12,6 +12,15 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 25: pr_closures -- the record that a PR left the cache
+// because it closed. Only open PRs are retained, so a close deletes the row,
+// and an absent row cannot lose a comparison: a delivery carrying OLDER state
+// re-inserts the PR as open and nothing afterwards restates the close. That
+// is not hypothetical -- a merged PR was resurrected 82 seconds after its
+// merge by a redelivered pre-merge payload, and stayed open in the cache for
+// the next 44 minutes. The closure record lets every open write path refuse a
+// write that cannot prove it postdates the close.
+//
 // SchemaVersion 24: compare_cache.base_tip_sha -- base_commit.sha, the base
 // tip GitHub says a comparison was computed against. A cached `behind_by` is
 // the one stale answer that stops its own correction (pr-minder reads it to
@@ -95,7 +104,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 24
+const SchemaVersion = 25
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",

@@ -81,6 +81,42 @@ Not covered, stated plainly: a delivery GitHub records as **successful** that
 the mirror then failed to act on. That is a dispatcher disposition, visible in
 the delivery log, and a different problem.
 
+#### A replay is an old view, and old views can overwrite new ones
+
+Idempotence is not the property that makes a replay safe, and treating it as
+one produced the mirror's next bug. GitHub re-sends the payload it built *when
+the event happened*. Applying it later is a correct, repeatable write — of
+state that has since been superseded.
+
+Measured on 2026-08-10: `agentic-loop#24` merged at 15:08:16Z. At 15:09:38Z —
+82 seconds later, on the replayer's cycle — the PR was written back into the
+cache as **open**, from a payload stamped `updated_at: 15:06:10Z`. Only open
+PRs are retained, so the close had *deleted* the row, and a deleted row has
+nothing to lose a comparison against: the stale view simply re-inserted it.
+Nothing restates a close. It was still open 44 minutes later, when the
+consistency check found it.
+
+The fix is at the **write**, not here. An ordinary late delivery does exactly
+the same damage — GitHub delivers concurrently, so a slow `synchronize` can
+land after the `closed` it preceded — and nothing the replayer could check
+would catch that one. So a close now leaves a record (`pr_closures`: the PR,
+and the `updated_at` of the view that reported the close), and every open-PR
+write path refuses a view that cannot prove it postdates it. A genuine reopen
+carries a later `updated_at`, applies, and clears the record on the way
+through. The record expires at `ghdata.PRClosureRetention` (24h — the replay
+lookback, since nothing else re-sends a delivery at all).
+
+A write with **no** `updated_at` is refused too: it cannot prove anything, and
+refusing what cannot prove it is the entire job. Every real source stamps it.
+
+Only a **statement** that the PR closed records one — the `closed` delivery,
+or a single-PR fetch answering non-open. The reconcile sweeps (the org
+snapshot, the complete `/pulls` page) delete rows by inferring the close from
+*absence* from an eventually-consistent list, which is exactly why those paths
+carry a grace window. A closure recorded from a wrong inference would refuse
+the PR's real deliveries for a day; a wrong delete costs one refetch, and the
+sweep re-runs.
+
 ### 2. Notice the staleness on read (`compare_cache.base_tip_sha`)
 
 Recovery narrows the window; it does not close it. So the one answer whose
