@@ -9,7 +9,7 @@
 // The store is deliberately IN-MEMORY — the same live-view-not-audit-log
 // stance as the api package's request log: rate-limit windows reset within the
 // hour, so the data is sub-hour-ephemeral, and persisting it would add a
-// schema.sql table whose SchemaVersion bump nukes the whole cache. It resets
+// schema.sql table, whose every edit nukes the whole cache. It resets
 // on restart.
 //
 // Dead observations age out. An actively observed identity is re-observed

@@ -89,7 +89,7 @@ type bodySample struct {
 
 // shapeStore holds routeShapes. In-memory and reset on restart, on the
 // requestLog / ratemeter stance: this is a live operator view, not an audit
-// log, and it must not force a cache-nuking schema bump.
+// log, and it must not force a cache-nuking schema change.
 type shapeStore struct {
 	mu     sync.Mutex
 	shapes map[string]*routeShape
