@@ -55,6 +55,7 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 		slog.Warn("webhook: tip-move un-resolve failed", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
 	} else if moved {
 		payload.PR.Mergeable = sql.NullString{}
+		payload.PR.MergeableState = sql.NullString{}
 		payload.PR.MergeCommitSha = sql.NullString{}
 		slog.Info("webhook: un-resolved merge fields on tip move", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action)
 	}

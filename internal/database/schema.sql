@@ -112,6 +112,14 @@ CREATE TABLE pull_requests (
     additions            INTEGER,
     deletions            INTEGER,
     mergeable            TEXT,
+    mergeable_state      TEXT,   -- GitHub's mergeable_state (clean|behind|blocked|unstable|dirty|draft|
+                                 -- has_hooks|unknown). SINGLE-PR responses only, like the diff stats.
+                                 -- It answers what `mergeable` cannot -- WHY a mergeable PR still will not
+                                 -- merge -- and `behind` is the only statement anywhere that a strict
+                                 -- up-to-date rule is the thing blocking it. Un-resolved with `mergeable`
+                                 -- by every branch/tip move AND, unlike it, by CI events: unstable/blocked
+                                 -- <-> clean turn on check results, which move no tip and so would leave
+                                 -- this field the one cached answer nothing invalidates.
     author_login         TEXT,
     author_avatar        TEXT,
     author_url           TEXT,
