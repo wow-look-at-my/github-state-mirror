@@ -28,15 +28,18 @@ func TestCachedPull_MergeableGate(t *testing.T) {
 	mergeable := "null"
 	u.single = func(w http.ResponseWriter, r *http.Request) {
 		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
+		// mergeable_state tracks mergeable, as GitHub's does: "unknown" while
+		// the test merge computes, a real state once it resolves. The hit gate
+		// reads both, so pinning it to "unknown" would hold every read on the
+		// miss path and prove nothing about caching.
 		switch mergeable {
 		case "true":
-			pr["mergeable"] = true
+			pr["mergeable"], pr["mergeable_state"] = true, "clean"
 		case "false":
-			pr["mergeable"] = false
+			pr["mergeable"], pr["mergeable_state"] = false, "dirty"
 		default:
-			pr["mergeable"] = nil
+			pr["mergeable"], pr["mergeable_state"] = nil, "unknown"
 		}
-		pr["mergeable_state"] = "unknown"
 		pr["merged"] = false
 		servePRJSON(w, pr)
 	}

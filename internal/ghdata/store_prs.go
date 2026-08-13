@@ -194,6 +194,30 @@ func (s *Store) NullPRMergeableByRepo(ctx context.Context, owner, repo string) e
 	})
 }
 
+// NullPRMergeableStateByHeadSHA un-resolves mergeable_state alone for the open
+// PRs on a head sha whose CI moved. A check or status result is the only thing
+// that flips unstable/blocked <-> clean, and it moves no tip -- so this is the
+// one merge field with no other invalidator, and without this a `blocked` from
+// a run that has since gone green would keep being served.
+//
+// mergeable and merge_commit_sha stay put: a check result cannot change
+// whether two trees conflict, and nulling them would make every check event
+// re-fetch every PR on that sha for an answer that did not move. No stale
+// marker either -- the marker refuses a re-offered PRE-PUSH test-merge sha,
+// and nothing pushed here.
+//
+// An empty sha is a payload that named none; it must not become a repo-wide
+// wildcard, so it is a no-op (the caller has already flushed what it could).
+func (s *Store) NullPRMergeableStateByHeadSHA(ctx context.Context, owner, repo, headSHA string) error {
+	if headSHA == "" {
+		return nil
+	}
+	return s.q.NullPRMergeableStateByHeadSHA(ctx, dbgen.NullPRMergeableStateByHeadSHAParams{
+		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+		HeadRefOid: sql.NullString{String: headSHA, Valid: true},
+	})
+}
+
 // ---- PR Labels ----
 
 func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber int64, labels []dbgen.PrLabel) error {

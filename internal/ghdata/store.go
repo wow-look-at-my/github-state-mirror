@@ -470,6 +470,7 @@ func prToParams(pr dbgen.PullRequest) dbgen.UpsertPullRequestParams {
 		Additions:          pr.Additions,
 		Deletions:          pr.Deletions,
 		Mergeable:          pr.Mergeable,
+		MergeableState:     pr.MergeableState,
 		AuthorLogin:        pr.AuthorLogin,
 		AuthorAvatar:       pr.AuthorAvatar,
 		AuthorUrl:          pr.AuthorUrl,

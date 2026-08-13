@@ -123,8 +123,8 @@ UPDATE repos SET is_archived = ? WHERE owner = ? AND name = ?;
 -- the /graphql tier serves their mergeable and they can never satisfy the
 -- REST route's rest-complete gate.)
 -- name: UpsertPullRequest :exec
-INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pull_requests (owner, repo, number, title, url, is_draft, state, created_at, updated_at, additions, deletions, mergeable, mergeable_state, author_login, author_avatar, author_url, head_ref_name, base_ref_name, head_ref_oid, review_request_count, last_commit_status, node_id, body, author_type, base_ref_oid, head_repo_full_name, auto_merge_method, merge_commit_sha, touched_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, number) DO UPDATE SET
     title = excluded.title,
     url = excluded.url,
@@ -152,6 +152,33 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
                   OR pull_requests.merge_commit_sha = pull_requests.merge_stale_sha)
             THEN pull_requests.mergeable
         ELSE COALESCE(excluded.mergeable, pull_requests.mergeable)
+    END,
+    -- mergeable_state resolves on EXACTLY the predicate above, deliberately
+    -- repeated rather than derived: SET clauses read the pre-update row, so
+    -- there is no way to say "whatever mergeable just became". The two
+    -- describe one computed answer and must never disagree -- a row serving
+    -- mergeable NULL beside mergeable_state 'clean' is precisely the pre-push
+    -- lie the stale guard exists to refuse, now wearing the other field's
+    -- name. TestUpsertKeepsMergeAndStateTogether pins them together; edit
+    -- both branches or neither.
+    mergeable_state = CASE
+        WHEN excluded.node_id IS NOT NULL
+             AND excluded.merge_commit_sha IS NOT NULL
+             AND excluded.merge_commit_sha = pull_requests.merge_stale_sha
+             AND pull_requests.merge_stale_at IS NOT NULL
+             AND pull_requests.merge_stale_at > strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-1 hour')
+             AND NOT (pull_requests.merge_stale_after IS NOT NULL AND pull_requests.merge_stale_after != ''
+                      AND ((pull_requests.merge_stale_ref = excluded.base_ref_name AND pull_requests.merge_stale_after = excluded.base_ref_oid)
+                           OR (pull_requests.merge_stale_ref = excluded.head_ref_name AND pull_requests.merge_stale_after = excluded.head_ref_oid)))
+             AND NOT (COALESCE(excluded.mergeable, '') = 'CONFLICTING'
+                      AND pull_requests.merge_stale_at <= strftime('%Y-%m-%dT%H:%M:%SZ', excluded.touched_at, '-30 seconds'))
+            THEN NULL
+        WHEN excluded.node_id IS NULL
+             AND pull_requests.node_id IS NOT NULL
+             AND (pull_requests.merge_commit_sha IS NULL
+                  OR pull_requests.merge_commit_sha = pull_requests.merge_stale_sha)
+            THEN pull_requests.mergeable_state
+        ELSE COALESCE(excluded.mergeable_state, pull_requests.mergeable_state)
     END,
     author_login = COALESCE(excluded.author_login, pull_requests.author_login),
     author_avatar = COALESCE(excluded.author_avatar, pull_requests.author_avatar),
@@ -240,8 +267,12 @@ ON CONFLICT (owner, repo, number) DO UPDATE SET
 -- old values on null payloads; a direct REST read of the PR is authoritative
 -- about "currently unresolved", so the cached single-PR route uses this after
 -- absorbing to make a null answer miss again until GitHub resolves it.
+-- It writes mergeable_state in the same statement, never a second one: the two
+-- are facets of one computed answer, and a window where the row holds a fresh
+-- mergeable beside the previous mergeable_state is a window in which the route
+-- can serve them disagreeing.
 -- name: SetPRMergeable :exec
-UPDATE pull_requests SET mergeable = ?
+UPDATE pull_requests SET mergeable = ?, mergeable_state = ?
 WHERE owner = ? AND repo = ? AND number = ?;
 
 -- NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) for
@@ -267,6 +298,7 @@ UPDATE pull_requests SET
     merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
                              THEN CAST(sqlc.narg(stale_after) AS TEXT) ELSE NULL END,
     mergeable = NULL,
+    mergeable_state = NULL,
     merge_commit_sha = NULL
 WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo) AND state = 'OPEN'
   AND (base_ref_name = sqlc.arg(base_ref_name) OR head_ref_name = sqlc.arg(head_ref_name));
@@ -289,6 +321,7 @@ UPDATE pull_requests SET
     merge_stale_after = CASE WHEN COALESCE(merge_commit_sha, merge_stale_sha) IS NOT NULL
                              THEN CAST(sqlc.narg(stale_after) AS TEXT) ELSE NULL END,
     mergeable = NULL,
+    mergeable_state = NULL,
     merge_commit_sha = NULL
 WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
   AND number = sqlc.arg(number) AND state = 'OPEN';
@@ -301,8 +334,25 @@ WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
 -- a branch that provably moved -- an unmoved PR's re-offered sha is VALID, and
 -- marking it stale would wedge that row into missing for the whole window.
 -- name: NullPRMergeableByRepo :exec
-UPDATE pull_requests SET mergeable = NULL, merge_commit_sha = NULL
+UPDATE pull_requests SET mergeable = NULL, mergeable_state = NULL, merge_commit_sha = NULL
 WHERE owner = ? AND repo = ? AND state = 'OPEN';
+
+-- NullPRMergeableStateByHeadSHA un-resolves mergeable_state ALONE for the open
+-- PRs on a head sha whose CI just moved. It is the one merge field a check or
+-- status event changes: unstable/blocked <-> clean is decided by check results,
+-- which move no tip, so nothing else here would ever invalidate it -- and a
+-- cached `blocked` outliving the run that caused it is exactly the class of
+-- stale answer that stops a consumer from acting.
+--
+-- mergeable and merge_commit_sha are deliberately UNTOUCHED: a check result
+-- cannot change whether two trees conflict, and nulling them would force the
+-- whole resolve-poll to re-fetch every PR on every check event -- traffic
+-- bought for an answer that did not move. No stale marker either: the guard
+-- exists to refuse a re-offered PRE-PUSH test-merge sha, and no tip moved
+-- here, so the sha a refetch brings back is valid.
+-- name: NullPRMergeableStateByHeadSHA :exec
+UPDATE pull_requests SET mergeable_state = NULL
+WHERE owner = ? AND repo = ? AND head_ref_oid = ? AND state = 'OPEN';
 
 -- SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
 -- directly fetched answer, INCLUDING null (not armed) -- the SetPRMergeable
