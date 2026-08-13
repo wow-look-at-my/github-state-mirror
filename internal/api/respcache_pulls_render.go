@@ -25,9 +25,13 @@ type restPRJSON struct {
 	MergeCommitSHA *string `json:"merge_commit_sha"`
 	Merged         *bool   `json:"merged"`    // single-PR responses only
 	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
-	Additions      *int64  `json:"additions"` // single-PR responses only
-	Deletions      *int64  `json:"deletions"` // single-PR responses only
-	HTMLURL        string  `json:"html_url"`
+	// MergeableState is single-PR only as well, and it is the field that says
+	// WHY a mergeable PR still will not merge -- "behind" being GitHub's only
+	// statement anywhere that a strict up-to-date rule is the blocker.
+	MergeableState string `json:"mergeable_state"`
+	Additions      *int64 `json:"additions"` // single-PR responses only
+	Deletions      *int64 `json:"deletions"` // single-PR responses only
+	HTMLURL        string `json:"html_url"`
 	User           *struct {
 		Login     string `json:"login"`
 		Type      string `json:"type"`
@@ -151,6 +155,14 @@ func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []
 		}
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
 	}
+	// "unknown" is GitHub's own word for "still computing", not an answer, and
+	// storing it would let the hit gate serve a resolved-looking row that never
+	// re-asks. Absent (the LIST shape) is likewise not an answer -- nullableStr
+	// leaves both unset, which is what keeps the route missing until GitHub
+	// states a real state.
+	if p.MergeableState != "" && p.MergeableState != "unknown" {
+		pr.MergeableState = sql.NullString{String: p.MergeableState, Valid: true}
+	}
 	if p.Additions != nil {
 		pr.Additions = sql.NullInt64{Int64: *p.Additions, Valid: true}
 	}
@@ -174,7 +186,14 @@ func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []
 // pr-minder-reconcile hook read off mirror-served PR objects: number, state,
 // draft, title, body, node_id, user.login/.type, labels[].name/.color,
 // head.ref/.sha/.repo.full_name, base.ref/.sha, auto_merge, merge_commit_sha,
-// created_at/updated_at, and (single) mergeable/merged.
+// created_at/updated_at, and (single) mergeable/mergeable_state/merged.
+//
+// That superset claim is a PROMISE, and it is the kind that rots silently: a
+// consumer that starts reading a field this list omits gets undefined, not an
+// error, on every path -- and the rebuild is served on the MISS path too, so
+// there is no fetch that quietly heals it. mergeable_state was missing here
+// for exactly that reason. Adding a field a consumer reads means adding it
+// here, and TestRenderedSinglePullCarriesConsumerFields is the check.
 type pullUserJSON struct {
 	Login string `json:"login"`
 	Type  string `json:"type,omitempty"`
@@ -227,12 +246,19 @@ type pullListItemJSON struct {
 // upstream answer ever supplied. They are nullable-but-always-keyed like
 // mergeable: a row that has never been absorbed from a single-PR answer has
 // no stats to serve, and a fabricated 0 would read as "empty PR".
+// mergeable_state rides here for the same reason and answers what `mergeable`
+// cannot: a PR can be perfectly mergeable and still refuse to merge, and this
+// is the only field that says why ("behind" -- a strict up-to-date rule). It
+// is emitted as GitHub emits it: always keyed, never omitted, "unknown" while
+// unresolved, which is the same word GitHub uses and the same instruction to
+// ask again.
 type pullSingleJSON struct {
 	pullListItemJSON
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable"`
-	Additions *int64 `json:"additions"`
-	Deletions *int64 `json:"deletions"`
+	Merged         bool   `json:"merged"`
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
+	Additions      *int64 `json:"additions"`
+	Deletions      *int64 `json:"deletions"`
 }
 
 // applySinglePullFields fills the single-PR-only members from the row:
@@ -245,6 +271,10 @@ func applySinglePullFields(out *pullSingleJSON, pr dbgen.PullRequest) {
 	case "CONFLICTING":
 		v := false
 		out.Mergeable = &v
+	}
+	out.MergeableState = "unknown"
+	if pr.MergeableState.Valid && pr.MergeableState.String != "" {
+		out.MergeableState = pr.MergeableState.String
 	}
 	if pr.Additions.Valid {
 		v := pr.Additions.Int64

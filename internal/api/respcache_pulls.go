@@ -407,6 +407,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		// stale; the consumer's resolve-poll carries on and every poll misses
 		// (re-triggering the recompute) until GitHub serves a fresh sha.
 		pr.Mergeable = sql.NullString{}
+		pr.MergeableState = sql.NullString{}
 		pr.MergeCommitSha = sql.NullString{}
 	}
 	h.serveSinglePull(w, r, pr, labels, false)
@@ -425,13 +426,21 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// mergeableKnown reports whether the row's mergeable is a resolved answer.
-// NULL (unresolved / un-resolved by a branch push) and the GraphQL "UNKNOWN"
-// both gate the single-PR route to a miss so pr-minder's resolve-poll always
-// reaches GitHub.
+// mergeableKnown reports whether the row's merge answer is resolved -- BOTH
+// facets of it. NULL (unresolved / un-resolved by a branch push) and the
+// GraphQL "UNKNOWN" both gate the single-PR route to a miss so pr-minder's
+// resolve-poll always reaches GitHub.
+//
+// mergeable_state is part of the gate rather than a field that rides along: a
+// CI event un-resolves it alone (unstable/blocked <-> clean moves no tip), and
+// were it not gated here that row would keep HITTING and serving a state
+// GitHub has since left -- a cached answer nothing re-asks, which is the exact
+// failure this field exists to end. A hit must mean every merge answer in the
+// document is one GitHub currently stands behind.
 func mergeableKnown(pr dbgen.PullRequest) bool {
 	return pr.Mergeable.Valid &&
-		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING")
+		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING") &&
+		pr.MergeableState.Valid && pr.MergeableState.String != "" && pr.MergeableState.String != "unknown"
 }
 
 // diffStatsKnown reports whether the row carries the additions/deletions only

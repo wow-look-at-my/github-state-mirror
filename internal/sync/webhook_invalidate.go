@@ -172,6 +172,12 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// here; if that ever relaxes, the helper widens repo-wide rather than
 		// exact-matching nothing.
 		d.flushWorkflowRunsForSHA(ctx, scope, owner, repo, sha)
+		// A CI result also moves the PR's mergeable_state -- unstable/blocked
+		// <-> clean is decided by exactly this, and it is the ONLY merge field
+		// a check event touches. No tip moved, so nothing else here would ever
+		// invalidate it, and the single-PR route would keep serving the state
+		// of a run that has since finished.
+		flush("PR mergeable_state", scope, d.store.NullPRMergeableStateByHeadSHA(ctx, owner, repo, sha))
 	case "workflow_job":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {

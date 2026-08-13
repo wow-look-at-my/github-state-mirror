@@ -308,6 +308,7 @@ type PullRequest struct {
 	Additions          sql.NullInt64
 	Deletions          sql.NullInt64
 	Mergeable          sql.NullString
+	MergeableState     sql.NullString
 	AuthorLogin        sql.NullString
 	AuthorAvatar       sql.NullString
 	AuthorUrl          sql.NullString
