@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/stretchr/testify v1.11.1
-	github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260801212952-b3ad0855723c
+	github.com/wow-look-at-my/js-snippets/timelinewire v0.1.0
 	modernc.org/sqlite v1.48.0
 )
 
