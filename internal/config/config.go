@@ -40,7 +40,7 @@ type Config struct {
 	DBPath        string
 	WebhookSecret string
 	// SubscriptionsDBPath is the subscriber-notification config DB — a
-	// SEPARATE SQLite file that survives the cache DB's SchemaVersion nukes.
+	// SEPARATE SQLite file that survives the cache DB's schema nukes.
 	// Empty = derive from DBPath (github-mirror.db ->
 	// github-mirror-subscriptions.db; notify.DeriveDBPath, applied in
 	// cmd/server).

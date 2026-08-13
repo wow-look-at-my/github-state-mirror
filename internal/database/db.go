@@ -12,99 +12,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 25: pr_closures -- the record that a PR left the cache
-// because it closed. Only open PRs are retained, so a close deletes the row,
-// and an absent row cannot lose a comparison: a delivery carrying OLDER state
-// re-inserts the PR as open and nothing afterwards restates the close. That
-// is not hypothetical -- a merged PR was resurrected 82 seconds after its
-// merge by a redelivered pre-merge payload, and stayed open in the cache for
-// the next 44 minutes. The closure record lets every open write path refuse a
-// write that cannot prove it postdates the close.
-//
-// SchemaVersion 24: compare_cache.base_tip_sha -- base_commit.sha, the base
-// tip GitHub says a comparison was computed against. A cached `behind_by` is
-// the one stale answer that stops its own correction (pr-minder reads it to
-// decide whether a PR needs its branch updated, so a stale "not behind" ends
-// the work that would refresh it), and it used to sit until the 24h TTL if
-// the push flush missed it. With the tip recorded, a read can compare it
-// against what git_ref_cache says the branch is on now -- which a push keeps
-// current by applying its own `after` -- and refuse the row.
-//
-// SchemaVersion 23: three of the largest remaining uncached slices become
-// cached routes. repo_installation_cache gains status/message, so the
-// authoritative "not installed here" 404 becomes a cacheable VERDICT (bounded
-// by its own short TTL, since only OUR App's installation events reach us);
-// label_cache holds the single-label read, flushed by `label` deliveries;
-// installation_repos_cache holds GET /installation/repositories keyed by the
-// BEARER's fingerprint, because that answer belongs to one installation token
-// rather than to the app principal its callers share; and hooks_cache holds
-// the repo and org webhook CONFIGURATION listings, keyed by the bearer for a
-// stronger reason -- they are ADMIN-only reads and the reveal layer only
-// proves READ access.
-//
-// SchemaVersion 22: workflow_runs (global truth for Actions RUN state,
-// maintained per run by workflow_run/workflow_job deliveries) +
-// workflow_runs_list_cache (the completeness proof that lets the repo-wide
-// runs LISTING be rebuilt from those rows). The listing is NOT a snapshot:
-// clearing one on every job delivery would be invalidate-and-refetch.
-//
-// SchemaVersion 21: code_quality_setup_cache -- the cached Code Quality
-// enablement read. Config with no webhook: flushed by a PATCH the mirror
-// proxies and by repository events, otherwise bounded by a short TTL.
-//
-// SchemaVersion 20: workflow_jobs_cache -- the cached Actions job reads (a
-// run's jobs page and a single job). Only TERMINAL answers are stored; a
-// re-run replaces a run's jobs under the same run id, so both kinds carry
-// run_id and one flush covers everything the re-run invalidates.
-//
-// SchemaVersion 19: git_ref_cache -- the cached GET /git/ref/{ref} lookup
-// (the hottest UNROUTED path in the request log). Keyed by the VERBATIM
-// requested ref spelling; a push naming the ref flushes every spelling, which
-// is also what clears a cached absent-ref 404 verdict.
-//
-// SchemaVersion 18: pull_requests gains merge_stale_ref/merge_stale_after --
-// the stale marker's push-tip PROOF. A base/head push now records WHICH branch
-// moved and its post-push tip alongside the remembered sha, so an absorbed
-// answer whose reported tip for that branch equals the push's after sha
-// provably post-dates the push and is accepted even when it re-offers the
-// remembered sha -- the wrong-mark race (a fresh post-push answer absorbed
-// before the late push delivery landed, then stamped stale by it) heals on
-// the very next poll instead of wedging the row into missing for the whole
-// MergeStaleTTL window. Bumping nukes the DB on deploy; run the consistency
-// check's apply mode (Reconcile) once after deploy to rebuild truth promptly.
-// (17 added merge_stale_sha/merge_stale_at -- the push-invalidated test-merge
-// sha memory: a refetch re-offering the exact nulled sha is presumed pre-push
-// (a tip change always changes the sha of a successful test merge) and is
-// stored unresolved instead of re-resolving, so the single-PR route keeps
-// missing until GitHub serves a fresh sha;
-// 16 was respcache round 2: commit_ci_cache gained pagination
-// columns (per_page, page; the unique key is now owner/repo/ref/kind/
-// per_page/page) and a third kind 'statuses_list' (the raw statuses LIST
-// route); compare_cache gains base_ref/head_ref (the basehead's two sides,
-// split at '...', so a push can flush per ref instead of per repo) and a
-// status column (404 "unknown ref" answers become expiring miss markers);
-// and three new tables -- workflow_runs_cache (per-page snapshots of
-// GET /repos/{owner}/{repo}/actions/runs?head_sha=...),
-// git_commit_miss_cache (expiring 404 verdicts for the single git-commit
-// read; cleared by any real commit upsert so a sha that materializes stops
-// answering 404), and pull_diff406_cache (406 "diff too large" verdicts for
-// the single-PR diff read; 200 diff bodies are never stored);
-// 15 added pull_files_cache, closed_pull_cache, and branches_list_cache;
-// 14 was a no-schema-change nuke of truth rows poisoned by the
-// collaborator-repo bleed -- repos a User login merely collaborates on,
-// absorbed keyed by the WRONG owner; the fixed fetch (ownerAffiliations:
-// OWNER + the dropForeignRepoNode guard in ghclient) keeps them out
-// afterwards; 13 added commit_ci_cache -- trimmed combined-commit-status and
-// check-runs snapshots backing the cached
-// GET /repos/{owner}/{repo}/commits/{ref}/status and
-// .../commits/{ref}/check-runs routes; 12 added compare_cache for the cached
-// compare route; 11 added commits_list_cache for the cached commits LIST
-// route; 10 was ONE GLOBAL TRUTH STORE, the global-cache re-architecture: the
-// actor dimension dropped from every GitHub-state table, access decided at
-// serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
-// /installation cache branch, folded into that model; 8 was per-user
-// partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 25
+// What each schema change was and why: docs/schema-history.md.
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
@@ -113,9 +21,13 @@ var pragmas = []string{
 	"PRAGMA foreign_keys=ON",
 }
 
-// Open opens (or creates) the SQLite database at path.
-// If the schema version doesn't match or the DB is corrupt, the file is
-// deleted and recreated. This is a cache — data loss is acceptable.
+// Open opens (or creates) the SQLite database at path. A file whose schema is
+// not the one this binary was built against, or that cannot be read at all, is
+// deleted and rebuilt. This is a cache — data loss is acceptable.
+//
+// A schema change is the ONLY thing that rebuilds it, and it always does: the
+// comparison is against schema.sql's own scrubbed fingerprint, so there is no
+// declaration to keep in step with the file and no lever to pull without one.
 func Open(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return createFresh(path)
@@ -131,9 +43,9 @@ func Open(path string) (*sql.DB, error) {
 		return createFresh(path)
 	}
 
-	var version int64
-	if err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil || version != SchemaVersion {
-		// Version mismatch or schema missing — nuke and recreate.
+	var fingerprint string
+	if err := db.QueryRow("SELECT fingerprint FROM schema_version LIMIT 1").Scan(&fingerprint); err != nil || fingerprint != currentFingerprint() {
+		// Different schema, or a file too old to state which — nuke and recreate.
 		db.Close()
 		os.Remove(path)
 		return createFresh(path)
@@ -151,9 +63,9 @@ func createFresh(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", SchemaVersion); err != nil {
+	if _, err := db.Exec("INSERT INTO schema_version (fingerprint) VALUES (?)", currentFingerprint()); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("set schema version: %w", err)
+		return nil, fmt.Errorf("set schema fingerprint: %w", err)
 	}
 	return db, nil
 }

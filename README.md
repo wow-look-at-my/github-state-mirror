@@ -356,7 +356,7 @@ Delivery semantics:
 
 **Authorization (reveal-gated, fail closed):** a subscription is notified about a repo only if its principal could read that repo through the reveal layer's non-probing fast paths at delivery time — the repo is **public** in global truth, or the principal holds a **live grant**. There is no per-notification probe (no caller token exists at delivery time); unknown visibility reads as private, so a private repo's activity never reaches a principal that has not proven access. Earn the grant the normal way (an org list-sync or any revealed read with your token) before expecting private-repo notifications.
 
-**Persistence:** subscriptions are service **config**, not cache. They live in their own SQLite file (`SUBSCRIPTIONS_DB_PATH`, default derived from `DB_PATH`: `github-mirror.db` → `github-mirror-subscriptions.db`) which **survives the cache DB's SchemaVersion nukes** and every deploy.
+**Persistence:** subscriptions are service **config**, not cache. They live in their own SQLite file (`SUBSCRIPTIONS_DB_PATH`, default derived from `DB_PATH`: `github-mirror.db` → `github-mirror-subscriptions.db`) which **survives the cache DB's schema nukes** and every deploy.
 
 **Operator view:** admin-only `GET /api/notifications` (dashboard session auth) returns in-memory delivery counters (`delivered` / `failed` / `gated` / `auto_disabled`), the recent delivery attempts (bounded ring; resets on restart), and every subscription with its principal (secrets redacted). JSON only — there is no dashboard tab.
 
@@ -404,7 +404,7 @@ The service has **no static service token**. API requests authenticate with the 
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
 | `LISTEN_ADDR` | No | `:8080` | HTTP listen address |
 | `DB_PATH` | No | `github-mirror.db` | SQLite database file path |
-| `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's SchemaVersion nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
+| `SUBSCRIPTIONS_DB_PATH` | No | derived from `DB_PATH` | Subscriber-notification config DB — a **separate** SQLite file that survives the cache DB's schema nukes. Default strips a trailing `.db` from `DB_PATH` and appends `-subscriptions.db` (`github-mirror.db` → `github-mirror-subscriptions.db`). |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allow-list for browser clients. Safe to leave open because the cache reveals data per the caller's proven GitHub access, not origin. |
 | `CACHE_MAX_ROWS` | No | `1000000` | Per-table row ceiling for the response caches (LRU rows beyond it are pruned on every write). One knob for every cache table: all but `git_commits_cache` are TTL-bounded (~24 h backstop or token expiry), so for them the cap is only a runaway safety net; `git_commits_cache` (immutable rows, no TTL) is the one table that actually grows to the ceiling. A value that is unparseable or < 1 fails startup. |
 | `PASSTHROUGH_DEBOUNCE` | No | `5s` | How long an uncacheable (passthrough) read is held so identical concurrent requests share one upstream call. `0` forwards immediately. Deliberately makes uncacheable endpoints slow — the delay is the disincentive. Unparseable, negative, or > 30s fails startup. |

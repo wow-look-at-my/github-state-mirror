@@ -72,6 +72,10 @@ func upstreamSinglePR(num int64, state, title, headRef, headSHA, createdAt strin
 	pr["additions"] = 12
 	pr["deletions"] = 3
 	pr["changed_files"] = 2
+	// GitHub always states mergeable_state on a single-PR answer, and the hit
+	// gate requires a resolved one, so a fixture omitting it would exercise
+	// only the miss path.
+	pr["mergeable_state"] = "clean"
 	return pr
 }
 
