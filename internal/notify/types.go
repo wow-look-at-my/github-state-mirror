@@ -6,7 +6,7 @@
 // racing their own GitHub webhooks against the mirror's ingestion.
 //
 // Subscriptions are service CONFIG, not cache: they live in their own SQLite
-// file (see store.go) that the main DB's SchemaVersion nuke never touches.
+// file (see store.go) that the main DB's schema nuke never touches.
 package notify
 
 import (
