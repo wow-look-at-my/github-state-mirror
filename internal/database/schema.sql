@@ -1,5 +1,8 @@
--- Schema version: bump this constant in db.go when changing this file.
--- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
+-- The DB is a cache with no migrations. Changing this file rebuilds it: db.go
+-- hashes it with comments scrubbed and compares that against the hash recorded
+-- in the file, so editing a table nukes and editing this comment does not.
+-- Nothing here needs declaring, and nothing else nukes -- history and the
+-- post-deploy reconcile step are in docs/schema-history.md.
 --
 -- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
 -- pull_requests, pr_labels, commit_checks, and the per-route response-cache
@@ -18,7 +21,10 @@
 -- ============================================================================
 
 CREATE TABLE schema_version (
-    version INTEGER NOT NULL
+    fingerprint TEXT NOT NULL   -- sha256 of this file, comments scrubbed and
+                                -- whitespace collapsed. A file whose value
+                                -- differs from the running binary's is a file
+                                -- describing other tables, and is replaced.
 );
 
 -- Freshness markers. Two kinds of rows share this table:

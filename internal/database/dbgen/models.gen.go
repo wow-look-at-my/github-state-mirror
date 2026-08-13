@@ -376,7 +376,7 @@ type RepoInstallationCache struct {
 }
 
 type SchemaVersion struct {
-	Version int64
+	Fingerprint string
 }
 
 type WebhookDelivery struct {

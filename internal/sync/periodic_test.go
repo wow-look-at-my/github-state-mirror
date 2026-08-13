@@ -78,7 +78,7 @@ func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 // at startup, not one full interval in. The interval here is an hour, so any
 // fetch observed within the test window can only be the startup cycle -- the
 // production regression was exactly a bare ticker whose first fire sat 6h
-// away while near-daily schema-bump deploys (which also nuke the freshness
+// away while near-daily schema-change deploys (which also nuke the freshness
 // markers) restarted the clock, so no cycle ever completed.
 func TestPeriodicRefresher_StartRunsImmediately(t *testing.T) {
 	dir := t.TempDir()

@@ -56,9 +56,11 @@ never re-key, so one owner's sync can never absorb truth rows or mint grants
 across owners; this also covers the identity-locked org query with zero
 query-text change (`TestOrgQueryUntouched` still passes) and kills the
 visibility map's bare-name collision hazard (a same-named foreign node
-clobbering an owned repo's visibility entry). SchemaVersion 14's deploy-time
-nuke cleaned up the junk rows a corrected re-run could never delete (sync never
-deletes repo rows; the PR reconcile only visits fetched repos).
+clobbering an owned repo's visibility entry). A deploy-time nuke (schema
+history, entry 14) cleaned up the junk rows a corrected re-run could never
+delete (sync never deletes repo rows; the PR reconcile only visits fetched
+repos). Reconcile, not a nuke, is the tool for that today — the DB is rebuilt
+only by a schema change now, so there is no version to bump for a data problem.
 
 ## Observers
 
