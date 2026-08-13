@@ -115,7 +115,7 @@ var schemaSQL string
 // serve time by the reveal-by-permission layer; 9 was the per-actor /pulls +
 // /installation cache branch, folded into that model; 8 was per-user
 // partitions; 7 added workflow_jobs; 6 added the response-cache tables.)
-const SchemaVersion = 25
+const SchemaVersion = 26
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
