@@ -4,7 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"sync"
 )
+
+// currentFingerprint is schemaFingerprint(schemaSQL), computed once. The input
+// is a compiled-in constant, so re-scrubbing 40 KB of DDL on every Open buys
+// nothing.
+var currentFingerprint = sync.OnceValue(func() string { return schemaFingerprint(schemaSQL) })
 
 // schemaFingerprint reduces schema.sql to the tables it actually builds --
 // comments dropped, formatting normalized -- and hashes the result. That hash

@@ -44,7 +44,7 @@ func Open(path string) (*sql.DB, error) {
 	}
 
 	var fingerprint string
-	if err := db.QueryRow("SELECT fingerprint FROM schema_version LIMIT 1").Scan(&fingerprint); err != nil || fingerprint != schemaFingerprint(schemaSQL) {
+	if err := db.QueryRow("SELECT fingerprint FROM schema_version LIMIT 1").Scan(&fingerprint); err != nil || fingerprint != currentFingerprint() {
 		// Different schema, or a file too old to state which — nuke and recreate.
 		db.Close()
 		os.Remove(path)
@@ -63,7 +63,7 @@ func createFresh(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	if _, err := db.Exec("INSERT INTO schema_version (fingerprint) VALUES (?)", schemaFingerprint(schemaSQL)); err != nil {
+	if _, err := db.Exec("INSERT INTO schema_version (fingerprint) VALUES (?)", currentFingerprint()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set schema fingerprint: %w", err)
 	}
