@@ -26,19 +26,20 @@ type PRPayload struct {
 func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	var body struct {
 		PullRequest *struct {
-			Number    int     `json:"number"`
-			NodeID    string  `json:"node_id"`
-			Title     string  `json:"title"`
-			Body      *string `json:"body"`
-			HTMLURL   string  `json:"html_url"`
-			Draft     bool    `json:"draft"`
-			State     string  `json:"state"`
-			CreatedAt string  `json:"created_at"`
-			UpdatedAt string  `json:"updated_at"`
-			Additions *int    `json:"additions"`
-			Deletions *int    `json:"deletions"`
-			Mergeable *bool   `json:"mergeable"`
-			User      *struct {
+			Number         int     `json:"number"`
+			NodeID         string  `json:"node_id"`
+			Title          string  `json:"title"`
+			Body           *string `json:"body"`
+			HTMLURL        string  `json:"html_url"`
+			Draft          bool    `json:"draft"`
+			State          string  `json:"state"`
+			CreatedAt      string  `json:"created_at"`
+			UpdatedAt      string  `json:"updated_at"`
+			Additions      *int    `json:"additions"`
+			Deletions      *int    `json:"deletions"`
+			Mergeable      *bool   `json:"mergeable"`
+			MergeableState string  `json:"mergeable_state"`
+			User           *struct {
 				Login     string `json:"login"`
 				Type      string `json:"type"`
 				AvatarURL string `json:"avatar_url"`
@@ -148,6 +149,14 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 			m = "CONFLICTING"
 		}
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
+	}
+	// mergeable_state is the only field that says a strict up-to-date rule is
+	// what blocks the merge ("behind"), so a webhook-maintained row must carry
+	// it or the single-PR route serves a document that cannot answer the
+	// question. "unknown" is GitHub still computing, not an answer: storing it
+	// would resolve the row on a non-answer.
+	if gpr.MergeableState != "" && gpr.MergeableState != "unknown" {
+		pr.MergeableState = sql.NullString{String: gpr.MergeableState, Valid: true}
 	}
 	if gpr.User != nil {
 		pr.AuthorLogin = nullStr(gpr.User.Login)

@@ -12,6 +12,17 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// SchemaVersion 26: pull_requests.mergeable_state -- GitHub's merge-state
+// string, which the single-PR route parsed off upstream and then dropped. The
+// rebuilt document is served on the MISS path too, so the field was
+// unreachable through this mirror on every path: a consumer could not read it
+// at all, and nothing said so. It is the only place GitHub states that a
+// strict up-to-date rule is what blocks a merge (`behind`), so its absence
+// pushed pr-minder onto inferring behindness from a compare -- an answer this
+// cache can serve stale, and did, leaving armed PRs sitting behind their base
+// for hours (grok-build#51). Un-resolved alongside `mergeable` wherever a tip
+// moves, plus on CI events, which move it and nothing else.
+//
 // SchemaVersion 25: pr_closures -- the record that a PR left the cache
 // because it closed. Only open PRs are retained, so a close deletes the row,
 // and an absent row cannot lose a comparison: a delivery carrying OLDER state

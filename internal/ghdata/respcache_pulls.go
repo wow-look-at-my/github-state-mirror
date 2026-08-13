@@ -428,13 +428,18 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 	if !applied {
 		return false, tx.Commit()
 	}
-	mergeable := pr.Mergeable
+	mergeable, mergeableState := pr.Mergeable, pr.MergeableState
 	if staleRejected {
+		// Both facets together: a row left holding a resolved mergeable_state
+		// beside a nulled mergeable would serve the pre-push answer under the
+		// other field's name, which is what this rejection exists to refuse.
 		mergeable = sql.NullString{}
+		mergeableState = sql.NullString{}
 	}
 	if err := q.SetPRMergeable(ctx, dbgen.SetPRMergeableParams{
-		Mergeable: mergeable,
-		Owner:     pr.Owner, Repo: pr.Repo, Number: pr.Number,
+		Mergeable:      mergeable,
+		MergeableState: mergeableState,
+		Owner:          pr.Owner, Repo: pr.Repo, Number: pr.Number,
 	}); err != nil {
 		return false, err
 	}
