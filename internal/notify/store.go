@@ -17,8 +17,8 @@ import (
 // and lives by different rules — subscriptions are operator/consumer CONFIG,
 // not disposable cached GitHub state:
 //
-//   - It is NEVER nuked. The main DB's SchemaVersion bump-to-nuke doctrine
-//     applies only to the cache; this file survives every deploy.
+//   - It is NEVER nuked. The main DB's schema-change-nukes doctrine applies
+//     only to the cache; this file survives every deploy.
 //   - Its schema is created with CREATE TABLE IF NOT EXISTS and may only ever
 //     evolve ADDITIVELY (new columns with defaults) so an old file keeps
 //     working under a new binary.

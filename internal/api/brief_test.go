@@ -109,7 +109,7 @@ func TestBuildBriefRanksPassthroughAndSkipsCachedRoutes(t *testing.T) {
 	require.Nil(t, cands[1].Shape, "a route with no capture yet joins to nothing")
 
 	md := renderBrief(snap, cands, "2026-08-01T00:00:00Z")
-	for _, want := range []string{"GET /b", "id: number", "tier-2 contract", "assertNoURLKeys", "SchemaVersion"} {
+	for _, want := range []string{"GET /b", "id: number", "tier-2 contract", "assertNoURLKeys", "schema.sql"} {
 		require.Contains(t, md, want)
 
 	}

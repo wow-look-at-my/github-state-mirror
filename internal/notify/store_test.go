@@ -216,7 +216,7 @@ func TestStoreDisabledSubscriptionNotEnabled(t *testing.T) {
 
 // TestStoreSurvivesReopen pins the config-DB contract: closing and reopening
 // the same file (as across a deploy) keeps every subscription — there is no
-// version nuke on this store.
+// schema nuke on this store.
 func TestStoreSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subscriptions.db")
