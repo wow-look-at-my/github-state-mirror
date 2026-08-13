@@ -5,8 +5,8 @@
 // round-trip); nothing is faked to zero or inflated for display.
 //
 // Like the request log and the rate meter it is deliberately IN-MEMORY (a live
-// operational view, not an audit log — and a DB table would force a
-// cache-nuking SchemaVersion bump for sub-day-ephemeral data): it resets on
+// operational view, not an audit log — and a DB table would put sub-day-
+// ephemeral data behind a cache-nuking schema change): it resets on
 // restart. It is bounded two ways — events older than the retention window
 // (24h) are evicted lazily on write and on read, and a hard count cap (100k)
 // drops the oldest as a memory backstop against a traffic flood. There is

@@ -44,7 +44,7 @@ func main() {
 	}
 
 	// Subscriber-notification config DB: a SEPARATE SQLite file, deliberately
-	// outside the cache DB's SchemaVersion nuke-and-recreate lifecycle —
+	// outside the cache DB's nuke-and-recreate-on-schema-change lifecycle —
 	// subscriptions are configuration, not disposable cached state.
 	subsPath := cfg.SubscriptionsDBPath
 	if subsPath == "" {
