@@ -80,9 +80,17 @@ const (
 	maxMintBodyBytes = 1 << 20 // 1 MiB
 
 	// cacheHeader marks responses served by a cached route: "hit" (rebuilt
-	// from stored state, no upstream call) or "miss" (fetched, absorbed, then
-	// rebuilt). Passthrough responses carry no marker.
+	// from stored state, no upstream call), "miss" (fetched, absorbed, then
+	// rebuilt) or "revalidated" (a stored answer the caller refused, refetched
+	// and rewritten -- see revalidationRequested). Passthrough responses carry
+	// no marker.
 	cacheHeader = "X-GSM-Cache"
+
+	// cacheStateHit / cacheStateMiss / cacheStateRevalidated are the three
+	// values cacheHeader takes.
+	cacheStateHit         = "hit"
+	cacheStateMiss        = "miss"
+	cacheStateRevalidated = "revalidated"
 )
 
 // ---- GET /repos/{owner}/{repo}/contents/{path...} ----
@@ -434,12 +442,22 @@ func (h *handlers) upstreamError(w http.ResponseWriter, r *http.Request, err err
 
 // writeRebuilt writes a rebuilt (trimmed) JSON response with the cache marker.
 func writeRebuilt(w http.ResponseWriter, status int, body []byte, hit bool) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	state := cacheStateMiss
 	if hit {
-		w.Header().Set(cacheHeader, "hit")
-	} else {
-		w.Header().Set(cacheHeader, "miss")
+		state = cacheStateHit
 	}
+	writeRebuiltState(w, status, body, state)
+}
+
+// writeRebuiltState is writeRebuilt for a route that distinguishes a third
+// cacheHeader state. The header is the caller's only way to tell a refetch
+// from a replay, which a caller that ASKED for a refetch has to be able to do:
+// reading "hit" back from a revalidation request means this mirror does not
+// implement one, and the caller must say so rather than assume it was served
+// fresh bytes.
+func writeRebuiltState(w http.ResponseWriter, status int, body []byte, state string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set(cacheHeader, state)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }

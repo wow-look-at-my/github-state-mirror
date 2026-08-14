@@ -132,6 +132,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
+		if event.Type == "pull_request" {
+			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
+		}
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -230,6 +233,37 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		if err := d.store.InvalidateRepoInstallationCache(ctx, event.InstallationID); err != nil {
 			slog.Warn("webhook: invalidate repo installation cache failed", "installation", id, "error", err)
+		}
+	}
+}
+
+// applyMergedPRBaseTip lands a merged PR's statement about its BASE branch:
+// the merge put `merge_commit_sha` on that branch, so the cached ref rows for
+// it are updated from the payload rather than dropped (the apply-the-payload
+// rule) -- in every spelling, since rows key the verbatim requested one.
+//
+// The push for that same merge says the same thing, and this is deliberately
+// the SECOND way to hear it. A delivery that never arrives is this mirror's
+// quietest failure and GitHub does not re-send one; a branch tip is the answer
+// where that hurts most, because a consumer reading the pre-merge tip
+// concludes there is nothing to do and never asks again. Two independent
+// deliveries have to be lost now, not one. Ordering safety and the merged-only
+// rule live in the store method and the parser.
+func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, owner, repo string, event webhook.Event) {
+	tip, ok := webhook.ParseMergedPRBaseTip(event.Raw)
+	if !ok {
+		return // not a merged PR, or the payload states no base tip
+	}
+	now := time.Now()
+	for _, ref := range refSpellings(tip.BaseRef, false) {
+		applied, err := d.store.ApplyMergedBaseTip(ctx, owner, repo, ref, tip.MergeCommitSHA, tip.MergedAt, now, ghdata.GitRefCacheTTL)
+		if err != nil {
+			flush("merged-PR base tip apply", scope, err)
+			continue
+		}
+		if applied {
+			slog.Info("webhook: applied merged PR's base tip to the cached ref",
+				"repo", scope, "ref", ref, "tip", tip.MergeCommitSHA, "merged_at", tip.MergedAt)
 		}
 	}
 }

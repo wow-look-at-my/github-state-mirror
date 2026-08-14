@@ -155,6 +155,61 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 	}, now, ttl)
 }
 
+// ApplyMergedBaseTip writes a merged PR's own statement about its base branch
+// into that branch's cached ref row: merging created `merge_commit_sha` ON the
+// base branch, so at `mergedAt` that commit WAS the tip.
+//
+// This exists because the push that states the same thing can be lost, and
+// losing it is silent: the row then serves the pre-merge tip for the full TTL,
+// and every verdict computed against it is wrong in the direction that stops
+// its own repair (docs/cache/stale-tip-repair.md). A merge is delivered TWICE
+// -- once as a push, once as pull_request/closed -- so honoring both means one
+// lost delivery no longer wedges the tip.
+//
+// A late delivery must not REGRESS a newer tip (CLAUDE.md: a delivery is a
+// view of its own moment), and here the ordering is decidable without a
+// fetch: the row records when its content was established, so a merge that
+// happened BEFORE that instant says nothing this row does not already
+// account for, and is dropped. Only a merge that postdates the row applies.
+// Everything else follows ApplyPushedRefTip: 200 rows only, per verbatim
+// spelling, an already-current row is a no-op, and a 404-verdict row is left
+// to the caller (promoting one would need a node_id no payload carries).
+func (s *Store) ApplyMergedBaseTip(ctx context.Context, owner, repo, ref, mergeCommitSHA string, mergedAt, now time.Time, ttl time.Duration) (bool, error) {
+	if !IsFullHexSHA(mergeCommitSHA) || strings.Trim(mergeCommitSHA, "0") == "" || mergedAt.IsZero() {
+		return false, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.Status != http.StatusOK {
+		return false, nil
+	}
+	established, perr := time.Parse(time.RFC3339, row.FetchedAt)
+	if perr != nil || !mergedAt.After(established) {
+		return false, nil // the row is at least as new as this merge
+	}
+	var doc storedGitRefDoc
+	if err := json.Unmarshal([]byte(row.Doc), &doc); err != nil {
+		return false, nil
+	}
+	if doc.Object.SHA == mergeCommitSHA {
+		return true, nil
+	}
+	doc.Object.SHA = mergeCommitSHA
+	patched, err := json.Marshal(doc)
+	if err != nil {
+		return false, nil
+	}
+	return true, s.PutCachedGitRef(ctx, CachedGitRef{
+		Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Status: http.StatusOK, Doc: string(patched),
+	}, now, ttl)
+}
+
 // KnownBranchTip reports the tip this mirror currently believes a branch is
 // on, read out of the cached ref answers. It is the freshest thing available
 // without asking GitHub: a push APPLIES its own `after` into these rows

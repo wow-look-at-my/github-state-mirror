@@ -33,13 +33,59 @@ import (
 // re-poll refs that were deleted (a merged PR's head) forever, each read a
 // fresh upstream 404. It stays honest because ref CREATION arrives as a push
 // for that exact ref, which drops the verdict row.
+//
+// And because a lost push leaves this row WRONG rather than old, the route
+// takes `Cache-Control: no-cache`: the caller that can prove the tip moved
+// refetches and rewrites the row, and reads `X-GSM-Cache: revalidated` back
+// as proof that it did. See revalidationRequested and
+// docs/cache/stale-tip-repair.md.
 
 // gitRefCacheTTL bounds how long a MISSED push delivery could leave a stale
 // tip (or a stale absent-verdict) being served. A delivered push does not
 // wait for it: the push APPLIES its own `after` tip to the row
 // (ghdata.ApplyPushedRefTip), so this is only the backstop for a delivery
 // that never landed. Shared with that writer so both clocks agree.
+//
+// A TTL is the wrong instrument to be the ONLY backstop here, and this route
+// is where that bites hardest: the answer is one mutable pointer, and every
+// consumer decision built on it (is this PR behind? does it change anything?)
+// is wrong for as long as the pointer is. So a caller that can PROVE the
+// pointer moved -- it holds a commit GitHub says is on this branch and this
+// row does not -- repairs the row with `Cache-Control: no-cache`
+// (revalidationRequested) instead of waiting the TTL out.
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
+
+// revalidationRequested reports whether the caller asked this route to skip
+// its stored answer and read GitHub again -- `Cache-Control: no-cache`, the
+// standard spelling, on the REQUEST.
+//
+// Why a caller may say that at all: a cached answer here can be WRONG rather
+// than merely old. Every row is kept honest by a delivery, and GitHub never
+// re-sends one it failed to hand over (docs/webhooks/delivery-gaps.md), so a
+// single lost push leaves a branch tip wrong for the whole TTL. The consumer
+// is usually the one holding the proof -- pr-minder reads a tip that GitHub's
+// own answer for the PR in front of it contradicts -- and before this there
+// was nowhere to take that proof: nothing could repair the row until the TTL
+// ran out. That is what wedged xml-validator#10 (docs/cache/stale-tip-repair.md).
+//
+// It is not a way to opt out of the cache: the refetch spends the CALLER's
+// own rate-limit budget (fetchUpstream forwards the caller's token), and the
+// fresh answer is STORED, so a revalidation repairs the row for everyone
+// rather than serving one caller privately. A client sending it on every
+// request would be paying its own quota to keep the mirror correct, and the
+// request log shows the route missing where it should be hitting.
+func revalidationRequested(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Cache-Control"), ",") {
+		directive := strings.TrimSpace(strings.ToLower(part))
+		if i := strings.IndexByte(directive, '='); i >= 0 {
+			directive = strings.TrimSpace(directive[:i])
+		}
+		if directive == "no-cache" {
+			return true
+		}
+	}
+	return false
+}
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and
 // absorbing on a miss.
@@ -74,7 +120,10 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	if c, ok, err := h.store.GetCachedGitRef(r.Context(), owner, repo, ref, now); err != nil {
+	revalidate := revalidationRequested(r)
+	if revalidate {
+		slog.Info("git ref revalidation requested", "owner", owner, "repo", repo, "ref", ref, principalNameAttr(r.Context()))
+	} else if c, ok, err := h.store.GetCachedGitRef(r.Context(), owner, repo, ref, now); err != nil {
 		slog.Warn("git ref cache read failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
 	} else if ok {
 		h.reqlog.observe(r, DispHit)
@@ -111,8 +160,16 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("git ref cache write failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+	// A revalidation is a miss in every way the request log cares about -- it
+	// went upstream, absorbed, and rewrote the row -- so it records as one.
+	// What separates the two is what the CALLER needs to know, and that rides
+	// the response header.
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
-	writeRebuilt(w, status, []byte(doc), false)
+	state := cacheStateMiss
+	if revalidate {
+		state = cacheStateRevalidated
+	}
+	writeRebuiltState(w, status, []byte(doc), state)
 }
 
 // gitRefCacheable reports whether a requested ref path is one this route

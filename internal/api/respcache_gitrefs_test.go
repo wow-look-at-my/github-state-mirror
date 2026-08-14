@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -220,5 +221,141 @@ func TestGitRefCacheable(t *testing.T) {
 		{"refs/pull/7/head", false},
 	} {
 		assert.Equal(t, tc.want, gitRefCacheable(tc.ref), "ref %q", tc.ref)
+	}
+}
+
+// ---- stale-tip repair (docs/cache/stale-tip-repair.md) ----
+
+// A caller that can prove the stored tip is wrong repairs it: `Cache-Control:
+// no-cache` refetches, rewrites the row, and answers `revalidated` so the
+// caller can tell a refetch from a replay. The repair is for EVERYONE -- the
+// next ordinary reader hits the corrected row.
+func TestCachedGitRef_NoCacheRevalidatesAndRepairsTheRow(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+
+	require.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	// The branch moves without a delivery arriving -- the lost-push case the
+	// stored row cannot notice on its own.
+	u.gitRef = func(w http.ResponseWriter, _ *http.Request) {
+		writeGitHubJSON(w, map[string]any{
+			"ref": "refs/heads/main", "node_id": "REF_kwAE",
+			"object": map[string]any{"sha": shaCommit, "type": "commit"},
+		})
+	}
+	assert.Contains(t, do(t, router, authedReq("GET", target, nil)).Body.String(), shaTip,
+		"precondition: an ordinary read still serves the pre-move tip")
+
+	req := authedReq("GET", target, nil)
+	req.Header.Set("Cache-Control", "no-cache")
+	w := do(t, router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "revalidated", w.Header().Get(cacheHeader))
+	assert.Contains(t, w.Body.String(), shaCommit)
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits), "a revalidation must go upstream")
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Contains(t, w2.Body.String(), shaCommit, "the revalidation must have rewritten the stored row")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits), "the repaired row must serve without another fetch")
+}
+
+// Only `no-cache` revalidates. Every other Cache-Control directive -- and no
+// header at all -- serves the stored answer, so a stray header cannot quietly
+// turn the mirror into a proxy.
+func TestCachedGitRef_OnlyNoCacheRevalidates(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	for _, cc := range []string{"", "max-age=0", "no-store", "no-cache-please"} {
+		req := authedReq("GET", target, nil)
+		if cc != "" {
+			req.Header.Set("Cache-Control", cc)
+		}
+		assert.Equal(t, "hit", do(t, router, req).Header().Get(cacheHeader), "Cache-Control: %q must not revalidate", cc)
+	}
+	// Spelling variants that ARE no-cache.
+	for _, cc := range []string{"no-cache", "NO-CACHE", "max-age=0, no-cache"} {
+		req := authedReq("GET", target, nil)
+		req.Header.Set("Cache-Control", cc)
+		assert.Equal(t, "revalidated", do(t, router, req).Header().Get(cacheHeader), "Cache-Control: %q must revalidate", cc)
+	}
+	assert.Equal(t, before+3, atomic.LoadInt32(&u.gitRefHits))
+}
+
+// A merge is delivered twice -- as a push, and as pull_request/closed. The
+// second one states the base branch's new tip too, so losing the push alone no
+// longer leaves the tip wrong.
+func TestCachedGitRef_MergedPullRequestAppliesBaseTip(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	postWebhookJSON(t, router, "pull_request", map[string]any{
+		"action": "closed", "number": 11, "repository": fixtureRepo(),
+		"pull_request": map[string]any{
+			"number": 11, "state": "closed", "merged": true,
+			"merged_at":        time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+			"merge_commit_sha": shaCommit,
+			"base":             map[string]any{"ref": "main", "sha": shaTip, "repo": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}},
+			"head":             map[string]any{"ref": "feature", "sha": shaMid},
+		},
+	})
+
+	w := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader))
+	assert.Contains(t, w.Body.String(), shaCommit, "the merge commit is the base branch's new tip")
+	assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits), "applying the payload must cost no upstream call")
+}
+
+// The two ways a pull_request delivery states NOTHING about the base tip. An
+// open PR's merge_commit_sha is the throwaway test-merge, which is on no
+// branch; and a merge that predates the row's own content is a view of a
+// moment the row already accounts for.
+func TestCachedGitRef_UnmergedAndLatePullRequestsLeaveTheTip(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		merged   bool
+		mergedAt time.Time
+	}{
+		{"open PR's test-merge commit", false, time.Now().Add(time.Minute)},
+		{"merge older than the stored row", true, time.Now().Add(-time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, _, _, u := respCacheStack(t)
+			target := "/repos/org1/repo1/git/ref/heads/main"
+			do(t, router, authedReq("GET", target, nil))
+			require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+			before := atomic.LoadInt32(&u.gitRefHits)
+
+			state := "open"
+			if tc.merged {
+				state = "closed"
+			}
+			postWebhookJSON(t, router, "pull_request", map[string]any{
+				"action": "synchronize", "number": 12, "repository": fixtureRepo(),
+				"pull_request": map[string]any{
+					"number": 12, "state": state, "merged": tc.merged,
+					"merged_at":        tc.mergedAt.UTC().Format(time.RFC3339),
+					"merge_commit_sha": shaCommit,
+					"base":             map[string]any{"ref": "main", "sha": shaTip, "repo": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}},
+					"head":             map[string]any{"ref": "feature", "sha": shaMid},
+				},
+			})
+
+			w := do(t, router, authedReq("GET", target, nil))
+			assert.Equal(t, "hit", w.Header().Get(cacheHeader))
+			assert.Contains(t, w.Body.String(), shaTip, "the stored tip must survive")
+			assert.NotContains(t, w.Body.String(), shaCommit)
+			assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits))
+		})
 	}
 }
