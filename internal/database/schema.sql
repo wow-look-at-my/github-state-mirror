@@ -944,15 +944,16 @@ CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
 --   GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
 --   GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
 --
--- Only TERMINAL answers are stored: a page whose every job has completed, or
--- a single completed job. A queued/in_progress job is a live value the GHA
--- runner coordinator acts on, and no TTL short enough to be safe would be
--- long enough to be useful -- those always reach GitHub. What is left is the
--- fleet re-reading SETTLED runs forever, which is the traffic worth killing.
+-- A job still moving is stored too, on a short TTL, and REWRITTEN by its own
+-- workflow_job deliveries rather than left to age (ghdata.ApplyWorkflowJob).
+-- The fetch proves a page's membership; the deliveries keep its contents
+-- current; the short TTL bounds a lost delivery and nothing else. Storing only
+-- terminal answers left the GHA coordinator re-asking GitHub for state it had
+-- already been told, which was most of the mirror's passthrough volume.
 --
 -- ref_id is the run id (kind 'run_jobs') or the job id (kind 'job'); run_id is
--- carried on BOTH kinds so a re-run -- which replaces a run's jobs under the
--- same run id -- flushes every row it invalidates from one signal.
+-- carried on BOTH kinds so a re-run -- a different set of jobs under the same
+-- run id -- flushes every row it invalidates from one signal.
 CREATE TABLE workflow_jobs_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased

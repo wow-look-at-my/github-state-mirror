@@ -63,7 +63,7 @@ bookkeeping and which no test can classify for you.
 | row family | verdict | why |
 | --- | --- | --- |
 | `workflow_jobs` truth | **applied** | job state is written from the payload. |
-| `workflow_jobs_cache` (run/job pages) | **Justified** | only TERMINAL answers are ever stored, and a re-run replaces a run's jobs under the same run id. The flush is what makes a re-run's new jobs visible; there is no "the payload states the whole page" to apply, because a page is many jobs and a delivery is one. |
+| `workflow_jobs_cache` (run/job pages) | **applied** | the delivery carries the whole job object — labels, runner, every step — which is exactly one entry of these answers, so `ApplyWorkflowJob` rewrites it in place. See "Live job state" below: this is also what made a RUNNING run cacheable, which was three quarters of the mirror's passthrough volume. The flush stays for what a delivery cannot answer: a job the page does not list (the run's membership moved) and a different `run_attempt` (a re-run is a different set of jobs). |
 
 ## repository
 
@@ -122,6 +122,35 @@ is provably about this commit and the branch spellings still flush.
 
 `TestCachedCommitCI_StatusEventRewritesTheCombinedDoc` (internal/api) is the
 pin: it byte-compares a rewritten document against the fetch it saved.
+
+## Live job state
+
+The Actions job reads were the largest passthrough in the mirror by a wide
+margin — `runs/{id}/jobs` alone was 67.5% — and they were never a missing cache
+route. They were modeled and declined on purpose: only a page whose every job
+had finished was stored, because a queued or running job is a live value the
+GHA runner coordinator provisions against, and no TTL short enough to be safe
+there is long enough to be worth having.
+
+That reasoning is right about a TTL and wrong about the only instrument
+available. A `workflow_job` delivery carries the whole job object, so a stored
+answer does not have to age toward the truth — it can be told. The split:
+
+- A **fetch** proves the page's MEMBERSHIP: which jobs belong to the run, in
+  what order. Webhooks cannot establish that; nothing in a delivery says "and
+  that is all of them".
+- The **deliveries** keep each entry's contents current, rewritten in place as
+  the job moves.
+
+Neither half works alone, which is why this is not "cache live state and hope".
+What the short live TTL (`ghdata.WorkflowJobsLiveTTL`, 60s) bounds is a LOST
+delivery — the mirror's quietest failure — and nothing else. A settled page
+keeps the long one.
+
+Two things a delivery cannot answer, both of which drop the run's rows so a
+fetch can settle them: a job the stored page does not list (the run's
+membership moved), and a delivery whose `run_attempt` differs from the stored
+entry's (a re-run is a different set of jobs, whether or not it reuses ids).
 
 ## Single source of truth (the compare rework)
 

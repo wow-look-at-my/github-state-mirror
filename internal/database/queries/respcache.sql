@@ -764,6 +764,13 @@ WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND pa
 -- name: DeleteWorkflowJobsCacheForRun :exec
 DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
 
+-- ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+-- pages and the single-job rows under it -- so a workflow_job delivery can
+-- rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+-- dropping answers the delivery just told us the new value of.
+-- name: ListWorkflowJobsCacheForRun :many
+SELECT * FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
 -- name: DeleteWorkflowJobsCacheByRepo :exec
 DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?;
 

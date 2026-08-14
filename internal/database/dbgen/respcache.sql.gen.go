@@ -1713,6 +1713,56 @@ func (q *Queries) ListCommitCICacheByRepoKind(ctx context.Context, arg ListCommi
 	return items, nil
 }
 
+const listWorkflowJobsCacheForRun = `-- name: ListWorkflowJobsCacheForRun :many
+SELECT id, owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?
+`
+
+type ListWorkflowJobsCacheForRunParams struct {
+	Owner string
+	Repo  string
+	RunID int64
+}
+
+// ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+// pages and the single-job rows under it -- so a workflow_job delivery can
+// rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+// dropping answers the delivery just told us the new value of.
+func (q *Queries) ListWorkflowJobsCacheForRun(ctx context.Context, arg ListWorkflowJobsCacheForRunParams) ([]WorkflowJobsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowJobsCacheForRun, arg.Owner, arg.Repo, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowJobsCache
+	for rows.Next() {
+		var i WorkflowJobsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Kind,
+			&i.RefID,
+			&i.RunID,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
 SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
 WHERE owner = ?1 AND repo = ?2

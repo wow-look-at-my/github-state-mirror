@@ -195,10 +195,10 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			headSHA, runID = payload.HeadSHA, payload.RunID
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
-		// A job's state moved, so the run's cached JOB answers moved with it.
-		// Only terminal answers are ever stored, but a RE-RUN replaces a
-		// run's jobs under the same run id -- this is that signal.
-		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
+		// A job's state moved, and the delivery STATES the new state: the
+		// run's cached job answers are rewritten from it, and flushed only
+		// where they cannot be.
+		d.settleWorkflowJobs(ctx, owner+"/"+repo, owner, repo, event, runID)
 	case "workflow_run":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {

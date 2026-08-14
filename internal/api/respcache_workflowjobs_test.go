@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,40 +98,72 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runJobsHits), "a hit must not call upstream")
 }
 
-// The load-bearing rule: a job still running is a LIVE value the runner
-// coordinator provisions against. It is never stored, so every read reaches
-// GitHub — no TTL, however short, is allowed to answer for it.
-func TestCachedRunJobs_LiveJobNeverCached(t *testing.T) {
+// A RUNNING run is served, and its own deliveries are what keep the answer
+// true. This is the load-bearing behavior of the whole route: the fetch
+// settles which jobs belong to the run, the workflow_job delivery states the
+// new value of one of them, and the stored page is rewritten rather than
+// dropped — so the runner coordinator reads current job state without the
+// fleet re-asking GitHub for what it was already told.
+func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
 		writeGitHubJSON(w, jobsPage(jobDoc("in_progress", "")))
 	}
 
-	for i := 1; i <= 3; i++ {
-		w := do(t, router, authedReq("GET", runJobsTarget(), nil))
-		require.Equal(t, http.StatusOK, w.Code)
-		assert.Empty(t, w.Header().Get(cacheHeader), "an in-flight job must never be served from the cache")
-		assert.Equal(t, int32(i), atomic.LoadInt32(&u.runJobsHits), "every read must reach GitHub")
-	}
+	w1 := do(t, router, authedReq("GET", runJobsTarget(), nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	require.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Contains(t, w1.Body.String(), `"status":"in_progress"`)
 
-	// Once it finishes, the same read starts caching.
+	w2 := do(t, router, authedReq("GET", runJobsTarget(), nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a live page is stored, not forwarded")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runJobsHits))
+
+	// The job finishes. GitHub tells us; nothing needs to ask.
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action":       "completed",
+		"workflow_job": jobDoc("completed", "success"),
+		"repository":   fixtureRepo(),
+	})
+
+	w3 := do(t, router, authedReq("GET", runJobsTarget(), nil))
+	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "the delivery answered it; nothing to re-fetch")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runJobsHits), "a rewrite must cost no upstream call")
+	assert.Contains(t, w3.Body.String(), `"conclusion":"success"`)
+	assert.NotContains(t, w3.Body.String(), `"status":"in_progress"`)
+
+	// And the rewritten page is what a fetch would now return, byte for byte.
 	u.runJobs = defaultRunJobsUpstream
-	require.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
-	assert.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+	fresh := do(t, router, authedReq("GET", runJobsTarget()+"?per_page=100", nil))
+	require.Equal(t, "miss", fresh.Header().Get(cacheHeader), "a different page shape is its own row")
+	assert.Equal(t, fresh.Body.String(), w3.Body.String(),
+		"a rewritten page must be indistinguishable from the fetch it saved")
 }
 
-// One in-flight job poisons the whole page: the page IS the answer, and a
-// partially-settled page is a live answer.
-func TestCachedRunJobs_MixedPageNotCached(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
+// The live TTL is the LOST-DELIVERY bound, and only that: a page with a job
+// still moving expires on it, while a settled page keeps serving. Nothing else
+// separates the two rows.
+func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
+	router, _, db, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
 		writeGitHubJSON(w, jobsPage(jobDoc("completed", "success"), jobDoc("queued", "")))
 	}
 
 	do(t, router, authedReq("GET", runJobsTarget(), nil))
-	w := do(t, router, authedReq("GET", runJobsTarget(), nil))
-	assert.Empty(t, w.Header().Get(cacheHeader), "one queued job makes the whole page live")
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader),
+		"one queued job among finished ones is still a page worth serving")
+
+	var expires string
+	require.NoError(t, db.QueryRow(`SELECT expires_at FROM workflow_jobs_cache`).Scan(&expires))
+	exp, err := time.Parse(time.RFC3339, expires)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(workflowJobsLiveTTL), exp, 5*time.Second,
+		"a live page carries the short TTL, not the settled one")
+
+	_, err = db.Exec(`UPDATE workflow_jobs_cache SET expires_at = '2000-01-01T00:00:00Z'`)
+	require.NoError(t, err)
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader),
+		"past the bound, the next read goes and looks")
 }
 
 // A single completed job caches the same way.
