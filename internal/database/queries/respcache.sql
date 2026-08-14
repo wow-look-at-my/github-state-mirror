@@ -482,6 +482,12 @@ DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
 -- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
 -- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
 -- snapshots survive.
+-- ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+-- workflow_run delivery can rewrite the run's entry inside each page
+-- (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT * FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+
 -- name: DeleteWorkflowRunsCacheForHeadSHA :exec
 DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
 

@@ -827,9 +827,6 @@ type DeleteWorkflowRunsCacheForHeadSHAParams struct {
 	HeadSha string
 }
 
-// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
-// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
-// snapshots survive.
 func (q *Queries) DeleteWorkflowRunsCacheForHeadSHA(ctx context.Context, arg DeleteWorkflowRunsCacheForHeadSHAParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
 	return err
@@ -1826,6 +1823,56 @@ func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsPara
 			&i.UpdatedAt,
 			&i.RunStartedAt,
 			&i.TouchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowRunsCacheForHeadSHA = `-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT id, owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?
+`
+
+type ListWorkflowRunsCacheForHeadSHAParams struct {
+	Owner   string
+	Repo    string
+	HeadSha string
+}
+
+// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
+// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
+// snapshots survive.
+// ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+// workflow_run delivery can rewrite the run's entry inside each page
+// (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+func (q *Queries) ListWorkflowRunsCacheForHeadSHA(ctx context.Context, arg ListWorkflowRunsCacheForHeadSHAParams) ([]WorkflowRunsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRunsCache
+	for rows.Next() {
+		var i WorkflowRunsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.HeadSha,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
 		); err != nil {
 			return nil, err
 		}

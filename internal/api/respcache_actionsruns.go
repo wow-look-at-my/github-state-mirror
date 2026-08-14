@@ -62,10 +62,13 @@ import (
 
 const (
 	// workflowRunsCacheTTL bounds how long a stale per-COMMIT runs page can
-	// be served. CI webhooks flush within seconds of any run change; the TTL
-	// is the backstop for the one signal GitHub never webhooks -- run
-	// DELETION -- and for missed deliveries.
-	workflowRunsCacheTTL = 24 * time.Hour
+	// be served. CI webhooks settle these pages within seconds of any run
+	// change -- a `workflow_run` delivery REWRITES its own entry, the rest
+	// flush -- so the TTL is the backstop for the one signal GitHub never
+	// webhooks (run DELETION) and for missed deliveries. It lives in the
+	// store because both writers need it: a rewritten page is exactly as
+	// fresh as a fetched one.
+	workflowRunsCacheTTL = ghdata.WorkflowRunsCacheTTL
 
 	// workflowRunsDefaultPerPage is GitHub's default page size for the runs
 	// listing when the request does not send per_page.
@@ -349,27 +352,13 @@ func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string
 // from its breakdown). Dropped: node_id, the head_branch/event/actor/
 // repository/head_commit objects, every other *_url, and the unbounded
 // pull_requests/referenced_workflows arrays.
-type workflowRunItemJSON struct {
-	ID           int64   `json:"id"`
-	Name         *string `json:"name"` // nullable (a run may have no name)
-	HeadSHA      string  `json:"head_sha"`
-	Status       string  `json:"status"`
-	Conclusion   *string `json:"conclusion"` // nullable until completed
-	HTMLURL      string  `json:"html_url"`   // pinned consumer-read exception
-	CreatedAt    string  `json:"created_at"`
-	UpdatedAt    string  `json:"updated_at"`
-	RunStartedAt *string `json:"run_started_at"` // nullable while queued
-}
-
-// workflowRunsJSON is the trimmed rebuild of a runs listing: {total_count,
-// workflow_runs: [...]}. total_count is copied VERBATIM from upstream -- it
-// is GitHub's TOTAL matching-run count, NOT the page length (pr-minder's
-// hasWorkflowRuns sends per_page=1 and reads exactly this field as its
-// "does the sha have any runs?" answer).
-type workflowRunsJSON struct {
-	TotalCount   int64                 `json:"total_count"`
-	WorkflowRuns []workflowRunItemJSON `json:"workflow_runs"`
-}
+// The trimmed shapes live in the store: a `workflow_run` delivery rewrites an
+// entry inside a stored page, so the render and the rewrite must agree byte
+// for byte and there is exactly one definition of each.
+type (
+	workflowRunItemJSON = ghdata.StoredWorkflowRunItem
+	workflowRunsJSON    = ghdata.StoredWorkflowRunsPage
+)
 
 // parsedWorkflowRuns is one absorbed /actions/runs answer: the trimmed items
 // the rebuild emits, plus the run fields that go into TRUTH but never onto
@@ -441,20 +430,8 @@ func absorbWorkflowRuns(status int, body []byte) (parsedWorkflowRuns, bool) {
 		return parsedWorkflowRuns{}, false
 	}
 	var raw struct {
-		TotalCount   *int64 `json:"total_count"`
-		WorkflowRuns *[]struct {
-			ID           int64   `json:"id"`
-			RunAttempt   int64   `json:"run_attempt"`
-			Name         *string `json:"name"`
-			HeadSHA      string  `json:"head_sha"`
-			HeadBranch   *string `json:"head_branch"`
-			Status       string  `json:"status"`
-			Conclusion   *string `json:"conclusion"`
-			HTMLURL      string  `json:"html_url"`
-			CreatedAt    string  `json:"created_at"`
-			UpdatedAt    string  `json:"updated_at"`
-			RunStartedAt *string `json:"run_started_at"`
-		} `json:"workflow_runs"`
+		TotalCount   *int64                   `json:"total_count"`
+		WorkflowRuns *[]ghdata.RawWorkflowRun `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(trimmed, &raw); err != nil || raw.TotalCount == nil || raw.WorkflowRuns == nil {
 		return parsedWorkflowRuns{}, false
@@ -464,18 +441,14 @@ func absorbWorkflowRuns(status int, body []byte) (parsedWorkflowRuns, bool) {
 		Runs:       make([]parsedWorkflowRun, 0, len(*raw.WorkflowRuns)),
 	}
 	for _, run := range *raw.WorkflowRuns {
-		sha := strings.ToLower(run.HeadSHA)
-		if run.ID <= 0 || run.Status == "" || !isFullHexSHA(sha) {
+		item, ok := ghdata.TrimWorkflowRunItem(run)
+		if !ok {
 			return parsedWorkflowRuns{}, false
 		}
 		out.Runs = append(out.Runs, parsedWorkflowRun{
-			workflowRunItemJSON: workflowRunItemJSON{
-				ID: run.ID, Name: run.Name, HeadSHA: sha, Status: run.Status,
-				Conclusion: run.Conclusion, HTMLURL: run.HTMLURL,
-				CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, RunStartedAt: run.RunStartedAt,
-			},
-			HeadBranch: derefOrEmpty(run.HeadBranch),
-			RunAttempt: run.RunAttempt,
+			workflowRunItemJSON: item,
+			HeadBranch:          derefOrEmpty(run.HeadBranch),
+			RunAttempt:          run.RunAttempt,
 		})
 	}
 	return out, true

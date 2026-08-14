@@ -37,11 +37,12 @@ import (
 //     the disposition logic -- so queued/waiting jobs, which onWorkflowJob
 //     drops as ignored, still flush (a queued job is a run the cached
 //     listing may not have shown yet).
-//   - workflow_run: the run's head_sha flushes that sha's workflow-runs
-//     pages (repo-wide when absent). The ONLY signal for a startup_failure
-//     run, which creates no jobs, check runs, or statuses -- without it a
-//     runs page cached just before the failure serves stale for the full
-//     TTL. The truth side has no workflow_run handler, so the delivery still
+//   - workflow_run: the delivery IS the run object those pages list, so its
+//     entry is REWRITTEN inside the sha's pages (settleWorkflowRuns) and the
+//     sha is flushed only for a run they do not list -- a new run, which only
+//     a fetch can settle. Either way this is the ONLY signal for a
+//     startup_failure run, which creates no jobs, check runs, or statuses.
+//     The truth side has no workflow_run handler, so the delivery still
 //     records as ignored (invalidation precedes disposition, the queued
 //     workflow_job precedent).
 //   - repository additionally flushes the repo's cached hook listings. That
@@ -212,7 +213,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// BEFORE the disposition logic: the truth side has no workflow_run
 		// handler, so the delivery still records as ignored.
 		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
-		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
+		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
 		// The "not installed here" verdicts carry no installation id, so the

@@ -22,9 +22,15 @@ func CheckRunObject(raw json.RawMessage) (json.RawMessage, bool) {
 	return namedObject(raw, func(b *deliveryObjects) json.RawMessage { return b.CheckRun })
 }
 
+// WorkflowRunObject is the raw `workflow_run` key of a workflow_run delivery.
+func WorkflowRunObject(raw json.RawMessage) (json.RawMessage, bool) {
+	return namedObject(raw, func(b *deliveryObjects) json.RawMessage { return b.WorkflowRun })
+}
+
 type deliveryObjects struct {
 	WorkflowJob json.RawMessage `json:"workflow_job"`
 	CheckRun    json.RawMessage `json:"check_run"`
+	WorkflowRun json.RawMessage `json:"workflow_run"`
 }
 
 func namedObject(raw json.RawMessage, pick func(*deliveryObjects) json.RawMessage) (json.RawMessage, bool) {

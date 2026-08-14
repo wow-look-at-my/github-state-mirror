@@ -56,7 +56,7 @@ bookkeeping and which no test can classify for you.
 | `commit_ci_cache`, the `/status` and `/statuses` docs, on a `status` event | **applied** | the payload IS the status, whole. `SettleCommitCIFromStatus` rewrites both documents from it — see "The status rewrite" below for the ordering rules that make the result exact rather than plausible — and drops only what a stored page cannot provably hold. |
 | `commit_ci_cache`, the `/check-runs` docs, on a `check_run` event | **applied** | the delivery carries the whole run object, which is one entry of that listing. Unlike a status, a check run is UPDATED IN PLACE upstream — the same id moves queued → in_progress → completed — so the rewrite replaces the entry where it stands. See "The check-run rewrite" below for the ordering measurement that makes "where it stands" a fact rather than a hope. A `check_suite` delivery carries no runs and keeps the flush. |
 | the OTHER kinds, on either event | **applied** (nothing to do) | a commit status never appears in a check-runs listing and a check run never appears in a commit's statuses. Flushing all three kinds on every CI delivery re-fetched answers the delivery could not have changed; each now flushes only its own surface. |
-| `workflow_runs_cache` (sha pages) | **Owed** | a `workflow_run` delivery carries the whole run object, which is what these pages list. Same shape of conversion, same missing measurement. |
+| `workflow_runs_cache` (sha pages) | **applied** on `workflow_run`, **flushed** on the rest | a `workflow_run` delivery IS the run object these pages list, so its entry is rewritten in place. A run is updated in place upstream and the listing is ordered by CREATION — measured across 100 consecutive runs of one repo: `created_at` strictly descending with zero violations, `updated_at` with 31 — so the entry cannot move, and `total_count` (GitHub's total, not the page length) does not change when a run merely changes state. A run the pages do not list is a NEW run for the sha, a membership change only a fetch settles. `status`/`check_run`/`check_suite`/`workflow_job` deliveries name the sha but not the run object, so they keep the flush. |
 
 ## workflow_job / workflow_run
 
@@ -206,12 +206,18 @@ objects, not the trees they point at).
 
 ## Owed, in order
 
-1. `workflow_runs_cache` on `workflow_run` — the same rewrite, on the pages a
-   run's own delivery states.
-2. `commits_list_cache` on push — needs the absent-vs-unknown modelling first.
-3. The compare rework — needs tree storage, and retires two entries above.
+1. `commits_list_cache` on push — needs the absent-vs-unknown modelling first.
+2. The compare rework — needs tree storage, and retires an entry above.
 
 Done: the two status documents on a `status` delivery; the check-runs listing
 on a `check_run` delivery; a run's job answers on a `workflow_job` delivery
-(which also made a RUNNING run cacheable); and the cross-kind flushing that had
-every CI delivery dropping all three commit-CI kinds.
+(which also made a RUNNING run cacheable); a sha's runs pages on a
+`workflow_run` delivery; and the cross-kind flushing that had every CI delivery
+dropping all three commit-CI kinds.
+
+Each rewrite rests on a measurement of the listing's ORDER, because a rewritten
+document has to be byte-identical to the fetch it saved. Those measurements are
+recorded above rather than assumed, and the pattern they share is worth naming:
+where an entry is APPEND-ONLY upstream (a commit status) the rewrite has to
+place it; where an entry is UPDATED IN PLACE (a check run, a workflow run, a
+job) it only has to prove the entry does not move.

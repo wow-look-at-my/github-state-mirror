@@ -131,6 +131,25 @@ func (d *WebhookDispatcher) settleWorkflowJobs(ctx context.Context, scope, owner
 	d.flushWorkflowJobsForRun(ctx, scope, owner, repo, runID)
 }
 
+// settleWorkflowRuns lands a `workflow_run` delivery on the sha's cached runs
+// pages. The delivery IS the run object those pages list, so its entry is
+// rewritten where it stands; a run the pages do not list is a new run for the
+// sha, a membership change only a fetch settles, and falls back to the flush.
+func (d *WebhookDispatcher) settleWorkflowRuns(ctx context.Context, scope, owner, repo string, event webhook.Event, headSHA string) {
+	if raw, ok := webhook.WorkflowRunObject(event.Raw); ok {
+		if run, ok := ghdata.TrimWorkflowRunItemJSON(raw); ok {
+			applied, err := d.store.ApplyWorkflowRunToPages(ctx, owner, repo, run, time.Now(), ghdata.WorkflowRunsCacheTTL)
+			if err != nil {
+				flush("workflow run apply", scope, err)
+			}
+			if applied {
+				return
+			}
+		}
+	}
+	d.flushWorkflowRunsForSHA(ctx, scope, owner, repo, headSHA)
+}
+
 // applyOrFlushBranchesList settles a push's effect on the cached branches
 // pages. A page lists one entry per branch, and a tip-move changes only that
 // entry's sha -- which the push STATES in `after` -- so the pages are
