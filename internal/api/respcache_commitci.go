@@ -54,8 +54,10 @@ import (
 // A 24h TTL backstops missed deliveries.
 
 // commitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
-// stale snapshot being served. Webhooks flush sooner; this is the backstop.
-const commitCICacheTTL = 24 * time.Hour
+// stale snapshot being served. Webhooks settle these rows sooner; this is the
+// backstop. It lives in the store because a `status` delivery rewrites a
+// document there and must date it exactly as a fetch would.
+const commitCICacheTTL = ghdata.CommitCICacheTTL
 
 const (
 	// commitCIDefaultPerPage is GitHub's default page size on all three

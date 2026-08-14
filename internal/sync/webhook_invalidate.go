@@ -29,7 +29,9 @@ import (
 //     exactly which verbatim-ref commit-CI snapshots moved, and the sha names
 //     the workflow-runs pages; an unparseable payload falls back repo-wide
 //     for both, as does a (today impossible) parsed payload with no sha for
-//     the workflow-runs pages.
+//     the workflow-runs pages. Within those refs the grain is the KIND, and a
+//     `status` delivery REWRITES the two status-shaped documents from its own
+//     payload rather than dropping them -- see settleCommitCI.
 //   - workflow_job: the job's head_sha flushes that sha's workflow-runs
 //     pages (repo-wide when absent). This runs for EVERY delivery -- before
 //     the disposition logic -- so queued/waiting jobs, which onWorkflowJob
@@ -165,9 +167,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 			return
 		}
-		for _, ref := range refs {
-			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
-		}
+		d.settleCommitCI(ctx, scope, owner, repo, event, refs)
 		// A new or finished check implies the sha's workflow-runs listing may
 		// have changed too (runs are listed per head_sha) -- only that sha's
 		// pages, never the branch names (workflow_runs_cache keys shas only).
@@ -233,37 +233,6 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		if err := d.store.InvalidateRepoInstallationCache(ctx, event.InstallationID); err != nil {
 			slog.Warn("webhook: invalidate repo installation cache failed", "installation", id, "error", err)
-		}
-	}
-}
-
-// applyMergedPRBaseTip lands a merged PR's statement about its BASE branch:
-// the merge put `merge_commit_sha` on that branch, so the cached ref rows for
-// it are updated from the payload rather than dropped (the apply-the-payload
-// rule) -- in every spelling, since rows key the verbatim requested one.
-//
-// The push for that same merge says the same thing, and this is deliberately
-// the SECOND way to hear it. A delivery that never arrives is this mirror's
-// quietest failure and GitHub does not re-send one; a branch tip is the answer
-// where that hurts most, because a consumer reading the pre-merge tip
-// concludes there is nothing to do and never asks again. Two independent
-// deliveries have to be lost now, not one. Ordering safety and the merged-only
-// rule live in the store method and the parser.
-func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, owner, repo string, event webhook.Event) {
-	tip, ok := webhook.ParseMergedPRBaseTip(event.Raw)
-	if !ok {
-		return // not a merged PR, or the payload states no base tip
-	}
-	now := time.Now()
-	for _, ref := range refSpellings(tip.BaseRef, false) {
-		applied, err := d.store.ApplyMergedBaseTip(ctx, owner, repo, ref, tip.MergeCommitSHA, tip.MergedAt, now, ghdata.GitRefCacheTTL)
-		if err != nil {
-			flush("merged-PR base tip apply", scope, err)
-			continue
-		}
-		if applied {
-			slog.Info("webhook: applied merged PR's base tip to the cached ref",
-				"repo", scope, "ref", ref, "tip", tip.MergeCommitSHA, "merged_at", tip.MergedAt)
 		}
 	}
 }
@@ -365,35 +334,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
-// applyOrFlushBranchesList settles a push's effect on the cached branches
-// pages. A page lists one entry per branch, and a tip-move changes only that
-// entry's sha -- which the push STATES in `after` -- so the pages are
-// rewritten in place rather than dropped (CLAUDE.md's apply-the-payload rule);
-// dropping them re-lists every branch of the repo on the next reader, which
-// for pr-minder's per-repo fork-point detection is the whole listing back over
-// HTTP for a sha we were handed. Only what the pages cannot be edited into
-// falls back to the flush: a create or a delete, which move page MEMBERSHIP,
-// and a payload naming no ref.
-func (d *WebhookDispatcher) applyOrFlushBranchesList(ctx context.Context, scope, owner, repo, refName, after string, isTag bool) {
-	// A tag is not a branch: it never appears in the listing, so a tag push
-	// leaves the pages correct and there is nothing to do either way.
-	if isTag {
-		return
-	}
-	if refName != "" {
-		applied, err := d.store.ApplyPushedBranchTip(ctx, owner, repo, refName, after, time.Now(), ghdata.BranchesCacheTTL)
-		if err != nil {
-			flush("branches list tip apply", scope, err)
-		}
-		if applied {
-			return
-		}
-	}
-	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
-}
-
-// flush logs one best-effort cache invalidation's failure; it never fails
-// the dispatch (the invalidation pass is disposition-neutral bookkeeping).
 func flush(what, scope string, err error) {
 	if err != nil {
 		slog.Warn("webhook: invalidate "+what+" failed", "scope", scope, "error", err)

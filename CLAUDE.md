@@ -53,6 +53,8 @@ Storage and authorization are **separate axes**:
   A push alone hands you `ref` + `after` (the branch's exact new tip), `before`, `created`/`deleted`/`forced`, `base_ref`,
   `repository.default_branch`, and up to 2,048 full commit objects — see docs/webhooks/dispatch.md for what each event carries,
   the per-event matrix, the COALESCE rules that keep a webhook from blanking known state, and the routes still violating this.
+  Every surviving response-cache flush is inventoried in docs/webhooks/invalidations.md with a verdict — justified, or owed with
+  the conversion named — so the count can only go down; a new flush belongs in that table in the same change.
   Also non-negotiable: a delivery applies unconditionally — never add a "who has this cached?" gate, and never make a webhook
   trigger a fetch.
   **This is a build gate, not a convention.** `TestWebhookHandlersConsumeTheirPayload`

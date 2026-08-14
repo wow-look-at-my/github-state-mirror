@@ -202,6 +202,21 @@ DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?;
 -- name: DeleteCommitCICacheForRef :exec
 DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ?;
 
+-- DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+-- kind. A status delivery and a check delivery move disjoint documents --
+-- statuses never appear in a check-runs listing and check runs never appear
+-- in a combined status -- so each flushes only the kinds it can have moved.
+-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+
+-- ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+-- status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+-- instead of dropping them. Every spelling is listed, not just the sha:
+-- a branch-form combined status names the sha it resolved to, so the ones
+-- describing this commit are recognizable from their own contents.
+-- name: ListCommitCICacheByRepoKind :many
+SELECT * FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?;
+
 -- name: DeleteExpiredCommitCICache :exec
 DELETE FROM commit_ci_cache WHERE expires_at <= ?;
 

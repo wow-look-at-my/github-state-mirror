@@ -204,6 +204,31 @@ func (q *Queries) DeleteCommitCICacheForRef(ctx context.Context, arg DeleteCommi
 	return err
 }
 
+const deleteCommitCICacheForRefKind = `-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?
+`
+
+type DeleteCommitCICacheForRefKindParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Kind  string
+}
+
+// DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+// kind. A status delivery and a check delivery move disjoint documents --
+// statuses never appear in a check-runs listing and check runs never appear
+// in a combined status -- so each flushes only the kinds it can have moved.
+func (q *Queries) DeleteCommitCICacheForRefKind(ctx context.Context, arg DeleteCommitCICacheForRefKindParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitCICacheForRefKind,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+	)
+	return err
+}
+
 const deleteCommitsListCacheByRepo = `-- name: DeleteCommitsListCacheByRepo :exec
 DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?
 `
@@ -1618,6 +1643,56 @@ func (q *Queries) ListBranchesListCacheByRepo(ctx context.Context, arg ListBranc
 			&i.ID,
 			&i.Owner,
 			&i.Repo,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommitCICacheByRepoKind = `-- name: ListCommitCICacheByRepoKind :many
+SELECT id, owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?
+`
+
+type ListCommitCICacheByRepoKindParams struct {
+	Owner string
+	Repo  string
+	Kind  string
+}
+
+// ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+// status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+// instead of dropping them. Every spelling is listed, not just the sha:
+// a branch-form combined status names the sha it resolved to, so the ones
+// describing this commit are recognizable from their own contents.
+func (q *Queries) ListCommitCICacheByRepoKind(ctx context.Context, arg ListCommitCICacheByRepoKindParams) ([]CommitCiCache, error) {
+	rows, err := q.db.QueryContext(ctx, listCommitCICacheByRepoKind, arg.Owner, arg.Repo, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CommitCiCache
+	for rows.Next() {
+		var i CommitCiCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Ref,
+			&i.Kind,
 			&i.PerPage,
 			&i.Page,
 			&i.Doc,

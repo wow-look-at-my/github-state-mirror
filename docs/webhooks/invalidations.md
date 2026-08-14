@@ -53,8 +53,10 @@ bookkeeping and which no test can classify for you.
 | --- | --- | --- |
 | `commit_checks` truth | **applied** | the payload's state is written directly. |
 | PR `mergeable_state` | **applied-as-unresolved** | a CI result is the only thing that moves unstable/blocked ↔ clean, and no payload carries the recomputed value. |
-| `commit_ci_cache` (the rendered `/status`, `/check-runs` docs) | **Owed** | this is the clearest remaining violation. The payload carries the full status/check-run object — id, context, state, description, timestamps — and the mirror already applies it to `commit_checks`; then it DROPS the rendered doc, so the next reader buys the same answer back from GitHub. The truth table stores only `(sha, context, state)`, which is why a rebuild from truth alone would be lossy — but the stored DOC can be patched in place from the payload, exactly as `ApplyPushedRefTip` patches a ref doc: replace the entry for this context, recompute the rollup, keep every other entry. Conversion: a `ApplyCommitCIFromPayload` on the sha-form rows, with the branch-form rows still flushed (they may point elsewhere). |
-| `workflow_runs_cache` (sha pages) | **Owed** | a `workflow_run` delivery carries the whole run object, which is what these pages list. Same shape of conversion as above, and the same reason it has not happened yet: the rendered page holds run fields the truth table does not. |
+| `commit_ci_cache`, the `/status` and `/statuses` docs, on a `status` event | **applied** | the payload IS the status, whole. `SettleCommitCIFromStatus` rewrites both documents from it — see "The status rewrite" below for the ordering rules that make the result exact rather than plausible — and drops only what a stored page cannot provably hold. |
+| `commit_ci_cache`, the `/check-runs` docs, on a check event | **Owed** | a `check_run` delivery carries the whole run object, which is what the listing holds. The same conversion applies and has not been written; unlike the statuses array, the listing's ordering has not been measured, and a guess there produces a document a fetch would not have returned. |
+| the OTHER kinds, on either event | **applied** (nothing to do) | a commit status never appears in a check-runs listing and a check run never appears in a commit's statuses. Flushing all three kinds on every CI delivery re-fetched answers the delivery could not have changed; each now flushes only its own surface. |
+| `workflow_runs_cache` (sha pages) | **Owed** | a `workflow_run` delivery carries the whole run object, which is what these pages list. Same shape of conversion, same missing measurement. |
 
 ## workflow_job / workflow_run
 
@@ -87,6 +89,40 @@ Repo-wide on every action. **Justified**: an `edited` action can RENAME a label
 might request, so matching the payload's name would miss rows. The grain is the
 repo because the key space is unbounded, not because the payload is thin.
 
+## The status rewrite
+
+Rewriting a stored document from a payload is only correct if the result is
+what a fetch would have returned, byte for byte — a hit replays the stored
+bytes. For the two status-shaped documents that came down to their ORDERING,
+which the REST docs do not state. It was measured instead
+(`kubernetes/kubernetes` @`a231bf3f`, 53 raw statuses over 22 contexts):
+
+- Statuses are **append-only**. Re-posting a context creates a new status
+  object with a new id and a new `created_at`; nothing is mutated in place.
+  That is why the raw list keeps all 53 and the combined status keeps 22.
+- `/statuses` is **newest-first** — a new status is PREPENDED, and the
+  context's older entries stay.
+- `/status` holds the **latest per context, oldest-first** (exactly the raw
+  list's per-context latest, reversed), so a new status leaves its context's
+  old position and lands at the END.
+- Its `state` is the documented rollup: failure if any context is error or
+  failure, pending if there are none or any is pending, success otherwise.
+  `total_count` is the array's own length.
+
+Every rewrite refuses unless the stored page PROVES it can hold the result:
+page 1, the whole set present, room for a new entry, and a status that is the
+newest on the commit (an older one's position is unknown). A refusal drops the
+row, which is what happened to every one of these before the rewrite existed.
+
+Which rows are reached is decided by what the payload can IDENTIFY, not by the
+ref spellings the delivery names: a combined status states the sha it resolved
+to, so a branch-form row is usable and a row about another commit is left
+alone. The raw list is a bare array with no sha in it, so only the sha-form row
+is provably about this commit and the branch spellings still flush.
+
+`TestCachedCommitCI_StatusEventRewritesTheCombinedDoc` (internal/api) is the
+pin: it byte-compares a rewritten document against the fetch it saved.
+
 ## Single source of truth (the compare rework)
 
 `compare_cache` exists because a three-dot compare is expensive to fetch. It
@@ -102,8 +138,12 @@ objects, not the trees they point at).
 
 ## Owed, in order
 
-1. `commit_ci_cache` on status/check events — patch the stored doc from the
-   payload instead of dropping it. Highest volume, smallest change.
+1. `commit_ci_cache`'s check-runs documents on a `check_run` delivery — the
+   same rewrite the status half now does. Needs the listing's ordering
+   measured first, the way the statuses arrays were.
 2. `workflow_runs_cache` on workflow_run — same shape.
 3. `commits_list_cache` on push — needs the absent-vs-unknown modelling first.
 4. The compare rework — needs tree storage, and retires two entries above.
+
+Done: `commit_ci_cache`'s two status documents on a `status` delivery, and the
+cross-kind flushing that had every CI delivery dropping all three.

@@ -97,32 +97,51 @@ func TestStatusPublishPassthrough(t *testing.T) {
 	assert.JSONEq(t, body, u.lastPostBody, "the POST body must reach upstream untouched")
 }
 
-// TestCachedCommitCI_WebhookFlush: each of status/check_run/check_suite (CI
-// state moved on the ref the payload names -- the branch these snapshots are
-// keyed by), push with no usable ref (repo-wide fallback), and repository
-// events flushes BOTH of the ref's snapshot kinds. (Round 2 made the CI-event
-// flush per-ref: the payloads below all name "main" -- via the status
-// branches array or the suite head_branch -- exactly like GitHub's real
-// deliveries; a per-branch survival case lives in the dispatcher tests.)
+// TestCachedCommitCI_WebhookFlush walks what each delivery does to a ref's
+// three snapshot kinds. Two rules decide every row of the table:
+//
+//   - The surfaces are DISJOINT. A commit status never appears in a check-runs
+//     listing and a check run never appears in a commit's statuses, so a CI
+//     delivery that dropped all three was re-fetching answers it could not
+//     have changed.
+//   - A `status` delivery CARRIES the status, so the documents it can identify
+//     are rewritten and keep serving. The combined status names the sha it
+//     resolved to, which is what makes a branch-form row usable; the raw list
+//     is a bare array with no sha in it, so only the sha-form row is provably
+//     about this commit and the branch spelling still flushes.
+//
+// (Round 2 made the CI-event grain per-ref: the payloads below all name "main"
+// -- via the status branches array or the suite head_branch -- exactly like
+// GitHub's real deliveries; a per-branch survival case lives in the dispatcher
+// tests.)
 func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	statusTarget := "/repos/org1/repo1/commits/main/status"
 	checksTarget := "/repos/org1/repo1/commits/main/check-runs"
+	listTarget := "/repos/org1/repo1/commits/main/statuses"
+	targets := [3]string{statusTarget, checksTarget, listTarget}
 
 	seed := func(t *testing.T) {
 		t.Helper()
-		for _, target := range []string{statusTarget, checksTarget} {
+		for _, target := range targets {
 			do(t, router, authedReq("GET", target, nil))
 			w := do(t, router, authedReq("GET", target, nil))
 			require.Equal(t, "hit", w.Header().Get(cacheHeader), "seed must serve: %s", target)
 		}
 	}
 
+	const (
+		hit  = "hit"
+		miss = "miss"
+	)
 	for _, tc := range []struct {
 		event   string
 		payload map[string]any
+		want    [3]string // status, check-runs, statuses-list
+		why     string
 	}{
-		{"status", statusDelivery(shaTip)},
+		{"status", statusDelivery(shaTip), [3]string{hit, hit, miss},
+			"a status rewrites the combined doc it names, cannot touch check runs, and flushes the branch-form list"},
 		{"check_run", map[string]any{
 			"action": "completed",
 			"check_run": map[string]any{
@@ -130,28 +149,95 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 				"check_suite": map[string]any{"head_branch": "main"},
 			},
 			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
-		}},
+		}, [3]string{hit, miss, hit}, "a check run moves only the check-runs listing"},
 		{"check_suite", map[string]any{
 			"action": "completed",
 			"check_suite": map[string]any{
 				"head_sha": shaTip, "head_branch": "main", "status": "completed", "conclusion": "success",
 			},
 			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
-		}},
-		{"push", map[string]any{"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}}},
-		{"repository", map[string]any{"action": "privatized", "repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}}},
+		}, [3]string{hit, miss, hit}, "a check suite moves only the check-runs listing"},
+		{"push", map[string]any{"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}},
+			[3]string{miss, miss, miss}, "a push with no usable ref keeps the repo-wide fallback"},
+		{"repository", map[string]any{"action": "privatized", "repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}},
+			[3]string{miss, miss, miss}, "a repository event makes every row wrong, not stale"},
 	} {
 		seed(t)
-		before := [2]int32{atomic.LoadInt32(&u.statusHits), atomic.LoadInt32(&u.checkRunsHits)}
+		before := [3]int32{
+			atomic.LoadInt32(&u.statusHits), atomic.LoadInt32(&u.checkRunsHits), atomic.LoadInt32(&u.statusesHits),
+		}
 		postWebhookJSON(t, router, tc.event, tc.payload)
 
-		w := do(t, router, authedReq("GET", statusTarget, nil))
-		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a %s event must flush the status snapshot", tc.event)
-		w = do(t, router, authedReq("GET", checksTarget, nil))
-		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a %s event must flush the check-runs snapshot", tc.event)
-		assert.Equal(t, before[0]+1, atomic.LoadInt32(&u.statusHits), tc.event)
-		assert.Equal(t, before[1]+1, atomic.LoadInt32(&u.checkRunsHits), tc.event)
+		for i, target := range targets {
+			w := do(t, router, authedReq("GET", target, nil))
+			assert.Equal(t, tc.want[i], w.Header().Get(cacheHeader),
+				"%s -> %s: %s", tc.event, target, tc.why)
+		}
+		upstream := [3]int32{
+			atomic.LoadInt32(&u.statusHits), atomic.LoadInt32(&u.checkRunsHits), atomic.LoadInt32(&u.statusesHits),
+		}
+		for i := range targets {
+			extra := int32(0)
+			if tc.want[i] == miss {
+				extra = 1
+			}
+			assert.Equal(t, before[i]+extra, upstream[i],
+				"%s -> %s: a served answer must cost no upstream call", tc.event, targets[i])
+		}
 	}
+}
+
+// TestCachedCommitCI_StatusEventRewritesTheCombinedDoc is the identity pin for
+// the rewrite: a status delivery's effect on a stored document must be
+// indistinguishable from the fetch it saved. The stored answer after the
+// delivery is byte-compared against what the same route returns once upstream
+// reports the new status -- so a drifted field order, a wrong rollup, or an
+// entry in the wrong position fails here rather than in a consumer.
+func TestCachedCommitCI_StatusEventRewritesTheCombinedDoc(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	target := "/repos/org1/repo1/commits/" + shaTip + "/status"
+
+	// The commit starts with lint pending, so the rollup is pending.
+	u.status = func(w http.ResponseWriter, r *http.Request) {
+		servePRJSON(w, upstreamCombinedStatus(shaTip, "pending", []any{
+			upstreamStatusItem("ci/build", "success", "2/2 builds passed", rbmTargetURL(shaTip)),
+			upstreamStatusItem("lint", "pending", nil, ""),
+		}))
+	}
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits))
+
+	// lint finishes. The delivery states the whole status, so the stored
+	// document is rewritten rather than dropped.
+	delivery := statusDelivery(shaTip)
+	delivery["context"] = "lint"
+	delivery["state"] = "success"
+	delivery["description"] = nil
+	delivery["target_url"] = nil
+	postWebhookJSON(t, router, "status", delivery)
+
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the delivery answered it; nothing to re-fetch")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits), "a rewrite must cost no upstream call")
+
+	// What GitHub would now answer: lint's entry moved to the END (the array
+	// is oldest-first and a re-posted context is a NEW status object) and the
+	// rollup went to success.
+	u.status = func(w http.ResponseWriter, r *http.Request) {
+		servePRJSON(w, upstreamCombinedStatus(shaTip, "success", []any{
+			upstreamStatusItem("ci/build", "success", "2/2 builds passed", rbmTargetURL(shaTip)),
+			map[string]any{
+				"context": "lint", "state": "success", "description": nil, "target_url": nil,
+				"created_at": "2026-07-01T11:00:00Z", "updated_at": "2026-07-01T11:00:00Z",
+				"id": 1, "node_id": "SC_x", "url": "https://api.github.com/x", "avatar_url": "https://a",
+			},
+		}))
+	}
+	fresh := do(t, router, authedReq("GET", target+"?per_page=100", nil))
+	require.Equal(t, "miss", fresh.Header().Get(cacheHeader), "a different page shape is its own row")
+	assert.Equal(t, fresh.Body.String(), w.Body.String(),
+		"the rewritten document must be byte-identical to the fetch it saved")
 }
 
 // TestCachedCommitCI_TTLBackstopExpiry: even with webhooks silent, a snapshot
@@ -244,6 +330,14 @@ func rbmTargetURL(sha string) string {
 func statusDelivery(sha string) map[string]any {
 	return map[string]any{
 		"sha": sha, "state": "success", "context": "ci/build",
+		"description": "2/2 builds passed",
+		"target_url":  rbmTargetURL(sha),
+		// A status delivery always carries both timestamps, and they are not
+		// decoration: created_at is what places the entry in a stored
+		// document's ordering, so a fixture without them exercises only the
+		// fallback flush.
+		"created_at": "2026-07-01T11:00:00Z",
+		"updated_at": "2026-07-01T11:00:00Z",
 		"branches":   []any{map[string]any{"name": "main"}},
 		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
 	}
