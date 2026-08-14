@@ -52,6 +52,12 @@ jobs:
   # copying commits out of a module that cuts releases. The check turns itself
   # on when tags appear, so nobody has to remember to switch over.
   #
+  # A require carrying `// go-toolchain:branch=<branch>` is SKIPPED by both
+  # halves. That marker is go-toolchain's own branch tracking: it re-resolves
+  # the line to that branch's head on every run, so the pin is a real reachable
+  # commit by construction and a release tag is not what the repo asked for.
+  # Failing it would mean this check fighting a first-class org feature.
+  #
   # The regex captures two things per require line. The full module path is
   # what `go get` is told; the repo (path truncated at the first slash after
   # the org) is what can be cloned -- a nested module's path is not a URL.
@@ -68,11 +74,18 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const goMod = fs.readFileSync("go.mod", "utf-8");
+            const goMod = fs.readFileSync("go.mod", "utf-8").split("\n");
             // v0.0.0-<utc timestamp>-<12-char sha>: the shape `go get` writes for an untagged module.
-            const pseudo = /^\s+((github\.com\/(?:wow-look-at-my|PazerOP)\/[^\s\/]+)\S*)\s+(v[\d.]+-[\d]{14}-([0-9a-f]{12}))/gm;
+            const pseudo = /^\s+((github\.com\/(?:wow-look-at-my|PazerOP)\/[^\s\/]+)\S*)\s+(v[\d.]+-[\d]{14}-([0-9a-f]{12}))/;
             const bad: string[] = [];
-            for (const [, modulePath, repo, version, short] of goMod.matchAll(pseudo)) {
+            for (const line of goMod) {
+              const match = pseudo.exec(line);
+              if (!match) continue;
+              if (line.includes("go-toolchain:branch=")) {
+                core.info(`${match[1]} ${match[3]}: tracks a branch, go-toolchain owns this pin`);
+                continue;
+              }
+              const [, modulePath, repo, version, short] = match;
               const dir = `/tmp/${repo.split("/").pop()}`;
               const url = `https://github.com/${repo.replace("github.com/", "")}`;
               // Blobless: this needs the commit graph, not the files.
@@ -103,8 +116,9 @@ jobs:
             if (bad.length) {
               core.setFailed(
                 "go.mod pins a commit nobody can reach:\n" + bad.join("\n") +
-                "\n\nMerge the dependency first, then `go get <module>@master`. A pin to an " +
-                "unmerged branch resolves today and rots the moment that branch is deleted.");
+                "\n\nMerge the dependency first, then `go get <module>@master` -- or, to keep " +
+                "following a branch on purpose, add a `// go-toolchain:branch=<branch>` comment " +
+                "to the require line and let go-toolchain re-resolve it every run.");
             }
 
   # The dashboard front-end has exactly ONE source: TypeScript, in
