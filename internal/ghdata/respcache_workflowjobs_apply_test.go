@@ -50,7 +50,7 @@ func TestApplyWorkflowJob_RewritesOneEntry(t *testing.T) {
 	concl := "success"
 	done.Conclusion = &concl
 	applied, err := s.ApplyWorkflowJob(context.Background(), "org1", "repo1", applyRunID, done,
-		time.Now(), WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
+		time.Now())
 	require.NoError(t, err)
 	require.True(t, applied)
 
@@ -62,13 +62,15 @@ func TestApplyWorkflowJob_RewritesOneEntry(t *testing.T) {
 	assert.Equal(t, "success", *page.Jobs[1].Conclusion)
 }
 
-// A page still holding a moving job keeps the LIVE clock; once the last one
-// settles the same page earns the long one. The TTL follows the answer, not
-// the delivery.
+// The clock follows what is left MOVING in the answer, and it is three-way
+// because one part of it no delivery can keep current: GitHub sends one
+// delivery per job transition, while a RUNNING job's steps advance between
+// them unreported. A queued job has no steps yet, so a rewritten entry is
+// exactly right and earns the longer live clock; a running one does not.
 func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
-	seedJobsPage(t, s, jobEntry(1, 1, "queued"), jobEntry(2, 1, "in_progress"))
+	seedJobsPage(t, s, jobEntry(1, 1, "queued"), jobEntry(2, 1, "queued"))
 
 	expiryOf := func() time.Time {
 		t.Helper()
@@ -80,17 +82,25 @@ func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
 	}
 
 	now := time.Now()
-	_, err := s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, jobEntry(2, 1, "completed"),
-		now, WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
-	require.NoError(t, err)
-	assert.WithinDuration(t, now.Add(WorkflowJobsLiveTTL), expiryOf(), 2*time.Second,
-		"job 1 is still queued, so the page is still live")
-
-	_, err = s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, jobEntry(1, 1, "completed"),
-		now, WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
-	require.NoError(t, err)
-	assert.WithinDuration(t, now.Add(WorkflowJobsCacheTTL), expiryOf(), 2*time.Second,
-		"nothing left moving: the page has settled")
+	for _, tc := range []struct {
+		name string
+		job  StoredWorkflowJob
+		want time.Duration
+		why  string
+	}{
+		{"a job starts running", jobEntry(2, 1, "in_progress"), WorkflowJobsRunningTTL,
+			"its steps now advance with no delivery to report them"},
+		{"it finishes, one still queued", jobEntry(2, 1, "completed"), WorkflowJobsQueuedTTL,
+			"nothing is running, so nothing drifts unreported"},
+		{"the last one finishes", jobEntry(1, 1, "completed"), WorkflowJobsCacheTTL,
+			"nothing left moving: the page has settled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, tc.job, now)
+			require.NoError(t, err)
+			assert.WithinDuration(t, now.Add(tc.want), expiryOf(), 2*time.Second, tc.why)
+		})
+	}
 }
 
 // The two things a delivery cannot answer, both of which drop the run's rows
@@ -102,7 +112,7 @@ func TestApplyWorkflowJob_FlushesWhatItCannotAnswer(t *testing.T) {
 		s := testStore(t)
 		seedJobsPage(t, s, jobEntry(1, 1, "completed"))
 		applied, err := s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, jobEntry(77, 1, "queued"),
-			time.Now(), WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
+			time.Now())
 		require.NoError(t, err)
 		assert.False(t, applied, "the run gained a job; only a fetch settles membership")
 		_, ok := readJobsPage(t, s)
@@ -113,7 +123,7 @@ func TestApplyWorkflowJob_FlushesWhatItCannotAnswer(t *testing.T) {
 		s := testStore(t)
 		seedJobsPage(t, s, jobEntry(1, 1, "completed"))
 		applied, err := s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, jobEntry(1, 2, "queued"),
-			time.Now(), WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
+			time.Now())
 		require.NoError(t, err)
 		assert.False(t, applied, "a re-run is a different set of jobs, not an edit to this one")
 		_, ok := readJobsPage(t, s)
@@ -136,7 +146,7 @@ func TestApplyWorkflowJob_LeavesOtherJobsRowsAlone(t *testing.T) {
 	}
 
 	applied, err := s.ApplyWorkflowJob(ctx, "org1", "repo1", applyRunID, jobEntry(1, 1, "completed"),
-		time.Now(), WorkflowJobsLiveTTL, WorkflowJobsCacheTTL)
+		time.Now())
 	require.NoError(t, err)
 	require.True(t, applied)
 

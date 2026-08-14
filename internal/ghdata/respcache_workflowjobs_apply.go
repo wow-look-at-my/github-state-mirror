@@ -31,7 +31,7 @@ import (
 //
 // A repo with no cached rows for the run also reports false; there is no stale
 // answer to correct, and the caller's flush is then a no-op.
-func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID int64, job StoredWorkflowJob, now time.Time, liveTTL, terminalTTL time.Duration) (bool, error) {
+func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID int64, job StoredWorkflowJob, now time.Time) (bool, error) {
 	if runID <= 0 || job.ID <= 0 || job.Status == "" {
 		return false, nil
 	}
@@ -50,7 +50,7 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 		if row.Kind == WorkflowJobsKindJob && row.RefID != job.ID {
 			continue
 		}
-		patched, live, ok := patchWorkflowJobsDoc(row.Kind, row.Doc, job)
+		patched, liveness, ok := patchWorkflowJobsDoc(row.Kind, row.Doc, job)
 		if !ok {
 			// This row cannot represent the delivery -- most often a page that
 			// does not list the job, meaning the run gained one and only a
@@ -63,12 +63,8 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 			}
 			return false, nil
 		}
-		ttl := terminalTTL
-		if live {
-			ttl = liveTTL
-		}
 		if perr := s.PutCachedWorkflowJobs(ctx, ownerKey, repoKey, row.Kind, row.RefID, runID,
-			row.PerPage, row.Page, patched, now, ttl); perr != nil {
+			row.PerPage, row.Page, patched, now, liveness.TTL()); perr != nil {
 			return false, perr
 		}
 		applied = true
@@ -76,59 +72,56 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 	return applied, nil
 }
 
-// patchWorkflowJobsDoc rewrites one stored answer, reporting whether anything
-// in the result is still moving (which decides the row's TTL) and whether the
-// rewrite was possible at all.
-func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, bool, bool) {
+// patchWorkflowJobsDoc rewrites one stored answer, reporting what is still
+// moving in the result (which decides the row's TTL) and whether the rewrite
+// was possible at all.
+func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, JobsLiveness, bool) {
 	switch kind {
 	case WorkflowJobsKindJob:
 		var stored StoredWorkflowJob
 		if err := json.Unmarshal([]byte(doc), &stored); err != nil || stored.ID != job.ID {
-			return "", false, false
+			return "", JobsSettled, false
 		}
 		if stored.RunAttempt != job.RunAttempt {
-			return "", false, false // a different attempt is a different set of jobs
+			return "", JobsSettled, false // a different attempt is a different set of jobs
 		}
 		rendered, err := MarshalCacheDoc(job)
 		if err != nil {
-			return "", false, false
+			return "", JobsSettled, false
 		}
-		return string(rendered), !JobIsTerminal(job), true
+		return string(rendered), LivenessOf(job), true
 
 	case WorkflowJobsKindRunJobs:
 		var page StoredRunJobsPage
 		if err := json.Unmarshal([]byte(doc), &page); err != nil {
-			return "", false, false
+			return "", JobsSettled, false
 		}
 		found := false
-		live := false
 		for i := range page.Jobs {
-			if page.Jobs[i].ID == job.ID && page.Jobs[i].RunAttempt != job.RunAttempt {
+			if page.Jobs[i].ID != job.ID {
+				continue
+			}
+			if page.Jobs[i].RunAttempt != job.RunAttempt {
 				// A RE-RUN reports a new attempt. Whether it reuses job ids or
 				// mints them, the page's membership is settled by a fetch, not
 				// by editing one entry into a set from another attempt.
-				return "", false, false
+				return "", JobsSettled, false
 			}
-			if page.Jobs[i].ID == job.ID {
-				// The delivery states this job whole, so the entry is
-				// REPLACED rather than merged: a merge would have to decide
-				// which of two views of a field is newer, and the payload is
-				// one view of one moment.
-				page.Jobs[i] = job
-				found = true
-			}
-			if !JobIsTerminal(page.Jobs[i]) {
-				live = true
-			}
+			// The delivery states this job whole, so the entry is REPLACED
+			// rather than merged: a merge would have to decide which of two
+			// views of a field is newer, and the payload is one view of one
+			// moment.
+			page.Jobs[i] = job
+			found = true
 		}
 		if !found {
-			return "", false, false
+			return "", JobsSettled, false
 		}
 		rendered, err := MarshalCacheDoc(page)
 		if err != nil {
-			return "", false, false
+			return "", JobsSettled, false
 		}
-		return string(rendered), live, true
+		return string(rendered), LivenessOf(page.Jobs...), true
 	}
-	return "", false, false
+	return "", JobsSettled, false
 }

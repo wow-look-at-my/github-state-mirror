@@ -93,15 +93,14 @@ func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, own
 //
 // That is what makes a RUNNING run cacheable at all: a fetch settles which
 // jobs belong to the run, and these deliveries keep their contents current.
-// The flush stays for the two things a delivery cannot answer -- a job the
-// stored page does not list (the run's membership moved) and a payload the
-// model cannot hold.
+// The flush stays for what a delivery cannot answer -- a job the stored page
+// does not list (the run's membership moved), a different run_attempt, and a
+// payload the model cannot hold.
 func (d *WebhookDispatcher) settleWorkflowJobs(ctx context.Context, scope, owner, repo string, event webhook.Event, runID int64) {
 	if runID > 0 {
 		if raw, ok := webhook.WorkflowJobObject(event.Raw); ok {
 			if job, ok := ghdata.TrimWorkflowJobJSON(raw); ok {
-				applied, err := d.store.ApplyWorkflowJob(ctx, owner, repo, runID, job, time.Now(),
-					ghdata.WorkflowJobsLiveTTL, ghdata.WorkflowJobsCacheTTL)
+				applied, err := d.store.ApplyWorkflowJob(ctx, owner, repo, runID, job, time.Now())
 				if err != nil {
 					flush("workflow job apply", scope, err)
 				}

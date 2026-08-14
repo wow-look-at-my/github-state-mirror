@@ -140,9 +140,12 @@ func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 		"a rewritten page must be indistinguishable from the fetch it saved")
 }
 
-// The live TTL is the LOST-DELIVERY bound, and only that: a page with a job
-// still moving expires on it, while a settled page keeps serving. Nothing else
-// separates the two rows.
+// The live TTL is the LOST-DELIVERY bound, and only that. A page whose
+// movement is a job WAITING to start carries it (the deliveries keep such a
+// page exactly right, since a queued job has no steps yet); a running job's
+// steps advance unreported and earn the shorter one; a settled page keeps the
+// long one. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all
+// three.
 func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
@@ -157,8 +160,8 @@ func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT expires_at FROM workflow_jobs_cache`).Scan(&expires))
 	exp, err := time.Parse(time.RFC3339, expires)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(workflowJobsLiveTTL), exp, 5*time.Second,
-		"a live page carries the short TTL, not the settled one")
+	assert.WithinDuration(t, time.Now().Add(workflowJobsQueuedTTL), exp, 5*time.Second,
+		"a page with a queued job carries the live clock, not the settled one")
 
 	_, err = db.Exec(`UPDATE workflow_jobs_cache SET expires_at = '2000-01-01T00:00:00Z'`)
 	require.NoError(t, err)

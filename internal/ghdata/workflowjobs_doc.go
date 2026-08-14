@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// The two clocks a stored job answer can carry. Both live here because BOTH
+// The three clocks a stored job answer can carry. They live here because BOTH
 // writers need them: the fetch-on-miss path and the delivery that rewrites a
 // row. A rewritten answer is exactly as fresh as a fetched one, so it gets the
 // same clock (the BranchesCacheTTL precedent).
@@ -15,13 +15,64 @@ const (
 	// answer. A completed job is otherwise immutable, so this is long.
 	WorkflowJobsCacheTTL = 24 * time.Hour
 
-	// WorkflowJobsLiveTTL bounds an answer with a job still moving. Such a row
-	// is MAINTAINED by `workflow_job` deliveries rather than left to age, so
-	// this is not "how stale we tolerate" -- it is how long a LOST delivery
-	// can go unnoticed before the next read re-fetches. The GHA coordinator
-	// provisions runners against these answers, which is what keeps it short.
-	WorkflowJobsLiveTTL = 60 * time.Second
+	// WorkflowJobsQueuedTTL bounds an answer whose only movement is jobs
+	// WAITING to start. Deliveries maintain such a row, so this is not "how
+	// stale we tolerate" -- it is how long a LOST delivery can go unnoticed
+	// before the next read re-fetches. The GHA coordinator provisions runners
+	// against these answers, which is what keeps it short.
+	WorkflowJobsQueuedTTL = 60 * time.Second
+
+	// WorkflowJobsRunningTTL bounds an answer with a job actually RUNNING,
+	// and it is shorter for a reason deliveries cannot fix: GitHub sends one
+	// delivery per job TRANSITION (queued, in_progress, completed), while a
+	// running job's `steps` advance between them with no delivery at all. So
+	// a rewritten entry is exactly right about a queued job -- whose steps
+	// are empty by construction -- and knowably behind on a running one's
+	// steps. This is the bound on that, and the only part of the answer no
+	// webhook can keep current.
+	WorkflowJobsRunningTTL = 10 * time.Second
 )
+
+// JobsLiveness says what is moving in a stored answer, which is what decides
+// how long it may be served.
+type JobsLiveness int
+
+const (
+	// JobsSettled: every job has finished. Nothing can change but a re-run.
+	JobsSettled JobsLiveness = iota
+	// JobsQueued: something is still to come, but nothing is running -- so
+	// every field a delivery does not carry is empty rather than stale.
+	JobsQueued
+	// JobsRunning: a job is in progress, and its steps advance unreported.
+	JobsRunning
+)
+
+// TTL is how long an answer of this liveness may be served without a fetch.
+func (l JobsLiveness) TTL() time.Duration {
+	switch l {
+	case JobsRunning:
+		return WorkflowJobsRunningTTL
+	case JobsQueued:
+		return WorkflowJobsQueuedTTL
+	default:
+		return WorkflowJobsCacheTTL
+	}
+}
+
+// LivenessOf reports the strongest movement among a set of jobs.
+func LivenessOf(jobs ...StoredWorkflowJob) JobsLiveness {
+	out := JobsSettled
+	for _, j := range jobs {
+		switch {
+		case JobIsTerminal(j):
+		case strings.EqualFold(j.Status, JobStatusInProgress):
+			return JobsRunning
+		default:
+			out = JobsQueued
+		}
+	}
+	return out
+}
 
 // The stored shape of the Actions JOB reads:
 //
@@ -103,8 +154,13 @@ type RawWorkflowJob struct {
 	} `json:"steps"`
 }
 
-// JobStatusCompleted is the one status whose answer has stopped moving.
-const JobStatusCompleted = "completed"
+const (
+	// JobStatusCompleted is the one status whose answer has stopped moving.
+	JobStatusCompleted = "completed"
+	// JobStatusInProgress is the one whose UNREPORTED parts move: steps
+	// advance between deliveries.
+	JobStatusInProgress = "in_progress"
+)
 
 // TrimWorkflowJob converts one raw job, reporting false only when the model
 // cannot hold it (no id, no status). A job that is still queued or running

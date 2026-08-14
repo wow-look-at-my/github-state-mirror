@@ -143,9 +143,23 @@ answer does not have to age toward the truth — it can be told. The split:
   the job moves.
 
 Neither half works alone, which is why this is not "cache live state and hope".
-What the short live TTL (`ghdata.WorkflowJobsLiveTTL`, 60s) bounds is a LOST
-delivery — the mirror's quietest failure — and nothing else. A settled page
-keeps the long one.
+
+The TTL is then the lost-delivery bound — the mirror's quietest failure — and
+it is **three-way**, because one part of the answer no delivery can keep
+current. GitHub sends one delivery per job TRANSITION (queued, in_progress,
+completed), while a running job's `steps` advance between them unreported. So
+(`ghdata.JobsLiveness`):
+
+| what is moving | clock | why |
+| --- | --- | --- |
+| nothing | 24h | only a re-run can change it |
+| jobs WAITING to start | 60s | a queued job's steps are empty by construction, so a rewritten entry is exactly right |
+| a job RUNNING | 10s | its steps drift with nothing to report them |
+
+Reading that table the other way: the one field webhooks cannot maintain is the
+one the shortest clock exists for. Pretending otherwise — serving a running
+job's frozen step list for a minute — is the silent degradation this repo has a
+rule against.
 
 Two things a delivery cannot answer, both of which drop the run's rows so a
 fetch can settle them: a job the stored page does not list (the run's

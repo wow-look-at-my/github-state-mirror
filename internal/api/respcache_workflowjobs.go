@@ -28,23 +28,31 @@ import (
 // deliveries carry the whole job object, so a stored answer is REWRITTEN as
 // the job moves (ghdata.ApplyWorkflowJob) rather than aged: the fetch is what
 // proves a page's membership, and the deliveries are what keep its contents
-// current. What the short live TTL bounds is a LOST delivery, nothing else.
+// current.
 //
 // The alternative was leaving three quarters of the mirror's passthrough
 // volume permanently uncacheable, with the fleet re-asking GitHub for state it
 // had already been told.
+//
+// The TTL is then the LOST-delivery bound, and it is three-way because one
+// part of the answer no delivery can keep current: GitHub sends one delivery
+// per job TRANSITION, while a RUNNING job's `steps` advance between them
+// unreported. So a settled page keeps the long clock, a page whose movement is
+// only jobs WAITING keeps a short one (their steps are empty by construction,
+// so a rewritten entry is exactly right), and a page with a running job keeps
+// the shortest — see ghdata.JobsLiveness.
 //
 // Even a finished run can change: a RE-RUN replaces its jobs under the same
 // run id. Both kinds therefore carry the owning run_id, and a `workflow_run`
 // delivery — plus any job delivery the stored page cannot absorb — flushes
 // every row under that run.
 
-const (
-	// The two TTLs live in the store: a delivery rewrites these rows and must
-	// date them exactly as a fetch would.
-	workflowJobsCacheTTL = ghdata.WorkflowJobsCacheTTL
-	workflowJobsLiveTTL  = ghdata.WorkflowJobsLiveTTL
+// workflowJobsQueuedTTL is re-exported for this package's tests: the clocks
+// themselves live in the store (ghdata.JobsLiveness), because a delivery
+// rewrites these rows and must date them exactly as a fetch would.
+const workflowJobsQueuedTTL = ghdata.WorkflowJobsQueuedTTL
 
+const (
 	workflowJobsDefaultPerPage = 30
 	// workflowJobsMaxCachedPage caps the modeled pages; deeper pagination
 	// passes through. A run with more than 30 pages of jobs at the default
@@ -147,22 +155,11 @@ type workflowJobsRoute struct {
 }
 
 // absorbedJobs is one rendered job answer plus what decides how long it may be
-// served: the owning run, and whether anything in it is still moving.
+// served: the owning run, and what in it is still moving.
 type absorbedJobs struct {
-	doc   string
-	runID int64
-	live  bool
-}
-
-// ttl is the live TTL for an answer with a job still moving and the long one
-// for a settled answer. A live row is not a stale row waiting to expire: it is
-// maintained by `workflow_job` deliveries, which rewrite the job's entry in
-// place. The short TTL is what BOUNDS a lost delivery, and nothing else.
-func (a absorbedJobs) ttl() time.Duration {
-	if a.live {
-		return workflowJobsLiveTTL
-	}
-	return workflowJobsCacheTTL
+	doc      string
+	runID    int64
+	liveness ghdata.JobsLiveness
 }
 
 func (h *handlers) serveWorkflowJobs(w http.ResponseWriter, r *http.Request, rt workflowJobsRoute) {
@@ -200,7 +197,7 @@ func (h *handlers) serveWorkflowJobs(w http.ResponseWriter, r *http.Request, rt 
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedWorkflowJobs(r.Context(), rt.owner, rt.repo, rt.kind, rt.refID, got.runID, rt.perPage, rt.page, got.doc, now, got.ttl()); err != nil {
+	if err := h.store.PutCachedWorkflowJobs(r.Context(), rt.owner, rt.repo, rt.kind, rt.refID, got.runID, rt.perPage, rt.page, got.doc, now, got.liveness.TTL()); err != nil {
 		slog.Warn("workflow jobs cache write failed", "owner", rt.owner, "repo", rt.repo, "kind", rt.kind, "id", rt.refID, "error", err)
 	}
 	h.refreshGrantOn2xx(r, rt.owner, rt.repo, resp.StatusCode)
@@ -253,11 +250,9 @@ func absorbRunJobs(status int, body []byte) (absorbedJobs, bool) {
 		if tj.RunID > 0 {
 			got.runID = tj.RunID
 		}
-		if !ghdata.JobIsTerminal(tj) {
-			got.live = true
-		}
 		out.Jobs = append(out.Jobs, tj)
 	}
+	got.liveness = ghdata.LivenessOf(out.Jobs...)
 	if got.runID <= 0 {
 		return absorbedJobs{}, false
 	}
@@ -291,5 +286,5 @@ func absorbSingleJob(status int, body []byte) (absorbedJobs, bool) {
 	if err != nil {
 		return absorbedJobs{}, false
 	}
-	return absorbedJobs{doc: string(rendered), runID: job.RunID, live: !ghdata.JobIsTerminal(job)}, true
+	return absorbedJobs{doc: string(rendered), runID: job.RunID, liveness: ghdata.LivenessOf(job)}, true
 }
