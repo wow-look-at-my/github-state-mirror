@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
 // Git-ref route tests (GET /repos/{owner}/{repo}/git/ref/{ref...}); the
@@ -226,67 +228,122 @@ func TestGitRefCacheable(t *testing.T) {
 
 // ---- stale-tip repair (docs/cache/stale-tip-repair.md) ----
 
-// A caller that can prove the stored tip is wrong repairs it: `Cache-Control:
-// no-cache` refetches, rewrites the row, and answers `revalidated` so the
-// caller can tell a refetch from a replay. The repair is for EVERYONE -- the
-// next ordinary reader hits the corrected row.
-func TestCachedGitRef_NoCacheRevalidatesAndRepairsTheRow(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
+// openPRWithBase delivers an OPEN PR whose base names `branch` at `baseSHA` --
+// the second, independently-absorbed answer about where that branch is.
+func openPRWithBase(t *testing.T, router http.Handler, number int, branch, baseSHA, headSHA string) {
+	t.Helper()
+	postWebhookJSON(t, router, "pull_request", map[string]any{
+		"action": "synchronize", "number": number, "repository": fixtureRepo(),
+		"pull_request": map[string]any{
+			"number": number, "node_id": "PR_kwAE", "state": "open", "title": "t", "html_url": "u",
+			"base": map[string]any{"ref": branch, "sha": baseSHA, "repo": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}}},
+			"head": map[string]any{"ref": "feature", "sha": headSHA},
+		},
+	})
+}
+
+// seedRefRow stores a ref answer as if it had been fetched `ago` in the past.
+// Stored timestamps are whole seconds, so a row fetched in the same second as
+// the PR view that contradicts it is deliberately NOT contradicted -- the
+// evidence has to be newer than our own answer. Back-dating the row is how
+// these tests get that ordering without sleeping through a second boundary.
+func seedRefRow(t *testing.T, store *ghdata.Store, ref, sha string, ago time.Duration) {
+	t.Helper()
+	doc, err := marshalTrimmed(gitRefJSON{
+		Ref: "refs/" + strings.TrimPrefix(ref, "refs/"), NodeID: "REF_kwAE",
+		Object: gitRefObjJSON{SHA: sha, Type: "commit"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.PutCachedGitRef(context.Background(), ghdata.CachedGitRef{
+		Owner: "org1", Repo: "repo1", Ref: ref, Status: http.StatusOK, Doc: string(doc),
+	}, time.Now().Add(-ago), gitRefCacheTTL))
+}
+
+// The mirror must not serve a tip its own PR rows contradict. A lost push
+// leaves the ref row wrong; the PR's base.sha arrives by another delivery and
+// another route and says otherwise; the mirror does not pick a side, it asks
+// GitHub -- with no client telling it to.
+func TestCachedGitRef_ContradictingPRBaseIsRefetchedNotServed(t *testing.T) {
+	router, store, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"
 
-	require.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	// A row fetched a minute ago, from before the branch moved.
+	seedRefRow(t, store, "heads/main", shaTip, time.Minute)
 	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 	before := atomic.LoadInt32(&u.gitRefHits)
 
-	// The branch moves without a delivery arriving -- the lost-push case the
-	// stored row cannot notice on its own.
+	// The branch moved and the push delivery never arrived -- but a PR based on
+	// it did, naming the new tip.
 	u.gitRef = func(w http.ResponseWriter, _ *http.Request) {
 		writeGitHubJSON(w, map[string]any{
 			"ref": "refs/heads/main", "node_id": "REF_kwAE",
 			"object": map[string]any{"sha": shaCommit, "type": "commit"},
 		})
 	}
-	assert.Contains(t, do(t, router, authedReq("GET", target, nil)).Body.String(), shaTip,
-		"precondition: an ordinary read still serves the pre-move tip")
+	openPRWithBase(t, router, 10, "main", shaCommit, shaMid)
 
-	req := authedReq("GET", target, nil)
-	req.Header.Set("Cache-Control", "no-cache")
-	w := do(t, router, req)
+	w := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "revalidated", w.Header().Get(cacheHeader))
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a contradicted row must not be served")
 	assert.Contains(t, w.Body.String(), shaCommit)
-	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits), "a revalidation must go upstream")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 
 	w2 := do(t, router, authedReq("GET", target, nil))
-	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
-	assert.Contains(t, w2.Body.String(), shaCommit, "the revalidation must have rewritten the stored row")
-	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits), "the repaired row must serve without another fetch")
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "the refetched row settles it")
+	assert.Contains(t, w2.Body.String(), shaCommit)
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 }
 
-// Only `no-cache` revalidates. Every other Cache-Control directive -- and no
-// header at all -- serves the stored answer, so a stray header cannot quietly
-// turn the mirror into a proxy.
-func TestCachedGitRef_OnlyNoCacheRevalidates(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
+// A PR's base.sha LAGS its branch by design, so most disagreements are lag,
+// not staleness. The mirror still asks once -- it cannot tell the two apart
+// without asking -- but exactly once: re-absorbing the same lagging sha is not
+// new evidence, and the row it already paid for stands.
+func TestCachedGitRef_LaggingPRBaseCostsOneRefetchNotEvery(t *testing.T) {
+	router, store, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"
-	do(t, router, authedReq("GET", target, nil))
+	seedRefRow(t, store, "heads/main", shaTip, time.Minute)
 	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 	before := atomic.LoadInt32(&u.gitRefHits)
 
-	for _, cc := range []string{"", "max-age=0", "no-store", "no-cache-please"} {
-		req := authedReq("GET", target, nil)
-		if cc != "" {
-			req.Header.Set("Cache-Control", cc)
-		}
-		assert.Equal(t, "hit", do(t, router, req).Header().Get(cacheHeader), "Cache-Control: %q must not revalidate", cc)
+	// Upstream keeps answering shaTip: the ref row was right and the PR's
+	// base.sha is simply behind.
+	openPRWithBase(t, router, 11, "main", shaMid, shaCommit)
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader), "the first disagreement is worth one question")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
+
+	for i := 0; i < 3; i++ {
+		openPRWithBase(t, router, 11, "main", shaMid, shaCommit)
+		assert.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+			"re-absorbing the same lagging base.sha must not re-trigger (round %d)", i)
 	}
-	// Spelling variants that ARE no-cache.
-	for _, cc := range []string{"no-cache", "NO-CACHE", "max-age=0, no-cache"} {
-		req := authedReq("GET", target, nil)
-		req.Header.Set("Cache-Control", cc)
-		assert.Equal(t, "revalidated", do(t, router, req).Header().Get(cacheHeader), "Cache-Control: %q must revalidate", cc)
-	}
-	assert.Equal(t, before+3, atomic.LoadInt32(&u.gitRefHits))
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits), "exactly one refetch for one disagreeing sha")
+}
+
+// Evidence older than the row's own fetch was already accounted for by
+// fetching: a PR absorbed BEFORE the ref read cannot contradict it.
+func TestCachedGitRef_PRBaseOlderThanTheRowIsNotEvidence(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+
+	openPRWithBase(t, router, 12, "main", shaCommit, shaMid)
+	require.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	assert.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits), "the row was fetched after that PR view; nothing to re-ask")
+}
+
+// A PR on a DIFFERENT branch says nothing about this ref.
+func TestCachedGitRef_OtherBranchPRIsNotEvidence(t *testing.T) {
+	router, store, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+	seedRefRow(t, store, "heads/main", shaTip, time.Minute)
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	openPRWithBase(t, router, 13, "release", shaCommit, shaMid)
+	assert.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits))
 }
 
 // A merge is delivered twice -- as a push, and as pull_request/closed. The

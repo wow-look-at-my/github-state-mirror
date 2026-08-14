@@ -85,12 +85,14 @@ Storage and authorization are **separate axes**:
   re-send what never arrived — once per delivery id, 24h lookback, 25 per cycle, logged; and `compare_cache.base_tip_sha`
   records the base tip GitHub says an answer was computed against, so a read can refuse it whatever happened to the flush. Never
   answer a gap with a shorter TTL: that hides the window, it does not close it. docs/webhooks/delivery-gaps.md.
-- **A BRANCH TIP IS THE ANSWER A LOST DELIVERY RUINS WORST, so it is stated twice and is repairable on demand.** A merge is
-  delivered as a push AND as `pull_request`/merged, and both now write the base branch's new tip (`ApplyMergedBaseTip`,
-  ordered against the row's own establishment time) — one lost delivery no longer wedges it. When both are lost, the consumer
-  that can PROVE the tip moved repairs the row with `Cache-Control: no-cache` on the ref route, and reads
-  `X-GSM-Cache: revalidated` back as proof it was refetched rather than replayed. Cross-checking against other cached state
-  cannot substitute: everything else the mirror holds about a tip rides the same delivery stream. docs/cache/stale-tip-repair.md.
+- **A BRANCH TIP IS THE ANSWER A LOST DELIVERY RUINS WORST, and keeping it right is THIS SERVICE's job — never a client's.**
+  A consumer cannot notice a delivery that never arrived, so a "revalidate this for me" request from one is the responsibility
+  inverted (it was the first cut of this fix, and it is rejected). Two internal mechanisms instead: every delivery that STATES
+  the tip applies it — a push's `after`, and now a merged PR's `merge_commit_sha` for its base branch (`ApplyMergedBaseTip`,
+  ordered against the row's own establishment time) — and a stored tip that the mirror's own absorbed PR rows CONTRADICT is
+  refetched rather than served (`GetCachedGitRefChecked`; bounded to one refetch per genuinely new disagreeing sha, since a
+  PR's `base.sha` legitimately lags). PR rows work as evidence because they arrive on a DIFFERENT delivery; the branches list,
+  the compare rows and `KnownBranchTip` do not, and `KnownBranchTip` reads these very rows. docs/cache/stale-tip-repair.md.
 - **A DELIVERY IS A VIEW OF ITS OWN MOMENT, SO A LATE ONE CAN OVERWRITE A NEWER TRUTH.** Idempotence does not help: applying an
   old payload is a correct, repeatable write of superseded state. A merged PR came back OPEN 82 seconds after its merge, from a
   redelivered pre-merge payload, and stayed open for 44 minutes — only open PRs are retained, so the close had DELETED the row,

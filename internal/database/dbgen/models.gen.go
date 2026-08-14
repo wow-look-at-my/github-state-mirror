@@ -194,15 +194,16 @@ type GitCommitsCache struct {
 }
 
 type GitRefCache struct {
-	ID         int64
-	Owner      string
-	Repo       string
-	Ref        string
-	Status     int64
-	Doc        string
-	FetchedAt  string
-	ExpiresAt  string
-	LastUsedAt string
+	ID                int64
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int64
+	Doc               string
+	FetchedAt         string
+	ExpiresAt         string
+	LastUsedAt        string
+	ReconciledAgainst string
 }
 
 type HooksCache struct {

@@ -893,16 +893,21 @@ CREATE TABLE workflow_runs_list_cache (
 -- real ref) or 404 (the "no such ref" VERDICT -- deleted branches are polled
 -- forever by fleet sweeps, and ref creation arrives as a push, which clears
 -- the verdict). doc holds the rendered trimmed body. owner/repo lowercased.
+-- reconciled_against records the contradicting PR base.sha a refetch already
+-- settled (see Store.GetCachedGitRefChecked): a PR's base.sha legitimately
+-- LAGS its branch, so the same lagging value must not buy a refetch on every
+-- read. Empty means no contradiction has been answered for this row.
 CREATE TABLE git_ref_cache (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner        TEXT NOT NULL,              -- lowercased
-    repo         TEXT NOT NULL,              -- lowercased
-    ref          TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
-    status       INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
-    doc          TEXT NOT NULL,              -- trimmed ref document as JSON
-    fetched_at   TEXT NOT NULL,              -- RFC3339
-    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
-    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner              TEXT NOT NULL,              -- lowercased
+    repo               TEXT NOT NULL,              -- lowercased
+    ref                TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
+    status             INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
+    doc                TEXT NOT NULL,              -- trimmed ref document as JSON
+    fetched_at         TEXT NOT NULL,              -- RFC3339
+    expires_at         TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
+    last_used_at       TEXT NOT NULL,              -- RFC3339, for LRU pruning
+    reconciled_against TEXT NOT NULL DEFAULT ''    -- a contradicting PR base.sha this row's fetch already settled
 );
 
 CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);

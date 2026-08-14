@@ -7,8 +7,44 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 )
+
+const contradictingPRBaseTip = `-- name: ContradictingPRBaseTip :one
+SELECT base_ref_oid FROM pull_requests
+WHERE owner = ? AND repo = ? AND base_ref_name = ?
+  AND base_ref_oid IS NOT NULL AND base_ref_oid != '' AND base_ref_oid != ?
+  AND touched_at > ?
+ORDER BY touched_at DESC
+LIMIT 1
+`
+
+type ContradictingPRBaseTipParams struct {
+	Owner       string
+	Repo        string
+	BaseRefName sql.NullString
+	BaseRefOid  sql.NullString
+	TouchedAt   string
+}
+
+// ContradictingPRBaseTip finds an absorbed OPEN PR whose base branch is this
+// ref and whose base.sha is NOT the sha this row serves -- evidence, from a
+// view absorbed AFTER the row was fetched, that the row has moved on.
+// Newest-absorbed first, so several PRs on one branch settle deterministically
+// on one refetch rather than taking turns re-triggering it.
+func (q *Queries) ContradictingPRBaseTip(ctx context.Context, arg ContradictingPRBaseTipParams) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, contradictingPRBaseTip,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.BaseRefOid,
+		arg.TouchedAt,
+	)
+	var base_ref_oid sql.NullString
+	err := row.Scan(&base_ref_oid)
+	return base_ref_oid, err
+}
 
 const countWorkflowRuns = `-- name: CountWorkflowRuns :one
 SELECT COUNT(*) FROM workflow_runs
@@ -1161,7 +1197,7 @@ func (q *Queries) GetGitCommitMissCache(ctx context.Context, arg GetGitCommitMis
 
 const getGitRefCache = `-- name: GetGitRefCache :one
 
-SELECT id, owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at FROM git_ref_cache
+SELECT id, owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against FROM git_ref_cache
 WHERE owner = ? AND repo = ? AND ref = ?
 `
 
@@ -1185,6 +1221,7 @@ func (q *Queries) GetGitRefCache(ctx context.Context, arg GetGitRefCacheParams) 
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
+		&i.ReconciledAgainst,
 	)
 	return i, err
 }
@@ -2715,25 +2752,30 @@ func (q *Queries) UpsertGitCommitMissCache(ctx context.Context, arg UpsertGitCom
 }
 
 const upsertGitRefCache = `-- name: UpsertGitRefCache :exec
-INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref) DO UPDATE SET
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at
+    last_used_at = excluded.last_used_at,
+    -- An empty value LEAVES the recorded contradiction alone: a push applying
+    -- its own tip settles nothing about a lagging PR base.sha, and clearing
+    -- the memory there would re-arm a refetch the row already paid for.
+    reconciled_against = CASE WHEN excluded.reconciled_against = '' THEN git_ref_cache.reconciled_against ELSE excluded.reconciled_against END
 `
 
 type UpsertGitRefCacheParams struct {
-	Owner      string
-	Repo       string
-	Ref        string
-	Status     int64
-	Doc        string
-	FetchedAt  string
-	ExpiresAt  string
-	LastUsedAt string
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int64
+	Doc               string
+	FetchedAt         string
+	ExpiresAt         string
+	LastUsedAt        string
+	ReconciledAgainst string
 }
 
 func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCacheParams) error {
@@ -2746,6 +2788,7 @@ func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCachePa
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
+		arg.ReconciledAgainst,
 	)
 	return err
 }
