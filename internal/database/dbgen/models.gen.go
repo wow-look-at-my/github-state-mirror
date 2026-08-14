@@ -399,6 +399,14 @@ type WebhookReplay struct {
 	RequestedAt string
 }
 
+type WebhookWatermark struct {
+	Subject    string
+	EventTime  string
+	DeliveryID string
+	EventType  string
+	UpdatedAt  string
+}
+
 type WorkflowJob struct {
 	Owner        string
 	Repo         string

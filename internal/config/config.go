@@ -35,6 +35,16 @@ const (
 	maxPassthroughDebounce     = 30 * time.Second
 )
 
+// defaultWebhookReorderWindow / maxWebhookReorderWindow bound the
+// delivery-reordering hold (see WEBHOOK_REORDER_WINDOW). GitHub gives a
+// webhook endpoint single-digit seconds to answer and every delivery waits
+// this window before dispatch, so a value near that limit would trade correct
+// ordering for the failed deliveries ordering exists to prevent.
+const (
+	defaultWebhookReorderWindow = 2 * time.Second
+	maxWebhookReorderWindow     = 5 * time.Second
+)
+
 type Config struct {
 	ListenAddr    string
 	DBPath        string
@@ -56,6 +66,15 @@ type Config struct {
 	// fleet-sweep polling of unmodelable endpoints into one call per window,
 	// and it prices an uncacheable read into the caller's own latency.
 	PassthroughDebounce time.Duration
+
+	// WebhookReorderWindow is how long a delivery is held so other deliveries
+	// for the SAME subject can be sorted with it and applied oldest-first
+	// (internal/sync/reorder.go). 0 dispatches on arrival, leaving the
+	// watermark gate to refuse whatever arrives out of order. It is bounded
+	// hard: every delivery pays this in latency, and GitHub's own delivery
+	// timeout is single-digit seconds, so a window long enough to abandon a
+	// delivery must fail at startup rather than at 3am.
+	WebhookReorderWindow time.Duration
 
 	// CacheMaxRows is the per-table row ceiling for the response caches
 	// (cmd/server applies it to ghdata.CacheMaxRows at startup). One knob for
@@ -101,16 +120,21 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	reorderWindow, err := parseWebhookReorderWindow(os.Getenv("WEBHOOK_REORDER_WINDOW"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
-		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
-		DBPath:              envOr("DB_PATH", "github-mirror.db"),
-		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
-		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
-		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval:     refreshInterval,
-		ReplayInterval:      replayInterval,
-		PassthroughDebounce: debounce,
-		CacheMaxRows:        cacheMaxRows,
+		ListenAddr:           envOr("LISTEN_ADDR", ":8080"),
+		DBPath:               envOr("DB_PATH", "github-mirror.db"),
+		WebhookSecret:        os.Getenv("WEBHOOK_SECRET"),
+		SubscriptionsDBPath:  os.Getenv("SUBSCRIPTIONS_DB_PATH"),
+		AllowedOrigins:       parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RefreshInterval:      refreshInterval,
+		ReplayInterval:       replayInterval,
+		PassthroughDebounce:  debounce,
+		WebhookReorderWindow: reorderWindow,
+		CacheMaxRows:         cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),
@@ -187,6 +211,27 @@ func parseReplayInterval(s string) (time.Duration, error) {
 // implausibly long values are errors the server refuses to start on — the
 // window adds latency to every uncacheable read, so a fat-fingered "5m" must fail
 // loudly at boot instead of wedging the API.
+// parseWebhookReorderWindow parses WEBHOOK_REORDER_WINDOW. The ceiling is the
+// point at which holding a delivery starts risking GitHub's delivery timeout,
+// which would turn a latency knob into lost deliveries -- the exact failure the
+// reordering exists to reduce.
+func parseWebhookReorderWindow(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultWebhookReorderWindow, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must not be negative (0 dispatches on arrival)", s)
+	}
+	if d > maxWebhookReorderWindow {
+		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must be <= %s (every delivery waits it, and GitHub times deliveries out)", s, maxWebhookReorderWindow)
+	}
+	return d, nil
+}
+
 func parsePassthroughDebounce(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultPassthroughDebounce, nil

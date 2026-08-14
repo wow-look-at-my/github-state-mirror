@@ -77,9 +77,52 @@ export interface MissingSubscription {
     effect: string;
 }
 
+// One delivery the ordering gate refused: it carried a view of a subject that
+// a newer delivery had already applied.
+export interface OutOfOrderSample {
+    at: string;
+    event_type: string;
+    action?: string;
+    repo?: string;
+    subject: string;
+    delivery_id?: string;
+    superseded_by?: string;
+    lateness_seconds: number;
+    // True when the refused delivery still contributed facts that cannot be
+    // stale (today: a push's commit objects, which no later push restates).
+    still_absorbed: boolean;
+    clock_field?: string;
+    event_time: string;
+    watermark_time: string;
+}
+
+// What the out-of-order gate has seen since this process started. GitHub
+// orders nothing, so a non-zero superseded count is normal; the bands are what
+// distinguish ordinary delivery jitter from something holding deliveries back.
+export interface OrderingSnapshot {
+    ordered: number;
+    superseded: number;
+    unorderable: number;
+    failed: number;
+    superseded_within_grace: number;
+    superseded_beyond_grace: number;
+    grace_seconds: number;
+    worst_lateness_seconds: number;
+    mean_lateness_seconds: number;
+    by_event?: Record<string, number> | null;
+    recent?: OutOfOrderSample[] | null;
+    // The reorder window's own numbers. `held` with a zero `reordered` is the
+    // window costing latency and buying nothing.
+    held: number;
+    reordered: number;
+    mean_hold_seconds: number;
+    reorder_window_seconds: number;
+}
+
 export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
     missing_subscriptions?: MissingSubscription[] | null;
+    ordering?: OrderingSnapshot | null;
 }
 
 // ---- request activity (cache hit/miss/passthrough/write) ----

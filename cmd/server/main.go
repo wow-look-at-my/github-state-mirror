@@ -92,8 +92,11 @@ func main() {
 	// straight to global truth).
 	app := buildAppAuthenticator(cfg, gh)
 
-	// Webhook dispatcher: applies every stateful event to global truth.
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
+	// Webhook dispatcher: applies every stateful event to global truth, in the
+	// order the events HAPPENED rather than the order GitHub's deliveries
+	// arrived -- a short reorder window sorts what lands close together, and a
+	// per-subject watermark refuses whatever is older than that.
+	dispatcher := syncpkg.NewWebhookDispatcherWindowed(mgr, store, cfg.WebhookReorderWindow)
 
 	// Subscriber notifier: after each dispatched delivery it POSTs signed
 	// notifications to matching subscriptions, reveal-gated per principal

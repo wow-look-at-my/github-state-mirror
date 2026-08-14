@@ -752,6 +752,33 @@ CREATE TABLE webhook_deliveries (
     detail       TEXT NOT NULL DEFAULT ''    -- human summary, e.g. "upserted PR #42"
 );
 
+-- The newest view of each SUBJECT this mirror has applied, so an older one
+-- arriving later can be recognized as superseded rather than written over it.
+-- GitHub does not order deliveries and never claims to; two views of one
+-- resource can arrive in either order, and applying the older one second is a
+-- correct, repeatable write of stale state (a merged PR came back OPEN 82
+-- seconds after its merge exactly that way).
+--
+-- subject is the RESOURCE the view is of, at the grain that actually
+-- supersedes -- "pr:owner/repo#12", "status:owner/repo:<sha>:<context>",
+-- "check_run:owner/repo:<id>" (webhook.OrderOf). Coarser keys would let one
+-- resource's event discard another's. event_time is the payload's own clock
+-- for that subject, always a GitHub-set field, never a user-set one (a push
+-- uses repository.pushed_at, never head_commit.timestamp).
+--
+-- Observability, not truth: the rows only gate writes, and losing them (a
+-- nuke, a prune) costs at most a window in which an out-of-order delivery is
+-- applied as it always was. Pruned by age on write.
+CREATE TABLE webhook_watermarks (
+    subject     TEXT PRIMARY KEY,           -- the resource, at superseding grain
+    event_time  TEXT NOT NULL,              -- RFC3339, from the payload's own clock
+    delivery_id TEXT NOT NULL DEFAULT '',   -- X-GitHub-Delivery of the view that set it
+    event_type  TEXT NOT NULL DEFAULT '',   -- X-GitHub-Event of that view
+    updated_at  TEXT NOT NULL               -- RFC3339 receipt time, for pruning
+);
+
+CREATE INDEX idx_webhook_watermarks_pruning ON webhook_watermarks (updated_at);
+
 -- Deliveries this mirror has already asked GitHub to send again. GitHub keeps
 -- its own log of deliveries it could not hand over and will re-send one on
 -- request, but it never retries by itself -- so a delivery lost to a restart

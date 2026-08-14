@@ -15,6 +15,14 @@ const (
 	DispInvalidated = "invalidated" // marked freshness stale (fallback / structural change)
 	DispIgnored     = "ignored"     // an event or action the mirror does not track
 	DispError       = "error"       // an internal (store) failure — GitHub should retry
+	// DispSuperseded marks a delivery this mirror has already seen PAST: a
+	// strictly newer view of the same subject was applied, so writing this one
+	// would replace current state with stale state. It is a successful
+	// outcome, not a failure — the state it carries is already present in a
+	// newer form — and it is reported separately from `ignored` because the
+	// two mean opposite things: ignored is "nothing here to store", superseded
+	// is "this arrived out of order".
+	DispSuperseded = "superseded"
 )
 
 // DispatchResult summarizes what Dispatch did with one webhook event. The
@@ -30,9 +38,9 @@ type DispatchResult struct {
 
 // StatusCode maps a disposition to the HTTP status returned to GitHub:
 //
-//   - applied                 -> 200 OK   (data written to global truth)
-//   - ignored / invalidated   -> 202      (received, no data applied)
-//   - error                   -> 500      (transient; GitHub retries)
+//   - applied                            -> 200 OK   (data written to global truth)
+//   - ignored / invalidated / superseded -> 202      (received, no data applied)
+//   - error                              -> 500      (transient; GitHub retries)
 //
 // Every non-error outcome is 2xx so GitHub never disables a healthy webhook over
 // a legitimate no-op, while the 200-vs-202 split lets an operator tell at a

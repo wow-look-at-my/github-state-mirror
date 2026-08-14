@@ -245,7 +245,7 @@ func NewRouter(
 	if app != nil {
 		appEvents = app.SubscribedEvents
 	}
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each

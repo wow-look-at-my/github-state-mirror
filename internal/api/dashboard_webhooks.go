@@ -6,6 +6,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 // The dashboard's Webhooks tab: the delivery log, plus the check for event
@@ -24,6 +25,12 @@ type webhooksResponse struct {
 	// App cannot be asked: "I could not determine this" must never render as
 	// "these are missing".
 	MissingSubscriptions []missingSubscription `json:"missing_subscriptions,omitempty"`
+	// Ordering is what the out-of-order gate has seen since this process
+	// started: how many deliveries arrived behind a view already applied, how
+	// far behind, and the recent ones in full. GitHub orders nothing, so this
+	// is not an anomaly counter -- it is the only place the rate of it is
+	// visible at all.
+	Ordering *syncpkg.OrderingSnapshot `json:"ordering,omitempty"`
 }
 
 type missingSubscription struct {
@@ -48,7 +55,14 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 	if deliveries == nil {
 		deliveries = []ghdata.WebhookDelivery{}
 	}
-	writeJSON(w, webhooksResponse{Deliveries: deliveries, MissingSubscriptions: d.missingSubscriptions(r)})
+	var ordering *syncpkg.OrderingSnapshot
+	if d.ordering != nil {
+		snap := d.ordering()
+		ordering = &snap
+	}
+	writeJSON(w, webhooksResponse{
+		Deliveries: deliveries, MissingSubscriptions: d.missingSubscriptions(r), Ordering: ordering,
+	})
 }
 
 // missingSubscriptions asks the App which events it is subscribed to and
