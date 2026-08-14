@@ -26,12 +26,30 @@ import (
 // three kinds on every CI delivery therefore threw away answers the delivery
 // could not have changed, on the routes the fleet polls hardest.
 //
-// A `status` delivery goes further than flushing its own kinds: it CARRIES the
-// status, which is everything both status-shaped documents hold, so the store
-// rewrites them and drops only what it cannot prove (see
-// SettleCommitCIFromStatus). A check delivery has no equivalent yet -- see
-// docs/webhooks/invalidations.md.
+// Both delivery kinds then go further than flushing their own kinds, because
+// both CARRY the thing their documents hold: a `status` rewrites the two
+// status-shaped documents (SettleCommitCIFromStatus) and a `check_run`
+// rewrites the check-runs listing (ApplyCheckRunToCommitCI), each dropping
+// only what it cannot prove. A `check_suite` carries no runs and keeps the
+// flush. docs/webhooks/invalidations.md has the ordering measurements both
+// rewrites rest on.
 func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, repo string, event webhook.Event, refs []string) {
+	if event.Type == "check_run" {
+		// A check run is UPDATED in place upstream -- the same id moves
+		// queued -> in_progress -> completed -- so the delivery states the new
+		// value of one entry and the page keeps its shape.
+		if raw, ok := webhook.CheckRunObject(event.Raw); ok {
+			if run, ok := ghdata.TrimCheckRunJSON(raw); ok {
+				applied, err := d.store.ApplyCheckRunToCommitCI(ctx, owner, repo, run, time.Now(), ghdata.CommitCICacheTTL)
+				if err != nil {
+					flush("check run apply", scope, err)
+				}
+				if applied {
+					return
+				}
+			}
+		}
+	}
 	if event.Type != "status" {
 		for _, ref := range refs {
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRefKind(ctx, owner, repo, ref, ghdata.CommitCIKindCheckRuns))

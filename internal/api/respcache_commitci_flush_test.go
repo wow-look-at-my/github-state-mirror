@@ -187,6 +187,46 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 	}
 }
 
+// A check run is UPDATED IN PLACE upstream -- the same id moves queued ->
+// in_progress -> completed -- so a delivery states the new value of one entry
+// and the stored page keeps its shape. The pin is the same as the status one:
+// the rewritten page must be what a fetch would now return, byte for byte.
+func TestCachedCommitCI_CheckRunEventRewritesThePage(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	target := "/repos/org1/repo1/commits/" + shaTip + "/check-runs"
+
+	runs := func(status string, conclusion, completedAt any) map[string]any {
+		return map[string]any{"total_count": 2, "check_runs": []any{
+			upstreamCheckRun(101, "build/"+shaTip, "completed", "success", "2026-07-01T10:00:00Z", "2026-07-01T10:04:00Z"),
+			upstreamCheckRun(102, "test/"+shaTip, status, conclusion, "2026-07-01T10:01:00Z", completedAt),
+		}}
+	}
+	u.checkRuns = func(w http.ResponseWriter, _ *http.Request) {
+		servePRJSON(w, runs("in_progress", nil, nil))
+	}
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits))
+
+	finished := upstreamCheckRun(102, "test/"+shaTip, "completed", "success",
+		"2026-07-01T10:01:00Z", "2026-07-01T10:06:00Z")
+	postWebhookJSON(t, router, "check_run", map[string]any{
+		"action": "completed", "check_run": finished, "repository": fixtureRepo(),
+	})
+
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the delivery answered it; nothing to re-fetch")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits), "a rewrite must cost no upstream call")
+
+	u.checkRuns = func(w http.ResponseWriter, _ *http.Request) {
+		servePRJSON(w, runs("completed", "success", "2026-07-01T10:06:00Z"))
+	}
+	fresh := do(t, router, authedReq("GET", target+"?per_page=100", nil))
+	require.Equal(t, "miss", fresh.Header().Get(cacheHeader), "a different page shape is its own row")
+	assert.Equal(t, fresh.Body.String(), w.Body.String(),
+		"the rewritten page must be byte-identical to the fetch it saved")
+}
+
 // TestCachedCommitCI_StatusEventRewritesTheCombinedDoc is the identity pin for
 // the rewrite: a status delivery's effect on a stored document must be
 // indistinguishable from the fetch it saved. The stored answer after the

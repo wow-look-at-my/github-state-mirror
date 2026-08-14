@@ -369,79 +369,21 @@ func absorbStatusesList(trimmed []byte) (string, bool) {
 	return string(rendered), true
 }
 
-// appIDJSON is a check run's producing app, trimmed to its id -- the one app
-// field the org's known consumer contract (required-builds-manager's
-// own-check filter) branches on. The rest of GitHub's app object (slug, name,
-// owner, permissions, events, urls) is dropped.
-type appIDJSON struct {
-	ID int64 `json:"id"`
-}
-
-// checkRunOutputJSON is a check run's output, trimmed to its title -- the one
-// output field the consumers read (required-builds renders output.title on
-// its breakdown page; survey 2026-07-11). summary/text stay dropped: they are
-// UNBOUNDED display markdown no mirror-pointed consumer reads.
-type checkRunOutputJSON struct {
-	Title *string `json:"title"` // nullable; key always emitted
-}
-
-// checkRunItemJSON is one trimmed entry of the check_runs array: the bounded
-// state fields a CI watcher branches on. conclusion/started_at/completed_at
-// are nullable while a run is queued/in progress and the keys are always
-// emitted, exactly as upstream. The 2026-07-11 consumer survey re-added three
-// fields the 2026-07-05 survey had dropped -- required-builds reads
-// output.title (trimmed to exactly that; see checkRunOutputJSON) and renders
-// details_url/html_url as its breakdown links, so both URL fields are PINNED
-// exceptions to the no-URL doctrine (nullable pointers, keys always emitted:
-// GitHub sends details_url null for runs without one). Still dropped: `url`,
-// node_id/external_id, check_suite, pull_requests, and the rest of `output`
-// (summary/text -- unbounded display markdown).
-type checkRunItemJSON struct {
-	ID          int64              `json:"id"`
-	HeadSHA     string             `json:"head_sha"`
-	Name        string             `json:"name"`
-	Status      string             `json:"status"`
-	Conclusion  *string            `json:"conclusion"`   // nullable until completed
-	StartedAt   *string            `json:"started_at"`   // nullable while queued
-	CompletedAt *string            `json:"completed_at"` // nullable until completed
-	App         *appIDJSON         `json:"app"`          // nullable; trimmed to {id}
-	Output      checkRunOutputJSON `json:"output"`       // always emitted; trimmed to {title}
-	DetailsURL  *string            `json:"details_url"`  // nullable; pinned consumer-read exception
-	HTMLURL     *string            `json:"html_url"`     // nullable; pinned consumer-read exception
-}
-
-// checkRunsJSON is the trimmed rebuild of a check-runs listing:
-// {total_count, check_runs:[...]}. total_count is GitHub's TOTAL (it can
-// exceed the page the bare query returned -- the snapshot is that exact
-// query's answer, like the commits list).
-type checkRunsJSON struct {
-	TotalCount int64              `json:"total_count"`
-	CheckRuns  []checkRunItemJSON `json:"check_runs"`
-}
+// The trimmed check-run shapes live in the store: a `check_run` delivery
+// rewrites one entry inside a stored page, so the render and the rewrite must
+// agree byte for byte and there is exactly one definition of each.
+type (
+	checkRunItemJSON = ghdata.StoredCheckRun
+	checkRunsJSON    = ghdata.StoredCheckRunsPage
+)
 
 // absorbCheckRuns parses a check-runs 200 into the trimmed document. The
 // check_runs array must be PRESENT (always present upstream, empty when the
 // ref has none) and every run must carry a status and a full-hex head sha.
 func absorbCheckRuns(trimmed []byte) (string, bool) {
 	var raw struct {
-		TotalCount int64 `json:"total_count"`
-		CheckRuns  *[]struct {
-			ID          int64   `json:"id"`
-			HeadSHA     string  `json:"head_sha"`
-			Name        string  `json:"name"`
-			Status      string  `json:"status"`
-			Conclusion  *string `json:"conclusion"`
-			StartedAt   *string `json:"started_at"`
-			CompletedAt *string `json:"completed_at"`
-			App         *struct {
-				ID int64 `json:"id"`
-			} `json:"app"`
-			Output *struct {
-				Title *string `json:"title"`
-			} `json:"output"`
-			DetailsURL *string `json:"details_url"`
-			HTMLURL    *string `json:"html_url"`
-		} `json:"check_runs"`
+		TotalCount int64                 `json:"total_count"`
+		CheckRuns  *[]ghdata.RawCheckRun `json:"check_runs"`
 	}
 	if err := json.Unmarshal(trimmed, &raw); err != nil || raw.CheckRuns == nil {
 		return "", false
@@ -451,22 +393,9 @@ func absorbCheckRuns(trimmed []byte) (string, bool) {
 		CheckRuns:  make([]checkRunItemJSON, 0, len(*raw.CheckRuns)),
 	}
 	for _, cr := range *raw.CheckRuns {
-		sha := strings.ToLower(cr.HeadSHA)
-		if cr.Status == "" || !isFullHexSHA(sha) {
+		item, ok := ghdata.TrimCheckRun(cr)
+		if !ok {
 			return "", false
-		}
-		item := checkRunItemJSON{
-			ID: cr.ID, HeadSHA: sha, Name: cr.Name, Status: cr.Status,
-			Conclusion: cr.Conclusion, StartedAt: cr.StartedAt, CompletedAt: cr.CompletedAt,
-			DetailsURL: cr.DetailsURL, HTMLURL: cr.HTMLURL,
-		}
-		if cr.App != nil {
-			item.App = &appIDJSON{ID: cr.App.ID}
-		}
-		// GitHub always sends the output object on real check runs; a missing
-		// or null one still rebuilds as {"title": null} so the key is stable.
-		if cr.Output != nil {
-			item.Output = checkRunOutputJSON{Title: cr.Output.Title}
 		}
 		doc.CheckRuns = append(doc.CheckRuns, item)
 	}

@@ -207,6 +207,100 @@ func TestPatchStatusesList_RefusesAnOlderStatusAndLaterPages(t *testing.T) {
 	assert.False(t, ok, "only the first page has a known head")
 }
 
+func checkRun(id int64, status string, startedAt *string) StoredCheckRun {
+	return StoredCheckRun{ID: id, HeadSHA: ciSHA, Name: "build", Status: status, StartedAt: startedAt}
+}
+
+func checkRunsDoc(t *testing.T, runs ...StoredCheckRun) string {
+	t.Helper()
+	b, err := MarshalCacheDoc(StoredCheckRunsPage{TotalCount: int64(len(runs)), CheckRuns: runs})
+	require.NoError(t, err)
+	return string(b)
+}
+
+// A check run keeps its id across the whole lifecycle, and the listing is
+// ordered by id, so a rewrite replaces the entry where it stands and every
+// other run is untouched.
+func TestPatchCheckRunsPage_ReplacesInPlace(t *testing.T) {
+	started := "2026-07-01T10:00:00Z"
+	doc := checkRunsDoc(t, checkRun(2, "completed", &started), checkRun(1, "in_progress", &started))
+
+	done := checkRun(1, "completed", &started)
+	concl := "failure"
+	done.Conclusion = &concl
+	got, ok := patchCheckRunsPage(doc, 30, 1, done)
+	require.True(t, ok)
+
+	var page StoredCheckRunsPage
+	require.NoError(t, json.Unmarshal([]byte(got), &page))
+	assert.Equal(t, []int64{2, 1}, []int64{page.CheckRuns[0].ID, page.CheckRuns[1].ID}, "order is by id, unmoved")
+	assert.Equal(t, "completed", page.CheckRuns[1].Status)
+	require.NotNil(t, page.CheckRuns[1].Conclusion)
+	assert.Equal(t, "failure", *page.CheckRuns[1].Conclusion)
+}
+
+func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
+	started := "2026-07-01T10:00:00Z"
+	full := checkRunsDoc(t, checkRun(1, "in_progress", &started))
+
+	t.Run("a page other than the first", func(t *testing.T) {
+		_, ok := patchCheckRunsPage(full, 30, 2, checkRun(1, "completed", &started))
+		assert.False(t, ok)
+	})
+
+	t.Run("a run the page does not list", func(t *testing.T) {
+		_, ok := patchCheckRunsPage(full, 30, 1, checkRun(99, "queued", nil))
+		assert.False(t, ok, "a new check run is a membership change only a fetch settles")
+	})
+
+	t.Run("a page that does not hold every run", func(t *testing.T) {
+		var page StoredCheckRunsPage
+		require.NoError(t, json.Unmarshal([]byte(full), &page))
+		page.TotalCount = 9
+		partial, err := MarshalCacheDoc(page)
+		require.NoError(t, err)
+		_, ok := patchCheckRunsPage(string(partial), 30, 1, checkRun(1, "completed", &started))
+		assert.False(t, ok)
+	})
+
+	t.Run("a queued run gaining a start time", func(t *testing.T) {
+		queued := checkRunsDoc(t, checkRun(1, "queued", nil))
+		_, ok := patchCheckRunsPage(queued, 30, 1, checkRun(1, "in_progress", &started))
+		assert.False(t, ok, "the one transition whose position the ordering measurement does not cover")
+	})
+}
+
+// A page about a DIFFERENT commit is not this delivery's business. The page
+// carries no sha of its own -- every entry does -- which is what makes it
+// identifiable at all.
+func TestApplyCheckRunToCommitCI_LeavesOtherCommitsAlone(t *testing.T) {
+	s := testStore(t)
+	ctx, now := context.Background(), time.Now()
+	const otherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	started := "2026-07-01T10:00:00Z"
+
+	elsewhere := checkRun(5, "completed", &started)
+	elsewhere.HeadSHA = otherSHA
+	otherDoc := checkRunsDoc(t, elsewhere)
+	for _, seed := range []struct{ ref, doc string }{
+		{"main", checkRunsDoc(t, checkRun(1, "in_progress", &started))},
+		{"release", otherDoc},
+	} {
+		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
+			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindCheckRuns, Doc: seed.doc,
+		}, 30, 1, now, time.Hour))
+	}
+
+	applied, err := s.ApplyCheckRunToCommitCI(ctx, "org1", "repo1", checkRun(1, "completed", &started), now, CommitCICacheTTL)
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	got, ok, err := s.GetCachedCommitCI(ctx, "org1", "repo1", "release", CommitCIKindCheckRuns, 30, 1, now)
+	require.NoError(t, err)
+	require.True(t, ok, "a page about another commit was not moved by this run")
+	assert.Equal(t, otherDoc, got.Doc)
+}
+
 // SettleCommitCIFromStatus decides which ROWS it may touch from what the
 // payload can identify, not from the spellings the caller names: a combined
 // status states the sha it resolved to, so a branch-form row pointing at

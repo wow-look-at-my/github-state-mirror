@@ -166,6 +166,116 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 	return nil
 }
 
+// ApplyCheckRunToCommitCI writes a `check_run` delivery's own run object into
+// every cached check-runs page that already lists it. Reports false when
+// nothing could be rewritten and the caller should flush instead.
+//
+// Which rows it reaches, like the combined status, is decided by what the
+// payload can identify: every entry of a check-runs page carries its
+// `head_sha`, so a page describing this commit is recognizable from its own
+// contents whatever ref spelling it is keyed by.
+//
+// Unlike a commit status, a check run is UPDATED IN PLACE upstream -- the same
+// id goes queued -> in_progress -> completed -- so a rewrite does not have to
+// decide where the entry belongs. That the listing's order is stable under an
+// update is measured, not assumed (github-state-mirror#88's head commit,
+// sampled twice across a status transition): it is id-descending, and the one
+// sample that discriminates is a run with a LOWER id and a LATER completed_at
+// sorting after a higher-id one, which rules out completion ordering.
+func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) (bool, error) {
+	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
+		return false, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	rows, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindCheckRuns,
+	})
+	if err != nil {
+		return false, err
+	}
+	applied := false
+	for _, row := range rows {
+		patched, ok := patchCheckRunsPage(row.Doc, row.PerPage, row.Page, run)
+		if !ok {
+			if !checkRunsPageDescribes(row.Doc, run.HeadSHA) {
+				continue // a page about another commit: this run did not move it
+			}
+			if derr := s.deleteCommitCIRow(ctx, ownerKey, repoKey, row); derr != nil {
+				return false, derr
+			}
+			continue
+		}
+		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
+			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Doc: patched,
+		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
+			return false, perr
+		}
+		applied = true
+	}
+	return applied, nil
+}
+
+// checkRunsPageDescribes reports whether a stored check-runs page is an answer
+// ABOUT this commit. The page carries no sha of its own, but every ENTRY does,
+// so a non-empty page identifies itself. An empty page names no commit at all
+// and is left alone -- a run appearing on it is a membership change the flush
+// for the payload's own ref spellings already covers.
+func checkRunsPageDescribes(doc, sha string) bool {
+	var page StoredCheckRunsPage
+	if err := json.Unmarshal([]byte(doc), &page); err != nil || len(page.CheckRuns) == 0 {
+		return false
+	}
+	for _, cr := range page.CheckRuns {
+		if cr.HeadSHA != sha {
+			return false
+		}
+	}
+	return true
+}
+
+// patchCheckRunsPage rewrites a stored check-runs page from the delivery,
+// replacing the run's entry where it stands.
+//
+// Reports false -- the caller drops the row instead -- for a page other than
+// the first, a page that does not hold every run (total_count above its own
+// length), a run the page does not list (a new check run is a membership
+// change only a fetch settles), and the one transition whose POSITION could
+// move: a queued run gaining a `started_at`. The listing is ordered by id, so
+// an update cannot move an entry -- but a queued run has no start time at all,
+// and refusing that single case costs one flush instead of resting the whole
+// rewrite on the ordering measurement holding for a field that was null.
+func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (string, bool) {
+	if page != 1 {
+		return "", false
+	}
+	var stored StoredCheckRunsPage
+	if err := json.Unmarshal([]byte(doc), &stored); err != nil {
+		return "", false
+	}
+	if stored.TotalCount != int64(len(stored.CheckRuns)) || int64(len(stored.CheckRuns)) > perPage {
+		return "", false
+	}
+	found := false
+	for i := range stored.CheckRuns {
+		if stored.CheckRuns[i].ID != run.ID {
+			continue
+		}
+		if stored.CheckRuns[i].StartedAt == nil && run.StartedAt != nil {
+			return "", false
+		}
+		stored.CheckRuns[i] = run
+		found = true
+	}
+	if !found {
+		return "", false
+	}
+	rendered, err := MarshalCacheDoc(stored)
+	if err != nil {
+		return "", false
+	}
+	return string(rendered), true
+}
+
 // InvalidateCommitCIForRefKind drops one ref spelling's snapshots of ONE kind.
 // A check delivery uses it for the check-runs kind: a check run never appears
 // in a commit's statuses, so flushing those rows too would re-fetch answers

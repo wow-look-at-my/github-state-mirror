@@ -30,8 +30,8 @@ import (
 //     the workflow-runs pages; an unparseable payload falls back repo-wide
 //     for both, as does a (today impossible) parsed payload with no sha for
 //     the workflow-runs pages. Within those refs the grain is the KIND, and a
-//     `status` delivery REWRITES the two status-shaped documents from its own
-//     payload rather than dropping them -- see settleCommitCI.
+//     `status` or `check_run` delivery REWRITES the documents its own payload
+//     states rather than dropping them -- see settleCommitCI.
 //   - workflow_job: the job's head_sha flushes that sha's workflow-runs
 //     pages (repo-wide when absent). This runs for EVERY delivery -- before
 //     the disposition logic -- so queued/waiting jobs, which onWorkflowJob

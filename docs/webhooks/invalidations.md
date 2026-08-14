@@ -54,7 +54,7 @@ bookkeeping and which no test can classify for you.
 | `commit_checks` truth | **applied** | the payload's state is written directly. |
 | PR `mergeable_state` | **applied-as-unresolved** | a CI result is the only thing that moves unstable/blocked ↔ clean, and no payload carries the recomputed value. |
 | `commit_ci_cache`, the `/status` and `/statuses` docs, on a `status` event | **applied** | the payload IS the status, whole. `SettleCommitCIFromStatus` rewrites both documents from it — see "The status rewrite" below for the ordering rules that make the result exact rather than plausible — and drops only what a stored page cannot provably hold. |
-| `commit_ci_cache`, the `/check-runs` docs, on a check event | **Owed** | a `check_run` delivery carries the whole run object, which is what the listing holds. The same conversion applies and has not been written; unlike the statuses array, the listing's ordering has not been measured, and a guess there produces a document a fetch would not have returned. |
+| `commit_ci_cache`, the `/check-runs` docs, on a `check_run` event | **applied** | the delivery carries the whole run object, which is one entry of that listing. Unlike a status, a check run is UPDATED IN PLACE upstream — the same id moves queued → in_progress → completed — so the rewrite replaces the entry where it stands. See "The check-run rewrite" below for the ordering measurement that makes "where it stands" a fact rather than a hope. A `check_suite` delivery carries no runs and keeps the flush. |
 | the OTHER kinds, on either event | **applied** (nothing to do) | a commit status never appears in a check-runs listing and a check run never appears in a commit's statuses. Flushing all three kinds on every CI delivery re-fetched answers the delivery could not have changed; each now flushes only its own surface. |
 | `workflow_runs_cache` (sha pages) | **Owed** | a `workflow_run` delivery carries the whole run object, which is what these pages list. Same shape of conversion, same missing measurement. |
 
@@ -123,6 +123,31 @@ is provably about this commit and the branch spellings still flush.
 `TestCachedCommitCI_StatusEventRewritesTheCombinedDoc` (internal/api) is the
 pin: it byte-compares a rewritten document against the fetch it saved.
 
+## The check-run rewrite
+
+A check run is not a status. A status is APPEND-ONLY (re-posting a context
+mints a new object), while a check run is UPDATED IN PLACE — one id carries the
+run from queued through completed. So the rewrite never has to decide where an
+entry goes; it only has to know that the entry does not MOVE when it changes.
+
+That was measured, not assumed (`github-state-mirror#88`'s head commit, sampled
+twice across a status transition). The listing is **id-descending**, and the
+sample that discriminates is a run with a LOWER id and a LATER `completed_at`
+sorting AFTER a higher-id one — which rules out completion ordering. The order
+was byte-identical across both samples while one run went in_progress →
+completed.
+
+Refused, so the caller flushes: a page other than the first, a page that does
+not hold every run (`total_count` above its own length), a run the page does
+not list (a new check run is a membership change only a fetch settles), and one
+transition the measurement does not cover — a QUEUED run gaining a
+`started_at`. Under id ordering that entry cannot move, but a queued run has no
+start time at all, and one flush is cheaper than resting the rewrite on the
+measurement holding for a field that was null.
+
+A page carries no sha of its own; every ENTRY does, which is what makes a page
+about another commit recognizable and left alone.
+
 ## Live job state
 
 The Actions job reads were the largest passthrough in the mirror by a wide
@@ -181,12 +206,12 @@ objects, not the trees they point at).
 
 ## Owed, in order
 
-1. `commit_ci_cache`'s check-runs documents on a `check_run` delivery — the
-   same rewrite the status half now does. Needs the listing's ordering
-   measured first, the way the statuses arrays were.
-2. `workflow_runs_cache` on workflow_run — same shape.
-3. `commits_list_cache` on push — needs the absent-vs-unknown modelling first.
-4. The compare rework — needs tree storage, and retires two entries above.
+1. `workflow_runs_cache` on `workflow_run` — the same rewrite, on the pages a
+   run's own delivery states.
+2. `commits_list_cache` on push — needs the absent-vs-unknown modelling first.
+3. The compare rework — needs tree storage, and retires two entries above.
 
-Done: `commit_ci_cache`'s two status documents on a `status` delivery, and the
-cross-kind flushing that had every CI delivery dropping all three.
+Done: the two status documents on a `status` delivery; the check-runs listing
+on a `check_run` delivery; a run's job answers on a `workflow_job` delivery
+(which also made a RUNNING run cacheable); and the cross-kind flushing that had
+every CI delivery dropping all three commit-CI kinds.
