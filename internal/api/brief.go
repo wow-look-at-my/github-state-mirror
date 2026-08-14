@@ -264,9 +264,9 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"nullability. For a documented endpoint, read the spec AND the capture; a route with no captured " +
 	"skeleton is not necessarily an undocumented one.\n\n" +
 	"### Files a new route touches\n\n" +
-	"- `internal/database/schema.sql` — the snapshot table (+ unique key and LRU index), then bump " +
-	"`SchemaVersion` in `internal/database/db.go` (there are no migrations: the cache is nuked and " +
-	"recreated).\n" +
+	"- `internal/database/schema.sql` — the snapshot table (+ unique key and LRU index). There are " +
+	"no migrations and nothing to declare: adding the table changes the file's scrubbed fingerprint, " +
+	"so the deploy nukes and recreates the cache by itself.\n" +
 	"- `internal/database/queries/respcache.sql` — get/upsert/touch/invalidate/expire/prune, then " +
 	"`sqlc generate`.\n" +
 	"- `internal/ghdata/respcache_<route>.go` — the store methods.\n" +

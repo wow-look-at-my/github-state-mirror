@@ -32,7 +32,7 @@ func NewPeriodicRefresher(mgr *freshness.Manager, interval time.Duration, sessio
 //
 // The startup run is load-bearing: a bare ticker's first fire is a full
 // interval after process start, and under a deploy cadence shorter than the
-// interval (schema-bump deploys also nuke the freshness markers) the fleet
+// interval (schema-change deploys also nuke the freshness markers) the fleet
 // sync never completed at all.
 func (p *PeriodicRefresher) Start(ctx context.Context) {
 	if ctx.Err() == nil {
