@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // Store wraps sqlc-generated queries and adds transaction logic for bulk
@@ -198,9 +199,9 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 		prs := data.PRsByRepo[repoKey]
 		labelsByNumber := data.LabelsByPR[repoKey]
 
-		fetched := make(map[int64]bool, len(prs))
+		fetched := set.New[int64](len(prs))
 		for _, pr := range prs {
-			fetched[pr.Number] = true
+			fetched.Add(pr.Number)
 			applied, err := upsertPRTx(ctx, q, pr, touched)
 			if err != nil {
 				return err
@@ -222,7 +223,7 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 			return err
 		}
 		for _, row := range existing {
-			if fetched[row.Number] || row.TouchedAt >= cutoff {
+			if fetched.Contains(row.Number) || row.TouchedAt >= cutoff {
 				continue
 			}
 			if err := q.DeletePullRequest(ctx, dbgen.DeletePullRequestParams{Owner: r.Owner, Repo: r.Name, Number: row.Number}); err != nil {

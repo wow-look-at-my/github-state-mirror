@@ -12,6 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // commitCIKinds is every kind commit_ci_cache stores, so a test can assert on
@@ -91,12 +92,9 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 		seedRef("repo1", "claude/dev")
 		seedRef("other-repo", "main")
 		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, tc.body))
-		moves := map[string]bool{}
-		for _, kind := range tc.moves {
-			moves[kind] = true
-		}
+		moves := set.Of(tc.moves...)
 		for _, kind := range commitCIKinds {
-			if !moves[kind] {
+			if !moves.Contains(kind) {
 				assert.True(t, serves("repo1", "main", kind),
 					"a %s event cannot change %s answers and must leave them served", tc.event, kind)
 				assert.True(t, serves("repo1", sha, kind),

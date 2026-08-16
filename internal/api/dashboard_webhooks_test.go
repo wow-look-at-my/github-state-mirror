@@ -57,7 +57,7 @@ func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 	// lists it, because every App receives it unconditionally.
 	subscribed := []string{}
 	for _, req := range ghdata.RequiredWebhookEvents {
-		if req.Event == "label" || ghclient.AlwaysDeliveredEvents[req.Event] {
+		if req.Event == "label" || ghclient.AlwaysDeliveredEvents.Contains(req.Event) {
 			continue
 		}
 		subscribed = append(subscribed, req.Event)

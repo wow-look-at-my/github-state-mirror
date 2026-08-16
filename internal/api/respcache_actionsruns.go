@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // This file implements the cached workflow-runs route (tier 2 of the cache
@@ -88,15 +89,15 @@ const (
 // listing's `status` filter (it doubles as a conclusion filter). Validating
 // against the closed set keeps the cache key's cardinality bounded and makes
 // an unknown value pass through rather than mint a row nothing will read.
-var workflowRunStatuses = map[string]bool{
-	"completed": true, "action_required": true, "cancelled": true,
-	"failure": true, "neutral": true, "skipped": true, "stale": true,
-	"success": true, "timed_out": true, "in_progress": true, "queued": true,
-	"requested": true, "waiting": true, "pending": true,
-}
+var workflowRunStatuses = set.Of(
+	"completed", "action_required", "cancelled",
+	"failure", "neutral", "skipped", "stale",
+	"success", "timed_out", "in_progress", "queued",
+	"requested", "waiting", "pending",
+)
 
-// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ''
-// for the repo-wide listing and Filters is '' when no modeled filter was
+// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ”
+// for the repo-wide listing and Filters is ” when no modeled filter was
 // sent; the pair is the row key, and HeadSHA == "" is also what selects the
 // listing TTL and the repo-wide listing flush.
 type workflowRunsShape struct {
@@ -140,7 +141,7 @@ func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 				return workflowRunsShape{}, false
 			}
 		case "status":
-			if !workflowRunStatuses[v] {
+			if !workflowRunStatuses.Contains(v) {
 				return workflowRunsShape{}, false
 			}
 			shape.Status = v

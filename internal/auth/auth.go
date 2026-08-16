@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 const (
@@ -45,7 +46,7 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	SessionKey   []byte          // HMAC key for signing session cookies
-	AdminLogins  map[string]bool // logins granted the all-scopes admin view
+	AdminLogins  set.Set[string] // logins granted the all-scopes admin view
 
 	// Endpoints (defaults applied in New when empty).
 	AuthorizeURL string // GitHub OAuth authorize endpoint
@@ -80,9 +81,6 @@ func New(cfg Config) *Service {
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.github.com"
 	}
-	if cfg.AdminLogins == nil {
-		cfg.AdminLogins = map[string]bool{}
-	}
 	client := cfg.HTTPClient
 	if client == nil {
 		client = httpobs.Client(15*time.Second, cfg.Observer)
@@ -99,7 +97,7 @@ func (s *Service) Configured() bool {
 // IsAdmin reports whether the login may view all cache scopes. Matching is
 // case-insensitive; AdminLogins is expected to hold lowercased logins.
 func (s *Service) IsAdmin(login string) bool {
-	return s.cfg.AdminLogins[strings.ToLower(login)]
+	return s.cfg.AdminLogins.Contains(strings.ToLower(login))
 }
 
 // AuthCodeURL builds the GitHub authorize URL for the given redirect URI and

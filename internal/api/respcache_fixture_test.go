@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // Shared fixtures for the cached-route tests: the fake GitHub every route
@@ -314,9 +315,9 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 // before.
 func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 	t.Helper()
-	allow := make(map[string]bool, len(allowed))
+	allow := set.New[string](len(allowed))
 	for _, k := range allowed {
-		allow[strings.ToLower(k)] = true
+		allow.Add(strings.ToLower(k))
 	}
 	var v interface{}
 	require.NoError(t, json.Unmarshal(body, &v), "rebuilt body must be valid JSON: %s", body)
@@ -326,7 +327,7 @@ func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 		case map[string]interface{}:
 			for k, val := range x {
 				lk := strings.ToLower(k)
-				assert.False(t, !allow[lk] && (lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links"),
+				assert.False(t, !allow.Contains(lk) && (lk == "url" || strings.HasSuffix(lk, "_url") || lk == "_links"),
 					"rebuilt body must not contain URL key %q (at %s): %s", k, at, body)
 				walk(val, at+"."+k)
 			}

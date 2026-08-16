@@ -10,6 +10,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
@@ -404,16 +405,12 @@ func refSpellings(shortName string, isTag bool) []string {
 // dedupNonEmpty returns vals with empty strings dropped and duplicates
 // removed, first occurrence order preserved.
 func dedupNonEmpty(vals []string) []string {
-	seen := make(map[string]struct{}, len(vals))
+	seen := set.New[string](len(vals))
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if v == "" {
+		if v == "" || !seen.Add(v) {
 			continue
 		}
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
 		out = append(out, v)
 	}
 	return out

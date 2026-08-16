@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // defaultCacheMaxRows is the default per-table row ceiling for the response
@@ -95,7 +97,7 @@ type Config struct {
 	OAuthClientID     string
 	OAuthClientSecret string
 	SessionSecret     []byte          // HMAC key for session cookies
-	AdminLogins       map[string]bool // lowercased logins granted the all-scopes view
+	AdminLogins       set.Set[string] // lowercased logins granted the all-scopes view
 	BaseURL           string          // public base URL (for OAuth redirect_uri); derived from request if empty
 }
 
@@ -311,11 +313,11 @@ func parseOrigins(s string) []string {
 
 // parseAdmins builds the set of admin logins (lowercased for case-insensitive
 // matching) from a comma-separated list.
-func parseAdmins(s string) map[string]bool {
-	out := make(map[string]bool)
+func parseAdmins(s string) set.Set[string] {
+	out := set.New[string]()
 	for _, p := range strings.Split(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			out[strings.ToLower(p)] = true
+			out.Add(strings.ToLower(p))
 		}
 	}
 	return out

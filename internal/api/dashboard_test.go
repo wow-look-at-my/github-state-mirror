@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // configuredAuth returns an auth.Service wired to a stub GitHub OAuth + API so
@@ -37,7 +38,7 @@ func configuredAuth(t *testing.T) *auth.Service {
 		ClientID:     "id",
 		ClientSecret: "secret",
 		SessionKey:   []byte("test-session-key"),
-		AdminLogins:  map[string]bool{"pazerop": true},
+		AdminLogins:  set.Of("pazerop"),
 		TokenURL:     srv.URL + "/token",
 		APIBaseURL:   srv.URL,
 	})

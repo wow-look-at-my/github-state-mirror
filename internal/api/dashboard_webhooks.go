@@ -7,6 +7,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The dashboard's Webhooks tab: the delivery log, plus the check for event
@@ -80,13 +81,10 @@ func (d *dashboard) missingSubscriptions(r *http.Request) []missingSubscription 
 		slog.Warn("read app event subscriptions failed; not reporting subscription state", "error", err)
 		return nil
 	}
-	have := make(map[string]bool, len(subscribed))
-	for _, e := range subscribed {
-		have[e] = true
-	}
+	have := set.Of(subscribed...)
 	var missing []missingSubscription
 	for _, req := range ghdata.RequiredWebhookEvents {
-		if have[req.Event] || ghclient.AlwaysDeliveredEvents[req.Event] {
+		if have.Contains(req.Event) || ghclient.AlwaysDeliveredEvents.Contains(req.Event) {
 			continue
 		}
 		missing = append(missing, missingSubscription{Event: req.Event, Effect: req.Effect})
