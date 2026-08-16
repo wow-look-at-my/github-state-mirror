@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
@@ -180,4 +181,46 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 	}
 
 	return PRPayload{PR: pr, Labels: labels}, nil
+}
+
+// MergedPRBaseTip is what a merged pull_request delivery says about the BASE
+// BRANCH, as opposed to about the PR: merging created a commit on that
+// branch, and the payload names it.
+type MergedPRBaseTip struct {
+	BaseRef        string    // the base branch's name ("master")
+	MergeCommitSHA string    // the commit merging put on it
+	MergedAt       time.Time // when GitHub says that happened
+}
+
+// ParseMergedPRBaseTip reads a pull_request payload's statement about its base
+// branch's tip, and reports false for any delivery that does not make one.
+//
+// Only a MERGED PR does. `merge_commit_sha` on an open PR is the throwaway
+// test-merge commit, which is on no branch at all -- reading that as a tip
+// would write a commit nobody can reach. The merged flag plus merged_at is
+// what separates the two, and merged_at is also what orders the statement
+// against what the mirror already holds (ghdata.ApplyMergedBaseTip).
+func ParseMergedPRBaseTip(raw json.RawMessage) (MergedPRBaseTip, bool) {
+	var body struct {
+		PullRequest *struct {
+			Merged         bool    `json:"merged"`
+			MergedAt       *string `json:"merged_at"`
+			MergeCommitSHA *string `json:"merge_commit_sha"`
+			Base           struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.PullRequest == nil {
+		return MergedPRBaseTip{}, false
+	}
+	pr := body.PullRequest
+	if !pr.Merged || pr.MergedAt == nil || pr.MergeCommitSHA == nil || pr.Base.Ref == "" {
+		return MergedPRBaseTip{}, false
+	}
+	mergedAt, err := time.Parse(time.RFC3339, *pr.MergedAt)
+	if err != nil {
+		return MergedPRBaseTip{}, false
+	}
+	return MergedPRBaseTip{BaseRef: pr.Base.Ref, MergeCommitSHA: *pr.MergeCommitSHA, MergedAt: mergedAt}, true
 }

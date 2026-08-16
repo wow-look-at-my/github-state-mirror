@@ -7,8 +7,44 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 )
+
+const contradictingPRBaseTip = `-- name: ContradictingPRBaseTip :one
+SELECT base_ref_oid FROM pull_requests
+WHERE owner = ? AND repo = ? AND base_ref_name = ?
+  AND base_ref_oid IS NOT NULL AND base_ref_oid != '' AND base_ref_oid != ?
+  AND touched_at > ?
+ORDER BY touched_at DESC
+LIMIT 1
+`
+
+type ContradictingPRBaseTipParams struct {
+	Owner       string
+	Repo        string
+	BaseRefName sql.NullString
+	BaseRefOid  sql.NullString
+	TouchedAt   string
+}
+
+// ContradictingPRBaseTip finds an absorbed OPEN PR whose base branch is this
+// ref and whose base.sha is NOT the sha this row serves -- evidence, from a
+// view absorbed AFTER the row was fetched, that the row has moved on.
+// Newest-absorbed first, so several PRs on one branch settle deterministically
+// on one refetch rather than taking turns re-triggering it.
+func (q *Queries) ContradictingPRBaseTip(ctx context.Context, arg ContradictingPRBaseTipParams) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, contradictingPRBaseTip,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.BaseRefOid,
+		arg.TouchedAt,
+	)
+	var base_ref_oid sql.NullString
+	err := row.Scan(&base_ref_oid)
+	return base_ref_oid, err
+}
 
 const countWorkflowRuns = `-- name: CountWorkflowRuns :one
 SELECT COUNT(*) FROM workflow_runs
@@ -165,6 +201,31 @@ type DeleteCommitCICacheForRefParams struct {
 // payload names exactly which spellings moved.
 func (q *Queries) DeleteCommitCICacheForRef(ctx context.Context, arg DeleteCommitCICacheForRefParams) error {
 	_, err := q.db.ExecContext(ctx, deleteCommitCICacheForRef, arg.Owner, arg.Repo, arg.Ref)
+	return err
+}
+
+const deleteCommitCICacheForRefKind = `-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?
+`
+
+type DeleteCommitCICacheForRefKindParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Kind  string
+}
+
+// DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+// kind. A status delivery and a check delivery move disjoint documents --
+// statuses never appear in a check-runs listing and check runs never appear
+// in a combined status -- so each flushes only the kinds it can have moved.
+func (q *Queries) DeleteCommitCICacheForRefKind(ctx context.Context, arg DeleteCommitCICacheForRefKindParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitCICacheForRefKind,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+	)
 	return err
 }
 
@@ -766,9 +827,6 @@ type DeleteWorkflowRunsCacheForHeadSHAParams struct {
 	HeadSha string
 }
 
-// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
-// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
-// snapshots survive.
 func (q *Queries) DeleteWorkflowRunsCacheForHeadSHA(ctx context.Context, arg DeleteWorkflowRunsCacheForHeadSHAParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
 	return err
@@ -1161,7 +1219,7 @@ func (q *Queries) GetGitCommitMissCache(ctx context.Context, arg GetGitCommitMis
 
 const getGitRefCache = `-- name: GetGitRefCache :one
 
-SELECT id, owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at FROM git_ref_cache
+SELECT id, owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against FROM git_ref_cache
 WHERE owner = ? AND repo = ? AND ref = ?
 `
 
@@ -1185,6 +1243,7 @@ func (q *Queries) GetGitRefCache(ctx context.Context, arg GetGitRefCacheParams) 
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
+		&i.ReconciledAgainst,
 	)
 	return i, err
 }
@@ -1601,6 +1660,106 @@ func (q *Queries) ListBranchesListCacheByRepo(ctx context.Context, arg ListBranc
 	return items, nil
 }
 
+const listCommitCICacheByRepoKind = `-- name: ListCommitCICacheByRepoKind :many
+SELECT id, owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?
+`
+
+type ListCommitCICacheByRepoKindParams struct {
+	Owner string
+	Repo  string
+	Kind  string
+}
+
+// ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+// status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+// instead of dropping them. Every spelling is listed, not just the sha:
+// a branch-form combined status names the sha it resolved to, so the ones
+// describing this commit are recognizable from their own contents.
+func (q *Queries) ListCommitCICacheByRepoKind(ctx context.Context, arg ListCommitCICacheByRepoKindParams) ([]CommitCiCache, error) {
+	rows, err := q.db.QueryContext(ctx, listCommitCICacheByRepoKind, arg.Owner, arg.Repo, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CommitCiCache
+	for rows.Next() {
+		var i CommitCiCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Ref,
+			&i.Kind,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowJobsCacheForRun = `-- name: ListWorkflowJobsCacheForRun :many
+SELECT id, owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?
+`
+
+type ListWorkflowJobsCacheForRunParams struct {
+	Owner string
+	Repo  string
+	RunID int64
+}
+
+// ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+// pages and the single-job rows under it -- so a workflow_job delivery can
+// rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+// dropping answers the delivery just told us the new value of.
+func (q *Queries) ListWorkflowJobsCacheForRun(ctx context.Context, arg ListWorkflowJobsCacheForRunParams) ([]WorkflowJobsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowJobsCacheForRun, arg.Owner, arg.Repo, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowJobsCache
+	for rows.Next() {
+		var i WorkflowJobsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Kind,
+			&i.RefID,
+			&i.RunID,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
 SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
 WHERE owner = ?1 AND repo = ?2
@@ -1664,6 +1823,56 @@ func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsPara
 			&i.UpdatedAt,
 			&i.RunStartedAt,
 			&i.TouchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowRunsCacheForHeadSHA = `-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT id, owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?
+`
+
+type ListWorkflowRunsCacheForHeadSHAParams struct {
+	Owner   string
+	Repo    string
+	HeadSha string
+}
+
+// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
+// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
+// snapshots survive.
+// ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+// workflow_run delivery can rewrite the run's entry inside each page
+// (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+func (q *Queries) ListWorkflowRunsCacheForHeadSHA(ctx context.Context, arg ListWorkflowRunsCacheForHeadSHAParams) ([]WorkflowRunsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRunsCache
+	for rows.Next() {
+		var i WorkflowRunsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.HeadSha,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2715,25 +2924,30 @@ func (q *Queries) UpsertGitCommitMissCache(ctx context.Context, arg UpsertGitCom
 }
 
 const upsertGitRefCache = `-- name: UpsertGitRefCache :exec
-INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref) DO UPDATE SET
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at
+    last_used_at = excluded.last_used_at,
+    -- An empty value LEAVES the recorded contradiction alone: a push applying
+    -- its own tip settles nothing about a lagging PR base.sha, and clearing
+    -- the memory there would re-arm a refetch the row already paid for.
+    reconciled_against = CASE WHEN excluded.reconciled_against = '' THEN git_ref_cache.reconciled_against ELSE excluded.reconciled_against END
 `
 
 type UpsertGitRefCacheParams struct {
-	Owner      string
-	Repo       string
-	Ref        string
-	Status     int64
-	Doc        string
-	FetchedAt  string
-	ExpiresAt  string
-	LastUsedAt string
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int64
+	Doc               string
+	FetchedAt         string
+	ExpiresAt         string
+	LastUsedAt        string
+	ReconciledAgainst string
 }
 
 func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCacheParams) error {
@@ -2746,6 +2960,7 @@ func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCachePa
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
+		arg.ReconciledAgainst,
 	)
 	return err
 }

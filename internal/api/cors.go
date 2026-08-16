@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/wow-look-at-my/go-containers/set"
 	"net/http"
 )
 
@@ -22,12 +23,9 @@ import (
 // intercepts preflight for method-specific routes like POST /graphql.
 func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 	wildcard := len(allowed) == 0
-	allowSet := make(map[string]struct{}, len(allowed))
-	for _, o := range allowed {
-		if o == "*" {
-			wildcard = true
-		}
-		allowSet[o] = struct{}{}
+	allowSet := set.Of(allowed...)
+	if allowSet.Contains("*") {
+		wildcard = true
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -36,7 +34,7 @@ func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 			if wildcard {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			} else if origin != "" {
-				if _, ok := allowSet[origin]; ok {
+				if allowSet.Contains(origin) {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Add("Vary", "Origin")
 				}

@@ -202,6 +202,21 @@ DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?;
 -- name: DeleteCommitCICacheForRef :exec
 DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ?;
 
+-- DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+-- kind. A status delivery and a check delivery move disjoint documents --
+-- statuses never appear in a check-runs listing and check runs never appear
+-- in a combined status -- so each flushes only the kinds it can have moved.
+-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+
+-- ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+-- status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+-- instead of dropping them. Every spelling is listed, not just the sha:
+-- a branch-form combined status names the sha it resolved to, so the ones
+-- describing this commit are recognizable from their own contents.
+-- name: ListCommitCICacheByRepoKind :many
+SELECT * FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?;
+
 -- name: DeleteExpiredCommitCICache :exec
 DELETE FROM commit_ci_cache WHERE expires_at <= ?;
 
@@ -467,6 +482,12 @@ DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
 -- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
 -- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
 -- snapshots survive.
+-- ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+-- workflow_run delivery can rewrite the run's entry inside each page
+-- (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT * FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+
 -- name: DeleteWorkflowRunsCacheForHeadSHA :exec
 DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
 
@@ -677,14 +698,31 @@ SELECT * FROM git_ref_cache
 WHERE owner = ? AND repo = ? AND ref = ?;
 
 -- name: UpsertGitRefCache :exec
-INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref) DO UPDATE SET
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at;
+    last_used_at = excluded.last_used_at,
+    -- An empty value LEAVES the recorded contradiction alone: a push applying
+    -- its own tip settles nothing about a lagging PR base.sha, and clearing
+    -- the memory there would re-arm a refetch the row already paid for.
+    reconciled_against = CASE WHEN excluded.reconciled_against = '' THEN git_ref_cache.reconciled_against ELSE excluded.reconciled_against END;
+
+-- ContradictingPRBaseTip finds an absorbed OPEN PR whose base branch is this
+-- ref and whose base.sha is NOT the sha this row serves -- evidence, from a
+-- view absorbed AFTER the row was fetched, that the row has moved on.
+-- Newest-absorbed first, so several PRs on one branch settle deterministically
+-- on one refetch rather than taking turns re-triggering it.
+-- name: ContradictingPRBaseTip :one
+SELECT base_ref_oid FROM pull_requests
+WHERE owner = ? AND repo = ? AND base_ref_name = ?
+  AND base_ref_oid IS NOT NULL AND base_ref_oid != '' AND base_ref_oid != ?
+  AND touched_at > ?
+ORDER BY touched_at DESC
+LIMIT 1;
 
 -- name: TouchGitRefCache :exec
 UPDATE git_ref_cache SET last_used_at = ?
@@ -731,6 +769,13 @@ WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND pa
 -- run's jobs under the SAME run id, so this is the flush that matters.
 -- name: DeleteWorkflowJobsCacheForRun :exec
 DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
+-- ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+-- pages and the single-job rows under it -- so a workflow_job delivery can
+-- rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+-- dropping answers the delivery just told us the new value of.
+-- name: ListWorkflowJobsCacheForRun :many
+SELECT * FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
 
 -- name: DeleteWorkflowJobsCacheByRepo :exec
 DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?;

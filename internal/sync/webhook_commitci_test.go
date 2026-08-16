@@ -12,7 +12,16 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
+
+// commitCIKinds is every kind commit_ci_cache stores, so a test can assert on
+// what a delivery leaves ALONE as precisely as on what it drops.
+var commitCIKinds = []string{
+	ghdata.CommitCIKindStatus,
+	ghdata.CommitCIKindCheckRuns,
+	ghdata.CommitCIKindStatusesList,
+}
 
 // TestDispatch_CIEventsFlushCommitCICache: status, check_run, and check_suite
 // events flush the commit-CI snapshots for exactly the ref spellings the
@@ -20,6 +29,11 @@ import (
 // payload does NOT name, and another repo's snapshots, survive (round 2's
 // per-ref grain). A push with no usable ref and a repository event keep the
 // conservative repo-wide flush.
+//
+// Within a named ref the grain is the KIND. The two surfaces are disjoint
+// upstream -- a status never appears in a check-runs listing and a check run
+// never appears in a commit's statuses -- so a delivery that flushed all three
+// was re-fetching answers it could not have changed.
 func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -28,7 +42,7 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	seedRef := func(repo, ref string) {
 		t.Helper()
-		for _, kind := range []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindCheckRuns} {
+		for _, kind := range commitCIKinds {
 			require.NoError(t, store.PutCachedCommitCI(ctx, ghdata.CachedCommitCI{
 				Owner: "org1", Repo: repo, Ref: ref, Kind: kind,
 				Doc: `{"seeded":true}`,
@@ -49,14 +63,15 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	// the unnamed ref survives.
 	for _, tc := range []struct {
 		event string
+		moves []string // the kinds this delivery can have changed
 		body  json.RawMessage
 	}{
-		{"status", mustJSON(t, map[string]any{
+		{"status", []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindStatusesList}, mustJSON(t, map[string]any{
 			"sha": sha, "state": "success", "context": "ci/build",
 			"branches":   []any{map[string]any{"name": "main"}},
 			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
 		})},
-		{"check_run", mustJSON(t, map[string]any{
+		{"check_run", []string{ghdata.CommitCIKindCheckRuns}, mustJSON(t, map[string]any{
 			"action": "completed",
 			"check_run": map[string]any{
 				"head_sha": sha, "status": "completed", "conclusion": "success", "name": "build",
@@ -64,7 +79,7 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 			},
 			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
 		})},
-		{"check_suite", mustJSON(t, map[string]any{
+		{"check_suite", []string{ghdata.CommitCIKindCheckRuns}, mustJSON(t, map[string]any{
 			"action": "completed",
 			"check_suite": map[string]any{
 				"head_sha": sha, "head_branch": "main", "status": "completed", "conclusion": "success",
@@ -77,11 +92,21 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 		seedRef("repo1", "claude/dev")
 		seedRef("other-repo", "main")
 		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, tc.body))
-		for _, kind := range []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindCheckRuns} {
+		moves := set.Of(tc.moves...)
+		for _, kind := range commitCIKinds {
+			if !moves.Contains(kind) {
+				assert.True(t, serves("repo1", "main", kind),
+					"a %s event cannot change %s answers and must leave them served", tc.event, kind)
+				assert.True(t, serves("repo1", sha, kind),
+					"a %s event cannot change %s answers and must leave them served", tc.event, kind)
+				continue
+			}
 			assert.False(t, serves("repo1", "main", kind),
 				"a %s event must flush the named branch's %s snapshots", tc.event, kind)
 			assert.False(t, serves("repo1", sha, kind),
 				"a %s event must flush the sha spelling's %s snapshots", tc.event, kind)
+		}
+		for _, kind := range commitCIKinds {
 			assert.True(t, serves("repo1", "claude/dev", kind),
 				"a %s event must leave an unnamed ref's %s snapshots intact", tc.event, kind)
 			assert.True(t, serves("other-repo", "main", kind),

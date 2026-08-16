@@ -13,6 +13,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The dashboard JSON API: /api/me, /api/jobs, /api/requests, and the cache
@@ -245,17 +246,17 @@ func (d *dashboard) collectInputs(ctx context.Context, scope, login string, iden
 
 	// Admin "all": every identity, plus any principal with freshness metadata
 	// but no identity row (e.g. the background app-installation sessions).
-	seen := make(map[string]bool, len(identities))
+	seen := set.New[string](len(identities))
 	inputs := make([]principalInput, 0, len(identities))
 	for _, id := range identities {
 		inputs = append(inputs, principalInput{principal: id.Actor, login: id.Login, lastSeen: id.LastSeen})
-		seen[id.Actor] = true
+		seen.Add(id.Actor)
 	}
 	if known, err := d.store.KnownPrincipals(ctx); err != nil {
 		slog.Warn("list known principals failed", "error", err)
 	} else {
 		for _, a := range known {
-			if !seen[a] {
+			if !seen.Contains(a) {
 				inputs = append(inputs, principalInput{principal: a, login: unknownLogin})
 			}
 		}

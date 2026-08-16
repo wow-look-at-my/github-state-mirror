@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // EVERY REQUEST THIS SERVICE SENDS IS ON THE DASHBOARD.
@@ -49,9 +51,7 @@ const (
 // http.DefaultClient. There is no transport to wrap and no place to hang an
 // observer, so one of these is always a hole -- the guard reports it and no
 // allowlist entry should ever excuse it.
-var packageLevelSenders = map[string]bool{
-	"Get": true, "Post": true, "PostForm": true, "Head": true,
-}
+var packageLevelSenders = set.Of("Get", "Post", "PostForm", "Head")
 
 // Outbound is one construct that can send a request.
 type Outbound struct {
@@ -88,7 +88,7 @@ func FindOutbound(fset *token.FileSet, name string, src []byte) ([]Outbound, err
 			// http.DefaultClient used as a value, and the package-level
 			// senders that use it implicitly.
 			if pkg, ok := node.X.(*ast.Ident); ok && pkg.Name == "http" {
-				if node.Sel.Name == "DefaultClient" || packageLevelSenders[node.Sel.Name] {
+				if node.Sel.Name == "DefaultClient" || packageLevelSenders.Contains(node.Sel.Name) {
 					add(node.Pos(), KindPackageLevel)
 				}
 			}

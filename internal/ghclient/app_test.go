@@ -168,8 +168,8 @@ func TestAppAuthenticator_SubscribedEvents(t *testing.T) {
 // The events GitHub delivers to every App are never in that list, so a caller
 // diffing against it must not read their absence as "unsubscribed".
 func TestAlwaysDeliveredEvents(t *testing.T) {
-	assert.True(t, AlwaysDeliveredEvents["installation"])
-	assert.True(t, AlwaysDeliveredEvents["installation_repositories"])
-	assert.False(t, AlwaysDeliveredEvents["push"], "push is a real subscription and must be diffable")
-	assert.False(t, AlwaysDeliveredEvents["label"])
+	assert.True(t, AlwaysDeliveredEvents.Contains("installation"))
+	assert.True(t, AlwaysDeliveredEvents.Contains("installation_repositories"))
+	assert.False(t, AlwaysDeliveredEvents.Contains("push"), "push is a real subscription and must be diffable")
+	assert.False(t, AlwaysDeliveredEvents.Contains("label"))
 }

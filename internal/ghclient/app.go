@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // AppAuthenticator signs in as a GitHub App. It mints short-lived RS256 JWTs
@@ -79,11 +81,11 @@ func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, e
 // regardless of configuration. They never appear in the App's `events` list
 // because there is nothing to subscribe to, so a caller diffing against
 // SubscribedEvents must treat them as always present rather than missing.
-var AlwaysDeliveredEvents = map[string]bool{
-	"installation":              true,
-	"installation_repositories": true,
-	"github_app_authorization":  true,
-}
+var AlwaysDeliveredEvents = set.Of(
+	"installation",
+	"installation_repositories",
+	"github_app_authorization",
+)
 
 // SubscribedEvents reports the event types this App is subscribed to, as
 // GitHub itself states them (GET /app, authenticated by the App's own JWT).

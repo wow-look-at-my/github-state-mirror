@@ -76,9 +76,13 @@ type dashboard struct {
 	// check reads; nil (no App configured) means the check reports nothing
 	// rather than guessing from traffic.
 	appEvents func(context.Context) ([]string, error)
+	// ordering reports what the out-of-order delivery gate has seen (counts,
+	// lateness bands, recent refusals). Nil-safe: without it the Webhooks tab
+	// simply omits the panel.
+	ordering func() syncpkg.OrderingSnapshot
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error)) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
@@ -121,6 +125,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		timeline:  timeline,
 		shapes:    shapes,
 		appEvents: appEvents,
+		ordering:  ordering,
 	}
 }
 

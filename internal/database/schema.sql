@@ -752,6 +752,33 @@ CREATE TABLE webhook_deliveries (
     detail       TEXT NOT NULL DEFAULT ''    -- human summary, e.g. "upserted PR #42"
 );
 
+-- The newest view of each SUBJECT this mirror has applied, so an older one
+-- arriving later can be recognized as superseded rather than written over it.
+-- GitHub does not order deliveries and never claims to; two views of one
+-- resource can arrive in either order, and applying the older one second is a
+-- correct, repeatable write of stale state (a merged PR came back OPEN 82
+-- seconds after its merge exactly that way).
+--
+-- subject is the RESOURCE the view is of, at the grain that actually
+-- supersedes -- "pr:owner/repo#12", "status:owner/repo:<sha>:<context>",
+-- "check_run:owner/repo:<id>" (webhook.OrderOf). Coarser keys would let one
+-- resource's event discard another's. event_time is the payload's own clock
+-- for that subject, always a GitHub-set field, never a user-set one (a push
+-- uses repository.pushed_at, never head_commit.timestamp).
+--
+-- Observability, not truth: the rows only gate writes, and losing them (a
+-- nuke, a prune) costs at most a window in which an out-of-order delivery is
+-- applied as it always was. Pruned by age on write.
+CREATE TABLE webhook_watermarks (
+    subject     TEXT PRIMARY KEY,           -- the resource, at superseding grain
+    event_time  TEXT NOT NULL,              -- RFC3339, from the payload's own clock
+    delivery_id TEXT NOT NULL DEFAULT '',   -- X-GitHub-Delivery of the view that set it
+    event_type  TEXT NOT NULL DEFAULT '',   -- X-GitHub-Event of that view
+    updated_at  TEXT NOT NULL               -- RFC3339 receipt time, for pruning
+);
+
+CREATE INDEX idx_webhook_watermarks_pruning ON webhook_watermarks (updated_at);
+
 -- Deliveries this mirror has already asked GitHub to send again. GitHub keeps
 -- its own log of deliveries it could not hand over and will re-send one on
 -- request, but it never retries by itself -- so a delivery lost to a restart
@@ -893,16 +920,21 @@ CREATE TABLE workflow_runs_list_cache (
 -- real ref) or 404 (the "no such ref" VERDICT -- deleted branches are polled
 -- forever by fleet sweeps, and ref creation arrives as a push, which clears
 -- the verdict). doc holds the rendered trimmed body. owner/repo lowercased.
+-- reconciled_against records the contradicting PR base.sha a refetch already
+-- settled (see Store.GetCachedGitRefChecked): a PR's base.sha legitimately
+-- LAGS its branch, so the same lagging value must not buy a refetch on every
+-- read. Empty means no contradiction has been answered for this row.
 CREATE TABLE git_ref_cache (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner        TEXT NOT NULL,              -- lowercased
-    repo         TEXT NOT NULL,              -- lowercased
-    ref          TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
-    status       INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
-    doc          TEXT NOT NULL,              -- trimmed ref document as JSON
-    fetched_at   TEXT NOT NULL,              -- RFC3339
-    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
-    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner              TEXT NOT NULL,              -- lowercased
+    repo               TEXT NOT NULL,              -- lowercased
+    ref                TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
+    status             INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
+    doc                TEXT NOT NULL,              -- trimmed ref document as JSON
+    fetched_at         TEXT NOT NULL,              -- RFC3339
+    expires_at         TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
+    last_used_at       TEXT NOT NULL,              -- RFC3339, for LRU pruning
+    reconciled_against TEXT NOT NULL DEFAULT ''    -- a contradicting PR base.sha this row's fetch already settled
 );
 
 CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);
@@ -912,15 +944,16 @@ CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
 --   GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
 --   GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
 --
--- Only TERMINAL answers are stored: a page whose every job has completed, or
--- a single completed job. A queued/in_progress job is a live value the GHA
--- runner coordinator acts on, and no TTL short enough to be safe would be
--- long enough to be useful -- those always reach GitHub. What is left is the
--- fleet re-reading SETTLED runs forever, which is the traffic worth killing.
+-- A job still moving is stored too, on a short TTL, and REWRITTEN by its own
+-- workflow_job deliveries rather than left to age (ghdata.ApplyWorkflowJob).
+-- The fetch proves a page's membership; the deliveries keep its contents
+-- current; the short TTL bounds a lost delivery and nothing else. Storing only
+-- terminal answers left the GHA coordinator re-asking GitHub for state it had
+-- already been told, which was most of the mirror's passthrough volume.
 --
 -- ref_id is the run id (kind 'run_jobs') or the job id (kind 'job'); run_id is
--- carried on BOTH kinds so a re-run -- which replaces a run's jobs under the
--- same run id -- flushes every row it invalidates from one signal.
+-- carried on BOTH kinds so a re-run -- a different set of jobs under the same
+-- run id -- flushes every row it invalidates from one signal.
 CREATE TABLE workflow_jobs_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased

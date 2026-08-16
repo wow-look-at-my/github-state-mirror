@@ -47,13 +47,17 @@ func IsFullHexSHA(s string) bool {
 // exactly as fresh as a fetched one, so it gets the same clock.
 const GitRefCacheTTL = 24 * time.Hour
 
-// CachedGitRef is one stored ref answer.
+// CachedGitRef is one stored ref answer. ReconciledAgainst carries the
+// contradicting PR base.sha (if any) that the fetch producing this answer went
+// and settled; an empty value on a write LEAVES whatever the row already
+// recorded.
 type CachedGitRef struct {
-	Owner  string
-	Repo   string
-	Ref    string
-	Status int
-	Doc    string
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int
+	Doc               string
+	ReconciledAgainst string
 }
 
 // GetCachedGitRef returns the cached ref answer, or ok=false on a miss (no
@@ -73,7 +77,94 @@ func (s *Store) GetCachedGitRef(ctx context.Context, owner, repo, ref string, no
 	_ = s.q.TouchGitRefCache(ctx, dbgen.TouchGitRefCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Ref: ref,
 	})
-	return CachedGitRef{Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Status: int(row.Status), Doc: row.Doc}, true, nil
+	return CachedGitRef{
+		Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Status: int(row.Status), Doc: row.Doc,
+		ReconciledAgainst: row.ReconciledAgainst,
+	}, true, nil
+}
+
+// GetCachedGitRefChecked is GetCachedGitRef plus the one question that read
+// alone cannot answer: does anything else this mirror holds say the stored tip
+// is wrong? It returns the row, whether one is live, and -- when a live row is
+// CONTRADICTED -- the PR base.sha that contradicts it. A caller must not serve
+// a contradicted row; it must fetch, and record the returned sha on the row it
+// stores.
+//
+// The contradiction: an OPEN PR based on this branch carries GitHub's own
+// `base.sha` for it, absorbed by a different delivery and a different route
+// than the tip. If those two disagree, this mirror is internally inconsistent
+// about one branch, and it does not get to pick a side by guessing -- it goes
+// and asks. That is the whole mechanism, and it is deliberately not an
+// ancestry test: proving WHICH is newer costs the same call as just fetching
+// the truth.
+//
+// Two conditions keep it from firing forever, because a PR's base.sha
+// legitimately LAGS its branch (GitHub recomputes it on PR contact, not on
+// every base push), so a mismatch is usually lag rather than staleness:
+//
+//   - the contradicting view must have been absorbed AFTER this row was
+//     fetched (touched_at > fetched_at). Evidence older than our own answer
+//     was already accounted for by fetching it.
+//   - the sha must not be the one a previous fetch already settled
+//     (reconciled_against). Re-absorbing the same lagging base.sha is not new
+//     evidence.
+//
+// Together those bound it to one refetch per genuinely new disagreeing sha per
+// branch -- roughly one per base-branch move -- while a lost push delivery
+// stops being able to wedge the tip at all. docs/cache/stale-tip-repair.md.
+func (s *Store) GetCachedGitRefChecked(ctx context.Context, owner, repo, ref string, now time.Time) (CachedGitRef, bool, string, error) {
+	c, ok, err := s.GetCachedGitRef(ctx, owner, repo, ref, now)
+	if err != nil || !ok {
+		return c, ok, "", err
+	}
+	// Only a real ref answer names a tip. A 404 verdict says the branch does
+	// not exist, which an open PR based on it would also contradict -- but
+	// that contradiction is already handled: a ref CREATION arrives as a push
+	// for that exact ref and drops the verdict.
+	if c.Status != http.StatusOK {
+		return c, true, "", nil
+	}
+	branch := branchNameFromRefPath(ref)
+	if branch == "" {
+		return c, true, "", nil
+	}
+	var doc storedGitRefDoc
+	if err := json.Unmarshal([]byte(c.Doc), &doc); err != nil {
+		return c, true, "", nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	if err != nil {
+		return c, true, "", nil // the read above already succeeded; this is the row's own metadata
+	}
+	base, err := s.q.ContradictingPRBaseTip(ctx, dbgen.ContradictingPRBaseTipParams{
+		Owner: ownerKey, Repo: repoKey, BaseRefName: sql.NullString{String: branch, Valid: true},
+		BaseRefOid: sql.NullString{String: doc.Object.SHA, Valid: true}, TouchedAt: row.FetchedAt,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return c, true, "", nil
+	}
+	if err != nil {
+		return c, true, "", err
+	}
+	sha := strings.ToLower(base.String)
+	if !IsFullHexSHA(sha) || sha == c.ReconciledAgainst {
+		return c, true, "", nil
+	}
+	return c, true, sha, nil
+}
+
+// branchNameFromRefPath reduces a requested ref path to the branch name the PR
+// rows key ("heads/main", "refs/heads/main" -> "main"). Anything that is not a
+// branch -- a tag, a partial ref -- yields "", because only branches are what
+// a PR's base names.
+func branchNameFromRefPath(ref string) string {
+	rest := strings.TrimPrefix(ref, "refs/")
+	name, ok := strings.CutPrefix(rest, "heads/")
+	if !ok || name == "" {
+		return ""
+	}
+	return name
 }
 
 // PutCachedGitRef records one fetched ref answer, then prunes the table
@@ -83,6 +174,7 @@ func (s *Store) PutCachedGitRef(ctx context.Context, c CachedGitRef, now time.Ti
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Ref: c.Ref,
 		Status: int64(c.Status), Doc: c.Doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
+		ReconciledAgainst: c.ReconciledAgainst,
 	}); err != nil {
 		return err
 	}
@@ -146,6 +238,61 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 		return true, nil // already current (a replayed delivery)
 	}
 	doc.Object.SHA = afterSHA
+	patched, err := json.Marshal(doc)
+	if err != nil {
+		return false, nil
+	}
+	return true, s.PutCachedGitRef(ctx, CachedGitRef{
+		Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Status: http.StatusOK, Doc: string(patched),
+	}, now, ttl)
+}
+
+// ApplyMergedBaseTip writes a merged PR's own statement about its base branch
+// into that branch's cached ref row: merging created `merge_commit_sha` ON the
+// base branch, so at `mergedAt` that commit WAS the tip.
+//
+// This exists because the push that states the same thing can be lost, and
+// losing it is silent: the row then serves the pre-merge tip for the full TTL,
+// and every verdict computed against it is wrong in the direction that stops
+// its own repair (docs/cache/stale-tip-repair.md). A merge is delivered TWICE
+// -- once as a push, once as pull_request/closed -- so honoring both means one
+// lost delivery no longer wedges the tip.
+//
+// A late delivery must not REGRESS a newer tip (CLAUDE.md: a delivery is a
+// view of its own moment), and here the ordering is decidable without a
+// fetch: the row records when its content was established, so a merge that
+// happened BEFORE that instant says nothing this row does not already
+// account for, and is dropped. Only a merge that postdates the row applies.
+// Everything else follows ApplyPushedRefTip: 200 rows only, per verbatim
+// spelling, an already-current row is a no-op, and a 404-verdict row is left
+// to the caller (promoting one would need a node_id no payload carries).
+func (s *Store) ApplyMergedBaseTip(ctx context.Context, owner, repo, ref, mergeCommitSHA string, mergedAt, now time.Time, ttl time.Duration) (bool, error) {
+	if !IsFullHexSHA(mergeCommitSHA) || strings.Trim(mergeCommitSHA, "0") == "" || mergedAt.IsZero() {
+		return false, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.Status != http.StatusOK {
+		return false, nil
+	}
+	established, perr := time.Parse(time.RFC3339, row.FetchedAt)
+	if perr != nil || !mergedAt.After(established) {
+		return false, nil // the row is at least as new as this merge
+	}
+	var doc storedGitRefDoc
+	if err := json.Unmarshal([]byte(row.Doc), &doc); err != nil {
+		return false, nil
+	}
+	if doc.Object.SHA == mergeCommitSHA {
+		return true, nil
+	}
+	doc.Object.SHA = mergeCommitSHA
 	patched, err := json.Marshal(doc)
 	if err != nil {
 		return false, nil

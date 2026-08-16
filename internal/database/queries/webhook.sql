@@ -51,3 +51,33 @@ ON CONFLICT (delivery_id) DO NOTHING;
 -- rows for nothing.
 -- name: PruneWebhookReplays :exec
 DELETE FROM webhook_replays WHERE requested_at < ?;
+
+-- ============================================================================
+-- Event-order watermarks (out-of-order delivery handling)
+-- ============================================================================
+
+-- name: GetWebhookWatermark :one
+SELECT * FROM webhook_watermarks WHERE subject = ?;
+
+-- ClaimWebhookWatermark advances a subject's watermark, and ONLY forward: the
+-- WHERE on the upsert is what makes the decision atomic under concurrent
+-- deliveries for one subject, so the winner is decided by the payload clock
+-- rather than by which request reached the database first. RETURNING yields a
+-- row exactly when this view won; no rows means an equal-or-newer view is
+-- already recorded.
+-- name: ClaimWebhookWatermark :one
+INSERT INTO webhook_watermarks (subject, event_time, delivery_id, event_type, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (subject) DO UPDATE SET
+    event_time = excluded.event_time,
+    delivery_id = excluded.delivery_id,
+    event_type = excluded.event_type,
+    updated_at = excluded.updated_at
+WHERE excluded.event_time > webhook_watermarks.event_time
+RETURNING event_time;
+
+-- PruneWebhookWatermarks drops subjects nothing has touched in a while. A
+-- delivery older than that window is past every TTL it could have moved, and
+-- the periodic refresh has been through since.
+-- name: PruneWebhookWatermarks :exec
+DELETE FROM webhook_watermarks WHERE updated_at < ?;

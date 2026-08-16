@@ -53,6 +53,8 @@ Storage and authorization are **separate axes**:
   A push alone hands you `ref` + `after` (the branch's exact new tip), `before`, `created`/`deleted`/`forced`, `base_ref`,
   `repository.default_branch`, and up to 2,048 full commit objects — see docs/webhooks/dispatch.md for what each event carries,
   the per-event matrix, the COALESCE rules that keep a webhook from blanking known state, and the routes still violating this.
+  Every surviving response-cache flush is inventoried in docs/webhooks/invalidations.md with a verdict — justified, or owed with
+  the conversion named — so the count can only go down; a new flush belongs in that table in the same change.
   Also non-negotiable: a delivery applies unconditionally — never add a "who has this cached?" gate, and never make a webhook
   trigger a fetch.
   **This is a build gate, not a convention.** `TestWebhookHandlersConsumeTheirPayload`
@@ -85,12 +87,28 @@ Storage and authorization are **separate axes**:
   re-send what never arrived — once per delivery id, 24h lookback, 25 per cycle, logged; and `compare_cache.base_tip_sha`
   records the base tip GitHub says an answer was computed against, so a read can refuse it whatever happened to the flush. Never
   answer a gap with a shorter TTL: that hides the window, it does not close it. docs/webhooks/delivery-gaps.md.
+- **A BRANCH TIP IS THE ANSWER A LOST DELIVERY RUINS WORST, and keeping it right is THIS SERVICE's job — never a client's.**
+  A consumer cannot notice a delivery that never arrived, so a "revalidate this for me" request from one is the responsibility
+  inverted (it was the first cut of this fix, and it is rejected). Two internal mechanisms instead: every delivery that STATES
+  the tip applies it — a push's `after`, and now a merged PR's `merge_commit_sha` for its base branch (`ApplyMergedBaseTip`,
+  ordered against the row's own establishment time) — and a stored tip that the mirror's own absorbed PR rows CONTRADICT is
+  refetched rather than served (`GetCachedGitRefChecked`; bounded to one refetch per genuinely new disagreeing sha, since a
+  PR's `base.sha` legitimately lags). PR rows work as evidence because they arrive on a DIFFERENT delivery; the branches list,
+  the compare rows and `KnownBranchTip` do not, and `KnownBranchTip` reads these very rows. docs/cache/stale-tip-repair.md.
 - **A DELIVERY IS A VIEW OF ITS OWN MOMENT, SO A LATE ONE CAN OVERWRITE A NEWER TRUTH.** Idempotence does not help: applying an
   old payload is a correct, repeatable write of superseded state. A merged PR came back OPEN 82 seconds after its merge, from a
   redelivered pre-merge payload, and stayed open for 44 minutes — only open PRs are retained, so the close had DELETED the row,
   and a deleted row has nothing to lose a comparison against. Every close now leaves one (`pr_closures` + the closing view's
   `updated_at`), and every open-PR write path refuses a view that cannot prove it postdates it. Fix this class at the WRITE, never
   in the replayer: ordinary out-of-order delivery does the same damage. docs/webhooks/delivery-gaps.md.
+- **GITHUB ORDERS NOTHING IT SENDS, SO THE DISPATCHER DOES.** Every delivery states the moment its view is from and the SUBJECT
+  it is a view of (`webhook.OrderOf`; the clock is always a GitHub-set payload field — `repository.pushed_at`, never
+  `head_commit.timestamp` — because no header carries one and the tunnel's own headers describe our hop). Two mechanisms:
+  a per-subject **reorder window** (`WEBHOOK_REORDER_WINDOW`, 2s) sorts what lands close together and applies it oldest-first,
+  and a per-subject **watermark** refuses anything older than a view already applied (`superseded`). The subject grain is
+  load-bearing — `status` keys sha+CONTEXT, because keyed on the sha alone one context's result would discard another's. A
+  superseded push still absorbs its commits: immutable facts a newer view never restates. Counted, timed and shown on the
+  Webhooks tab, because "significant disruption" needs a distribution, not a boolean. docs/webhooks/ordering.md.
 - **App-identity principal (opt-in, for trusted first-party app callers)** — a *request*-time caller may send a **GitHub App JWT** in the `X-Mirror-Identity` header. `requireAuth` verifies it via `ghclient.VerifyAppIdentity` (`GET /app` — GitHub only 200s if the RS256 signature checks out against the app's public key, so it's unforgeable; cached per-JWT) and resolves that caller to the principal `app:<id>`, skipping the per-user/fingerprint resolution entirely (installation tokens cannot call `/user`). This exists because such a caller's installation tokens rotate hourly — fingerprint principals would lose their earned grants every hour; the app principal keeps **one stable grant set** across all the app's tokens. The `Authorization` token is still injected into the context for upstream fetches/probes/passthrough, so per-repo authorization against GitHub is unchanged. No identity header → the default per-user/fingerprint resolution above.
 - **The cache contract (three tiers)** — every data route is exactly one of: (1) the GraphQL org-repos query, byte-identical and
   identity-test-locked; (2) a cached REST route, whose state is absorbed and whose response is REBUILT with every URL field
@@ -136,6 +154,7 @@ Storage and authorization are **separate axes**:
 - `CACHE_MAX_ROWS` (optional) — per-table row ceiling for the response caches (sets `ghdata.CacheMaxRows` at startup; default `1000000`). One knob for every cache table: all but `git_commits_cache` are TTL-bounded, so the cap is only a runaway safety net for them; `git_commits_cache` (immutable rows, no TTL) is the one table that actually grows to the ceiling. A value that is unparseable or < 1 fails startup.
 - `PASSTHROUGH_DEBOUNCE` (optional) — how long an eligible uncacheable (passthrough) READ is held so identical concurrent requests share one upstream call, as a Go duration string (default `5s`). `0` disables coalescing and forwards immediately. Values that are unparseable, negative, or > 30s fail startup — the window adds latency to every uncacheable read, so a fat-fingered `5m` must fail loudly at boot rather than wedge the API. See the tier-3 passthrough-debouncing paragraph.
 - `REFRESH_INTERVAL` (optional) — periodic fleet-refresh cadence as a Go duration string (default `6h`). The first cycle always runs immediately at startup regardless of the interval. A value that is unparseable or not positive fails startup.
+- `WEBHOOK_REORDER_WINDOW` (optional) — how long a delivery is held so other deliveries for the SAME subject can be sorted with it and applied oldest-first (default `2s`; `0` dispatches on arrival and leaves ordering entirely to the watermark). Capped at 5s and validated at startup: every delivery waits this window, and GitHub's own delivery timeout is single-digit seconds, so a too-long hold would turn a latency knob into lost deliveries. See docs/webhooks/ordering.md.
 - `WEBHOOK_REPLAY_INTERVAL` (optional) — how often the delivery-gap replayer asks GitHub to re-send deliveries it could not hand over (default `5m`; first cycle at startup, because a restart is itself such a window). `0` disables recovery and the server warns; so does an unset `GITHUB_APP_ID`, since the failure log is a JWT-authenticated app-level endpoint. Unparseable or negative fails startup. See docs/webhooks/delivery-gaps.md.
 - `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (optional) — GitHub OAuth App credentials for dashboard login. If unset, the dashboard still renders but sign-in is disabled. Register the OAuth App's callback as `<BASE_URL>/auth/callback`.
 - `SESSION_SECRET` (optional) — HMAC key for session cookies. If unset, a random per-process key is used (sessions reset on restart); set it in production.

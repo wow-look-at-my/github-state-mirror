@@ -164,7 +164,7 @@ var RequiredWebhookEvents = []struct {
 	{"status", "commit status rollups go stale"},
 	{"repository", "renames, deletions, and visibility changes are never applied"},
 	{"label", "PR label state drifts"},
-	{"workflow_job", "the workflow_jobs table stops filling and runs entering the backlog are missed"},
+	{"workflow_job", "a running workflow's cached jobs stop being told what changed and fall back to re-fetching each minute; the workflow_jobs table stops filling and runs entering the backlog are missed"},
 	{"workflow_run", "runs with no jobs yet (startup_failure, concurrency-gated) never reach truth, so the runs listing re-fetches instead of serving from rows"},
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
 }
