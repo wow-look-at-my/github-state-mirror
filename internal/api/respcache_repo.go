@@ -106,7 +106,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 // repoRowComplete reports whether a truth row carries everything the trimmed
-// rebuild emits: known visibility (fail closed on unknown ”), a default
+// rebuild emits: known visibility (fail closed on unknown ''), a default
 // branch, and the canonical full name.
 func repoRowComplete(row dbgen.Repo) bool {
 	return row.Visibility != "" &&

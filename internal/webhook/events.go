@@ -130,7 +130,7 @@ type repositoryObject struct {
 }
 
 // toRepo converts the payload object into a truth row. Fields the payload does
-// not state stay NULL/” so the store's COALESCE upsert preserves anything
+// not state stay NULL/'' so the store's COALESCE upsert preserves anything
 // already known.
 func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
 	if r == nil || r.Name == "" || r.Owner.Login == "" {

@@ -96,8 +96,8 @@ var workflowRunStatuses = set.Of(
 	"requested", "waiting", "pending",
 )
 
-// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ”
-// for the repo-wide listing and Filters is ” when no modeled filter was
+// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ''
+// for the repo-wide listing and Filters is '' when no modeled filter was
 // sent; the pair is the row key, and HeadSHA == "" is also what selects the
 // listing TTL and the repo-wide listing flush.
 type workflowRunsShape struct {

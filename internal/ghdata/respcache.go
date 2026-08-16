@@ -252,7 +252,7 @@ func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedG
 
 // joinParents/splitParents encode a parent-sha list as the compact form stored
 // in the parents column. Shas are hex, so a comma join is unambiguous; stored
-// as "sha1,sha2" (” = no parents).
+// as "sha1,sha2" ('' = no parents).
 func joinParents(parents []string) string { return strings.Join(parents, ",") }
 
 func splitParents(s string) []string {

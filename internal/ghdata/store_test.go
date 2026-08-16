@@ -77,7 +77,7 @@ func TestSyncOrgTruth_VisibilityPreserved(t *testing.T) {
 // (the owner-agnostic query the fleet refresher uses) stamps it into truth --
 // and a later visibility-less sync (the identity-locked org-query path) keeps
 // it. This is the 2026-07-20 fix: the refresher used to sync visibility-less
-// rows, leaving every fleet-synced owner's repo at ” = fail-closed unknown
+// rows, leaving every fleet-synced owner's repo at '' = fail-closed unknown
 // (203 visibility_unknown entries in that day's consistency report).
 func TestSyncOrgTruth_StampsVisibility(t *testing.T) {
 	s := testStore(t)

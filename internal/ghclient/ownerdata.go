@@ -51,7 +51,7 @@ const ownerPRFields = `
 // ownerPRFields extras. visibility is what lets the fleet refresher's sync
 // STAMP each repo's visibility into truth (UpsertRepo only overwrites with a
 // non-empty value, so the visibility-less org-query path never blanks it);
-// without it every refresher-absorbed row sat at ” = unknown = fail-closed
+// without it every refresher-absorbed row sat at '' = unknown = fail-closed
 // private, and the 2026-07-20 consistency report carried 203 informational
 // visibility_unknown entries -- essentially every fleet-synced owner's repo.
 // orgDataQuery itself stays byte-untouched: it is the identity-locked cached
