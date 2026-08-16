@@ -340,6 +340,10 @@ table.scopes .avatar { width: 22px; height: 22px; border-radius: 50%; border: 1p
 .disp.invalidated { color: var(--accent); background: rgba(47,129,247,0.12); }
 .disp.ignored     { color: var(--gray);   background: rgba(110,118,129,0.15); }
 .disp.error       { color: var(--red);    background: rgba(248,81,73,0.12); }
+/* An out-of-order delivery is not an error: the state it carries is already
+   present in a newer form. Yellow, like a write -- something happened that an
+   operator may want to look at, not something that failed. */
+.disp.superseded  { color: var(--yellow); background: rgba(210,153,34,0.12); }
 
 .wh-missing { margin: 8px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.6; }
 .wh-missing code { font-family: var(--mono, monospace); }

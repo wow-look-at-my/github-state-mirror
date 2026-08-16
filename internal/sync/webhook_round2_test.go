@@ -60,19 +60,36 @@ func (s r2Seeder) commitsListServe(ref string) bool {
 	return ok
 }
 
+// seedCommitCI seeds one ref's snapshot of EVERY kind: a push moves them all
+// (the branch points somewhere else afterwards), while the CI deliveries move
+// only the kind they can have changed, so a test asserting on one kind alone
+// could not tell those apart.
 func (s r2Seeder) seedCommitCI(ref string) {
 	s.t.Helper()
-	require.NoError(s.t, s.store.PutCachedCommitCI(context.Background(), ghdata.CachedCommitCI{
-		Owner: "org1", Repo: "repo1", Ref: ref, Kind: ghdata.CommitCIKindStatus,
-		Doc: `{"seeded":true}`,
-	}, 30, 1, s.now, time.Hour))
+	for _, kind := range commitCIKinds {
+		require.NoError(s.t, s.store.PutCachedCommitCI(context.Background(), ghdata.CachedCommitCI{
+			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind,
+			Doc: `{"seeded":true}`,
+		}, 30, 1, s.now, time.Hour))
+	}
 }
 
-func (s r2Seeder) commitCIServe(ref string) bool {
+func (s r2Seeder) commitCIServeKind(ref, kind string) bool {
 	s.t.Helper()
-	_, ok, err := s.store.GetCachedCommitCI(context.Background(), "org1", "repo1", ref, ghdata.CommitCIKindStatus, 30, 1, s.now)
+	_, ok, err := s.store.GetCachedCommitCI(context.Background(), "org1", "repo1", ref, kind, 30, 1, s.now)
 	require.NoError(s.t, err)
 	return ok
+}
+
+// commitCIServe reports whether ANY kind of the ref's snapshot still serves.
+func (s r2Seeder) commitCIServe(ref string) bool {
+	s.t.Helper()
+	for _, kind := range commitCIKinds {
+		if s.commitCIServeKind(ref, kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s r2Seeder) seedCompare(basehead, baseRef, headRef string) {
@@ -285,10 +302,15 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
 	})))
 
-	assert.False(t, s.commitCIServe(r2SHA), "the head sha's commit-CI snapshots must flush")
-	assert.False(t, s.commitCIServe("feat"), "the head branch's commit-CI snapshots must flush")
-	assert.False(t, s.commitCIServe("heads/feat"), "the branch's heads/<name> spelling must flush too")
-	assert.False(t, s.commitCIServe("refs/heads/feat"), "the branch's refs/heads/<name> spelling must flush too")
+	const checkRuns = ghdata.CommitCIKindCheckRuns
+	assert.False(t, s.commitCIServeKind(r2SHA, checkRuns), "the head sha's check-runs snapshots must flush")
+	assert.False(t, s.commitCIServeKind("feat", checkRuns), "the head branch's check-runs snapshots must flush")
+	assert.False(t, s.commitCIServeKind("heads/feat", checkRuns), "the branch's heads/<name> spelling must flush too")
+	assert.False(t, s.commitCIServeKind("refs/heads/feat", checkRuns), "the branch's refs/heads/<name> spelling must flush too")
+	assert.True(t, s.commitCIServeKind(r2SHA, ghdata.CommitCIKindStatus),
+		"a check run never appears in a commit's statuses; the combined status must keep serving")
+	assert.True(t, s.commitCIServeKind(r2SHA, ghdata.CommitCIKindStatusesList),
+		"a check run never appears in a commit's statuses; the statuses list must keep serving")
 	assert.True(t, s.commitCIServe(r2OtherSHA), "another sha's commit-CI snapshots must survive")
 	assert.False(t, s.workflowRunsServe(r2SHA), "the head sha's workflow-runs pages must flush")
 	assert.True(t, s.workflowRunsServe(r2OtherSHA), "another sha's workflow-runs pages must survive")

@@ -13,7 +13,8 @@
 
 import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
-    WebhookDelivery, WebhooksResponse, MissingSubscription, BrowseRepo, BrowsePR, BrowseResponse,
+    WebhookDelivery, WebhooksResponse, MissingSubscription, OrderingSnapshot, OutOfOrderSample,
+    BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
@@ -514,6 +515,7 @@ async function loadWebhooks(silent = false): Promise<void> {
 
     const missing = data.missing_subscriptions ?? [];
     if (missing.length > 0) body.appendChild(missingSubscriptionsBanner(missing));
+    if (data.ordering) body.appendChild(orderingPanel(data.ordering));
 
     if (deliveries.length === 0) {
         body.appendChild(el("div", { class: "empty" },
@@ -530,6 +532,7 @@ const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
     ["applied", "state written to global truth"],
     ["invalidated", "marked stale; refetched on next read"],
     ["ignored", "event/action not tracked"],
+    ["superseded", "arrived out of order; a newer view was already applied"],
     ["error", "internal error (GitHub retries)"],
 ];
 
@@ -553,6 +556,91 @@ function missingSubscriptionsBanner(missing: MissingSubscription[]): HTMLElement
     }
     banner.appendChild(list);
     return banner;
+}
+
+// ---- delivery ordering ----
+//
+// GitHub orders nothing it sends, so a non-zero "out of order" count is normal
+// rather than an alarm. What matters is the SHAPE: how many the reorder window
+// fixed by sorting, how many arrived too late for it and were refused, and how
+// far behind those were. Without this the whole mechanism is invisible, which
+// is how out-of-order deliveries went years without a number attached.
+function orderingPanel(o: OrderingSnapshot): HTMLElement {
+    const grid = el("div", { class: "stat-grid" });
+    grid.appendChild(statCard(o.ordered, "In order"));
+    grid.appendChild(statCard(o.reordered, "Batches re-sorted"));
+    grid.appendChild(statCard(o.superseded, "Refused as stale"));
+    grid.appendChild(statCard(o.unorderable, "No clock"));
+    if (o.failed > 0) grid.appendChild(statCard(o.failed, "Gate errors"));
+
+    const bits: string[] = [];
+    if (o.reorder_window_seconds > 0) {
+        bits.push("window " + fmtSecs(o.reorder_window_seconds) + ", held " + o.held +
+            (o.held > 0 ? " (mean " + fmtSecs(o.mean_hold_seconds) + ")" : ""));
+    } else {
+        bits.push("reorder window off — deliveries dispatch on arrival");
+    }
+    if (o.superseded > 0) {
+        bits.push(o.superseded_within_grace + " within " + fmtSecs(o.grace_seconds) + " (delivery jitter), " +
+            o.superseded_beyond_grace + " beyond it");
+        bits.push("late by: mean " + fmtSecs(o.mean_lateness_seconds) + ", worst " + fmtSecs(o.worst_lateness_seconds));
+    }
+    const byEvent = Object.entries(o.by_event ?? {}).sort((a, b) => b[1] - a[1]);
+    if (byEvent.length) bits.push("refused: " + byEvent.map(([k, v]) => k + " ×" + v).join(", "));
+
+    const section = el("details", { class: "req-groups", open: o.superseded > 0 },
+        el("summary", { text: "Delivery ordering" }),
+        el("p", {
+            class: "grp-caption",
+            text: "GitHub sends deliveries in no particular order. Views arriving close together are sorted by the payload's own clock and applied oldest-first; anything older than a view already applied is refused rather than written over it. " + bits.join(" · "),
+        }),
+        grid,
+    );
+    const recent = o.recent ?? [];
+    if (recent.length) section.appendChild(wideWrap(outOfOrderTable(recent)));
+    return section;
+}
+
+function fmtSecs(s: number): string {
+    if (!isFinite(s)) return "—";
+    if (s >= 60) return Math.round(s / 60) + "m";
+    if (s >= 1) return (Math.round(s * 10) / 10) + "s";
+    return Math.round(s * 1000) + "ms";
+}
+
+function outOfOrderTable(samples: OutOfOrderSample[]): HTMLElement {
+    const rows = [...samples].reverse().flatMap((s, i) => {
+        const evt = s.action ? s.event_type + "." + s.action : s.event_type;
+        const cells = [
+            el("td", { class: "wh-event", text: evt }),
+            el("td", { class: "wh-repo", text: s.repo || "—" }),
+            el("td", { class: "wh-detail", text: s.subject }),
+            el("td", { text: fmtSecs(s.lateness_seconds) }),
+            el("td", { text: s.still_absorbed ? "commits kept" : "—" }),
+            el("td", { class: "wh-when", text: fmtTime(s.at) }),
+        ];
+        return collapsibleRow("ooo", (s.delivery_id || s.subject) + " " + i, cells, () => detailPairs([
+            ["Event", evt],
+            ["Subject", s.subject],
+            ["Late by", fmtSecs(s.lateness_seconds)],
+            ["View taken", fmtAbsolute(s.event_time) + (s.clock_field ? " (" + s.clock_field + ")" : "")],
+            ["Already applied", fmtAbsolute(s.watermark_time)],
+            ["Delivery", s.delivery_id],
+            ["Superseded by delivery", s.superseded_by],
+            ["Immutable facts still absorbed", s.still_absorbed ? "yes (its commits)" : "no"],
+        ]));
+    });
+    return el("table", { class: "webhooks rows-collapsible" },
+        el("thead", null, el("tr", null,
+            el("th", { text: "Event" }),
+            el("th", { text: "Repo" }),
+            el("th", { text: "Subject" }),
+            el("th", { text: "Late by" }),
+            el("th", { text: "Kept" }),
+            el("th", { text: "Seen" }),
+        )),
+        el("tbody", null, rows),
+    );
 }
 
 function webhookLegend(): HTMLElement {
@@ -1000,7 +1088,18 @@ function reqDispClass(disp: string): string {
 // window, so each row can expand to show what was cut off. Rows are keyed and
 // the open set survives the 5s background refresh — without that, an open row
 // would snap shut every few seconds, which is worse than not opening at all.
-const expandedRows: Record<string, Set<string>> = { requests: new Set(), webhooks: new Set() };
+// Which rows the reader has expanded, per table, so a silent refresh does not
+// collapse what they opened. Keyed lazily: a table naming itself here for the
+// first time gets its own set rather than a crash mid-render.
+const expandedRows: Record<string, Set<string>> = {};
+
+function expandedSet(table: string): Set<string> {
+    const existing = expandedRows[table];
+    if (existing) return existing;
+    const fresh = new Set<string>();
+    expandedRows[table] = fresh;
+    return fresh;
+}
 
 // requestRowKey identifies a request row across refreshes. The ring has no ids,
 // so the timestamp + what was requested + by whom is the available identity;
@@ -1013,7 +1112,7 @@ function requestRowKey(e: RequestEvent, i: number): string {
 // collapsibleRow returns the visible row plus its (initially hidden) detail
 // row. Clicking, or Enter/Space on the focused row, toggles the pair.
 function collapsibleRow(table: string, key: string, cells: HTMLElement[], detail: () => HTMLElement): HTMLElement[] {
-    const openSet = expandedRows[table];
+    const openSet = expandedSet(table);
     const isOpen = openSet.has(key);
     const detailRow = el("tr", { class: "row-detail" },
         el("td", { colspan: String(cells.length) }, detail()));

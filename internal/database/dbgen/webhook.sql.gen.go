@@ -9,6 +9,45 @@ import (
 	"context"
 )
 
+const claimWebhookWatermark = `-- name: ClaimWebhookWatermark :one
+INSERT INTO webhook_watermarks (subject, event_time, delivery_id, event_type, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (subject) DO UPDATE SET
+    event_time = excluded.event_time,
+    delivery_id = excluded.delivery_id,
+    event_type = excluded.event_type,
+    updated_at = excluded.updated_at
+WHERE excluded.event_time > webhook_watermarks.event_time
+RETURNING event_time
+`
+
+type ClaimWebhookWatermarkParams struct {
+	Subject    string
+	EventTime  string
+	DeliveryID string
+	EventType  string
+	UpdatedAt  string
+}
+
+// ClaimWebhookWatermark advances a subject's watermark, and ONLY forward: the
+// WHERE on the upsert is what makes the decision atomic under concurrent
+// deliveries for one subject, so the winner is decided by the payload clock
+// rather than by which request reached the database first. RETURNING yields a
+// row exactly when this view won; no rows means an equal-or-newer view is
+// already recorded.
+func (q *Queries) ClaimWebhookWatermark(ctx context.Context, arg ClaimWebhookWatermarkParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, claimWebhookWatermark,
+		arg.Subject,
+		arg.EventTime,
+		arg.DeliveryID,
+		arg.EventType,
+		arg.UpdatedAt,
+	)
+	var event_time string
+	err := row.Scan(&event_time)
+	return event_time, err
+}
+
 const distinctWebhookEventTypes = `-- name: DistinctWebhookEventTypes :many
 SELECT DISTINCT event_type FROM webhook_deliveries WHERE event_type <> ''
 `
@@ -40,6 +79,27 @@ func (q *Queries) DistinctWebhookEventTypes(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const getWebhookWatermark = `-- name: GetWebhookWatermark :one
+
+SELECT subject, event_time, delivery_id, event_type, updated_at FROM webhook_watermarks WHERE subject = ?
+`
+
+// ============================================================================
+// Event-order watermarks (out-of-order delivery handling)
+// ============================================================================
+func (q *Queries) GetWebhookWatermark(ctx context.Context, subject string) (WebhookWatermark, error) {
+	row := q.db.QueryRowContext(ctx, getWebhookWatermark, subject)
+	var i WebhookWatermark
+	err := row.Scan(
+		&i.Subject,
+		&i.EventTime,
+		&i.DeliveryID,
+		&i.EventType,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const insertWebhookDelivery = `-- name: InsertWebhookDelivery :exec
@@ -138,6 +198,18 @@ DELETE FROM webhook_replays WHERE requested_at < ?
 // rows for nothing.
 func (q *Queries) PruneWebhookReplays(ctx context.Context, requestedAt string) error {
 	_, err := q.db.ExecContext(ctx, pruneWebhookReplays, requestedAt)
+	return err
+}
+
+const pruneWebhookWatermarks = `-- name: PruneWebhookWatermarks :exec
+DELETE FROM webhook_watermarks WHERE updated_at < ?
+`
+
+// PruneWebhookWatermarks drops subjects nothing has touched in a while. A
+// delivery older than that window is past every TTL it could have moved, and
+// the periodic refresh has been through since.
+func (q *Queries) PruneWebhookWatermarks(ctx context.Context, updatedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneWebhookWatermarks, updatedAt)
 	return err
 }
 

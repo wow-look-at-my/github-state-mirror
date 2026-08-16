@@ -32,6 +32,14 @@ import (
 // Unifying the two representations is possible future work. WHO may read a
 // cached row is the reveal layer's job (internal/api).
 
+// CommitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
+// stale snapshot being served. It lives here rather than in the route because
+// BOTH writers need it: the fetch-on-miss path and the `status` delivery that
+// rewrites a document from its own payload -- a rewritten answer is exactly as
+// fresh as a fetched one, so it gets the same clock (the BranchesCacheTTL
+// precedent).
+const CommitCICacheTTL = 24 * time.Hour
+
 // Commit-CI snapshot kinds (commit_ci_cache.kind).
 const (
 	// CommitCIKindStatus is the combined commit status
