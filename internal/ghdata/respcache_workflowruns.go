@@ -3,6 +3,7 @@ package ghdata
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -66,6 +67,75 @@ func (s *Store) PutCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 		return err
 	}
 	return s.q.PruneWorkflowRunsCacheLRU(ctx, CacheMaxRows)
+}
+
+// ApplyWorkflowRunToPages writes a `workflow_run` delivery's own run object
+// into every cached page of that sha which already lists it. Reports false
+// when nothing could be rewritten and the caller should flush the sha
+// instead.
+//
+// A run is UPDATED IN PLACE upstream -- one id carries it from queued to
+// completed -- so the rewrite replaces the entry where it stands and never has
+// to decide where an entry goes. That its position does not move is measured,
+// not assumed: across 100 consecutive runs of one repo, `created_at` is
+// strictly descending with ZERO violations while `updated_at` has 31, so the
+// listing is ordered by creation, and a run's creation time never changes.
+//
+// A run the pages do not list is a membership change -- a NEW run for the sha
+// -- which only a fetch can settle, so that reports false. total_count is
+// GitHub's total and does not move when a run merely changes state, so it is
+// left exactly as it was.
+func (s *Store) ApplyWorkflowRunToPages(ctx context.Context, owner, repo string, run StoredWorkflowRunItem, now time.Time, ttl time.Duration) (bool, error) {
+	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
+		return false, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	rows, err := s.q.ListWorkflowRunsCacheForHeadSHA(ctx, dbgen.ListWorkflowRunsCacheForHeadSHAParams{
+		Owner: ownerKey, Repo: repoKey, HeadSha: run.HeadSHA,
+	})
+	if err != nil {
+		return false, err
+	}
+	applied := false
+	for _, row := range rows {
+		patched, ok := patchWorkflowRunsPage(row.Doc, run)
+		if !ok {
+			return false, nil // let the caller drop the sha's pages
+		}
+		if perr := s.PutCachedWorkflowRuns(ctx, ownerKey, repoKey, run.HeadSHA,
+			int(row.PerPage), int(row.Page), patched, now, ttl); perr != nil {
+			return false, perr
+		}
+		applied = true
+	}
+	return applied, nil
+}
+
+// patchWorkflowRunsPage replaces one run's entry inside a stored page. The
+// page number does not matter: an in-place replacement changes neither the
+// membership nor the ordering, so whichever page lists the run is the page
+// that holds the new value.
+func patchWorkflowRunsPage(doc string, run StoredWorkflowRunItem) (string, bool) {
+	var page StoredWorkflowRunsPage
+	if err := json.Unmarshal([]byte(doc), &page); err != nil {
+		return "", false
+	}
+	found := false
+	for i := range page.WorkflowRuns {
+		if page.WorkflowRuns[i].ID != run.ID {
+			continue
+		}
+		page.WorkflowRuns[i] = run
+		found = true
+	}
+	if !found {
+		return "", false
+	}
+	rendered, err := MarshalCacheDoc(page)
+	if err != nil {
+		return "", false
+	}
+	return string(rendered), true
 }
 
 // InvalidateWorkflowRunsCache drops every cached workflow-runs page for a

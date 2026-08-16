@@ -33,16 +33,32 @@ import (
 // re-poll refs that were deleted (a merged PR's head) forever, each read a
 // fresh upstream 404. It stays honest because ref CREATION arrives as a push
 // for that exact ref, which drops the verdict row.
+//
+// And because a lost push leaves this row WRONG rather than old, serving it
+// is conditional: `GetCachedGitRefChecked` refuses a row that an absorbed PR's
+// own base.sha contradicts, and this route then answers from GitHub instead.
+// docs/cache/stale-tip-repair.md.
 
 // gitRefCacheTTL bounds how long a MISSED push delivery could leave a stale
 // tip (or a stale absent-verdict) being served. A delivered push does not
 // wait for it: the push APPLIES its own `after` tip to the row
 // (ghdata.ApplyPushedRefTip), so this is only the backstop for a delivery
 // that never landed. Shared with that writer so both clocks agree.
+//
+// A TTL is the wrong instrument to be the ONLY backstop here, and this route
+// is where that bites hardest: the answer is one mutable pointer, and every
+// consumer decision built on it (is this PR behind? does it change anything?)
+// is wrong for as long as the pointer is. Keeping it right is THIS SERVICE's
+// job -- a consumer cannot be asked to notice, and must never be asked to
+// send a fixup request. Two mechanisms do it, both internal: every delivery
+// that states the tip applies it (a push's `after`, a merged PR's
+// merge_commit_sha), and a stored row another absorbed row CONTRADICTS is
+// refetched instead of served. docs/cache/stale-tip-repair.md.
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and
-// absorbing on a miss.
+// absorbing on a miss -- or when the stored snapshot contradicts something
+// else this mirror holds (see the contradiction check below).
 func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
@@ -74,12 +90,21 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	if c, ok, err := h.store.GetCachedGitRef(r.Context(), owner, repo, ref, now); err != nil {
+	// The stored answer is served only if nothing else this mirror holds says
+	// otherwise. A contradiction is not a verdict -- it is a reason to go ask
+	// GitHub, which is what the fetch below does; `contradiction` rides along
+	// so the refetched row records what settled it.
+	contradiction := ""
+	if c, ok, why, err := h.store.GetCachedGitRefChecked(r.Context(), owner, repo, ref, now); err != nil {
 		slog.Warn("git ref cache read failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
-	} else if ok {
+	} else if ok && why == "" {
 		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, c.Status, []byte(c.Doc), true)
 		return
+	} else if ok {
+		contradiction = why
+		slog.Info("git ref cache contradicted by an absorbed PR base -- refetching rather than serving it",
+			"owner", owner, "repo", repo, "ref", ref, "stored", c.Doc, "pr_base", why)
 	}
 
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
@@ -107,6 +132,10 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.store.PutCachedGitRef(r.Context(), ghdata.CachedGitRef{
 		Owner: owner, Repo: repo, Ref: ref, Status: status, Doc: doc,
+		// What this fetch settles. A contradiction already answered must not
+		// re-trigger the next read: a PR's base.sha legitimately lags, so the
+		// same lagging value would otherwise buy a refetch every time.
+		ReconciledAgainst: contradiction,
 	}, now, gitRefCacheTTL); err != nil {
 		slog.Warn("git ref cache write failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
 	}

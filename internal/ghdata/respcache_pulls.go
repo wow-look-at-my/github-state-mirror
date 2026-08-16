@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // This file is the storage layer for the cached PR REST routes:
@@ -310,9 +311,9 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 	q := s.q.WithTx(tx)
 
 	touched := rfc3339(now)
-	fetched := make(map[int64]bool, len(prs))
+	fetched := set.New[int64](len(prs))
 	for _, pr := range prs {
-		fetched[pr.Number] = true
+		fetched.Add(pr.Number)
 		applied, err := upsertPRTx(ctx, q, pr, touched)
 		if err != nil {
 			return err
@@ -338,7 +339,7 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 			return err
 		}
 		for _, row := range existing {
-			if fetched[row.Number] || row.TouchedAt >= cutoff {
+			if fetched.Contains(row.Number) || row.TouchedAt >= cutoff {
 				continue
 			}
 			if err := q.DeletePullRequest(ctx, dbgen.DeletePullRequestParams{

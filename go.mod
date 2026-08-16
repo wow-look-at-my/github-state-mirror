@@ -9,6 +9,8 @@ require (
 	modernc.org/sqlite v1.48.0
 )
 
+require github.com/wow-look-at-my/go-containers v0.0.0-20260815235059-bc089f373e68 // go-toolchain:branch=master
+
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

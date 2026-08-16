@@ -10,18 +10,19 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // repoRoot is this package's directory, two levels down from the module root.
 const repoRoot = "../.."
 
 // skippedDirs are trees whose contents this repo does not author.
-var skippedDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"dbgen":        true, // sqlc codegen
-	"testdata":     true, // fixtures, incl. this guard's own deliberately-bad ones
-}
+var skippedDirs = set.Of(
+	".git",
+	"node_modules",
+	"dbgen",    // sqlc codegen
+	"testdata", // fixtures, incl. this guard's own deliberately-bad ones
+)
 
 // TestNoJSONSplices walks every Go file in the repository and fails on JSON
 // text built from anything but a marshaller. See jsonsplice.go for why no
@@ -35,7 +36,7 @@ func TestNoJSONSplices(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if skippedDirs[d.Name()] {
+			if skippedDirs.Contains(d.Name()) {
 				return fs.SkipDir
 			}
 			return nil

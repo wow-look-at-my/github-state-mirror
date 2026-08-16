@@ -21,8 +21,10 @@ import (
 // (Operator directive, 2026-07-03: "just because nobody has fetched something
 // doesn't mean we get to ignore updates from webhooks for it.")
 type WebhookDispatcher struct {
-	mgr   invalidator
-	store *ghdata.Store
+	mgr      invalidator
+	store    *ghdata.Store
+	ordering *OrderingStats
+	reorder  *reorderBuffer
 }
 
 // invalidator is the one freshness operation the dispatcher needs: marking
@@ -32,9 +34,27 @@ type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
+// NewWebhookDispatcher builds a dispatcher with no reorder window: deliveries
+// dispatch the moment they arrive, and out-of-order ones are caught by the
+// watermark gate alone. Production passes a window
+// (NewWebhookDispatcherWindowed); tests that are not about ordering want zero
+// so they do not sleep through it.
 func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
-	return &WebhookDispatcher{mgr: mgr, store: store}
+	return NewWebhookDispatcherWindowed(mgr, store, 0)
 }
+
+// NewWebhookDispatcherWindowed adds the reorder window: deliveries for one
+// subject arriving within it are sorted by their own clocks and applied
+// oldest-first, instead of the later-arriving older one being refused as
+// superseded. See reorder.go for why the window is small and why a uniform
+// delay would not work.
+func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
+	stats := NewOrderingStats()
+	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
+}
+
+// Ordering exposes what the out-of-order gate has seen, for the dashboard.
+func (d *WebhookDispatcher) Ordering() OrderingSnapshot { return d.ordering.Snapshot() }
 
 // outcome is the internal per-handler result: a disposition (one of the
 // webhook.Disp* constants) and a human-readable detail. Dispatch lifts it into
@@ -52,6 +72,21 @@ func errored(detail string) outcome { return outcome{disposition: webhook.DispEr
 // what it did. It also records the delivery in the global webhook log so the
 // dashboard can show whether data was preserved.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
+	// The reorder window first: a delivery whose subject already has a batch
+	// open joins it and is dispatched in clock order rather than arrival
+	// order. The order is recomputed inside the gate below rather than
+	// threaded through -- one JSON unmarshal, against a buffer hold measured
+	// in seconds.
+	if order, ok := webhook.OrderOf(event); ok {
+		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
+			return res
+		}
+	}
+	return d.dispatchNow(ctx, event)
+}
+
+// dispatchNow processes one delivery, past any reordering hold.
+func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
 	out := d.handle(ctx, event)
@@ -81,6 +116,15 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 
 // handle routes an event to its handler, returning the outcome.
 func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) outcome {
+	// ORDER FIRST, before anything writes. GitHub orders nothing, so a view
+	// older than one already applied must not run at all -- not the apply, and
+	// not the invalidation either, which would drop rows a newer delivery just
+	// refreshed. What a superseded delivery still contributes is only what
+	// cannot be stale (its immutable commits); internal/sync/ordering.go.
+	if superseded, out := d.checkOrder(ctx, event); superseded {
+		return out
+	}
+
 	// Cached-route invalidation runs alongside (never instead of) the normal
 	// apply logic, and is deliberately disposition-neutral: it is best-effort
 	// bookkeeping for the trimmed response caches and must not change what the

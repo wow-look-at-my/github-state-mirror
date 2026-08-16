@@ -10,6 +10,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
@@ -29,17 +30,20 @@ import (
 //     exactly which verbatim-ref commit-CI snapshots moved, and the sha names
 //     the workflow-runs pages; an unparseable payload falls back repo-wide
 //     for both, as does a (today impossible) parsed payload with no sha for
-//     the workflow-runs pages.
+//     the workflow-runs pages. Within those refs the grain is the KIND, and a
+//     `status` or `check_run` delivery REWRITES the documents its own payload
+//     states rather than dropping them -- see settleCommitCI.
 //   - workflow_job: the job's head_sha flushes that sha's workflow-runs
 //     pages (repo-wide when absent). This runs for EVERY delivery -- before
 //     the disposition logic -- so queued/waiting jobs, which onWorkflowJob
 //     drops as ignored, still flush (a queued job is a run the cached
 //     listing may not have shown yet).
-//   - workflow_run: the run's head_sha flushes that sha's workflow-runs
-//     pages (repo-wide when absent). The ONLY signal for a startup_failure
-//     run, which creates no jobs, check runs, or statuses -- without it a
-//     runs page cached just before the failure serves stale for the full
-//     TTL. The truth side has no workflow_run handler, so the delivery still
+//   - workflow_run: the delivery IS the run object those pages list, so its
+//     entry is REWRITTEN inside the sha's pages (settleWorkflowRuns) and the
+//     sha is flushed only for a run they do not list -- a new run, which only
+//     a fetch can settle. Either way this is the ONLY signal for a
+//     startup_failure run, which creates no jobs, check runs, or statuses.
+//     The truth side has no workflow_run handler, so the delivery still
 //     records as ignored (invalidation precedes disposition, the queued
 //     workflow_job precedent).
 //   - repository additionally flushes the repo's cached hook listings. That
@@ -132,6 +136,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
+		if event.Type == "pull_request" {
+			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
+		}
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -162,9 +169,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 			return
 		}
-		for _, ref := range refs {
-			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
-		}
+		d.settleCommitCI(ctx, scope, owner, repo, event, refs)
 		// A new or finished check implies the sha's workflow-runs listing may
 		// have changed too (runs are listed per head_sha) -- only that sha's
 		// pages, never the branch names (workflow_runs_cache keys shas only).
@@ -192,10 +197,10 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			headSHA, runID = payload.HeadSHA, payload.RunID
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
-		// A job's state moved, so the run's cached JOB answers moved with it.
-		// Only terminal answers are ever stored, but a RE-RUN replaces a
-		// run's jobs under the same run id -- this is that signal.
-		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
+		// A job's state moved, and the delivery STATES the new state: the
+		// run's cached job answers are rewritten from it, and flushed only
+		// where they cannot be.
+		d.settleWorkflowJobs(ctx, owner+"/"+repo, owner, repo, event, runID)
 	case "workflow_run":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
@@ -209,7 +214,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		// BEFORE the disposition logic: the truth side has no workflow_run
 		// handler, so the delivery still records as ignored.
 		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
-		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
+		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
 		// The "not installed here" verdicts carry no installation id, so the
@@ -331,35 +336,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
-// applyOrFlushBranchesList settles a push's effect on the cached branches
-// pages. A page lists one entry per branch, and a tip-move changes only that
-// entry's sha -- which the push STATES in `after` -- so the pages are
-// rewritten in place rather than dropped (CLAUDE.md's apply-the-payload rule);
-// dropping them re-lists every branch of the repo on the next reader, which
-// for pr-minder's per-repo fork-point detection is the whole listing back over
-// HTTP for a sha we were handed. Only what the pages cannot be edited into
-// falls back to the flush: a create or a delete, which move page MEMBERSHIP,
-// and a payload naming no ref.
-func (d *WebhookDispatcher) applyOrFlushBranchesList(ctx context.Context, scope, owner, repo, refName, after string, isTag bool) {
-	// A tag is not a branch: it never appears in the listing, so a tag push
-	// leaves the pages correct and there is nothing to do either way.
-	if isTag {
-		return
-	}
-	if refName != "" {
-		applied, err := d.store.ApplyPushedBranchTip(ctx, owner, repo, refName, after, time.Now(), ghdata.BranchesCacheTTL)
-		if err != nil {
-			flush("branches list tip apply", scope, err)
-		}
-		if applied {
-			return
-		}
-	}
-	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
-}
-
-// flush logs one best-effort cache invalidation's failure; it never fails
-// the dispatch (the invalidation pass is disposition-neutral bookkeeping).
 func flush(what, scope string, err error) {
 	if err != nil {
 		slog.Warn("webhook: invalidate "+what+" failed", "scope", scope, "error", err)
@@ -429,16 +405,12 @@ func refSpellings(shortName string, isTag bool) []string {
 // dedupNonEmpty returns vals with empty strings dropped and duplicates
 // removed, first occurrence order preserved.
 func dedupNonEmpty(vals []string) []string {
-	seen := make(map[string]struct{}, len(vals))
+	seen := set.New[string](len(vals))
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if v == "" {
+		if v == "" || !seen.Add(v) {
 			continue
 		}
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
 		out = append(out, v)
 	}
 	return out

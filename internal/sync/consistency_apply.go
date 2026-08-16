@@ -11,6 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The consistency check's APPLY half (POST /api/cache/check?apply=true): the
@@ -42,22 +43,22 @@ func (c *ConsistencyChecker) applyOwner(
 	if err := c.store.SyncOrgTruth(ctx, owner, sync, principal, fetchStart, now); err != nil {
 		return fmt.Errorf("sync truth: %w", err)
 	}
-	fetchedNames := make(map[string]bool, len(data.Repos))
+	fetchedNames := set.New[string](len(data.Repos))
 	for _, r := range data.Repos {
-		fetchedNames[r.Name] = true
+		fetchedNames.Add(r.Name)
 		repoKey := owner + "/" + r.Name
 		if _, ok := cachedRepos[r.Name]; !ok {
 			ap.ReposAbsorbed++
 		}
-		fetched := make(map[int64]bool, len(data.PRsByRepo[r.NameWithOwner]))
+		fetched := set.New[int64](len(data.PRsByRepo[r.NameWithOwner]))
 		for _, pr := range data.PRsByRepo[r.NameWithOwner] {
-			fetched[pr.Number] = true
+			fetched.Add(pr.Number)
 			if _, ok := cachedPRs[repoKey][pr.Number]; !ok {
 				ap.PRsAbsorbed++
 			}
 		}
 		for num := range cachedPRs[repoKey] {
-			if !fetched[num] {
+			if !fetched.Contains(num) {
 				ap.PRsDeleted++
 			}
 		}
@@ -72,7 +73,7 @@ func (c *ConsistencyChecker) applyOwner(
 			continue
 		}
 		cr, wasCached := cachedRepos[name]
-		if !wasCached && !fetchedNames[name] {
+		if !wasCached && !fetchedNames.Contains(name) {
 			continue
 		}
 		if wasCached && cr.Visibility == vis.Visibility {

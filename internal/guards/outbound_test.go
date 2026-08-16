@@ -55,7 +55,7 @@ func TestEveryOutboundClientIsObserved(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if skippedDirs[d.Name()] {
+			if skippedDirs.Contains(d.Name()) {
 				return fs.SkipDir
 			}
 			return nil

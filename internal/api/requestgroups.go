@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/wow-look-at-my/go-containers/set"
 	"net/url"
 	"sort"
 	"strings"
@@ -291,15 +292,15 @@ func normalizeRepoTail(tail []string) []string {
 // /repos/{owner}/{repo}/commits/{ref}/<sub>. The suffix anchor is what lets a
 // ref carry slashes (mirroring the server's own subtree dispatcher), so the
 // match keys on the LAST segment.
-var commitRefSubresources = map[string]bool{
-	"status": true, "check-runs": true, "statuses": true, "pulls": true, "check-suites": true, "comments": true,
-}
+var commitRefSubresources = set.Of(
+	"status", "check-runs", "statuses", "pulls", "check-suites", "comments",
+)
 
 func normalizeCommitsTail(tail []string) []string {
 	if len(tail) == 1 {
 		return tail // the commits LIST
 	}
-	if last := tail[len(tail)-1]; len(tail) >= 3 && commitRefSubresources[last] {
+	if last := tail[len(tail)-1]; len(tail) >= 3 && commitRefSubresources.Contains(last) {
 		return []string{"commits", "{ref}", last}
 	}
 	// Single-commit read: a full sha groups as {sha}, anything else (branch or

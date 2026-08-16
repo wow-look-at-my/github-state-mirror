@@ -245,7 +245,7 @@ func NewRouter(
 	if app != nil {
 		appEvents = app.SubscribedEvents
 	}
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents).routes(r)
+	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering).routes(r)
 
 	// Webhook endpoint — authenticated by HMAC signature (X-Hub-Signature-256),
 	// not a user token, so it sits outside the requireAuth group. After each
@@ -380,12 +380,12 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
 
 		// Cached Actions JOB reads (respcache_workflowjobs.go): a run's jobs
-		// page and a single job. Only TERMINAL answers are stored -- a
-		// queued/in_progress job is a live value the runner coordinator
-		// provisions against, so those always reach GitHub; what this kills
-		// is the fleet re-reading SETTLED runs forever. A re-run replaces a
-		// run's jobs under the same run id, so workflow_job/workflow_run
-		// deliveries flush every row under that run.
+		// page and a single job. A job still moving is stored too and
+		// REWRITTEN by its own workflow_job deliveries -- the fetch settles
+		// the page's membership, the deliveries its contents. A re-run is a
+		// different set of jobs under the same run id, so workflow_run
+		// deliveries, and job deliveries the page cannot absorb, flush every
+		// row under that run.
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
 
