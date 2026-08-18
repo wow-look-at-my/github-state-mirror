@@ -104,8 +104,9 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@v1
 
   # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Restores the go-build hand-off (server_linux_amd64) the build job
-  # cache-uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
+  # on master. Restores the go-build hand-off (the cosmo fat APE, as
+  # build/server_host) the build job cache-uploaded and feeds it to the
+  # Dockerfile, then prunes old GHCR versions.
   publish-ghcr:
     needs: build
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master

@@ -419,11 +419,15 @@ The service has **no static service token**. API requests authenticate with the 
 ## Building
 
 ```sh
-npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
+npm ci && npm run build                        # dashboard JS — the Go embed needs it on disk
+go run ./cosmopatch/main.go ./cosmopatch/tables.go  # generates go.mod's cosmo replace targets
 go-toolchain
 ```
 
-Binary is output to `build/server_linux_amd64`.
+Binary is output to `build/server_cosmo_fat` (a GOOS=cosmo fat APE covering
+linux/amd64, darwin/arm64, and windows/amd64), with `build/server_host` as a
+convenience symlink to it. See `cosmopatch/README.md` for why this build
+needs the code-generation step above.
 
 The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 

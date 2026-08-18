@@ -1,7 +1,10 @@
 # The binary is built by go-toolchain in CI and downloaded into build/ by the
 # publish-ghcr reusable workflow before this image is built -- it is NOT compiled
-# here. modernc.org/sqlite is pure Go, so build/server_linux_amd64 is a fully
-# static binary that runs on the distroless static base with no libc.
+# here. go-toolchain's build is a GOOS=cosmo fat APE (see cosmopatch/README.md),
+# which writes only server_cosmo_fat plus the server_host convenience symlink --
+# no per-platform server_linux_amd64 file exists. The APE self-assimilates into
+# a native ELF at exec time, so it runs on the distroless static base with no
+# libc, same as a real static linux/amd64 binary would.
 
 # Stage a writable, nonroot-owned data dir for the SQLite cache. distroless has
 # no shell, so the directory (with correct ownership) is prepared in busybox and
@@ -17,7 +20,7 @@ LABEL org.opencontainers.image.source="https://github.com/wow-look-at-my/github-
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.description="Mirrors GitHub state into SQLite behind a fast local API"
 
-COPY --chmod=755 build/server_linux_amd64 /usr/local/bin/github-state-mirror
+COPY --chmod=755 build/server_host /usr/local/bin/github-state-mirror
 COPY --from=dirs --chown=65532:65532 /data /var/lib/github-state-mirror
 
 # The SQLite cache DB is disposable but needs a writable, nonroot-owned location.
