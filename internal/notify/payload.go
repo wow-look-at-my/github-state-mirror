@@ -90,6 +90,8 @@ func extractIdentifiers(event webhook.Event) identifiers {
 		if json.Unmarshal(event.Raw, &body) == nil && body.CheckSuite != nil {
 			ids.sha = body.CheckSuite.HeadSHA
 		}
+	case "workflow_run":
+		ids.sha = webhook.ParseWorkflowRunHeadSHA(event.Raw)
 	case "workflow_job":
 		var body struct {
 			WorkflowJob *struct {
