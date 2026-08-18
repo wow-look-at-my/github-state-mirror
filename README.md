@@ -425,9 +425,8 @@ go-toolchain
 ```
 
 Binary is output to `build/server_cosmo_fat` (a GOOS=cosmo fat APE covering
-linux/amd64, darwin/arm64, and windows/amd64), with `build/server_host` as a
-convenience symlink to it. See `cosmopatch/README.md` for why this build
-needs the code-generation step above.
+linux/amd64, darwin/arm64, and windows/amd64). See `cosmopatch/README.md`
+for why this build needs the code-generation step above.
 
 The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 
