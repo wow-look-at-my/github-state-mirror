@@ -25,15 +25,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-// These three replaces point at output `go run ./cosmopatch/main.go
-// ./cosmopatch/tables.go` generates as a SIBLING of this checkout (not
-// nested inside it -- see the comment on cosmopatch/main.go's outDir) --
-// see cosmopatch/README.md. Run it before building; without it, these
-// paths don't exist and every build fails (including non-cosmo ones,
-// since a replace with no target is a hard error regardless of GOOS).
-replace modernc.org/libc => ../.cosmopatch-out/libc
-
-replace golang.org/x/sys => ../.cosmopatch-out/sys
-
-replace modernc.org/sqlite => ../.cosmopatch-out/sqlite

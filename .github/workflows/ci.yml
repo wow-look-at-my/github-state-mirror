@@ -92,10 +92,6 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # go-toolchain@v1's own build step builds the cosmo fat APE
-      # unconditionally, and go.mod's replace directives for that build
-      # point at output this step generates — see cosmopatch/README.md.
-      - run: go run ./cosmopatch/main.go ./cosmopatch/tables.go
       # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
       # on every run, and its cache key is once-per-run (NOT job-disambiguated),
       # so publish-ghcr just cache-downloads it. Do NOT add an explicit
