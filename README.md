@@ -419,14 +419,17 @@ The service has **no static service token**. API requests authenticate with the 
 ## Building
 
 ```sh
-npm ci && npm run build                        # dashboard JS — the Go embed needs it on disk
-go run ./cosmopatch/main.go ./cosmopatch/tables.go  # generates go.mod's cosmo replace targets
+npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
 go-toolchain
 ```
 
 Binary is output to `build/server_cosmo_fat` (a GOOS=cosmo fat APE covering
-linux/amd64, darwin/arm64, and windows/amd64). See `cosmopatch/README.md`
-for why this build needs the code-generation step above.
+linux/amd64, darwin/arm64, and windows/amd64). go-toolchain patches the
+third-party modules that have no cosmo port, so there is no per-repo step.
+
+Start it through a shell (`sh build/server_cosmo_fat`): the kernel cannot exec
+an APE directly. `docker/assimilate.sh` turns one into a plain ELF, which is
+what the container image ships.
 
 The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 

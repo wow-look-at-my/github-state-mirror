@@ -1,10 +1,17 @@
 # The binary is built by go-toolchain in CI and downloaded into build/ by the
 # publish-ghcr reusable workflow before this image is built -- it is NOT compiled
-# here. modernc.org/sqlite is pure Go, so build/server_linux_amd64 is a fully
-# static binary that runs on the distroless static base with no libc.
+# here. go-toolchain's build is a GOOS=cosmo fat APE: it writes exactly one
+# file, server_cosmo_fat, and no per-platform name such as server_linux_amd64.
 #
-# It must stay a plain ELF. This base has no shell, runs as nonroot, and gives
-# no writable temp dir. A Cosmopolitan APE cannot self-assimilate here.
+# An APE needs a SHELL to start. The kernel refuses the file -- it begins with
+# the DOS/shell magic, not an ELF header -- so a shell runs its boot script,
+# which writes the real header over a staged copy. The final base below has no
+# shell, so that has to happen here. docker/assimilate.sh does it once, at build
+# time, and the image ships the plain ELF the kernel accepts.
+FROM debian:stable-slim AS assimilate
+COPY build/server_cosmo_fat /in/server_cosmo_fat
+COPY docker/assimilate.sh /assimilate.sh
+RUN sh /assimilate.sh
 
 # Stage a writable, nonroot-owned data dir for the SQLite cache. distroless has
 # no shell, so the directory (with correct ownership) is prepared in busybox and
@@ -20,7 +27,7 @@ LABEL org.opencontainers.image.source="https://github.com/wow-look-at-my/github-
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.description="Mirrors GitHub state into SQLite behind a fast local API"
 
-COPY --chmod=755 build/server_linux_amd64 /usr/local/bin/github-state-mirror
+COPY --from=assimilate --chmod=755 /out/server /usr/local/bin/github-state-mirror
 COPY --from=dirs --chown=65532:65532 /data /var/lib/github-state-mirror
 
 # The SQLite cache DB is disposable but needs a writable, nonroot-owned location.
