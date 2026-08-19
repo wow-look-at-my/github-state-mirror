@@ -99,12 +99,69 @@ jobs:
       # name collides on the key and fails.
       - uses: wow-look-at-my/go-toolchain@v1
 
+  # START the image and require it to serve. Nothing used to: `build` tests the
+  # HOST binary, and publish-ghcr builds and pushes without ever running the
+  # result, so the first execution of the entrypoint was production. That is how
+  # an image whose binary the kernel could not exec shipped green -- the whole
+  # fleet's GitHub traffic routes through this service, and every route 404'd.
+  #
+  # The two routes below are registered unconditionally, so a 404 on either one
+  # means the process is not serving this program. Both 404'd during that
+  # outage, which is exactly what this job now refuses to let past.
+  image-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+      - name: Build the image and prove it serves
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            if (!fs.existsSync("build/server_cosmo_fat")) {
+              core.setFailed("build/server_cosmo_fat is missing — the go-build hand-off did not restore, so this job would test nothing.");
+              return;
+            }
+            await $`docker build -t gsm:smoke .`;
+            await $`docker run -d --name gsm-smoke -p 18080:8080 gsm:smoke`;
+            try {
+              // A 404 here is the outage signature; connection-refused just means it is still booting.
+              const routes = ["/.well-known/docker-updater/health", "/"];
+              for (const route of routes) {
+                let verdict = "never responded";
+                let ok = false;
+                for (let i = 0; i < 30 && !ok; i++) {
+                  try {
+                    const res = await fetch(`http://127.0.0.1:18080${route}`);
+                    verdict = `HTTP ${res.status}`;
+                    ok = res.status !== 404;
+                  } catch (e) {
+                    verdict = `no response (${(e as Error).message})`;
+                  }
+                  if (!ok) await new Promise((r) => setTimeout(r, 1000));
+                }
+                if (!ok) {
+                  core.setFailed(`${route} answered ${verdict} — the image is not serving its own routes.`);
+                  return;
+                }
+                core.info(`${route} -> ${verdict}`);
+              }
+              const state = await exec.getExecOutput("docker", ["inspect", "-f", "{{.State.Running}}", "gsm-smoke"], { silent: true });
+              if (state.stdout.trim() !== "true") core.setFailed("the container stopped after serving — it is not stable.");
+            } finally {
+              await exec.exec("docker", ["logs", "gsm-smoke"], { ignoreReturnCode: true });
+              await exec.exec("docker", ["rm", "-f", "gsm-smoke"], { ignoreReturnCode: true });
+            }
+
   # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
   # on master. Restores the go-build hand-off (build/server_cosmo_fat, the
   # cosmo fat APE) the build job cache-uploaded and feeds it to the
-  # Dockerfile, then prunes old GHCR versions.
+  # Dockerfile, then prunes old GHCR versions. Gated on image-smoke: an image
+  # nobody started is exactly what shipped the outage.
   publish-ghcr:
-    needs: build
+    needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
   # Deploy a standalone, backend-free styling preview of the dashboard to

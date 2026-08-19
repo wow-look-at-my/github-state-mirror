@@ -135,6 +135,13 @@ Storage and authorization are **separate axes**:
   leaving them unregistered reports the container as permanently unhealthy rather than unconfigured. health pings the cache DB
   (`Store.Ping`); pre-update holds while `freshness.Manager.Busy()` reports a detached fetch in flight.
 - **Build** — use `go-toolchain` (not `go build`/`go test` directly); run `npm run build` first on a fresh checkout and after editing `web/src/*.ts` (the JS it emits is gitignored, and `//go:embed` needs it on disk)
+- **The image is a GOOS=cosmo APE, and it needs a shell to start.** The kernel cannot exec an APE — the file begins `MZqFpD=`,
+  not an ELF header — so busybox supplies `/bin/sh` and the entrypoint names it. An exec-form `ENTRYPOINT` gets ENOEXEC no
+  matter what the image contains. The base stays distroless for its CA certificates; `/tmp` is writable because staging
+  writes there. see [docs/APE-STAGING.md in gosmopolitan](https://github.com/wow-look-at-my/gosmopolitan/blob/master/docs/APE-STAGING.md)
+- **CI's `image-smoke` job RUNS the image and `publish-ghcr` is gated on it.** `build` tests the host binary and the publish
+  job never started what it pushed, so the first execution of the entrypoint was production — an image that could not exec
+  its own binary shipped green and 404'd the whole fleet. Never publish an image no job has started.
 
 ## Commands
 
