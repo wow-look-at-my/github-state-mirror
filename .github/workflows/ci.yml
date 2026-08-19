@@ -116,9 +116,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # `path: build` matches what publish-ghcr passes. The hand-off holds the
+      # binaries themselves, not a build/ directory, so restoring into the
+      # workspace root leaves the Dockerfile's COPY with nothing to find.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
+          path: build
       - run: npm ci
       - run: npm run test:image
 
