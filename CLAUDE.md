@@ -139,9 +139,13 @@ Storage and authorization are **separate axes**:
   not an ELF header — so busybox supplies `/bin/sh` and the entrypoint names it. An exec-form `ENTRYPOINT` gets ENOEXEC no
   matter what the image contains. The base stays distroless for its CA certificates; `/tmp` is writable because staging
   writes there. see [docs/APE-STAGING.md in gosmopolitan](https://github.com/wow-look-at-my/gosmopolitan/blob/master/docs/APE-STAGING.md)
-- **CI's `image-smoke` job RUNS the image and `publish-ghcr` is gated on it.** `build` tests the host binary and the publish
+- **`docker/imagecheck.test.ts` RUNS the image, and `publish-ghcr` is gated on it** (CI's `image-smoke` job just invokes
+  `npm run test:image`; the assertions are in the suite, never in the YAML). `build` tests the host binary and the publish
   job never started what it pushed, so the first execution of the entrypoint was production — an image that could not exec
-  its own binary shipped green and 404'd the whole fleet. Never publish an image no job has started.
+  its own binary shipped green and 404'd the whole fleet. Never publish an image no job has started. The suite needs docker
+  and `build/server_cosmo_fat`, and FAILS rather than skips without them. Its last case is a negative control: it builds a
+  variant with an exec-form entrypoint and requires that one NOT to start, so the checks cannot pass for an image that
+  merely happens to work.
 
 ## Commands
 

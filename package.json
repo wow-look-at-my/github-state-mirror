@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "check:harness": "tsc -p tsconfig.harness.json"
+    "check:harness": "tsc -p tsconfig.harness.json",
+    "test:image": "node --test docker/imagecheck.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
