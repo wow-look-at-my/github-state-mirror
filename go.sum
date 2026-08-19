@@ -20,8 +20,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/wow-look-at-my/go-containers v0.0.0-20260815235059-bc089f373e68 h1:gBF/lTlZwXrVVoQKJpHeZBi+GEd/gSfgx8iQDa5Qsqg=
-github.com/wow-look-at-my/go-containers v0.0.0-20260815235059-bc089f373e68/go.mod h1:AGGzFZheJSooQmBf0LdfoAGXr7jSGxsn7N1NrOdhmIs=
+github.com/wow-look-at-my/go-containers v0.0.0-20260818100925-5e01414a6ac3 h1:0YbDEeJC9Cb2UsmTcx2awoUG0eVgUsSUJKIBteoMgSM=
+github.com/wow-look-at-my/go-containers v0.0.0-20260818100925-5e01414a6ac3/go.mod h1:AGGzFZheJSooQmBf0LdfoAGXr7jSGxsn7N1NrOdhmIs=
 github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260810095912-05d7e2f99130 h1:NIxTj/hCIMCGPS01t7ghMAgsL5DfJiSyPCVvTMVrnJU=
 github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260810095912-05d7e2f99130/go.mod h1:nJ1QE/XUVPoMp6ZFq9xaNqj57aQPkQYMMVZDZzj1ZMo=
 golang.org/x/mod v0.33.0 h1:tHFzIWbBifEmbwtGz65eaWyGiGZatSrT9prnU8DbVL8=

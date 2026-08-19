@@ -116,6 +116,17 @@ func pushEvent(owner, repo, ref, after string) webhook.Event {
 	return e
 }
 
+func workflowRunEvent(owner, repo, headSHA string) webhook.Event {
+	raw := mustJSON(map[string]any{
+		"action":       "completed",
+		"workflow_run": map[string]any{"id": 123, "head_sha": headSHA},
+		"repository":   map[string]any{"name": repo, "owner": map[string]any{"login": owner}},
+	})
+	e := webhook.ParseEvent("workflow_run", raw)
+	e.DeliveryID = "mirror-received-guid-workflow-run"
+	return e
+}
+
 func applied() webhook.DispatchResult {
 	return webhook.DispatchResult{Disposition: webhook.DispApplied}
 }
@@ -241,6 +252,32 @@ func TestNotifierPushPayloadIdentifiers(t *testing.T) {
 	var asMap map[string]any
 	require.NoError(t, json.Unmarshal(body, &asMap))
 	assert.NotContains(t, asMap, "pr_number")
+}
+
+// TestNotifierWorkflowRunPayloadIdentifiers: a workflow_run notification
+// carries the run's head sha (via webhook.ParseWorkflowRunHeadSHA), the same
+// correlation field a status/check_run notification carries — a required-
+// builds-manager-style consumer keys off owner/repo/sha regardless of which
+// of the three build listing types the event is.
+func TestNotifierWorkflowRunPayloadIdentifiers(t *testing.T) {
+	access := newFakeAccess()
+	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)
+	n, st := newTestNotifier(t, access, nil)
+
+	rec := &capture{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+	_, err := st.Create(context.Background(), "user:1", NewSubscription{URL: srv.URL, Secret: testSecret()}, time.Now())
+	require.NoError(t, err)
+
+	n.NotifyIngest(workflowRunEvent("my-org", "repo1", "feedbeef"), applied(), time.Now())
+	require.True(t, n.Flush(5*time.Second))
+
+	body, _ := rec.first(t)
+	var note Notification
+	require.NoError(t, json.Unmarshal(body, &note))
+	assert.Equal(t, "workflow_run", note.Event)
+	assert.Equal(t, "feedbeef", note.SHA, "a workflow_run carries the run's head sha")
 }
 
 // TestNotifierRevealGating is the load-bearing security test: a private
