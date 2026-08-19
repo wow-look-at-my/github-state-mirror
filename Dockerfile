@@ -5,19 +5,23 @@
 #
 # An APE needs a SHELL to start. The kernel refuses the file -- it begins with
 # the DOS/shell magic, not an ELF header -- so a shell runs its boot script,
-# which writes the real header over a staged copy. The final base below has no
-# shell, so that has to happen here. docker/assimilate.sh does it once, at build
-# time, and the image ships the plain ELF the kernel accepts.
-FROM debian:stable-slim AS assimilate
-COPY build/server_cosmo_fat /in/server_cosmo_fat
-COPY docker/assimilate.sh /assimilate.sh
-RUN sh /assimilate.sh
-
-# Stage a writable, nonroot-owned data dir for the SQLite cache. distroless has
-# no shell, so the directory (with correct ownership) is prepared in busybox and
-# copied in.
-FROM busybox:musl AS dirs
-RUN mkdir -p /data && chown 65532:65532 /data
+# which writes the real header over a copy it stages under /tmp.
+# see https://github.com/wow-look-at-my/gosmopolitan/blob/master/docs/APE-STAGING.md
+#
+# distroless ships no shell, so busybox supplies one. The base stays distroless
+# because it carries the CA certificates every upstream GitHub call needs.
+# busybox also prepares the two directories, since distroless has no shell to
+# run mkdir in: the SQLite cache dir, and /tmp, which staging writes to.
+FROM busybox:musl AS shell
+# The applet links are made by hand, RELATIVE. `busybox --install -s` writes
+# each one as an absolute path to where it ran, so every link would dangle once
+# this directory is copied to /bin below.
+RUN mkdir -p /out/bin /out/data /out/tmp \
+ && cp /bin/busybox /out/bin/busybox \
+ && cd /out/bin \
+ && for a in $(./busybox --list); do [ "$a" = busybox ] || ln -sf busybox "$a"; done \
+ && chown 65532:65532 /out/data /out/tmp \
+ && touch /out/tmp/.keep
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
@@ -27,8 +31,10 @@ LABEL org.opencontainers.image.source="https://github.com/wow-look-at-my/github-
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.description="Mirrors GitHub state into SQLite behind a fast local API"
 
-COPY --from=assimilate --chmod=755 /out/server /usr/local/bin/github-state-mirror
-COPY --from=dirs --chown=65532:65532 /data /var/lib/github-state-mirror
+COPY --from=shell /out/bin/ /bin/
+COPY --chmod=755 build/server_cosmo_fat /usr/local/bin/github-state-mirror
+COPY --from=shell --chown=65532:65532 /out/data /var/lib/github-state-mirror
+COPY --from=shell --chown=65532:65532 /out/tmp /tmp
 
 # The SQLite cache DB is disposable but needs a writable, nonroot-owned location.
 ENV DB_PATH=/var/lib/github-state-mirror/github-mirror.db
@@ -40,4 +46,9 @@ VOLUME /var/lib/github-state-mirror
 STOPSIGNAL SIGTERM
 
 USER nonroot
-ENTRYPOINT ["github-state-mirror"]
+
+# Through the shell ON PURPOSE. The exec form execve()s the file directly, and
+# the kernel cannot exec an APE -- that ENOEXEC is what left this image unable
+# to start. The boot script execs the staged copy, so the server still replaces
+# the shell as PID 1 and STOPSIGNAL reaches it.
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/github-state-mirror"]
