@@ -99,12 +99,40 @@ jobs:
       # name collides on the key and fails.
       - uses: wow-look-at-my/go-toolchain@v1
 
+  # START the image and require it to serve. Nothing used to: `build` tests the
+  # HOST binary, and publish-ghcr builds and pushes without ever running the
+  # result, so the first execution of the entrypoint was production. That is how
+  # an image whose binary the kernel could not exec shipped green -- the whole
+  # fleet's GitHub traffic routes through this service, and every route 404'd.
+  #
+  # The assertions live in docker/imagecheck.test.ts, not here. This job only
+  # restores the binary and runs the suite, so an engineer can reproduce a
+  # failure with `npm run test:image` instead of pushing a commit to see it.
+  image-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # `path: build` matches what publish-ghcr passes. The hand-off holds the
+      # binaries themselves, not a build/ directory, so restoring into the
+      # workspace root leaves the Dockerfile's COPY with nothing to find.
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      - run: npm ci
+      - run: npm run test:image
+
   # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
   # on master. Restores the go-build hand-off (build/server_cosmo_fat, the
   # cosmo fat APE) the build job cache-uploaded and feeds it to the
-  # Dockerfile, then prunes old GHCR versions.
+  # Dockerfile, then prunes old GHCR versions. Gated on image-smoke: an image
+  # nobody started is exactly what shipped the outage.
   publish-ghcr:
-    needs: build
+    needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
   # Deploy a standalone, backend-free styling preview of the dashboard to

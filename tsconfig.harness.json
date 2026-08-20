@@ -17,5 +17,5 @@
     "rootDir": ".",
     "outDir": null
   },
-  "include": ["internal/api/testdata/**/*.ts", "internal/api/web/src/**/*.ts"]
+  "include": ["internal/api/testdata/**/*.ts", "docker/**/*.ts", "internal/api/web/src/**/*.ts"]
 }

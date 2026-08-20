@@ -419,14 +419,21 @@ The service has **no static service token**. API requests authenticate with the 
 ## Building
 
 ```sh
-npm ci && npm run build                        # dashboard JS — the Go embed needs it on disk
-go run ./cosmopatch/main.go ./cosmopatch/tables.go  # generates go.mod's cosmo replace targets
+npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
 go-toolchain
 ```
 
 Binary is output to `build/server_cosmo_fat` (a GOOS=cosmo fat APE covering
-linux/amd64, darwin/arm64, and windows/amd64). See `cosmopatch/README.md`
-for why this build needs the code-generation step above.
+linux/amd64, darwin/arm64, and windows/amd64). go-toolchain patches the
+third-party modules that have no cosmo port, so there is no per-repo step.
+
+Start it through a shell (`sh build/server_cosmo_fat`): the kernel cannot exec
+an APE directly. The shell runs the boot script, which stages a runnable copy
+under `/tmp`. The container image does the same thing, which is why it carries
+busybox.
+
+`npm run test:image` builds the image, starts it, and requires it to serve.
+It needs docker and the binary above, and CI gates the GHCR publish on it.
 
 The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 
@@ -449,7 +456,7 @@ A container image is published to the GitHub Container Registry on every push to
 ghcr.io/wow-look-at-my/github-state-mirror:latest
 ```
 
-It is a static binary on a `distroless` base (no shell, runs as a non-root user), listens on port `8080`, and keeps its SQLite cache under `/var/lib/github-state-mirror` (declared as a volume), so `DB_PATH` defaults to `/var/lib/github-state-mirror/github-mirror.db` inside the container.
+It is a static binary on a `distroless` base plus busybox, which supplies the shell the APE needs to start. It runs as a non-root user, listens on port `8080`, and keeps its SQLite cache under `/var/lib/github-state-mirror` (declared as a volume), so `DB_PATH` defaults to `/var/lib/github-state-mirror/github-mirror.db` inside the container.
 
 ```sh
 docker run -p 8080:8080 \
