@@ -423,11 +423,12 @@ npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
 go-toolchain
 ```
 
-Binary is output to `build/server_cosmo_fat` (a GOOS=cosmo fat APE covering
-linux/amd64, darwin/arm64, and windows/amd64). go-toolchain patches the
-third-party modules that have no cosmo port, so there is no per-repo step.
+Binary is output to `build/server` (a GOOS=cosmo fat APE covering
+linux/amd64, darwin/arm64, and windows/amd64). The gosmopolitan fork aliases
+GOOS=cosmo to `linux` for build-tag matching, so third-party modules with no
+dedicated cosmo port build unmodified; there is no per-repo step.
 
-Start it through a shell (`sh build/server_cosmo_fat`): the kernel cannot exec
+Start it through a shell (`sh build/server`): the kernel cannot exec
 an APE directly. The shell runs the boot script, which stages a runnable copy
 under `/tmp`. The container image does the same thing, which is why it carries
 busybox.

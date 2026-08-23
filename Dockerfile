@@ -1,7 +1,8 @@
 # The binary is built by go-toolchain in CI and downloaded into build/ by the
 # publish-ghcr reusable workflow before this image is built -- it is NOT compiled
 # here. go-toolchain's build is a GOOS=cosmo fat APE: it writes exactly one
-# file, server_cosmo_fat, and no per-platform name such as server_linux_amd64.
+# file, the bare binary name (server), and no per-platform name such as
+# server_linux_amd64 or server_cosmo_fat.
 #
 # An APE needs a SHELL to start. The kernel refuses the file -- it begins with
 # the DOS/shell magic, not an ELF header -- so a shell runs its boot script,
@@ -32,7 +33,7 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.description="Mirrors GitHub state into SQLite behind a fast local API"
 
 COPY --from=shell /out/bin/ /bin/
-COPY --chmod=755 build/server_cosmo_fat /usr/local/bin/github-state-mirror
+COPY --chmod=755 build/server /usr/local/bin/github-state-mirror
 COPY --from=shell --chown=65532:65532 /out/data /var/lib/github-state-mirror
 COPY --from=shell --chown=65532:65532 /out/tmp /tmp
 
