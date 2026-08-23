@@ -75,6 +75,9 @@ jobs:
       - run: npm run build
       # go-toolchain@v1 cache-uploads build/ as go-build once per run; never add another cache-upload go-build step here, it collides on the key.
       - uses: wow-look-at-my/go-toolchain@v1
+        with:
+          # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
+          cosmo-platforms: linux/amd64,windows/amd64
 
   # Starts the image and requires it to serve; assertions live in docker/imagecheck.test.ts. See CLAUDE.md, "docker/imagecheck.test.ts".
   image-smoke:
