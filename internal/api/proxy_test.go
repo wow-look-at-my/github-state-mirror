@@ -1,7 +1,6 @@
 package api
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,37 +162,15 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
 }
 
-// TestProxy_FormerlyCachedNowForwarded verifies the endpoints the mirror used to
-// cache with TRIMMED shapes (/user) now pass through to GitHub verbatim, so
-// callers get GitHub's full response — not a subset. This is the
-// "identical-or-passthrough" rule: not served from cache => served as-is.
-// (/compare and /pulls/{n}/files, both once on this list for trims that broke
-// or would break consumers, are cached again as tier-2 routes whose rebuilds
-// preserve the consumer-read fields exactly — see respcache_compare_test.go
-// and respcache_pullfiles_test.go.)
-func TestProxy_FormerlyCachedNowForwarded(t *testing.T) {
-	cases := []struct{ name, path, body string }{
-		{"user", "/user", `{"login":"octocat","id":1,"node_id":"MDQ6VXNlcjE=","type":"User","site_admin":false}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var hits int32
-			gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				atomic.AddInt32(&hits, 1)
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, tc.body)
-			})
-			router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
-
-			req := authedReq("GET", tc.path, nil)
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-
-			require.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, tc.body, strings.TrimSpace(w.Body.String()),
-				"passthrough must return GitHub's body verbatim, not a trimmed cache shape")
-			assert.Equal(t, int32(1), atomic.LoadInt32(&hits),
-				"request must reach GitHub (no longer served from a trimmed cache)")
-		})
-	}
-}
+// The "identical-or-passthrough" rule this package follows: an endpoint is
+// either served byte-identical to GitHub (from a verbatim cache, or a live
+// forward) or it is not cached at all -- never a trimmed subset a consumer
+// might read a dropped field from. /user, /compare, and /pulls/{n}/files were
+// all, at different points, cached with a trim that broke or would break a
+// consumer; each was fixed by keeping the rule rather than relitigating it.
+// /compare and /pulls/{n}/files are tier-2 routes whose rebuilds preserve the
+// consumer-read fields exactly (respcache_compare_test.go,
+// respcache_pullfiles_test.go). /user (and /app, /user/orgs alongside it)
+// cache the upstream body VERBATIM, byte for byte, instead of guessing a
+// field subset again -- see respcache_identity_test.go for the hit/miss
+// byte-identity proof.

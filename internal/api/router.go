@@ -290,6 +290,11 @@ func NewRouter(
 	r.Get("/orgs/{org}/installation", h.cachedOwnerInstallation(ownerInstallScopeOrg, "org"))
 	r.Get("/users/{username}/installation", h.cachedOwnerInstallation(ownerInstallScopeUser, "username"))
 
+	// Cached App identity (respcache_identity.go). Same JWT-verified,
+	// outside-requireAuth shape as the installation lookups above: an
+	// installation token cannot resolve GET /app at all.
+	r.Get("/app", h.cachedApp)
+
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
 	// actor): the token's GitHub user ("user:<id>"), app:<id> for verified
@@ -315,6 +320,13 @@ func NewRouter(
 		// GraphQL endpoint (only the org-repos query shape is cached; everything
 		// else h.graphql forwards to the passthrough).
 		r.Post("/graphql", h.graphql)
+
+		// Cached self routes (respcache_identity.go): the requesting token's
+		// own profile and org memberships. Keyed by the bearer's fingerprint,
+		// the hooks_cache convention -- these carry no webhook signal at all
+		// (see the file header), so TTL is the primary bound.
+		r.Get("/user", h.cachedUser)
+		r.Get("/user/orgs", h.cachedUserOrgs)
 
 		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
 		// the 404 "config absent" answer; push/repository webhooks invalidate)

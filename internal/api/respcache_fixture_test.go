@@ -59,6 +59,15 @@ type respCacheUpstream struct {
 	gitTreeHits      int32
 	checkRunHits     int32
 	matchingRefsHits int32
+	// userHits/appHits count EVERY upstream call to /user and /app, including
+	// requireAuth's own identity resolution (ResolveTokenIdentity /
+	// VerifyAppIdentity) -- not just the identity route handlers' own miss
+	// fetches, because both land on the same fake-GitHub path and cannot be
+	// told apart here. See respcache_identity_test.go for what that means for
+	// the exact counts a test may assert.
+	userHits     int32
+	appHits      int32
+	userOrgsHits int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -95,6 +104,8 @@ type respCacheUpstream struct {
 	// matchingRefs answers GET /repos/{o}/{r}/git/matching-refs/heads/*;
 	// settable per test.
 	matchingRefs func(w http.ResponseWriter, r *http.Request)
+	// userOrgs answers GET /user/orgs; settable per test.
+	userOrgs func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -159,6 +170,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.gitTree = defaultGitTreeUpstream
 	u.checkRun = defaultCheckRunUpstream
 	u.matchingRefs = defaultMatchingRefsUpstream
+	u.userOrgs = defaultUserOrgsUpstream
 	return u
 }
 
@@ -169,13 +181,20 @@ func (u *respCacheUpstream) handler() http.Handler {
 			// Per-user partitioning resolves every bearer token here (id AND
 			// login required). Answer the shared test identity for testToken
 			// and a DISTINCT user for any other token, so cross-credential
-			// tests exercise two separate user scopes.
+			// tests exercise two separate user scopes. Counts EVERY call --
+			// requireAuth's own resolution included, see the userHits field
+			// doc.
+			atomic.AddInt32(&u.userHits, 1)
 			if r.Header.Get("Authorization") == "Bearer "+testToken {
 				_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			} else {
 				_ = json.NewEncoder(w).Encode(map[string]any{"login": "otheruser", "id": testUserID + 1})
 			}
+		case r.URL.Path == "/user/orgs":
+			atomic.AddInt32(&u.userOrgsHits, 1)
+			u.userOrgs(w, r)
 		case r.URL.Path == "/app":
+			atomic.AddInt32(&u.appHits, 1)
 			if r.Header.Get("Authorization") != "Bearer "+goodAppJWT {
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
