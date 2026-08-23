@@ -115,6 +115,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
 		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
+		flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
+		flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
 	case "label":
 		// Every action, repo-wide: an edit can RENAME (two names in one
 		// delivery) and one label answers under every spelling a caller
@@ -165,8 +167,12 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if len(refs) == 0 {
 			// Unparseable payload (or one naming no refs): no per-ref signal,
 			// so both CI-derived caches keep the conservative repo-wide flush.
+			// check_run_cache is keyed by run id, not by ref -- an unparseable
+			// check_run payload never reaches settleCommitCI's ApplyCheckRunByID
+			// below, so it gets the same repo-wide backstop here.
 			flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
 			flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
+			flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
 			return
 		}
 		d.settleCommitCI(ctx, scope, owner, repo, event, refs)
@@ -217,6 +223,20 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
+		// The app-installations LISTING (GET /app/installations, distinct
+		// from the by-repo lookups below): stored VERBATIM per page
+		// (identical-or-passthrough, respcache_identity.go's file header),
+		// so the payload's one changed installation cannot be spliced into
+		// a page without re-marshalling the array -- which page it would even
+		// land on is itself unknown. The payload does name its owning app_id
+		// directly, so the flush is at least scoped to exactly that app's
+		// pages rather than every app's.
+		if appID := webhook.ParseInstallationAppID(event.Raw); appID != "" {
+			appKey := "app:" + appID
+			if err := d.store.InvalidateAppInstallationsForApp(ctx, appKey); err != nil {
+				slog.Warn("webhook: invalidate app installations cache failed", "app", appKey, "error", err)
+			}
+		}
 		// The "not installed here" verdicts carry no installation id, so the
 		// by-id flush below cannot reach them -- and this delivery is exactly
 		// the news that an account's coverage changed. Dropped first, and
@@ -322,6 +342,11 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	}
 
 	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
+	// matching_refs_cache has no narrower per-ref target than the branches
+	// listing does (a prefix search's membership is exactly a filtered view
+	// of it), so it rides the same repo-wide flush rather than a per-prefix
+	// apply -- see respcache_matchingrefs.go's file header.
+	flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
 
 	// No per-ref grain for the rest, parseable or not: PR-files pages (a
 	// base push moves merge-base-relative file lists with no per-PR signal

@@ -290,6 +290,12 @@ func NewRouter(
 	r.Get("/orgs/{org}/installation", h.cachedOwnerInstallation(ownerInstallScopeOrg, "org"))
 	r.Get("/users/{username}/installation", h.cachedOwnerInstallation(ownerInstallScopeUser, "username"))
 
+	// Cached App identity (respcache_identity.go). Same JWT-verified,
+	// outside-requireAuth shape as the installation lookups above: an
+	// installation token cannot resolve GET /app at all.
+	r.Get("/app", h.cachedApp)
+	r.Get("/app/installations", h.cachedAppInstallations)
+
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
 	// actor): the token's GitHub user ("user:<id>"), app:<id> for verified
@@ -316,11 +322,50 @@ func NewRouter(
 		// else h.graphql forwards to the passthrough).
 		r.Post("/graphql", h.graphql)
 
+		// Cached self routes (respcache_identity.go): the requesting token's
+		// own profile and org memberships. Keyed by the bearer's fingerprint,
+		// the hooks_cache convention -- these carry no webhook signal at all
+		// (see the file header), so TTL is the primary bound.
+		r.Get("/user", h.cachedUser)
+		r.Get("/user/orgs", h.cachedUserOrgs)
+
+		// Cached org self-hosted-runners listing (respcache_orgrunners.go):
+		// admin-scoped, keyed by the bearer's fingerprint, cached VERBATIM
+		// (see respcache_identity.go's file header). Short TTL: no webhook
+		// announces a runner's status changing.
+		r.Get("/orgs/{org}/actions/runners", h.cachedOrgRunners)
+
+		// Cached personalized repo listing (respcache_userrepos.go): keyed by
+		// the bearer's fingerprint + sort/paging, cached VERBATIM. No webhook
+		// interaction -- see ghdata/respcache_userrepos.go.
+		r.Get("/user/repos", h.cachedUserRepos)
+
+		// Cached issue/PR search (respcache_searchissues.go): keyed by the
+		// bearer's fingerprint + the modeled query shape, cached VERBATIM,
+		// short TTL. The documented exception to webhook-driven maintenance
+		// -- see ghdata/respcache_searchissues.go and
+		// docs/cache/uncacheable-routes.md.
+		r.Get("/search/issues", h.cachedSearchIssues)
+
 		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
 		// the 404 "config absent" answer; push/repository webhooks invalidate)
 		// and immutable git commits (also absorbed from push payloads).
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
+
+		// Cached git tree read (respcache_gittrees.go): content-addressed and
+		// immutable by sha, like the commit route above -- no TTL, no webhook
+		// invalidation, LRU pruning only. recursive=1 is modeled (a distinct
+		// row, since it names a different entry set); every other query shape
+		// and non-default Accept pass through.
+		r.Get("/repos/{owner}/{repo}/git/trees/{sha}", h.cachedGitTree)
+
+		// Cached ref-prefix search (respcache_matchingrefs.go): only the
+		// heads/ prefix form is modeled (the surveyed caller's shape); a
+		// push/repository event flushes the whole repo's pages, mirroring
+		// branches_list_cache -- see the file header for why no per-prefix
+		// apply is attempted.
+		r.Get("/repos/{owner}/{repo}/git/matching-refs/heads/*", h.cachedMatchingRefs)
 
 		// Cached ref lookup (respcache_gitrefs.go): "where does this branch
 		// point right now". Greedy wildcard -- a ref path is at least
@@ -388,6 +433,12 @@ func NewRouter(
 		// row under that run.
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
+
+		// Cached SINGLE check-run read (respcache_checkrun.go), distinct from
+		// the check-runs LIST route below: keyed by the run's own id, so a
+		// `check_run` delivery always applies directly (ApplyCheckRunByID)
+		// rather than needing a "does the page still list it" question.
+		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}", h.cachedCheckRun)
 
 		// Cached Code Quality setup (respcache_codequality.go): the per-repo
 		// enablement config, modeled from GitHub's OpenAPI `code-quality-setup`

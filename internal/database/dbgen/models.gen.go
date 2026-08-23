@@ -24,6 +24,17 @@ type ActorIdentity struct {
 	LastSeen  string
 }
 
+type AppInstallationsCache struct {
+	ID         int64
+	AppKey     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type BranchesListCache struct {
 	ID         int64
 	Owner      string
@@ -60,6 +71,17 @@ type CacheRefreshLog struct {
 	Success        sql.NullInt64
 	RecordsChanged sql.NullInt64
 	ErrorMessage   sql.NullString
+}
+
+type CheckRunCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	CheckRunID int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type ClosedPullCache struct {
@@ -206,6 +228,17 @@ type GitRefCache struct {
 	ReconciledAgainst string
 }
 
+type GitTreesCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Sha        string
+	Recursive  string
+	Doc        string
+	FetchedAt  string
+	LastUsedAt string
+}
+
 type HooksCache struct {
 	ID         int64
 	TokenFp    string
@@ -214,6 +247,16 @@ type HooksCache struct {
 	Repo       string
 	PerPage    int64
 	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type IdentityCache struct {
+	ID         int64
+	SubjectKey string
+	Kind       string
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -250,6 +293,31 @@ type LabelCache struct {
 	Owner      string
 	Repo       string
 	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type MatchingRefsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Prefix     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type OrgRunnersCache struct {
+	ID         int64
+	TokenFp    string
+	Org        string
+	PerPage    int64
+	Page       int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -378,6 +446,28 @@ type RepoInstallationCache struct {
 
 type SchemaVersion struct {
 	Fingerprint string
+}
+
+type SearchIssuesCache struct {
+	ID         int64
+	TokenFp    string
+	QueryKey   string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type UserReposCache struct {
+	ID         int64
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type WebhookDelivery struct {
