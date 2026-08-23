@@ -161,6 +161,25 @@ a:hover { text-decoration: underline; }
 .tabs button + button { border-left: 1px solid var(--border); }
 .tabs button.active { background: var(--accent); color: var(--accent-fg); }
 
+/* ---- Copy JSON dropdown (page head, every tab) ---- */
+.copy-json { position: relative; flex: none; }
+.copy-json-caret { font-size: 10px; margin-left: 2px; }
+.copy-json-menu {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+    display: flex; flex-direction: column; min-width: 220px;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    overflow: hidden;
+}
+.copy-json-item {
+    display: block; width: 100%; text-align: left;
+    background: transparent; border: none; color: var(--fg);
+    padding: 9px 14px; font-size: 13px; cursor: pointer;
+}
+.copy-json-item:hover { background: var(--bg-elev-2); }
+.copy-json-item + .copy-json-item { border-top: 1px solid var(--border-muted); }
+.copy-json-item[disabled] { opacity: 0.6; cursor: not-allowed; }
+
 /* ---- Stat cards ---- */
 .stat-grid {
     display: grid;
