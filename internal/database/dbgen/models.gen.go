@@ -25,13 +25,14 @@ type ActorIdentity struct {
 }
 
 type AppInstallationsCache struct {
-	ID             int64
-	AppKey         string
-	InstallationID int64
-	Doc            string
-	FetchedAt      string
-	ExpiresAt      string
-	LastUsedAt     string
+	ID         int64
+	AppKey     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type BranchesListCache struct {

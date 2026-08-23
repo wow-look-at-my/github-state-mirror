@@ -1062,18 +1062,14 @@ DELETE FROM org_runners_cache WHERE id IN (
 
 -- ---- app_installations_cache (GET /app/installations) ----
 
--- name: GetAppInstallationsCache :many
+-- name: GetAppInstallationsCache :one
 SELECT * FROM app_installations_cache
-WHERE app_key = ? ORDER BY installation_id ASC;
+WHERE app_key = ? AND per_page = ? AND page = ?;
 
--- name: GetAppInstallationCacheEntry :one
-SELECT * FROM app_installations_cache
-WHERE app_key = ? AND installation_id = ?;
-
--- name: UpsertAppInstallationsCacheEntry :exec
-INSERT INTO app_installations_cache (app_key, installation_id, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (app_key, installation_id) DO UPDATE SET
+-- name: UpsertAppInstallationsCache :exec
+INSERT INTO app_installations_cache (app_key, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (app_key, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -1081,12 +1077,9 @@ ON CONFLICT (app_key, installation_id) DO UPDATE SET
 
 -- name: TouchAppInstallationsCache :exec
 UPDATE app_installations_cache SET last_used_at = ?
-WHERE app_key = ?;
+WHERE app_key = ? AND per_page = ? AND page = ?;
 
--- name: DeleteAppInstallationsCacheEntry :exec
-DELETE FROM app_installations_cache WHERE app_key = ? AND installation_id = ?;
-
--- name: DeleteAppInstallationsCacheAll :exec
+-- name: DeleteAppInstallationsCacheForApp :exec
 DELETE FROM app_installations_cache WHERE app_key = ?;
 
 -- name: DeleteExpiredAppInstallationsCache :exec

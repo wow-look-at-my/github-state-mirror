@@ -1206,21 +1206,24 @@ CREATE INDEX idx_org_runners_cache_lru ON org_runners_cache (last_used_at);
 
 -- State for GET /app/installations (every installation of the calling App --
 -- distinct from repo_installation_cache, which answers "does the app cover
--- THIS repo/owner"). Keyed by the verified app id. `installation` deliveries
--- carry the whole installation object and are the PRIMARY invalidation path
--- (ApplyInstallationToAppInstallations rewrites/adds/removes one entry in
--- place); expires_at is the TTL backstop for a missed delivery.
+-- THIS repo/owner"). Keyed by the verified app id, per-page, cached VERBATIM
+-- like identity_cache/org_runners_cache (identical-or-passthrough: this is a
+-- listing of full installation objects with no consumer survey to trim
+-- against). `installation`/`installation_repositories` deliveries flush the
+-- owning app's pages when the payload's own installation object names its
+-- app_id (installation_apply.go); expires_at is the TTL backstop otherwise.
 CREATE TABLE app_installations_cache (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_key        TEXT NOT NULL,            -- app:<id>
-    installation_id INTEGER NOT NULL,
-    doc            TEXT NOT NULL,            -- trimmed installation entry as JSON
-    fetched_at     TEXT NOT NULL,            -- RFC3339
-    expires_at     TEXT NOT NULL,            -- RFC3339 TTL backstop
-    last_used_at   TEXT NOT NULL             -- RFC3339, for LRU pruning
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_key      TEXT NOT NULL,              -- app:<id>
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- verbatim installations-page JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_app_installations_cache_key ON app_installations_cache (app_key, installation_id);
+CREATE UNIQUE INDEX idx_app_installations_cache_key ON app_installations_cache (app_key, per_page, page);
 CREATE INDEX idx_app_installations_cache_lru ON app_installations_cache (last_used_at);
 
 -- State for GET /search/issues?q=...&per_page=...: an exact-query-string

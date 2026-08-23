@@ -294,6 +294,7 @@ func NewRouter(
 	// outside-requireAuth shape as the installation lookups above: an
 	// installation token cannot resolve GET /app at all.
 	r.Get("/app", h.cachedApp)
+	r.Get("/app/installations", h.cachedAppInstallations)
 
 	// Data endpoints — every request must carry a valid GitHub token, and all
 	// cache access is scoped to that credential's partition (the requireAuth
@@ -327,6 +328,12 @@ func NewRouter(
 		// (see the file header), so TTL is the primary bound.
 		r.Get("/user", h.cachedUser)
 		r.Get("/user/orgs", h.cachedUserOrgs)
+
+		// Cached org self-hosted-runners listing (respcache_orgrunners.go):
+		// admin-scoped, keyed by the bearer's fingerprint, cached VERBATIM
+		// (see respcache_identity.go's file header). Short TTL: no webhook
+		// announces a runner's status changing.
+		r.Get("/orgs/{org}/actions/runners", h.cachedOrgRunners)
 
 		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
 		// the 404 "config absent" answer; push/repository webhooks invalidate)

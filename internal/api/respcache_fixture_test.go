@@ -65,9 +65,11 @@ type respCacheUpstream struct {
 	// fetches, because both land on the same fake-GitHub path and cannot be
 	// told apart here. See respcache_identity_test.go for what that means for
 	// the exact counts a test may assert.
-	userHits     int32
-	appHits      int32
-	userOrgsHits int32
+	userHits             int32
+	appHits              int32
+	userOrgsHits         int32
+	orgRunnersHits       int32
+	appInstallationsHits int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -106,6 +108,10 @@ type respCacheUpstream struct {
 	matchingRefs func(w http.ResponseWriter, r *http.Request)
 	// userOrgs answers GET /user/orgs; settable per test.
 	userOrgs func(w http.ResponseWriter, r *http.Request)
+	// orgRunners answers GET /orgs/{org}/actions/runners; settable per test.
+	orgRunners func(w http.ResponseWriter, r *http.Request)
+	// appInstallations answers GET /app/installations; settable per test.
+	appInstallations func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -171,6 +177,8 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.checkRun = defaultCheckRunUpstream
 	u.matchingRefs = defaultMatchingRefsUpstream
 	u.userOrgs = defaultUserOrgsUpstream
+	u.orgRunners = defaultOrgRunnersUpstream
+	u.appInstallations = defaultAppInstallationsUpstream
 	return u
 }
 
@@ -193,6 +201,17 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case r.URL.Path == "/user/orgs":
 			atomic.AddInt32(&u.userOrgsHits, 1)
 			u.userOrgs(w, r)
+		case strings.HasSuffix(r.URL.Path, "/actions/runners"):
+			atomic.AddInt32(&u.orgRunnersHits, 1)
+			u.orgRunners(w, r)
+		case r.URL.Path == "/app/installations":
+			atomic.AddInt32(&u.appInstallationsHits, 1)
+			if r.Header.Get("Authorization") != "Bearer "+goodAppJWT {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+				return
+			}
+			u.appInstallations(w, r)
 		case r.URL.Path == "/app":
 			atomic.AddInt32(&u.appHits, 1)
 			if r.Header.Get("Authorization") != "Bearer "+goodAppJWT {

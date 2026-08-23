@@ -102,26 +102,12 @@ func (q *Queries) DeleteAllInstallationReposCache(ctx context.Context) error {
 	return err
 }
 
-const deleteAppInstallationsCacheAll = `-- name: DeleteAppInstallationsCacheAll :exec
+const deleteAppInstallationsCacheForApp = `-- name: DeleteAppInstallationsCacheForApp :exec
 DELETE FROM app_installations_cache WHERE app_key = ?
 `
 
-func (q *Queries) DeleteAppInstallationsCacheAll(ctx context.Context, appKey string) error {
-	_, err := q.db.ExecContext(ctx, deleteAppInstallationsCacheAll, appKey)
-	return err
-}
-
-const deleteAppInstallationsCacheEntry = `-- name: DeleteAppInstallationsCacheEntry :exec
-DELETE FROM app_installations_cache WHERE app_key = ? AND installation_id = ?
-`
-
-type DeleteAppInstallationsCacheEntryParams struct {
-	AppKey         string
-	InstallationID int64
-}
-
-func (q *Queries) DeleteAppInstallationsCacheEntry(ctx context.Context, arg DeleteAppInstallationsCacheEntryParams) error {
-	_, err := q.db.ExecContext(ctx, deleteAppInstallationsCacheEntry, arg.AppKey, arg.InstallationID)
+func (q *Queries) DeleteAppInstallationsCacheForApp(ctx context.Context, appKey string) error {
+	_, err := q.db.ExecContext(ctx, deleteAppInstallationsCacheForApp, appKey)
 	return err
 }
 
@@ -997,67 +983,33 @@ func (q *Queries) DeleteWorkflowRunsNotIn(ctx context.Context, arg DeleteWorkflo
 	return err
 }
 
-const getAppInstallationCacheEntry = `-- name: GetAppInstallationCacheEntry :one
-SELECT id, app_key, installation_id, doc, fetched_at, expires_at, last_used_at FROM app_installations_cache
-WHERE app_key = ? AND installation_id = ?
+const getAppInstallationsCache = `-- name: GetAppInstallationsCache :one
+
+SELECT id, app_key, per_page, page, doc, fetched_at, expires_at, last_used_at FROM app_installations_cache
+WHERE app_key = ? AND per_page = ? AND page = ?
 `
 
-type GetAppInstallationCacheEntryParams struct {
-	AppKey         string
-	InstallationID int64
+type GetAppInstallationsCacheParams struct {
+	AppKey  string
+	PerPage int64
+	Page    int64
 }
 
-func (q *Queries) GetAppInstallationCacheEntry(ctx context.Context, arg GetAppInstallationCacheEntryParams) (AppInstallationsCache, error) {
-	row := q.db.QueryRowContext(ctx, getAppInstallationCacheEntry, arg.AppKey, arg.InstallationID)
+// ---- app_installations_cache (GET /app/installations) ----
+func (q *Queries) GetAppInstallationsCache(ctx context.Context, arg GetAppInstallationsCacheParams) (AppInstallationsCache, error) {
+	row := q.db.QueryRowContext(ctx, getAppInstallationsCache, arg.AppKey, arg.PerPage, arg.Page)
 	var i AppInstallationsCache
 	err := row.Scan(
 		&i.ID,
 		&i.AppKey,
-		&i.InstallationID,
+		&i.PerPage,
+		&i.Page,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 	)
 	return i, err
-}
-
-const getAppInstallationsCache = `-- name: GetAppInstallationsCache :many
-
-SELECT id, app_key, installation_id, doc, fetched_at, expires_at, last_used_at FROM app_installations_cache
-WHERE app_key = ? ORDER BY installation_id ASC
-`
-
-// ---- app_installations_cache (GET /app/installations) ----
-func (q *Queries) GetAppInstallationsCache(ctx context.Context, appKey string) ([]AppInstallationsCache, error) {
-	rows, err := q.db.QueryContext(ctx, getAppInstallationsCache, appKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []AppInstallationsCache
-	for rows.Next() {
-		var i AppInstallationsCache
-		if err := rows.Scan(
-			&i.ID,
-			&i.AppKey,
-			&i.InstallationID,
-			&i.Doc,
-			&i.FetchedAt,
-			&i.ExpiresAt,
-			&i.LastUsedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const getBranchesListCache = `-- name: GetBranchesListCache :one
@@ -2555,16 +2507,23 @@ func (q *Queries) PruneWorkflowRunsCacheLRU(ctx context.Context, offset int64) e
 
 const touchAppInstallationsCache = `-- name: TouchAppInstallationsCache :exec
 UPDATE app_installations_cache SET last_used_at = ?
-WHERE app_key = ?
+WHERE app_key = ? AND per_page = ? AND page = ?
 `
 
 type TouchAppInstallationsCacheParams struct {
 	LastUsedAt string
 	AppKey     string
+	PerPage    int64
+	Page       int64
 }
 
 func (q *Queries) TouchAppInstallationsCache(ctx context.Context, arg TouchAppInstallationsCacheParams) error {
-	_, err := q.db.ExecContext(ctx, touchAppInstallationsCache, arg.LastUsedAt, arg.AppKey)
+	_, err := q.db.ExecContext(ctx, touchAppInstallationsCache,
+		arg.LastUsedAt,
+		arg.AppKey,
+		arg.PerPage,
+		arg.Page,
+	)
 	return err
 }
 
@@ -3132,29 +3091,31 @@ func (q *Queries) TouchWorkflowRunsCache(ctx context.Context, arg TouchWorkflowR
 	return err
 }
 
-const upsertAppInstallationsCacheEntry = `-- name: UpsertAppInstallationsCacheEntry :exec
-INSERT INTO app_installations_cache (app_key, installation_id, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (app_key, installation_id) DO UPDATE SET
+const upsertAppInstallationsCache = `-- name: UpsertAppInstallationsCache :exec
+INSERT INTO app_installations_cache (app_key, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (app_key, per_page, page) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
     last_used_at = excluded.last_used_at
 `
 
-type UpsertAppInstallationsCacheEntryParams struct {
-	AppKey         string
-	InstallationID int64
-	Doc            string
-	FetchedAt      string
-	ExpiresAt      string
-	LastUsedAt     string
+type UpsertAppInstallationsCacheParams struct {
+	AppKey     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
-func (q *Queries) UpsertAppInstallationsCacheEntry(ctx context.Context, arg UpsertAppInstallationsCacheEntryParams) error {
-	_, err := q.db.ExecContext(ctx, upsertAppInstallationsCacheEntry,
+func (q *Queries) UpsertAppInstallationsCache(ctx context.Context, arg UpsertAppInstallationsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAppInstallationsCache,
 		arg.AppKey,
-		arg.InstallationID,
+		arg.PerPage,
+		arg.Page,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

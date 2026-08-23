@@ -223,6 +223,16 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
+		// The app-installations LISTING (GET /app/installations, distinct
+		// from the by-repo lookups below): the payload's own installation
+		// object names its owning app_id directly, so this flushes exactly
+		// that app's pages rather than every app's.
+		if appID := webhook.ParseInstallationAppID(event.Raw); appID != "" {
+			appKey := "app:" + appID
+			if err := d.store.InvalidateAppInstallationsForApp(ctx, appKey); err != nil {
+				slog.Warn("webhook: invalidate app installations cache failed", "app", appKey, "error", err)
+			}
+		}
 		// The "not installed here" verdicts carry no installation id, so the
 		// by-id flush below cannot reach them -- and this delivery is exactly
 		// the news that an account's coverage changed. Dropped first, and
