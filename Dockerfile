@@ -1,7 +1,7 @@
 # The binary is built by go-toolchain in CI and downloaded into build/ by the
 # publish-ghcr reusable workflow before this image is built -- it is NOT compiled
 # here. go-toolchain's build is a GOOS=cosmo fat APE: it writes exactly one
-# file, the bare binary name (server), and no per-platform name such as
+# file, named the bare binary name (server), and no per-platform name such as
 # server_linux_amd64 or server_cosmo_fat.
 #
 # An APE needs a SHELL to start. The kernel refuses the file -- it begins with
