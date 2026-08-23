@@ -3,17 +3,14 @@ name: CI
 on:
   push:
 
+# See docs/ci.md for why each grant below is required.
 permissions:
   id-token: write
-  # go-toolchain's dependency-graph submission needs this to POST its snapshot.
   contents: write
-  # go-toolchain's no-all-builds guard scans check runs via these two.
   actions: read
   checks: read
-  # Required by both publish paths here (go-toolchain's release upload in build, buildhost-publish-site in preview); each fails the job without it.
   artifact-metadata: write
   deployments: write
-  # Required by the publish-ghcr reusable workflow, which cannot exceed the caller's declared permissions.
   packages: write
 
 jobs:
@@ -34,7 +31,7 @@ jobs:
             exit 1
           fi
 
-  # Type-check gate for the dashboard's only source (internal/api/web/src/*.ts); also enforces that no generated JS is committed.
+  # See docs/ci.md for why this job exists and what it enforces.
   web-check:
     runs-on: ubuntu-latest
     steps:
@@ -44,7 +41,6 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # Type-checks testdata/ harnesses against the dashboard source, so a signature change fails here, not at runtime. Emits nothing (node runs the .ts directly).
       - run: npm run check:harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
@@ -68,16 +64,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Compiles the TypeScript before the Go build: dashboard.go's //go:embed line names each assets/*.js file directly, so a missing one is a compile error.
+      # See docs/ci.md: the dashboard JS must compile before the Go build.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # go-toolchain@v1 itself cache-uploads build/ as go-build on every run (a once-per-run key); do not add a separate cache-upload step, it collides.
+      # See docs/ci.md: do not add an explicit cache-upload step here.
       - uses: wow-look-at-my/go-toolchain@v1
 
-  # Starts the built image and requires it to serve; docker/imagecheck.test.ts holds the assertions, reproducible locally with `npm run test:image`.
+  # See docs/ci.md: this job starts the image and requires it to serve.
   image-smoke:
     needs: build
     runs-on: ubuntu-latest
@@ -86,7 +82,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # path: build matches publish-ghcr; the hand-off holds the binaries themselves, so restoring to the workspace root leaves the Dockerfile's COPY empty.
+      # See docs/ci.md: path must match what publish-ghcr passes.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
@@ -94,12 +90,12 @@ jobs:
       - run: npm ci
       - run: npm run test:image
 
-  # Builds and pushes the image to GHCR on master, restoring build's go-build hand-off for the Dockerfile; prunes old versions. Gated on image-smoke.
+  # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
   publish-ghcr:
     needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
-  # Deploys a backend-free styling preview (canned demo-data.js) to buildhost as a per-branch static site; OIDC handles auth, no static token needed.
+  # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
     needs: web-check
     runs-on: ubuntu-latest

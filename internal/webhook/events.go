@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -212,6 +213,23 @@ func ParseRepositoryObject(raw []byte) (dbgen.Repo, bool) {
 		return dbgen.Repo{}, false
 	}
 	return obj.toRepo()
+}
+
+// ParseInstallationAppID returns the app_id of the delivery's own
+// `installation` object ("" when absent or unparseable) -- an
+// `installation`/`installation_repositories` delivery's app-installations
+// cache flush target, since GitHub's installation object carries the owning
+// App's id directly.
+func ParseInstallationAppID(raw json.RawMessage) string {
+	var body struct {
+		Installation *struct {
+			AppID int64 `json:"app_id"`
+		} `json:"installation"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Installation == nil || body.Installation.AppID <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(body.Installation.AppID, 10)
 }
 
 // ParseRenameFrom returns changes.repository.name.from for a repository
