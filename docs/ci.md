@@ -72,7 +72,7 @@ failure with `npm run test:image` instead of pushing a commit to see it.
 ## `publish-ghcr`
 
 Builds the Docker image and pushes `ghcr.io/wow-look-at-my/github-state-mirror:latest`
-on master: restores the `go-build` hand-off (`build/server_cosmo_fat`, the
+on master: restores the `go-build` hand-off (`build/server`, the
 cosmo fat APE) `build` cache-uploaded, feeds it to the Dockerfile, then
 prunes old GHCR versions. Gated on `image-smoke` — an image nobody started
 is exactly what shipped the outage above.
