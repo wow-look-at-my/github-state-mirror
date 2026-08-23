@@ -588,6 +588,15 @@ func (q *Queries) DeleteExpiredSearchIssuesCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredUserReposCache = `-- name: DeleteExpiredUserReposCache :exec
+DELETE FROM user_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredUserReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredUserReposCache, expiresAt)
+	return err
+}
+
 const deleteExpiredWorkflowJobsCache = `-- name: DeleteExpiredWorkflowJobsCache :exec
 DELETE FROM workflow_jobs_cache WHERE expires_at <= ?
 `
@@ -1798,16 +1807,58 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 
 const getSearchIssuesCache = `-- name: GetSearchIssuesCache :one
 
-SELECT id, query_key, doc, fetched_at, expires_at, last_used_at FROM search_issues_cache WHERE query_key = ?
+SELECT id, token_fp, query_key, doc, fetched_at, expires_at, last_used_at FROM search_issues_cache WHERE token_fp = ? AND query_key = ?
 `
 
+type GetSearchIssuesCacheParams struct {
+	TokenFp  string
+	QueryKey string
+}
+
 // ---- search_issues_cache (GET /search/issues) ----
-func (q *Queries) GetSearchIssuesCache(ctx context.Context, queryKey string) (SearchIssuesCache, error) {
-	row := q.db.QueryRowContext(ctx, getSearchIssuesCache, queryKey)
+func (q *Queries) GetSearchIssuesCache(ctx context.Context, arg GetSearchIssuesCacheParams) (SearchIssuesCache, error) {
+	row := q.db.QueryRowContext(ctx, getSearchIssuesCache, arg.TokenFp, arg.QueryKey)
 	var i SearchIssuesCache
 	err := row.Scan(
 		&i.ID,
+		&i.TokenFp,
 		&i.QueryKey,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getUserReposCache = `-- name: GetUserReposCache :one
+
+SELECT id, token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at FROM user_repos_cache
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?
+`
+
+type GetUserReposCacheParams struct {
+	TokenFp string
+	Sort    string
+	PerPage int64
+	Page    int64
+}
+
+// ---- user_repos_cache (GET /user/repos) ----
+func (q *Queries) GetUserReposCache(ctx context.Context, arg GetUserReposCacheParams) (UserReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getUserReposCache,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i UserReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Sort,
+		&i.PerPage,
+		&i.Page,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
@@ -2483,6 +2534,17 @@ func (q *Queries) PruneSettledWorkflowRuns(ctx context.Context, touchedAt string
 	return err
 }
 
+const pruneUserReposCacheLRU = `-- name: PruneUserReposCacheLRU :exec
+DELETE FROM user_repos_cache WHERE id IN (
+    SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneUserReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneUserReposCacheLRU, offset)
+	return err
+}
+
 const pruneWorkflowJobsCacheLRU = `-- name: PruneWorkflowJobsCacheLRU :exec
 DELETE FROM workflow_jobs_cache WHERE id IN (
     SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -3024,16 +3086,41 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 }
 
 const touchSearchIssuesCache = `-- name: TouchSearchIssuesCache :exec
-UPDATE search_issues_cache SET last_used_at = ? WHERE query_key = ?
+UPDATE search_issues_cache SET last_used_at = ? WHERE token_fp = ? AND query_key = ?
 `
 
 type TouchSearchIssuesCacheParams struct {
 	LastUsedAt string
+	TokenFp    string
 	QueryKey   string
 }
 
 func (q *Queries) TouchSearchIssuesCache(ctx context.Context, arg TouchSearchIssuesCacheParams) error {
-	_, err := q.db.ExecContext(ctx, touchSearchIssuesCache, arg.LastUsedAt, arg.QueryKey)
+	_, err := q.db.ExecContext(ctx, touchSearchIssuesCache, arg.LastUsedAt, arg.TokenFp, arg.QueryKey)
+	return err
+}
+
+const touchUserReposCache = `-- name: TouchUserReposCache :exec
+UPDATE user_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?
+`
+
+type TouchUserReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchUserReposCache(ctx context.Context, arg TouchUserReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchUserReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
+	)
 	return err
 }
 
@@ -4000,9 +4087,9 @@ func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRep
 }
 
 const upsertSearchIssuesCache = `-- name: UpsertSearchIssuesCache :exec
-INSERT INTO search_issues_cache (query_key, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (query_key) DO UPDATE SET
+INSERT INTO search_issues_cache (token_fp, query_key, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, query_key) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -4010,6 +4097,7 @@ ON CONFLICT (query_key) DO UPDATE SET
 `
 
 type UpsertSearchIssuesCacheParams struct {
+	TokenFp    string
 	QueryKey   string
 	Doc        string
 	FetchedAt  string
@@ -4019,7 +4107,43 @@ type UpsertSearchIssuesCacheParams struct {
 
 func (q *Queries) UpsertSearchIssuesCache(ctx context.Context, arg UpsertSearchIssuesCacheParams) error {
 	_, err := q.db.ExecContext(ctx, upsertSearchIssuesCache,
+		arg.TokenFp,
 		arg.QueryKey,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertUserReposCache = `-- name: UpsertUserReposCache :exec
+INSERT INTO user_repos_cache (token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, sort, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertUserReposCacheParams struct {
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertUserReposCache(ctx context.Context, arg UpsertUserReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertUserReposCache,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

@@ -1093,19 +1093,19 @@ DELETE FROM app_installations_cache WHERE id IN (
 -- ---- search_issues_cache (GET /search/issues) ----
 
 -- name: GetSearchIssuesCache :one
-SELECT * FROM search_issues_cache WHERE query_key = ?;
+SELECT * FROM search_issues_cache WHERE token_fp = ? AND query_key = ?;
 
 -- name: UpsertSearchIssuesCache :exec
-INSERT INTO search_issues_cache (query_key, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (query_key) DO UPDATE SET
+INSERT INTO search_issues_cache (token_fp, query_key, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, query_key) DO UPDATE SET
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
     last_used_at = excluded.last_used_at;
 
 -- name: TouchSearchIssuesCache :exec
-UPDATE search_issues_cache SET last_used_at = ? WHERE query_key = ?;
+UPDATE search_issues_cache SET last_used_at = ? WHERE token_fp = ? AND query_key = ?;
 
 -- name: DeleteExpiredSearchIssuesCache :exec
 DELETE FROM search_issues_cache WHERE expires_at <= ?;
@@ -1113,4 +1113,31 @@ DELETE FROM search_issues_cache WHERE expires_at <= ?;
 -- name: PruneSearchIssuesCacheLRU :exec
 DELETE FROM search_issues_cache WHERE id IN (
     SELECT id FROM search_issues_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- user_repos_cache (GET /user/repos) ----
+
+-- name: GetUserReposCache :one
+SELECT * FROM user_repos_cache
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertUserReposCache :exec
+INSERT INTO user_repos_cache (token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, sort, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchUserReposCache :exec
+UPDATE user_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteExpiredUserReposCache :exec
+DELETE FROM user_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneUserReposCacheLRU :exec
+DELETE FROM user_repos_cache WHERE id IN (
+    SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );

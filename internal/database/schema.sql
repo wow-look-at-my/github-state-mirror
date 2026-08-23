@@ -1233,14 +1233,45 @@ CREATE INDEX idx_app_installations_cache_lru ON app_installations_cache (last_us
 -- deliberately short: long enough to collapse a tight poll loop asking the
 -- identical query, short enough that a real answer change (an issue closed,
 -- a label added) is visible within one poll cycle either way.
+--
+-- token_fp is part of the key, NOT an optimization -- search results are
+-- PERMISSION-SCOPED (GitHub filters hits to what the caller's token can see),
+-- so a row keyed on the query text alone would replay one credential's
+-- results to a different credential asking the identical query. Same
+-- per-credential stance as hooks_cache/org_runners_cache, for the same
+-- reason: correctness, not just cache-sharing convenience.
 CREATE TABLE search_issues_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
     query_key    TEXT NOT NULL,              -- sha256(q + '\n' + per_page + '\n' + page), verbatim query is unbounded
-    doc          TEXT NOT NULL,              -- trimmed search-results document as JSON
+    doc          TEXT NOT NULL,              -- verbatim search-results document as JSON
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary and only bound)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_search_issues_cache_key ON search_issues_cache (query_key);
+CREATE UNIQUE INDEX idx_search_issues_cache_key ON search_issues_cache (token_fp, query_key);
 CREATE INDEX idx_search_issues_cache_lru ON search_issues_cache (last_used_at);
+
+-- State for GET /user/repos: the requesting token's own personalized repo
+-- listing (distinct from the org-repos GraphQL tier-1 query -- this is a
+-- REST listing spanning every repo the token can see, across every owner).
+-- Keyed by the bearer's fingerprint + the modeled query shape, cached
+-- VERBATIM (identical-or-passthrough). No webhook interaction: a repository
+-- event is repo-wide and this is a personalized, potentially cross-owner
+-- listing with no clean per-repo patch target, so TTL alone bounds it, the
+-- hooks_cache/org_runners_cache precedent.
+CREATE TABLE user_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    sort         TEXT NOT NULL DEFAULT '',   -- verbatim ?sort= value ('' = default)
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- verbatim repos-page JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_user_repos_cache_key ON user_repos_cache (token_fp, sort, per_page, page);
+CREATE INDEX idx_user_repos_cache_lru ON user_repos_cache (last_used_at);

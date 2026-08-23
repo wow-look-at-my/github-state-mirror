@@ -335,6 +335,18 @@ func NewRouter(
 		// announces a runner's status changing.
 		r.Get("/orgs/{org}/actions/runners", h.cachedOrgRunners)
 
+		// Cached personalized repo listing (respcache_userrepos.go): keyed by
+		// the bearer's fingerprint + sort/paging, cached VERBATIM. No webhook
+		// interaction -- see ghdata/respcache_userrepos.go.
+		r.Get("/user/repos", h.cachedUserRepos)
+
+		// Cached issue/PR search (respcache_searchissues.go): keyed by the
+		// bearer's fingerprint + the modeled query shape, cached VERBATIM,
+		// short TTL. The documented exception to webhook-driven maintenance
+		// -- see ghdata/respcache_searchissues.go and
+		// docs/cache/uncacheable-routes.md.
+		r.Get("/search/issues", h.cachedSearchIssues)
+
 		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
 		// the 404 "config absent" answer; push/repository webhooks invalidate)
 		// and immutable git commits (also absorbed from push payloads).

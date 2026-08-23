@@ -70,6 +70,8 @@ type respCacheUpstream struct {
 	userOrgsHits         int32
 	orgRunnersHits       int32
 	appInstallationsHits int32
+	userReposHits        int32
+	searchIssuesHits     int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -112,6 +114,10 @@ type respCacheUpstream struct {
 	orgRunners func(w http.ResponseWriter, r *http.Request)
 	// appInstallations answers GET /app/installations; settable per test.
 	appInstallations func(w http.ResponseWriter, r *http.Request)
+	// userRepos answers GET /user/repos; settable per test.
+	userRepos func(w http.ResponseWriter, r *http.Request)
+	// searchIssues answers GET /search/issues; settable per test.
+	searchIssues func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -179,6 +185,8 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.userOrgs = defaultUserOrgsUpstream
 	u.orgRunners = defaultOrgRunnersUpstream
 	u.appInstallations = defaultAppInstallationsUpstream
+	u.userRepos = defaultUserReposUpstream
+	u.searchIssues = defaultSearchIssuesUpstream
 	return u
 }
 
@@ -201,6 +209,12 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case r.URL.Path == "/user/orgs":
 			atomic.AddInt32(&u.userOrgsHits, 1)
 			u.userOrgs(w, r)
+		case r.URL.Path == "/user/repos":
+			atomic.AddInt32(&u.userReposHits, 1)
+			u.userRepos(w, r)
+		case r.URL.Path == "/search/issues":
+			atomic.AddInt32(&u.searchIssuesHits, 1)
+			u.searchIssues(w, r)
 		case strings.HasSuffix(r.URL.Path, "/actions/runners"):
 			atomic.AddInt32(&u.orgRunnersHits, 1)
 			u.orgRunners(w, r)
