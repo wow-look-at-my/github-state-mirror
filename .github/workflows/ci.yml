@@ -5,20 +5,14 @@ on:
 
 permissions:
   id-token: write
-  # go-toolchain's dependency-graph submission POSTs a snapshot and fails
-  # without write; its no-all-builds guard scans check runs.
+  # go-toolchain submits a dependency-graph snapshot (needs write) and its no-all-builds guard scans check runs.
   contents: write
   actions: read
   checks: read
-  # buildhost#193 made recording an upload on the org's linked artifacts page
-  # part of publishing rather than a separate best-effort step, so both
-  # publishing paths here -- go-toolchain's release upload in `build` and
-  # buildhost-publish-site in `preview` -- now fail the job without it.
+  # Recording an upload on the org's artifacts page is part of publishing; go-toolchain's release upload and buildhost-publish-site both fail without these.
   artifact-metadata: write
   deployments: write
-  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
-  # A reusable workflow cannot exceed the caller's permissions, so it must be
-  # declared here.
+  # publish-ghcr pushes to GHCR; a reusable workflow cannot exceed the caller's permissions, so this must be declared here.
   packages: write
 
 jobs:
@@ -39,14 +33,7 @@ jobs:
             exit 1
           fi
 
-  # The dashboard front-end has exactly ONE source: TypeScript, in
-  # internal/api/web/src/*.ts. `npm run build` (tsc) emits
-  # internal/api/web/assets/*.js as a BUILD OUTPUT — it is gitignored, never
-  # committed, and every job that needs it compiles it (the build job does so
-  # before the Go build embeds it). This job is the type-check gate (tsc exits
-  # non-zero on any error) and it enforces the no-committed-JS rule, so a
-  # generated file can never creep back into the tree as a second source of
-  # truth that could then go stale.
+  # Type-check gate for the dashboard TypeScript and the no-committed-JS rule; see CLAUDE.md, "TypeScript front-end".
   web-check:
     runs-on: ubuntu-latest
     steps:
@@ -56,10 +43,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # The test harnesses in internal/api/testdata/ are TypeScript checked
-      # against the dashboard source they drive, so a changed export signature
-      # fails HERE rather than at runtime inside a measurement. They emit
-      # nothing (node runs the .ts directly); this is a type-check only.
+      # Type-checks internal/api/testdata/*.ts against the dashboard source; see CLAUDE.md, "TypeScript front-end".
       - run: npm run check:harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
@@ -83,31 +67,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The dashboard JS is not committed, so compile it from the TypeScript
-      # BEFORE the Go build: internal/api/dashboard.go names each assets/*.js
-      # file in its //go:embed line, and a missing embed target is a compile
-      # error, not a runtime 404.
+      # Compiles the TypeScript before the Go build: dashboard.go's //go:embed names each assets/*.js file, so a missing one is a compile error.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
-      # on every run, and its cache key is once-per-run (NOT job-disambiguated),
-      # so publish-ghcr just cache-downloads it. Do NOT add an explicit
-      # `cache-upload go-build` step here — a second same-run upload of that
-      # name collides on the key and fails.
+      # go-toolchain@v1 cache-uploads build/ as go-build once per run; never add another cache-upload go-build step here, it collides on the key.
       - uses: wow-look-at-my/go-toolchain@v1
 
-  # START the image and require it to serve. Nothing used to: `build` tests the
-  # HOST binary, and publish-ghcr builds and pushes without ever running the
-  # result, so the first execution of the entrypoint was production. That is how
-  # an image whose binary the kernel could not exec shipped green -- the whole
-  # fleet's GitHub traffic routes through this service, and every route 404'd.
-  #
-  # The assertions live in docker/imagecheck.test.ts, not here. This job only
-  # restores the binary and runs the suite, so an engineer can reproduce a
-  # failure with `npm run test:image` instead of pushing a commit to see it.
+  # Starts the image and requires it to serve; assertions live in docker/imagecheck.test.ts. See CLAUDE.md, "docker/imagecheck.test.ts".
   image-smoke:
     needs: build
     runs-on: ubuntu-latest
@@ -116,9 +85,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # `path: build` matches what publish-ghcr passes. The hand-off holds the
-      # binaries themselves, not a build/ directory, so restoring into the
-      # workspace root leaves the Dockerfile's COPY with nothing to find.
+      # path: build matches publish-ghcr; the hand-off holds the binaries, so restoring elsewhere leaves the Dockerfile's COPY empty.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
@@ -126,20 +93,12 @@ jobs:
       - run: npm ci
       - run: npm run test:image
 
-  # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Restores the go-build hand-off (build/server_cosmo_fat, the
-  # cosmo fat APE) the build job cache-uploaded and feeds it to the
-  # Dockerfile, then prunes old GHCR versions. Gated on image-smoke: an image
-  # nobody started is exactly what shipped the outage.
+  # Builds and pushes the image to GHCR on master, restoring the go-build hand-off; gated on image-smoke so nothing unstarted ships.
   publish-ghcr:
     needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
-  # Deploy a standalone, backend-free styling preview of the dashboard to
-  # buildhost as a per-branch static site, served at
-  # https://sites.pazer.build/github-state-mirror/branch/<branch>/. The preview
-  # injects demo-data.js so the page renders canned data (login/user/admin views)
-  # without a real server. OIDC handles auth; no static token is needed.
+  # Deploys a backend-free dashboard preview (demo-data.js, canned data) per branch to buildhost via OIDC; see https://sites.pazer.build/github-state-mirror/branch/<branch>/.
   preview:
     needs: web-check
     runs-on: ubuntu-latest
