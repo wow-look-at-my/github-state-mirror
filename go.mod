@@ -1,6 +1,6 @@
 module github.com/wow-look-at-my/github-state-mirror
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5
@@ -9,7 +9,7 @@ require (
 	modernc.org/sqlite v1.48.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260818100925-5e01414a6ac3 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0-20260820210621-2e1261867045 // go-toolchain:auto-branch
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
