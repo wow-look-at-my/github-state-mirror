@@ -322,6 +322,20 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
+		// Cached git tree read (respcache_gittrees.go): content-addressed and
+		// immutable by sha, like the commit route above -- no TTL, no webhook
+		// invalidation, LRU pruning only. recursive=1 is modeled (a distinct
+		// row, since it names a different entry set); every other query shape
+		// and non-default Accept pass through.
+		r.Get("/repos/{owner}/{repo}/git/trees/{sha}", h.cachedGitTree)
+
+		// Cached ref-prefix search (respcache_matchingrefs.go): only the
+		// heads/ prefix form is modeled (the surveyed caller's shape); a
+		// push/repository event flushes the whole repo's pages, mirroring
+		// branches_list_cache -- see the file header for why no per-prefix
+		// apply is attempted.
+		r.Get("/repos/{owner}/{repo}/git/matching-refs/heads/*", h.cachedMatchingRefs)
+
 		// Cached ref lookup (respcache_gitrefs.go): "where does this branch
 		// point right now". Greedy wildcard -- a ref path is at least
 		// heads/<name> and branch names carry slashes -- stored VERBATIM, so
@@ -388,6 +402,12 @@ func NewRouter(
 		// row under that run.
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
+
+		// Cached SINGLE check-run read (respcache_checkrun.go), distinct from
+		// the check-runs LIST route below: keyed by the run's own id, so a
+		// `check_run` delivery always applies directly (ApplyCheckRunByID)
+		// rather than needing a "does the page still list it" question.
+		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}", h.cachedCheckRun)
 
 		// Cached Code Quality setup (respcache_codequality.go): the per-repo
 		// enablement config, modeled from GitHub's OpenAPI `code-quality-setup`

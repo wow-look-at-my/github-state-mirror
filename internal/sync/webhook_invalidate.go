@@ -115,6 +115,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
 		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
 		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
+		flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
+		flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
 	case "label":
 		// Every action, repo-wide: an edit can RENAME (two names in one
 		// delivery) and one label answers under every spelling a caller
@@ -165,8 +167,12 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if len(refs) == 0 {
 			// Unparseable payload (or one naming no refs): no per-ref signal,
 			// so both CI-derived caches keep the conservative repo-wide flush.
+			// check_run_cache is keyed by run id, not by ref -- an unparseable
+			// check_run payload never reaches settleCommitCI's ApplyCheckRunByID
+			// below, so it gets the same repo-wide backstop here.
 			flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
 			flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
+			flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
 			return
 		}
 		d.settleCommitCI(ctx, scope, owner, repo, event, refs)
@@ -322,6 +328,11 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	}
 
 	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
+	// matching_refs_cache has no narrower per-ref target than the branches
+	// listing does (a prefix search's membership is exactly a filtered view
+	// of it), so it rides the same repo-wide flush rather than a per-prefix
+	// apply -- see respcache_matchingrefs.go's file header.
+	flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
 
 	// No per-ref grain for the rest, parseable or not: PR-files pages (a
 	// base push moves merge-base-relative file lists with no per-PR signal

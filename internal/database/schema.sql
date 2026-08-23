@@ -1091,3 +1091,153 @@ CREATE TABLE hooks_cache (
 CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, per_page, page);
 CREATE INDEX idx_hooks_cache_target ON hooks_cache (scope, owner, repo);
 CREATE INDEX idx_hooks_cache_lru ON hooks_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/git/trees/{tree_sha}[?recursive=1].
+-- Trees are content-addressed and immutable like git commits: no TTL, no
+-- webhook invalidation (no delivery names a tree object), LRU pruning only.
+-- recursive is the verbatim query value ('' or '1') because GitHub answers a
+-- DIFFERENT entry set for the same sha depending on it, so it is part of the
+-- key rather than a rendering option. doc is the whole trimmed document
+-- (sha, truncated, tree[] with url dropped from every entry) rendered once at
+-- absorb time, the hooks_cache/branches_list_cache snapshot convention.
+CREATE TABLE git_trees_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    sha          TEXT NOT NULL,              -- lowercased full hex tree sha
+    recursive    TEXT NOT NULL DEFAULT '',   -- '' or '1', verbatim
+    doc          TEXT NOT NULL,              -- trimmed tree document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_trees_cache_key ON git_trees_cache (owner, repo, sha, recursive);
+CREATE INDEX idx_git_trees_cache_lru ON git_trees_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/check-runs/{check_run_id} (the SINGLE
+-- check-run read, distinct from commit_ci_cache's LIST route). Keyed by the
+-- check run's own id, which never changes owner/repo/sha once created.
+-- Absorbed from an upstream fetch AND rewritten in place by `check_run`
+-- webhook deliveries (ghdata.StoredCheckRun/TrimCheckRunJSON, the same trim
+-- the LIST route uses -- one answer for what a check run becomes regardless
+-- of source). doc is the trimmed single-check-run document. expires_at is a
+-- backstop for a check run whose terminal state a delivery never reaches
+-- (deleted app, GitHub-side ordering loss); webhooks are the primary path.
+CREATE TABLE check_run_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    check_run_id INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed check-run document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks rewrite sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_check_run_cache_key ON check_run_cache (owner, repo, check_run_id);
+CREATE INDEX idx_check_run_cache_lru ON check_run_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix} (the
+-- ref-prefix search pr-minder's queue-branch scan uses). doc is the trimmed
+-- JSON array of matching {ref, object:{sha}} entries for one exact prefix.
+-- A branch create/delete/tip-move all arrive as a push naming a ref under
+-- refs/heads/ -- push/repository webhooks flush the whole repo's rows (the
+-- branches_list_cache precedent: a prefix search has no narrower per-ref
+-- target than the listing does). expires_at is the 24h TTL backstop.
+CREATE TABLE matching_refs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    prefix       TEXT NOT NULL,              -- verbatim path after heads/
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed matching-refs array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_matching_refs_cache_key ON matching_refs_cache (owner, repo, prefix, per_page, page);
+CREATE INDEX idx_matching_refs_cache_lru ON matching_refs_cache (last_used_at);
+
+-- State for the identity/self routes with no per-repo scope and no webhook
+-- signal: GET /app (App metadata, keyed by verified app id), GET /user and
+-- GET /user/orgs (keyed by the bearer's fingerprint, the hooks_cache
+-- convention -- a token uniquely names one user). `kind` picks which
+-- question a row answers; doc is the trimmed document. TTL is the PRIMARY
+-- bound for all three (hooks_cache's staleness stance): App metadata rarely
+-- changes and carries no webhook at all, and GitHub sends no event for a
+-- user's own profile edits or org membership changes (the CLAUDE.md
+-- `organization`/`membership` payload-unused exception covers the same gap).
+CREATE TABLE identity_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_key  TEXT NOT NULL,              -- app:<id> or the bearer's token fingerprint
+    kind         TEXT NOT NULL,              -- 'app' | 'user' | 'user_orgs'
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_identity_cache_key ON identity_cache (subject_key, kind);
+CREATE INDEX idx_identity_cache_lru ON identity_cache (last_used_at);
+
+-- State for GET /orgs/{org}/actions/runners. Keyed by the bearer's
+-- fingerprint like hooks_cache -- this is an admin-scoped read (needs
+-- `manage_runners:organization` or equivalent) and GitHub sends no webhook
+-- for a runner's online/offline/busy transitions, so a global row would both
+-- leak admin-only data through the ordinary reveal gate and go stale with no
+-- way to notice. TTL is short and primary: a runner's status is a live value
+-- a scheduler provisions against.
+CREATE TABLE org_runners_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    org          TEXT NOT NULL,              -- lowercased
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed runners document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_org_runners_cache_key ON org_runners_cache (token_fp, org, per_page, page);
+CREATE INDEX idx_org_runners_cache_lru ON org_runners_cache (last_used_at);
+
+-- State for GET /app/installations (every installation of the calling App --
+-- distinct from repo_installation_cache, which answers "does the app cover
+-- THIS repo/owner"). Keyed by the verified app id. `installation` deliveries
+-- carry the whole installation object and are the PRIMARY invalidation path
+-- (ApplyInstallationToAppInstallations rewrites/adds/removes one entry in
+-- place); expires_at is the TTL backstop for a missed delivery.
+CREATE TABLE app_installations_cache (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_key        TEXT NOT NULL,            -- app:<id>
+    installation_id INTEGER NOT NULL,
+    doc            TEXT NOT NULL,            -- trimmed installation entry as JSON
+    fetched_at     TEXT NOT NULL,            -- RFC3339
+    expires_at     TEXT NOT NULL,            -- RFC3339 TTL backstop
+    last_used_at   TEXT NOT NULL             -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_app_installations_cache_key ON app_installations_cache (app_key, installation_id);
+CREATE INDEX idx_app_installations_cache_lru ON app_installations_cache (last_used_at);
+
+-- State for GET /search/issues?q=...&per_page=...: an exact-query-string
+-- cache, the documented exception to webhook-driven invalidation (see
+-- docs/cache/uncacheable-routes.md) -- an arbitrary search query has no
+-- single resource a webhook could name, so this is TTL-only and
+-- deliberately short: long enough to collapse a tight poll loop asking the
+-- identical query, short enough that a real answer change (an issue closed,
+-- a label added) is visible within one poll cycle either way.
+CREATE TABLE search_issues_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_key    TEXT NOT NULL,              -- sha256(q + '\n' + per_page + '\n' + page), verbatim query is unbounded
+    doc          TEXT NOT NULL,              -- trimmed search-results document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary and only bound)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_search_issues_cache_key ON search_issues_cache (query_key);
+CREATE INDEX idx_search_issues_cache_lru ON search_issues_cache (last_used_at);
