@@ -224,9 +224,13 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
 	case "installation", "installation_repositories":
 		// The app-installations LISTING (GET /app/installations, distinct
-		// from the by-repo lookups below): the payload's own installation
-		// object names its owning app_id directly, so this flushes exactly
-		// that app's pages rather than every app's.
+		// from the by-repo lookups below): stored VERBATIM per page
+		// (identical-or-passthrough, respcache_identity.go's file header),
+		// so the payload's one changed installation cannot be spliced into
+		// a page without re-marshalling the array -- which page it would even
+		// land on is itself unknown. The payload does name its owning app_id
+		// directly, so the flush is at least scoped to exactly that app's
+		// pages rather than every app's.
 		if appID := webhook.ParseInstallationAppID(event.Raw); appID != "" {
 			appKey := "app:" + appID
 			if err := d.store.InvalidateAppInstallationsForApp(ctx, appKey); err != nil {
