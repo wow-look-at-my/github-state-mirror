@@ -314,13 +314,16 @@ func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) h
 		}
 		next.ServeHTTP(sw, r)
 		log.observeStatus(r, passthroughDisposition(r), sw.status)
-		shapes.observeRequest(r, route, sw.status, sw.Header().Get("Content-Type"), sw.capturedBody())
+		shapes.observeRequest(r, route, sw.status, sw.Header().Get("Content-Type"), sw.Header().Get("Content-Encoding"), sw.capturedBody())
 	})
 }
 
 // observeRequest records one passthrough's shape. body is nil unless this
 // request was selected for sampling; it is reduced to a skeleton and dropped.
-func (s *shapeStore) observeRequest(r *http.Request, route string, status int, contentType string, body []byte) {
+// contentEncoding is the upstream response's own Content-Encoding (e.g.
+// "gzip") — body is the WIRE bytes, not decoded, since the passthrough proxy
+// relays a caller's Accept-Encoding to GitHub unchanged (see decodeSample).
+func (s *shapeStore) observeRequest(r *http.Request, route string, status int, contentType, contentEncoding string, body []byte) {
 	if s == nil {
 		return
 	}
@@ -337,7 +340,7 @@ func (s *shapeStore) observeRequest(r *http.Request, route string, status int, c
 	s.observe(observation{
 		Method: r.Method, Route: route, Path: r.URL.Path,
 		QueryNames: names, Accept: r.Header.Get("Accept"), Caller: name,
-		Status: status, ContentType: contentType, Body: body,
+		Status: status, ContentType: contentType, ContentEncoding: contentEncoding, Body: body,
 	})
 }
 

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +43,53 @@ func TestJSONSkeletonRefusesNonJSON(t *testing.T) {
 	sk := jsonSkeleton([]byte("diff --git a/x b/x\n+secret line\n"))
 	require.Equal(t, "", sk)
 
+}
+
+// The passthrough proxy relays a caller's own Accept-Encoding to GitHub
+// unchanged, so a captured sample is the WIRE body: a caller that requests
+// gzip (most HTTP libraries do, by default) gets a gzip-encoded sample here.
+// Without decoding it first, json.Unmarshal always fails on gzip bytes, the
+// route's shape never records a skeleton, and — because a failed sample never
+// advances lastSampleAt — wantsBody keeps asking forever: the exact "no
+// response outline yet" stall the operator sees no matter how long they wait.
+func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
+	s := newShapeStore()
+	route := "/repos/{owner}/{repo}/labels"
+	plain := []byte(`[{"name":"bug","color":"d73a4a"}]`)
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	_, err := gz.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+
+	require.True(t, s.wantsBody("GET", route))
+	s.observe(observation{
+		Method: "GET", Route: route, Path: "/repos/o/r/labels",
+		Status: 200, ContentType: "application/json", ContentEncoding: "gzip",
+		Body: buf.Bytes(),
+	})
+
+	// A successful decode produced a real skeleton, so the route is no longer
+	// stuck asking for a re-sample on every subsequent passthrough.
+	require.False(t, s.wantsBody("GET", route))
+
+	snap := s.snapshot()
+	sh, ok := snap["GET "+route]
+	require.True(t, ok)
+	require.Len(t, sh.Bodies, 1)
+	require.Contains(t, sh.Bodies[0].Skeleton, "name: string")
+	require.Contains(t, sh.Bodies[0].Skeleton, "color: string")
+}
+
+// decodeSample must never choke on a body that is not actually gzip (a
+// Content-Encoding lie, or identity/absent): it falls back to the raw bytes
+// rather than losing the sample.
+func TestDecodeSamplePassesThroughNonGzip(t *testing.T) {
+	plain := []byte(`{"a":1}`)
+	require.Equal(t, plain, decodeSample(plain, ""))
+	require.Equal(t, plain, decodeSample(plain, "identity"))
+	require.Equal(t, plain, decodeSample(plain, "gzip")) // not actually gzip: falls back
 }
 
 func TestShapeStoreSamplingAndSnapshot(t *testing.T) {
