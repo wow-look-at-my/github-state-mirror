@@ -56,6 +56,9 @@ type respCacheUpstream struct {
 	labelHits        int32
 	installReposHits int32
 	hooksHits        int32
+	gitTreeHits      int32
+	checkRunHits     int32
+	matchingRefsHits int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -85,6 +88,13 @@ type respCacheUpstream struct {
 	// hooks answers the repo and org hook listings AND their write verbs;
 	// settable per test (the refusal test answers 403).
 	hooks func(w http.ResponseWriter, r *http.Request)
+	// gitTree answers GET /repos/{o}/{r}/git/trees/{sha}; settable per test.
+	gitTree func(w http.ResponseWriter, r *http.Request)
+	// checkRun answers GET /repos/{o}/{r}/check-runs/{id}; settable per test.
+	checkRun func(w http.ResponseWriter, r *http.Request)
+	// matchingRefs answers GET /repos/{o}/{r}/git/matching-refs/heads/*;
+	// settable per test.
+	matchingRefs func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	// per test. The default reports a PRIVATE repo, so callers earn grants.
 	// The bare-repo route's miss fetches land here too, so probeHits counts
@@ -146,6 +156,9 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.label = defaultLabelUpstream
 	u.installRepos = defaultInstallationReposUpstream
 	u.hooks = defaultHooksUpstream
+	u.gitTree = defaultGitTreeUpstream
+	u.checkRun = defaultCheckRunUpstream
+	u.matchingRefs = defaultMatchingRefsUpstream
 	return u
 }
 
@@ -213,9 +226,18 @@ func (u *respCacheUpstream) handler() http.Handler {
 		case strings.Contains(r.URL.Path, "/git/ref/"):
 			atomic.AddInt32(&u.gitRefHits, 1)
 			u.gitRef(w, r)
+		case strings.Contains(r.URL.Path, "/git/matching-refs/"):
+			atomic.AddInt32(&u.matchingRefsHits, 1)
+			u.matchingRefs(w, r)
+		case strings.Contains(r.URL.Path, "/git/trees/"):
+			atomic.AddInt32(&u.gitTreeHits, 1)
+			u.gitTree(w, r)
 		case strings.Contains(r.URL.Path, "/git/commits/"):
 			atomic.AddInt32(&u.commitHits, 1)
 			u.gitCommit(w, r)
+		case strings.Contains(r.URL.Path, "/check-runs/"):
+			atomic.AddInt32(&u.checkRunHits, 1)
+			u.checkRun(w, r)
 		case strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			n := atomic.AddInt32(&u.mintHits, 1)
 			w.WriteHeader(http.StatusCreated)
