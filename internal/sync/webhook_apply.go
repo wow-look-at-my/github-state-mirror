@@ -40,6 +40,13 @@ func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, re
 		// value of one entry and the page keeps its shape.
 		if raw, ok := webhook.CheckRunObject(event.Raw); ok {
 			if run, ok := ghdata.TrimCheckRunJSON(raw); ok {
+				// The single-check-run row (respcache_checkrun.go) is keyed by
+				// this run's own id, so the delivery is ALWAYS directly
+				// appliable -- unlike the list page below, there is no
+				// "does the stored answer still describe this run" question.
+				if err := d.store.ApplyCheckRunByID(ctx, owner, repo, run, time.Now(), ghdata.CheckRunCacheTTL); err != nil {
+					flush("check run by-id apply", scope, err)
+				}
 				applied, err := d.store.ApplyCheckRunToCommitCI(ctx, owner, repo, run, time.Now(), ghdata.CommitCICacheTTL)
 				if err != nil {
 					flush("check run apply", scope, err)

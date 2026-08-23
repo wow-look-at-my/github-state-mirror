@@ -45,24 +45,27 @@ import (
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
-	denyKindContents     = "contents"
-	denyKindGitCommit    = "git_commit"
-	denyKindRepoPulls    = "repo_pulls"
-	denyKindPull         = "pull"
-	denyKindRepoCommits  = "repo_commits"
-	denyKindCompare      = "compare"
-	denyKindCommitStatus = "commit_status"
-	denyKindCheckRuns    = "check_runs"
-	denyKindPullFiles    = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
-	denyKindBranches     = "branches"      // GET /repos/{owner}/{repo}/branches
-	denyKindRepo         = "repo"          // GET /repos/{owner}/{repo}
-	denyKindStatusesList = "statuses_list" // the raw statuses LIST (both path spellings)
-	denyKindWorkflowRuns = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
-	denyKindGitRef       = "git_ref"       // GET /repos/{owner}/{repo}/git/ref/{ref}
-	denyKindRunJobs      = "run_jobs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
-	denyKindWorkflowJob  = "workflow_job"  // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
-	denyKindCodeQuality  = "code_quality"  // GET /repos/{owner}/{repo}/code-quality/setup
-	denyKindLabel        = "label"         // GET /repos/{owner}/{repo}/labels/{name}
+	denyKindContents       = "contents"
+	denyKindGitCommit      = "git_commit"
+	denyKindRepoPulls      = "repo_pulls"
+	denyKindPull           = "pull"
+	denyKindRepoCommits    = "repo_commits"
+	denyKindCompare        = "compare"
+	denyKindCommitStatus   = "commit_status"
+	denyKindCheckRuns      = "check_runs"
+	denyKindPullFiles      = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
+	denyKindBranches       = "branches"      // GET /repos/{owner}/{repo}/branches
+	denyKindRepo           = "repo"          // GET /repos/{owner}/{repo}
+	denyKindStatusesList   = "statuses_list" // the raw statuses LIST (both path spellings)
+	denyKindWorkflowRuns   = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
+	denyKindGitRef         = "git_ref"       // GET /repos/{owner}/{repo}/git/ref/{ref}
+	denyKindRunJobs        = "run_jobs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+	denyKindWorkflowJob    = "workflow_job"  // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
+	denyKindCodeQuality    = "code_quality"  // GET /repos/{owner}/{repo}/code-quality/setup
+	denyKindLabel          = "label"         // GET /repos/{owner}/{repo}/labels/{name}
+	denyKindGitTree        = "git_tree"      // GET /repos/{owner}/{repo}/git/trees/{sha}
+	denyKindSingleCheckRun = "check_run"     // GET /repos/{owner}/{repo}/check-runs/{check_run_id}
+	denyKindMatchingRefs   = "matching_refs" // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
 )
 
 // revealOutcome is the reveal decision for one request.

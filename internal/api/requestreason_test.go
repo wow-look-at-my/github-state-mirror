@@ -128,8 +128,11 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 		target:     "/repos/org1/repo1/git/commits/abc123",
 		wantReason: PassPath,
 	}, {
+		// /orgs/{org}/actions/runners was the original example here; it is
+		// now a cached route (respcache_orgrunners.go). /rate_limit stays
+		// genuinely unrouted by design -- see docs/cache/uncacheable-routes.md.
 		name:       "no cached route claims the path",
-		target:     "/orgs/org1/actions/runners",
+		target:     "/rate_limit",
 		wantReason: PassUnrouted,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,9 +168,9 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 	assert.Equal(t, int64(1), runs.ByReason[PassQuery])
 	assert.Equal(t, int64(1), runs.ByReason[PassAccept])
 
-	runners, ok := byKey["GET /orgs/{org}/actions/runners"]
-	require.True(t, ok, "the org-runners group exists")
-	assert.Equal(t, int64(1), runners.ByReason[PassUnrouted])
+	rateLimit, ok := byKey["GET /rate_limit"]
+	require.True(t, ok, "the rate-limit group exists")
+	assert.Equal(t, int64(1), rateLimit.ByReason[PassUnrouted])
 }
 
 // TestPassthroughReason_MethodNotAllowed: the required-builds status PUBLISH
