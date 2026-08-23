@@ -5,7 +5,7 @@
 // image whose binary the kernel could not exec shipped green, and every route
 // 404'd for the whole fleet that routes its GitHub traffic through here.
 //
-// Needs docker and build/server_cosmo_fat (go-toolchain's output). It FAILS
+// Needs docker and build/server (go-toolchain's output). It FAILS
 // rather than skips when either is missing: a check that quietly passes on a
 // machine without docker is how this got shipped in the first place.
 //
@@ -56,8 +56,8 @@ async function probeRoute(route: string, seconds: number): Promise<number | null
 
 test('the binary the image needs is present', () => {
   assert.ok(
-    existsSync(join(REPO_ROOT, 'build/server_cosmo_fat')),
-    'build/server_cosmo_fat is missing — run go-toolchain first; without it this whole file would test nothing',
+    existsSync(join(REPO_ROOT, 'build/server')),
+    'build/server is missing — run go-toolchain first; without it this whole file would test nothing',
   );
 });
 
