@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,9 +52,11 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 // resources object — see TestRateLimit_EmptyWhenNoObservation — never a
 // fetch attempt).
 func TestRateLimit_NeverCallsUpstream(t *testing.T) {
+	var rateLimitHits int32
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/rate_limit" {
-			t.Fatal("GET /rate_limit must never reach upstream")
+			atomic.AddInt32(&rateLimitHits, 1)
+			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	})
@@ -61,6 +64,7 @@ func TestRateLimit_NeverCallsUpstream(t *testing.T) {
 
 	w := do(t, router, authedReq("GET", "/rate_limit", nil))
 	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, int32(0), atomic.LoadInt32(&rateLimitHits), "GET /rate_limit must never reach upstream")
 }
 
 // TestRateLimit_EmptyWhenNoObservation: a credential the meter has never
