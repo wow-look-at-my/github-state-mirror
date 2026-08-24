@@ -43,6 +43,12 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 	assert.Equal(t, 5000, resp.Resources["core"].Limit)
 	assert.Equal(t, 4321, resp.Resources["core"].Remaining)
 	assert.Equal(t, int64(9999999999), resp.Resources["core"].Reset)
+
+	// GitHub answers with core twice -- once under resources, once as the
+	// deprecated top-level `rate`. A caller reading `rate` must see the same
+	// numbers here as it would straight from GitHub.
+	require.NotNil(t, resp.Rate, "the deprecated top-level rate alias is still sent")
+	assert.Equal(t, resp.Resources["core"], *resp.Rate)
 }
 
 // TestRateLimit_NeverCallsUpstream: the route must be answered ENTIRELY from
@@ -80,6 +86,8 @@ func TestRateLimit_EmptyWhenNoObservation(t *testing.T) {
 	var resp ghclient.RateLimitResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Empty(t, resp.Resources)
+	assert.Nil(t, resp.Rate, "an unknown core is omitted, never a zeroed budget")
+	assert.NotContains(t, w.Body.String(), `"rate"`, "and the key is absent, not null")
 }
 
 // TestRateLimit_UnmodeledShapePassesThrough: GET /rate_limit takes no query
