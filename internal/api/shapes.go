@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +42,11 @@ const (
 	// build a skeleton. Larger bodies stream through untouched and are simply
 	// not sampled (the skeleton of a truncated body would be a lie).
 	shapeMaxSampleBytes = 256 << 10
+	// shapeMaxDecodedBytes bounds a gzip-decoded sample: the captured wire
+	// bytes are already capped at shapeMaxSampleBytes, but JSON commonly
+	// decompresses several times larger, and the decode runs against a
+	// trusted upstream (GitHub) rather than caller input.
+	shapeMaxDecodedBytes = 4 << 20
 	// shapeMaxPaths / shapeMaxNames bound the per-shape detail sets.
 	shapeMaxPaths = 3
 	shapeMaxNames = 24
@@ -117,15 +125,16 @@ func (s *shapeStore) wantsBody(method, route string) bool {
 // observation is one recorded passthrough. Body is the buffered response body
 // when it was sampled (nil otherwise) and is consumed here — never retained.
 type observation struct {
-	Method      string
-	Route       string
-	Path        string
-	QueryNames  []string
-	Accept      string
-	Caller      string
-	Status      int
-	ContentType string
-	Body        []byte
+	Method          string
+	Route           string
+	Path            string
+	QueryNames      []string
+	Accept          string
+	Caller          string
+	Status          int
+	ContentType     string
+	ContentEncoding string
+	Body            []byte
 }
 
 func (s *shapeStore) observe(o observation) {
@@ -135,7 +144,7 @@ func (s *shapeStore) observe(o observation) {
 	key := o.Method + " " + o.Route
 	skeleton := ""
 	if len(o.Body) > 0 {
-		skeleton = jsonSkeleton(o.Body)
+		skeleton = jsonSkeleton(decodeSample(o.Body, o.ContentEncoding))
 	}
 	now := time.Now().UTC()
 
@@ -276,6 +285,25 @@ func sortedIntCounts(m map[int]int64) []countedInt {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
 	return out
+}
+
+// decodeSample gunzips a captured sample when the upstream Content-Encoding
+// says gzip; every other value passes the bytes through unchanged.
+// see docs/dashboard/implementation-brief.md, "Compressed samples"
+func decodeSample(body []byte, contentEncoding string) []byte {
+	if !strings.Contains(strings.ToLower(contentEncoding), "gzip") {
+		return body
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return body
+	}
+	defer gz.Close()
+	decoded, err := io.ReadAll(io.LimitReader(gz, shapeMaxDecodedBytes))
+	if err != nil && len(decoded) == 0 {
+		return body
+	}
+	return decoded
 }
 
 // jsonSkeleton reduces a JSON document to its KEY/TYPE outline: every scalar

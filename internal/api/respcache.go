@@ -421,7 +421,7 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	if h.shapes.wantsBody(r.Method, route) && len(body) <= shapeMaxSampleBytes {
 		sample = body
 	}
-	h.shapes.observeRequest(r, route, resp.StatusCode, resp.Header.Get("Content-Type"), sample)
+	h.shapes.observeRequest(r, route, resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"), sample)
 }
 
 // upstreamError reports a failed upstream fetch, mirroring the passthrough

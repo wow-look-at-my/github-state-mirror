@@ -89,6 +89,22 @@ FuncMap in `brief.go`, and the template renders rather than decides. It is
 a model to read, and HTML-escaping would mangle every `<`, `&`, and quote in a
 captured path or skeleton.
 
+## Compressed samples
+
+Two paths carry the sample bytes: `recordPassthrough`'s `statusRecorder`
+buffers what the reverse proxy writes to the client, and `replayUnstored`
+buffers what it already read from GitHub. Neither the proxy nor the mirror
+strips a caller's `Accept-Encoding` before forwarding, so GitHub answers
+gzip-encoded whenever the caller asked for it — most HTTP clients do, by
+default. A sample is therefore the WIRE body, not the decoded one.
+
+`decodeSample` (`shapes.go`) gunzips a sample when the response's own
+`Content-Encoding` says gzip, before `jsonSkeleton` ever sees it. Without this
+step `json.Unmarshal` fails on every gzip sample, no skeleton is ever stored,
+`lastSampleAt` never advances, and `wantsBody` keeps asking on every
+subsequent passthrough — the route sits in "no response outline yet"
+regardless of how much traffic it gets.
+
 ## What the capture is not
 
 It records what this fleet actually sends and receives. That makes it the

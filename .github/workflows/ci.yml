@@ -6,11 +6,14 @@ on:
 # See docs/ci.md for why each grant below is required.
 permissions:
   id-token: write
+
   contents: write
   actions: read
   checks: read
+
   artifact-metadata: write
   deployments: write
+
   packages: write
 
 jobs:
@@ -41,6 +44,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
+
       - run: npm run check:harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
@@ -72,6 +76,9 @@ jobs:
       - run: npm run build
       # See docs/ci.md: do not add an explicit cache-upload step here.
       - uses: wow-look-at-my/go-toolchain@v1
+        with:
+          # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
+          cosmo-platforms: linux/amd64,windows/amd64
 
   # See docs/ci.md: this job starts the image and requires it to serve.
   image-smoke:
