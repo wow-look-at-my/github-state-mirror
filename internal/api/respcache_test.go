@@ -378,11 +378,14 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 		return req
 	}
 
-	// Miss: the JSON probe absorbs the fixture's base64 "aGVsbG8=\n", and the
-	// raw-Accept caller is served the DECODED bytes, not the JSON wrapper.
+	// Miss: the JSON probe absorbs the fixture's base64 "aGVsbG8=\n" (the
+	// trailing newline is GitHub's MIME-style wrapping of the base64 TEXT,
+	// not part of the decoded content -- "aGVsbG8=" alone decodes to the
+	// 5-byte "hello", matching the fixture's own declared size:5), and the
+	// raw-Accept caller is served those decoded bytes, not the JSON wrapper.
 	w1 := do(t, router, rawReq())
 	require.Equal(t, http.StatusOK, w1.Code)
-	assert.Equal(t, "hello\n", w1.Body.String(), "raw Accept serves the decoded file bytes")
+	assert.Equal(t, "hello", w1.Body.String(), "raw Accept serves the decoded file bytes")
 	assert.Equal(t, "text/plain; charset=utf-8", w1.Header().Get("Content-Type"))
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the miss probed upstream exactly once")
@@ -390,7 +393,7 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 	// Hit: a second identical raw-Accept request costs no upstream call.
 	w2 := do(t, router, rawReq())
 	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, "hello\n", w2.Body.String())
+	assert.Equal(t, "hello", w2.Body.String())
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "a raw-Accept hit must not call upstream")
 
@@ -425,7 +428,7 @@ func TestRespCache_RawAcceptMissProbesDefaultJSON(t *testing.T) {
 	w := do(t, router, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "application/vnd.github+json", gotAccept, "the probe fetch asks for the default JSON shape")
-	assert.Equal(t, "hello\n", w.Body.String())
+	assert.Equal(t, "hello", w.Body.String())
 }
 
 // TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough: a file too large
