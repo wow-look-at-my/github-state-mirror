@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -35,8 +34,7 @@ func (failOrgFetcher) Fetch(_ context.Context, _ string, _ string) (freshness.Re
 // surface the upstream error with a non-200 status and the reason in the body.
 func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err)
+	db := openTestDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
@@ -69,8 +67,7 @@ func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 // body, which stays byte-identical to GitHub's shape).
 func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err)
+	db := openTestDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
