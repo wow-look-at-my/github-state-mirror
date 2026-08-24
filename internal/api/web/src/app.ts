@@ -30,6 +30,10 @@ const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEM
 // renderDashboard.
 let dashIsAdmin = false;
 
+// The signed-in user, as last reported by /api/me. Carried into the "Copy
+// full state as JSON" document so it is self-describing (whose slice this is).
+let lastMe: Me | null = null;
+
 const COUNT_FIELDS: ReadonlyArray<readonly [keyof Counts, string]> = [
     ["repos", "Repos"],
     ["pull_requests", "Pull requests"],
@@ -194,6 +198,7 @@ async function renderDashboard(me: Me): Promise<void> {
         );
         head.appendChild(tabs);
     }
+    head.appendChild(renderCopyJsonControl());
     head.appendChild(el("div", { class: "sub", id: "scope-sub" }));
     main.appendChild(head);
 
@@ -253,6 +258,91 @@ function loadView(scope: string, silent = false): Promise<void> {
     return loadScope(scope, silent);
 }
 
+// ALL_VIEWS lists every tab name the Copy JSON control knows about, matching
+// the tabs' own data-scope values 1:1. Non-admins only ever see "mine".
+const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "timeline"];
+
+// dataForView fetches one tab's own JSON directly from its endpoint,
+// independent of whatever is currently rendered. Backs the Copy JSON
+// control, so a copy is always a live fetch rather than a snapshot of
+// whatever last happened to be on screen.
+async function dataForView(scope: string): Promise<unknown> {
+    switch (scope) {
+        case "mine": return api<CacheResponse>("/api/cache?scope=mine");
+        case "all": return api<CacheResponse>("/api/cache?scope=all");
+        case "webhooks": return api<WebhooksResponse>("/api/webhooks");
+        case "requests": return api<RequestsResponse>("/api/requests");
+        case "ratelimit": return api<RateLimitResponse>("/api/ratelimit");
+        case "timeline": return api<TimelineResponse>("/api/timeline");
+        default: throw new Error("unknown view " + scope);
+    }
+}
+
+// fullStateJSON gathers every tab the signed-in user can see into one
+// document — the "just give me everything on screen" escape hatch. A tab
+// whose fetch fails still reports itself under its own key with the error,
+// rather than silently dropping that section from the document.
+async function fullStateJSON(): Promise<unknown> {
+    const views = dashIsAdmin ? ALL_VIEWS : ["mine"];
+    const state: Record<string, unknown> = { generated_at: new Date().toISOString(), me: lastMe };
+    await Promise.all(views.map(async (v) => {
+        try {
+            state[v] = await dataForView(v);
+        } catch (e) {
+            state[v] = { error: (e as Error).message };
+        }
+    }));
+    return state;
+}
+
+// renderCopyJsonControl is the dropdown rendered once in the page head (next
+// to the tabs, present on every screen — including for a non-admin, who only
+// has the "mine" tab). "Copy this page" re-fetches the active tab's own JSON;
+// "Copy full state" gathers every tab via fullStateJSON. Both copy a live
+// fetch, never whatever text happens to be rendered at click time.
+function renderCopyJsonControl(): HTMLElement {
+    const trigger = el("button", {
+        class: "btn btn-sm copy-json-trigger",
+        "aria-haspopup": "true", "aria-expanded": "false",
+    }, "Copy JSON ", el("span", { class: "copy-json-caret", "aria-hidden": "true" }, "▾"));
+    const pageItem = el("button", { class: "copy-json-item" }, "Copy this page as JSON");
+    const stateItem = el("button", { class: "copy-json-item" }, "Copy full state as JSON");
+    const menu = el("div", { class: "copy-json-menu", hidden: true }, pageItem, stateItem);
+    const wrap = el("div", { class: "copy-json" }, trigger, menu);
+
+    let open = false;
+    const setOpen = (v: boolean): void => {
+        open = v;
+        menu.hidden = !v;
+        trigger.setAttribute("aria-expanded", v ? "true" : "false");
+    };
+    closeCopyJsonMenu = () => setOpen(false);
+    trigger.addEventListener("click", (e) => {
+        e.stopPropagation(); // otherwise the document listener that closes the menu fires right after this opens it
+        setOpen(!open);
+    });
+
+    // runCopy drives one menu item's click: fetch, copy, then a brief
+    // Copied!/Copy failed label on the item itself before it reverts.
+    const runCopy = (btn: HTMLButtonElement, label: string, build: () => Promise<unknown>): void => {
+        setOpen(false);
+        btn.disabled = true;
+        btn.textContent = "Copying…";
+        void build()
+            .then((obj) => copyText(JSON.stringify(obj, null, 2)))
+            .then((ok) => { btn.textContent = ok ? "Copied!" : "Copy failed"; })
+            .catch((e: Error) => { btn.textContent = "Failed: " + e.message; })
+            .finally(() => {
+                btn.disabled = false;
+                setTimeout(() => { btn.textContent = label; }, 1800);
+            });
+    };
+    pageItem.addEventListener("click", () => runCopy(pageItem as HTMLButtonElement, "Copy this page as JSON", () => dataForView(currentView)));
+    stateItem.addEventListener("click", () => runCopy(stateItem as HTMLButtonElement, "Copy full state as JSON", fullStateJSON));
+
+    return wrap;
+}
+
 // ---- auto-refresh ----
 // The dashboard polls the active tab every few seconds so cache/freshness/rate
 // state stays live without a manual reload. Refreshes are "silent" (no loading
@@ -269,6 +359,17 @@ let modalOpen = false;
 let onHashChange: ((scope: string) => void) | null = null;
 if (typeof window !== "undefined") {
     window.addEventListener("hashchange", () => onHashChange?.(location.hash.slice(1)));
+}
+
+// ---- copy JSON dropdown (page head, every tab) ----
+// Closing the menu on an outside click or Escape uses ONE persistent document
+// listener, in the same reattach-a-mutable-handler style as onHashChange
+// above: renderDashboard can run more than once (demo mode re-boots on every
+// state switch), and a listener added fresh on every render would leak.
+let closeCopyJsonMenu: (() => void) | null = null;
+if (typeof document !== "undefined") {
+    document.addEventListener("click", () => closeCopyJsonMenu?.());
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCopyJsonMenu?.(); });
 }
 
 function startAutoRefresh(): void {
@@ -1039,15 +1140,10 @@ function renderBrief(d: BriefResponse): HTMLElement {
 function textBlock(text: string, copyLabel: string, filename: string): HTMLElement {
     const copyBtn = el("button", { class: "btn btn-sm" }, copyLabel);
     copyBtn.addEventListener("click", () => {
-        const done = (ok: boolean): void => {
+        void copyText(text).then((ok) => {
             copyBtn.textContent = ok ? "Copied!" : "Copy failed";
             setTimeout(() => { copyBtn.textContent = copyLabel; }, 1500);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-        } else {
-            done(false);
-        }
+        });
     });
     const dlBtn = el("button", { class: "btn btn-sm" }, "Download .md");
     dlBtn.addEventListener("click", () => {
@@ -1378,21 +1474,24 @@ function openModal(titleText: string): Modal {
     return { body, close };
 }
 
+// copyText writes text to the clipboard, resolving whether it succeeded
+// rather than throwing — every caller renders the same Copied!/Copy failed
+// label off this result.
+function copyText(text: string): Promise<boolean> {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return Promise.resolve(false);
+    return navigator.clipboard.writeText(text).then(() => true, () => false);
+}
+
 // jsonBlock renders a pretty-printed, copyable JSON view. This is the artifact
 // the operator pastes back for analysis.
 function jsonBlock(obj: unknown, copyLabel: string): HTMLElement {
     const text = JSON.stringify(obj, null, 2);
     const copyBtn = el("button", { class: "btn btn-sm" }, copyLabel);
     copyBtn.addEventListener("click", () => {
-        const done = (ok: boolean): void => {
+        void copyText(text).then((ok) => {
             copyBtn.textContent = ok ? "Copied!" : "Copy failed";
             setTimeout(() => { copyBtn.textContent = copyLabel; }, 1500);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-        } else {
-            done(false);
-        }
+        });
     });
     return el("div", { class: "json-wrap" },
         el("div", { class: "json-toolbar" }, copyBtn),
@@ -1883,6 +1982,7 @@ async function boot(): Promise<void> {
         main.appendChild(el("div", { class: "error-banner", text: "Could not reach the server: " + (e as Error).message }));
         return;
     }
+    lastMe = me;
     renderUserBox(me);
     if (me.authenticated) {
         await renderDashboard(me);
