@@ -13,27 +13,36 @@ those applies and why a tier-2 row wouldn't help.
 
 ## `GET /rate_limit`
 
+No longer left here unmodified: it is now a served route
+(`internal/api/respcache_ratelimit.go`), just not a traditional tier-2 cache
+row. The reasoning below is why a **TTL-bounded store row** would be wrong
+for it, and why the route is answered from `internal/ratemeter`'s passively
+observed `X-RateLimit-*` state instead — see that file's header comment for
+the current mechanism; this entry stays for the "why not a normal cached
+route" history.
+
 The answer changes on **every** API call the credential makes — including
 calls this mirror itself proxies on the caller's behalf, and any call the
 caller makes directly against `api.github.com` outside the mirror entirely.
 No webhook, and no signal of any kind, announces "a call against this token
 just happened" — the mirror cannot even see the direct-to-GitHub calls that
-would invalidate a cached answer. A TTL would not bound staleness here the
-way it does for a search result or a runner roster: it would serve a stale
-**budget** to a caller deciding whether it is safe to make one more request,
-which is a correctness regression, not a missing feature. Passthrough is the
-only answer that is honestly live.
-
-This is not a gap in the cache: it is a gap the mirror already fills a
-different way. `internal/ratemeter` passively observes the `X-RateLimit-*`
-headers on every request that already flows through the mirror (the
-passthrough proxy, cached-route miss fetches, reveal probes, and every
-`ghclient` call) and the dashboard's `GET /api/ratelimit` exposes that
-observed state alongside the App's own live per-installation poll
-(`internal/sync/consistency.go`). A caller wanting its own live number reads
-`GET /rate_limit`, unmodified, exactly the way it would read it straight from
-GitHub — the mirror is not the mechanism through which that answer is meant
-to travel.
+would invalidate a cached answer. A TTL-bounded row would serve a stale
+**budget**, computed as of some past fetch, to a caller deciding whether it
+is safe to make one more request right now — a correctness regression, not a
+missing feature. That is what rules out a store-backed cache with a TTL, not
+whether the route can be served at all: `internal/ratemeter` already
+passively observes the `X-RateLimit-*` headers on every request that flows
+through the mirror on this credential's behalf — the passthrough proxy,
+cached-route miss fetches, reveal probes, every `ghclient` call — for free,
+because the mirror already made that request for its own reasons, with no
+TTL and no upstream round trip of its own needed to answer from it. The
+residual gap is real and unfixable from inside the mirror: a call the caller
+makes **directly** against `api.github.com`, bypassing the mirror entirely,
+is invisible to `internal/ratemeter`, so a credential used partly through the
+mirror and partly direct sees the mirror's view lag the real one by however
+much direct traffic it sends. The dashboard's `GET /api/ratelimit` exposes
+the same observed state (alongside the App's own live per-installation poll,
+`internal/sync/consistency.go`) for operators.
 
 ## `GET /app/hook/deliveries`
 

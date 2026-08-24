@@ -7,11 +7,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +33,66 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
+
+// schemaTemplate is a blank cache DB built ONCE per test binary and copied for
+// every test that needs one. Creating one costs the 45 CREATE TABLE + 45
+// CREATE INDEX statements of schema.sql and the fsync that lands them; this
+// package opens a fresh DB per test across several hundred of them, against
+// go-toolchain's hard 30s per-binary timeout, and a CI run has already died
+// inside exactly that exec. Copying the finished file costs a fraction of it,
+// and database.Open then takes its existing-file path — same pragmas, same
+// fingerprint check, same DB.
+var schemaTemplate struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if schemaTemplate.dir != "" {
+		_ = os.RemoveAll(schemaTemplate.dir)
+	}
+	os.Exit(code)
+}
+
+// openTestDB opens a throwaway cache DB at path, seeded from schemaTemplate.
+func openTestDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	schemaTemplate.once.Do(func() {
+		schemaTemplate.dir, schemaTemplate.err = os.MkdirTemp("", "gsm-schema-template")
+		if schemaTemplate.err != nil {
+			return
+		}
+		schemaTemplate.path = filepath.Join(schemaTemplate.dir, "template.db")
+		db, err := database.Open(schemaTemplate.path)
+		if err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		// The last connection to close checkpoints the WAL back into the main
+		// file, so one file is the whole DB. Say so out loud rather than
+		// assuming it: a leftover -wal would make every copy a DB missing its
+		// most recent writes.
+		if err := db.Close(); err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		if _, err := os.Stat(schemaTemplate.path + "-wal"); !os.IsNotExist(err) {
+			schemaTemplate.err = fmt.Errorf("template DB still has a -wal after close (stat: %v)", err)
+		}
+	})
+	require.NoError(t, schemaTemplate.err)
+
+	blank, err := os.ReadFile(schemaTemplate.path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, blank, 0o600))
+
+	db, err := database.Open(path)
+	require.NoError(t, err)
+	return db
+}
 
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
@@ -104,8 +167,7 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	db, err := database.Open(dbPath)
-	require.Nil(t, err)
+	db := openTestDB(t, dbPath)
 
 	t.Cleanup(func() { db.Close() })
 

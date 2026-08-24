@@ -171,6 +171,58 @@ func TestSnapshot_Sorted(t *testing.T) {
 	assert.Equal(t, []string{"app:1/core", "app:1/graphql", "user:9/core", "user:9/search"}, got)
 }
 
+// TestObservationsFor_FiltersByIdentity: only the named identity's readings
+// come back, across every resource it has, sorted by resource -- the
+// selection GET /rate_limit is answered from (respcache_ratelimit.go).
+func TestObservationsFor_FiltersByIdentity(t *testing.T) {
+	s := New()
+	for _, in := range []struct{ id, res string }{
+		{"user:9", "search"}, {"app:1", "graphql"}, {"user:9", "core"}, {"app:1", "core"},
+	} {
+		s.Observe(in.id, "", respWith(map[string]string{
+			"X-RateLimit-Limit":     "10",
+			"X-RateLimit-Remaining": "9",
+			"X-RateLimit-Resource":  in.res,
+		}))
+	}
+
+	got := s.ObservationsFor("user:9")
+	require.Len(t, got, 2)
+	assert.Equal(t, "core", got[0].Resource, "sorted by resource")
+	assert.Equal(t, "search", got[1].Resource)
+	for _, o := range got {
+		assert.Equal(t, "user:9", o.Identity)
+	}
+
+	assert.Empty(t, s.ObservationsFor("user:absent"), "an identity never observed gets nothing, not an error")
+}
+
+// TestObservationsFor_PrunesDead: a dead entry (its window rolled over) never
+// comes back, exactly like Snapshot -- so a caller polling GET /rate_limit
+// long after its last real request sees an empty answer rather than an hour
+// stale one.
+func TestObservationsFor_PrunesDead(t *testing.T) {
+	s := New()
+	now := time.Unix(1_800_000_000, 0)
+	advance := pinned(s, now)
+	s.Observe("user:9", "", respWith(map[string]string{
+		"X-RateLimit-Limit":     "5000",
+		"X-RateLimit-Remaining": "4000",
+		"X-RateLimit-Reset":     fmt.Sprint(now.Unix() + 60),
+	}))
+	require.Len(t, s.ObservationsFor("user:9"), 1)
+
+	advance(now.Add(61 * time.Second))
+	assert.Empty(t, s.ObservationsFor("user:9"))
+}
+
+// TestObservationsFor_NilStore: a nil *Store (the nil-recorder pattern) is
+// inert on this accessor too, matching Snapshot.
+func TestObservationsFor_NilStore(t *testing.T) {
+	var s *Store
+	assert.Nil(t, s.ObservationsFor("user:9"))
+}
+
 // TestPrune_PastResetDies: an observation whose reset moment has passed is
 // dead — an active identity would have been re-observed with a fresh future
 // reset — and Snapshot never returns it; entries with future resets survive.

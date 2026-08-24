@@ -32,7 +32,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("GET", "/rate_limit?foo=bar", nil)
+	req := authedReq("GET", "/meta?foo=bar", nil)
 	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -43,7 +43,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 
 	// Upstream received the forwarded request unchanged.
 	assert.Equal(t, "GET", gotMethod)
-	assert.Equal(t, "/rate_limit", gotPath)
+	assert.Equal(t, "/meta", gotPath)
 	assert.Equal(t, "foo=bar", gotQuery)
 	assert.Equal(t, "Bearer "+testToken, gotAuth, "caller's token must be forwarded")
 
@@ -65,7 +65,7 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("GET", "/rate_limit", nil)
+	req := authedReq("GET", "/meta", nil)
 	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
