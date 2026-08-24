@@ -492,7 +492,6 @@ func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
 	}
 }
 
-
 // TestCachedRoutes_RequestLogDispositions: the dashboard's request log must
 // reflect the cached routes — a miss records `miss`, a repeat records `hit` —
 // so the hit/miss counters finally show real numbers for REST traffic.
