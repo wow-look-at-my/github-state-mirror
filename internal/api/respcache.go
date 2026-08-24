@@ -1,18 +1,21 @@
 package api
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached REST routes. The contract (see CLAUDE.md,
+// This file holds the machinery every cached REST route shares — the upstream
+// fetch, the verbatim replay, the rebuild writer — plus the index of the
+// routes themselves. Each route family lives in its own respcache_*.go. The
+// contract (see CLAUDE.md,
 // "cache contract"): the mirror ABSORBS the state contained in a GitHub
 // response into structured tables (internal/ghdata/respcache.go) and REBUILDS
 // a TRIMMED response from that state — it deliberately does NOT replay
@@ -25,9 +28,9 @@ import (
 //
 // Cached routes:
 //
-//   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404; the
-//     default JSON shape AND the raw file-body Accept share one absorbed row —
-//     see cachedContents's file header)
+//   - GET /repos/{owner}/{repo}/contents/{path...}  (respcache_contents.go;
+//     200 file/dir AND 404; the default JSON shape AND the raw file-body
+//     Accept share one absorbed row — see that file's header)
 //   - GET /repos/{owner}/{repo}/git/commits/{sha}   (respcache_gitcommits.go;
 //     200 immutable + expiring 404 miss markers)
 //   - POST /app/installations/{id}/access_tokens    (201; App-JWT verified)

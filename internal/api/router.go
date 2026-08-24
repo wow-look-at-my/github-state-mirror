@@ -354,9 +354,9 @@ func NewRouter(
 		// docs/cache/uncacheable-routes.md.
 		r.Get("/search/issues", h.cachedSearchIssues)
 
-		// Cached REST routes (respcache.go): repo contents (200 file/dir AND
-		// the 404 "config absent" answer; push/repository webhooks invalidate)
-		// and immutable git commits (also absorbed from push payloads).
+		// Repo contents (respcache_contents.go): 200 file/dir AND the 404
+		// "config absent" answer; push/repository webhooks invalidate. Then
+		// immutable git commits (also absorbed from push payloads).
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 

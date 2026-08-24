@@ -64,6 +64,12 @@ func (h *handlers) cachedRateLimit(w http.ResponseWriter, r *http.Request) {
 			Limit: o.Limit, Remaining: o.Remaining, Used: o.Used, Reset: o.Reset,
 		}
 	}
+	// GitHub sends core twice: once in resources, once as the deprecated
+	// top-level `rate`. Send both, so pointing an existing caller at the mirror
+	// cannot quietly empty a field it reads.
+	if core, ok := resp.Resources["core"]; ok {
+		resp.Rate = &core
+	}
 
 	body, err := marshalTrimmed(resp)
 	if err != nil {
