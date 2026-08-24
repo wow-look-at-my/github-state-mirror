@@ -210,6 +210,38 @@ func (s *Store) Snapshot() []Observation {
 	return out
 }
 
+// ObservationsFor returns the live observations for ONE identity, across
+// every resource GitHub reports for it (core, search, graphql, ...), sorted
+// by resource. Dead entries are pruned first, exactly as Snapshot does.
+// Empty when the identity has made no request the meter has observed yet, or
+// its last reading's window has since rolled over -- never a stale answer,
+// since dead() is the same window-aware rule Snapshot relies on rather than a
+// flat serve TTL (a flat TTL would blank out a caller's perfectly-valid
+// standing just because they happened not to poll again within it).
+//
+// This is what GET /rate_limit is answered from (respcache_ratelimit.go): the
+// mirror already learns a credential's standing for free off every response
+// it makes on that credential's behalf, so a caller asking for it needs no
+// upstream call of its own.
+func (s *Store) ObservationsFor(identity string) []Observation {
+	if s == nil {
+		return nil
+	}
+	now := s.now()
+	s.mu.Lock()
+	s.pruneLocked(now)
+	var out []Observation
+	for k, o := range s.obs {
+		if k.identity == identity {
+			out = append(out, o)
+		}
+	}
+	s.mu.Unlock()
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Resource < out[j].Resource })
+	return out
+}
+
 // atoi parses a non-negative header value, reporting whether it was present
 // and numeric.
 func atoi(s string) (int, bool) {

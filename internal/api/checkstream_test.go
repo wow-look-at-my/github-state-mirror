@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
@@ -84,8 +83,7 @@ func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	db, err := database.Open(dbPath)
-	require.NoError(t, err)
+	db := openTestDB(t, dbPath)
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
