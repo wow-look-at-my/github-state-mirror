@@ -329,6 +329,13 @@ func NewRouter(
 		r.Get("/user", h.cachedUser)
 		r.Get("/user/orgs", h.cachedUserOrgs)
 
+		// Rate-limit standing (respcache_ratelimit.go): answered entirely from
+		// the passively observed X-RateLimit-* headers (ratemeter.Store) --
+		// NEVER an upstream call, so this is the one "cached" route with no
+		// miss at all. Kept for backward compatibility with callers still
+		// polling GET /rate_limit directly.
+		r.Get("/rate_limit", h.cachedRateLimit)
+
 		// Cached org self-hosted-runners listing (respcache_orgrunners.go):
 		// admin-scoped, keyed by the bearer's fingerprint, cached VERBATIM
 		// (see respcache_identity.go's file header). Short TTL: no webhook

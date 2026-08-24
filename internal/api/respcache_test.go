@@ -363,15 +363,117 @@ func TestRespCache_PruneCap(t *testing.T) {
 	assert.Greater(t, count, 0)
 }
 
-// TestRespCache_NonDefaultAcceptPassthrough: media types that change the
-// response shape (raw contents) are not modeled — the route must forward them
-// verbatim, uncached, so a raw-accepting caller never gets a JSON rebuild.
-func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
+// TestRespCache_RawAcceptServedFromCache: the raw file-body representation
+// (Accept: application/vnd.github.raw — what simple-llm-ui's file-read tool
+// sends) is modeled from the SAME row the default JSON representation is,
+// decoded server-side from the absorbed base64 `content`. A miss on EITHER
+// Accept variant satisfies both: this proves the shapes share one cache
+// entry rather than needing two independent fetches.
+func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
-	raw := []byte("plain raw bytes, not json")
+	target := "/repos/org1/repo1/contents/.github/cfg.jsonc"
+	rawReq := func() *http.Request {
+		req := authedReq("GET", target, nil)
+		req.Header.Set("Accept", "application/vnd.github.raw")
+		return req
+	}
+
+	// Miss: the JSON probe absorbs the fixture's base64 "aGVsbG8=\n", and the
+	// raw-Accept caller is served the DECODED bytes, not the JSON wrapper.
+	w1 := do(t, router, rawReq())
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "hello\n", w1.Body.String(), "raw Accept serves the decoded file bytes")
+	assert.Equal(t, "text/plain; charset=utf-8", w1.Header().Get("Content-Type"))
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the miss probed upstream exactly once")
+
+	// Hit: a second identical raw-Accept request costs no upstream call.
+	w2 := do(t, router, rawReq())
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hello\n", w2.Body.String())
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "a raw-Accept hit must not call upstream")
+
+	// The DEFAULT-Accept representation of the SAME path is ALSO a hit off
+	// the row the raw-Accept miss just populated -- one absorb, both shapes.
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w3.Code)
+	assert.Equal(t, "hit", w3.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the default-Accept shape shares the raw miss's row")
+	var file map[string]interface{}
+	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &file))
+	assert.Equal(t, "aGVsbG8=\n", file["content"], "the JSON shape still serves the base64 GitHub sent")
+}
+
+// TestRespCache_RawAcceptMissProbesDefaultJSON verifies the upstream call a
+// raw-Accept MISS makes carries the DEFAULT JSON Accept, not the caller's raw
+// one -- go-github, PyGithub and octokit.js all resolve file-vs-directory the
+// same way, since GitHub's behavior for raw Accept against a directory is
+// undocumented (see cachedContents's file header).
+func TestRespCache_RawAcceptMissProbesDefaultJSON(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	var gotAccept string
+	u.contents = func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		writeGitHubJSON(w, map[string]any{
+			"type": "file", "encoding": "base64", "size": 5,
+			"name": "f", "path": "f", "content": "aGVsbG8=\n", "sha": "s",
+		})
+	}
+	req := authedReq("GET", "/repos/org1/repo1/contents/f", nil)
+	req.Header.Set("Accept", "application/vnd.github.raw")
+	w := do(t, router, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/vnd.github+json", gotAccept, "the probe fetch asks for the default JSON shape")
+	assert.Equal(t, "hello\n", w.Body.String())
+}
+
+// TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough: a file too large
+// for the base64 JSON form (GitHub answers such a probe with encoding:"none"
+// and no content past ~1 MiB — docs.github.com/en/rest/repos/contents) cannot
+// be served from this cache at all. A raw-Accept caller still gets a correct
+// answer: a second, genuine passthrough carrying its OWN raw Accept header,
+// never the unusable JSON probe body.
+func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	rawBytes := []byte("the real raw bytes, straight from GitHub")
+	var jsonProbeHits, rawFallbackHits int32
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") == "application/vnd.github.raw" {
-			w.Header().Set("Content-Type", "application/vnd.github.raw")
+			atomic.AddInt32(&rawFallbackHits, 1)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write(rawBytes)
+			return
+		}
+		atomic.AddInt32(&jsonProbeHits, 1)
+		writeGitHubJSON(w, map[string]any{
+			"type": "file", "encoding": "none", "size": 5 << 20,
+			"name": "big.bin", "path": "big.bin", "sha": "s",
+		})
+	}
+	req := authedReq("GET", "/repos/org1/repo1/contents/big.bin", nil)
+	req.Header.Set("Accept", "application/vnd.github.raw")
+	w := do(t, router, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, string(rawBytes), w.Body.String(), "the caller's own raw Accept is answered directly")
+	assert.Empty(t, w.Header().Get(cacheHeader), "never marked as cached")
+	assert.Equal(t, int32(1), jsonProbeHits, "the JSON probe was tried once")
+	assert.Equal(t, int32(1), rawFallbackHits, "and, failing to absorb, fell back to one real raw call")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "both calls reached upstream")
+}
+
+// TestRespCache_NonDefaultAcceptPassthrough: media types that change the
+// response shape in ways this package does not model at all (html/object,
+// or an ambiguous mixed Accept) are not modeled — the route must forward
+// them verbatim, uncached. Raw (application/vnd.github.raw) is NOT one of
+// these anymore -- see TestRespCache_RawAcceptServedFromCache.
+func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	raw := []byte("plain html bytes, not json")
+	u.contents = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/vnd.github.html" {
+			w.Header().Set("Content-Type", "application/vnd.github.html")
 			_, _ = w.Write(raw)
 			return
 		}
@@ -381,14 +483,15 @@ func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
 
 	for i := 1; i <= 2; i++ {
 		req := authedReq("GET", "/repos/org1/repo1/contents/f", nil)
-		req.Header.Set("Accept", "application/vnd.github.raw")
+		req.Header.Set("Accept", "application/vnd.github.html")
 		w := do(t, router, req)
 		require.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, string(raw), w.Body.String(), "raw representation must pass through untouched")
+		assert.Equal(t, string(raw), w.Body.String(), "an unmodeled media type must pass through untouched")
 		assert.Empty(t, w.Header().Get(cacheHeader))
-		assert.Equal(t, int32(i), atomic.LoadInt32(&u.contentsHits), "non-default Accept is never cached")
+		assert.Equal(t, int32(i), atomic.LoadInt32(&u.contentsHits), "non-default, non-raw Accept is never cached")
 	}
 }
+
 
 // TestCachedRoutes_RequestLogDispositions: the dashboard's request log must
 // reflect the cached routes — a miss records `miss`, a repeat records `hit` —

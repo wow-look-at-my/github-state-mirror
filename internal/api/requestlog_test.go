@@ -165,7 +165,7 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code)
 	}
 	// Uncached path -> passthrough (the test upstream answers any path 200).
-	passReq := authedReq("GET", "/rate_limit", nil)
+	passReq := authedReq("GET", "/repos/o/r/releases", nil)
 	pw := httptest.NewRecorder()
 	router.ServeHTTP(pw, passReq)
 	require.Equal(t, http.StatusOK, pw.Code)
@@ -180,12 +180,12 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &snap))
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispMiss], int64(1), "first org query should be a cache miss")
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispHit], int64(1), "second org query should be a cache hit")
-	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/rate_limit should be a passthrough")
+	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/repos/o/r/releases should be a passthrough")
 	assert.GreaterOrEqual(t, len(snap.Recent), 3)
 
 	// The same traffic is aggregated into route-shape groups, sorted by total
 	// desc and capped: both /graphql calls share one group (1 miss + 1 hit),
-	// and /rate_limit groups on its own.
+	// and the releases path groups on its own.
 	require.NotEmpty(t, snap.Groups)
 	assert.LessOrEqual(t, len(snap.Groups), requestGroupsSnapshotCap)
 	byKey := map[string]requestGroupSnapshot{}
@@ -200,8 +200,8 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.GreaterOrEqual(t, gq.Hit, int64(1))
 	assert.GreaterOrEqual(t, gq.Miss, int64(1))
 	assert.Equal(t, "/graphql", gq.Sample)
-	rl, ok := byKey["GET /rate_limit"]
-	require.True(t, ok, "the rate_limit group exists")
+	rl, ok := byKey["GET /repos/{owner}/{repo}/releases"]
+	require.True(t, ok, "the releases group exists")
 	assert.GreaterOrEqual(t, rl.Passthrough, int64(1))
 
 	// The stack's real SQLite file is statted end to end: NewRouter threads the

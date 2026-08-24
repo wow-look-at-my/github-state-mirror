@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,7 +29,9 @@ import (
 //
 // Cached routes:
 //
-//   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404)
+//   - GET /repos/{owner}/{repo}/contents/{path...}  (200 file/dir AND 404; the
+//     default JSON shape AND the raw file-body Accept share one absorbed row —
+//     see cachedContents's file header)
 //   - GET /repos/{owner}/{repo}/git/commits/{sha}   (respcache_gitcommits.go;
 //     200 immutable + expiring 404 miss markers)
 //   - POST /app/installations/{id}/access_tokens    (201; App-JWT verified)
@@ -92,14 +95,37 @@ const (
 // `ref` query value matters (`contents?ref=...` differs per ref). Both 200
 // (file or directory) and 404 ("config file absent" — half the win for
 // pr-minder's per-repo config probe) are absorbed.
+//
+// TWO Accept shapes are modeled from the SAME absorbed row: the default JSON
+// representation (base64 `content` field) and the raw file-body
+// representation (Accept: application/vnd.github.raw, what simple-llm-ui's
+// file-read tool sends — docs/tools/filesystem-tools.md in that repo). They
+// are the same underlying bytes, so there is no second cache dimension: a
+// raw-Accept request is served by base64-DECODING the already-absorbed
+// `content` (serveContentsRaw) rather than caching a second copy, and a miss
+// is always fetched with the DEFAULT JSON Accept regardless of which shape
+// the caller asked for — mirroring go-github, PyGithub and octokit.js, which
+// all resolve file-vs-directory via the default JSON shape first and never
+// send the raw media type against a path that might be a directory (GitHub's
+// behavior there is undocumented). The one place this can't be made to work
+// -- a file too large for the base64 JSON form (>1 MiB; GitHub answers
+// encoding:"none" past that, only raw/object media types carry the bytes,
+// per docs.github.com/en/rest/repos/contents) -- falls back to a second,
+// uncached fetchUpstream call with the caller's own raw Accept header,
+// replayed verbatim (replayUnstored) rather than routed through the
+// passthrough proxy's debouncer, which exists to price shapes this mirror
+// could still learn to model, not ones that are structurally unabsorbable.
 func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 	path := chi.URLParam(r, "*")
 
-	// Only the plain JSON representation is absorbed. Other Accept media types
-	// (raw/html/object) change the response shape entirely — passthrough.
-	if !acceptsDefaultJSON(r) {
+	// Only the default JSON representation and the raw file-body
+	// representation are absorbed (see the file-header comment above). Any
+	// other Accept media type (html/object, or an ambiguous mix) changes the
+	// response shape entirely — passthrough.
+	rawAccept := acceptsRawContents(r)
+	if !acceptsDefaultJSON(r) && !rawAccept {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
@@ -125,14 +151,23 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedContents(r.Context(), owner, repo, path, ref, now); err == nil && ok {
-		h.serveContents(w, r, c, true)
+		h.serveContentsHit(w, r, c, rawAccept)
 		return
 	} else if err != nil {
 		slog.Warn("contents cache read failed", "owner", owner, "repo", repo, "path", path, "error", err)
 	}
 
-	// Miss: fetch from GitHub with the caller's own credentials.
-	resp, body, overflow, err := h.fetchUpstream(r, nil)
+	// Miss: fetch from GitHub with the caller's own credentials. A raw-Accept
+	// request is still probed with the DEFAULT JSON Accept (see the file
+	// header) — only the caller's Authorization and other headers ride along
+	// unchanged.
+	probeReq := r
+	if rawAccept {
+		probeReq = r.Clone(r.Context())
+		probeReq.Header = r.Header.Clone()
+		probeReq.Header.Set("Accept", "application/vnd.github+json")
+	}
+	resp, body, overflow, err := h.fetchUpstream(probeReq, nil)
 	if err != nil {
 		h.upstreamError(w, r, err)
 		return
@@ -141,6 +176,26 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 
 	c, absorbed := absorbContents(owner, repo, path, ref, resp.StatusCode, body)
 	if overflow || !absorbed {
+		if rawAccept {
+			// The JSON probe couldn't carry this response — most likely a
+			// file over the ~1 MiB base64 threshold, which GitHub answers
+			// with encoding:"none" and no content past that size (only
+			// raw/object media types work there). Fetch again with the
+			// caller's OWN raw Accept header (r, unmodified) and replay it
+			// verbatim via fetchUpstream/replayUnstored directly — NOT
+			// h.passthrough, which would route this second call through the
+			// passthrough proxy's debouncer: that hold exists to price
+			// shapes this mirror could still learn to model, not ones that
+			// are structurally unabsorbable regardless of Accept.
+			rawResp, rawBody, _, rawErr := h.fetchUpstream(r, nil)
+			if rawErr != nil {
+				h.upstreamError(w, r, rawErr)
+				return
+			}
+			defer rawResp.Body.Close()
+			h.replayUnstored(w, r, rawResp, rawBody)
+			return
+		}
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -152,7 +207,99 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	// either way; the reveal layer already vouched for this read.)
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
+	if rawAccept && c.Kind == ghdata.ContentsKindFile {
+		h.serveContentsRaw(w, r, c, false)
+		return
+	}
 	h.serveContents(w, r, c, false)
+}
+
+// serveContentsHit renders a cache HIT for whichever Accept shape the caller
+// asked for. A stored row always has everything either shape needs: a `file`
+// row is only ever created by absorbContents's JSON branch (it requires
+// encoding:"base64"), so its `content` is always populated and decodable for
+// a raw-Accept caller too — there is no partial-row case to fall back from.
+func (h *handlers) serveContentsHit(w http.ResponseWriter, r *http.Request, c ghdata.CachedContents, rawAccept bool) {
+	if rawAccept && c.Kind == ghdata.ContentsKindFile {
+		h.serveContentsRaw(w, r, c, true)
+		return
+	}
+	h.serveContents(w, r, c, true)
+}
+
+// serveContentsRaw decodes a cached FILE row's base64 `content` and serves it
+// as GitHub's raw media type would: the exact file bytes, not the JSON
+// wrapper. Reusing the SAME stored base64 the default-Accept representation
+// renders from means one absorb feeds both Accept shapes (see the file
+// header), and since base64 round-trips arbitrary bytes exactly, this is
+// correct for binary content too, up to the size the base64 JSON form
+// carries at all (past it, cachedContents falls back to a genuine
+// passthrough instead of trying to serve from this cache).
+//
+// Content-Type is fixed at "text/plain; charset=utf-8" rather than replaying
+// whatever a live GitHub raw response would carry (GitHub does not document
+// this, and it is only weakly evidenced in the wild as approximately this
+// value) — every known consumer of this shape (simple-llm-ui's file-read
+// tool, agentic-loop's repo client) detects binary content by inspecting the
+// BODY (UTF-8 validity / NUL bytes), never Content-Type, and MUST NOT see a
+// "json"-containing Content-Type here: agentic-loop's IsDirectoryListing
+// treats any body starting with '[' under a json Content-Type as a directory
+// listing, which would misidentify a text file whose content happens to
+// start with '[' (e.g. reading a JSON array file as raw text).
+func (h *handlers) serveContentsRaw(w http.ResponseWriter, r *http.Request, c ghdata.CachedContents, hit bool) {
+	// c.Content is base64 EXACTLY as GitHub sent it, including the embedded
+	// line breaks GitHub's own MIME-style wrapping inserts (documented on
+	// ghdata.CachedContents.Content) -- even a one-line "aGVsbG8=\n" carries
+	// a trailing one. encoding/base64 does not accept those as part of the
+	// alphabet, so they are stripped before decoding rather than assumed
+	// away; every other consumer of this field only ever REPLAYS it as text
+	// and never had to care.
+	clean := strings.NewReplacer("\r", "", "\n", "").Replace(c.Content)
+	raw, err := base64.StdEncoding.DecodeString(clean)
+	if err != nil {
+		slog.Warn("contents raw decode failed", "owner", c.Owner, "repo", c.Repo, "path", c.Path, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if hit {
+		h.reqlog.observe(r, DispHit)
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if hit {
+		w.Header().Set(cacheHeader, "hit")
+	} else {
+		w.Header().Set(cacheHeader, "miss")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+// acceptsRawContents reports whether the request asks for GitHub's raw
+// file-body media type — the shape simple-llm-ui's file-read tool sends
+// (Accept: application/vnd.github.raw; the +json and legacy v3 spellings are
+// accepted too, the acceptsDefaultJSON precedent). Every listed media range
+// must be a raw one, same rule as acceptsDefaultJSON; an EMPTY Accept is
+// deliberately NOT raw here (acceptsDefaultJSON already claims that case, and
+// the two must remain mutually exclusive so cachedContents's top-level gate
+// never double-counts a request).
+func acceptsRawContents(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	if strings.TrimSpace(accept) == "" {
+		return false
+	}
+	for _, part := range strings.Split(accept, ",") {
+		mediaType := strings.TrimSpace(strings.ToLower(part))
+		if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+			mediaType = strings.TrimSpace(mediaType[:i])
+		}
+		switch mediaType {
+		case "application/vnd.github.raw", "application/vnd.github.raw+json", "application/vnd.github.v3.raw":
+			// raw file-body representation
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // serveContents rebuilds and writes the trimmed contents response.
