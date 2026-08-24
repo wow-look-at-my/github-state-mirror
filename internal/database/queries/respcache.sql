@@ -922,3 +922,222 @@ DELETE FROM hooks_cache WHERE expires_at <= ?;
 DELETE FROM hooks_cache WHERE id IN (
     SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- git_trees_cache (GET /repos/{owner}/{repo}/git/trees/{sha}) ----
+
+-- name: GetGitTreeCache :one
+SELECT * FROM git_trees_cache
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?;
+
+-- name: UpsertGitTreeCache :exec
+INSERT INTO git_trees_cache (owner, repo, sha, recursive, doc, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha, recursive) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitTreeCache :exec
+UPDATE git_trees_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?;
+
+-- name: PruneGitTreesCacheLRU :exec
+DELETE FROM git_trees_cache WHERE id IN (
+    SELECT id FROM git_trees_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- check_run_cache (GET /repos/{owner}/{repo}/check-runs/{check_run_id}) ----
+
+-- name: GetCheckRunCache :one
+SELECT * FROM check_run_cache
+WHERE owner = ? AND repo = ? AND check_run_id = ?;
+
+-- name: UpsertCheckRunCache :exec
+INSERT INTO check_run_cache (owner, repo, check_run_id, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, check_run_id) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCheckRunCache :exec
+UPDATE check_run_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND check_run_id = ?;
+
+-- name: DeleteCheckRunCacheByRepo :exec
+DELETE FROM check_run_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCheckRunCache :exec
+DELETE FROM check_run_cache WHERE expires_at <= ?;
+
+-- name: PruneCheckRunCacheLRU :exec
+DELETE FROM check_run_cache WHERE id IN (
+    SELECT id FROM check_run_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- matching_refs_cache (GET /repos/{owner}/{repo}/git/matching-refs/heads/*) ----
+
+-- name: GetMatchingRefsCache :one
+SELECT * FROM matching_refs_cache
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertMatchingRefsCache :exec
+INSERT INTO matching_refs_cache (owner, repo, prefix, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, prefix, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchMatchingRefsCache :exec
+UPDATE matching_refs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteMatchingRefsCacheByRepo :exec
+DELETE FROM matching_refs_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredMatchingRefsCache :exec
+DELETE FROM matching_refs_cache WHERE expires_at <= ?;
+
+-- name: PruneMatchingRefsCacheLRU :exec
+DELETE FROM matching_refs_cache WHERE id IN (
+    SELECT id FROM matching_refs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- identity_cache (GET /app, GET /user, GET /user/orgs) ----
+
+-- name: GetIdentityCache :one
+SELECT * FROM identity_cache
+WHERE subject_key = ? AND kind = ?;
+
+-- name: UpsertIdentityCache :exec
+INSERT INTO identity_cache (subject_key, kind, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (subject_key, kind) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchIdentityCache :exec
+UPDATE identity_cache SET last_used_at = ?
+WHERE subject_key = ? AND kind = ?;
+
+-- name: DeleteExpiredIdentityCache :exec
+DELETE FROM identity_cache WHERE expires_at <= ?;
+
+-- name: PruneIdentityCacheLRU :exec
+DELETE FROM identity_cache WHERE id IN (
+    SELECT id FROM identity_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- org_runners_cache (GET /orgs/{org}/actions/runners) ----
+
+-- name: GetOrgRunnersCache :one
+SELECT * FROM org_runners_cache
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertOrgRunnersCache :exec
+INSERT INTO org_runners_cache (token_fp, org, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, org, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchOrgRunnersCache :exec
+UPDATE org_runners_cache SET last_used_at = ?
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteExpiredOrgRunnersCache :exec
+DELETE FROM org_runners_cache WHERE expires_at <= ?;
+
+-- name: PruneOrgRunnersCacheLRU :exec
+DELETE FROM org_runners_cache WHERE id IN (
+    SELECT id FROM org_runners_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- app_installations_cache (GET /app/installations) ----
+
+-- name: GetAppInstallationsCache :one
+SELECT * FROM app_installations_cache
+WHERE app_key = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertAppInstallationsCache :exec
+INSERT INTO app_installations_cache (app_key, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (app_key, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchAppInstallationsCache :exec
+UPDATE app_installations_cache SET last_used_at = ?
+WHERE app_key = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteAppInstallationsCacheForApp :exec
+DELETE FROM app_installations_cache WHERE app_key = ?;
+
+-- name: DeleteExpiredAppInstallationsCache :exec
+DELETE FROM app_installations_cache WHERE expires_at <= ?;
+
+-- name: PruneAppInstallationsCacheLRU :exec
+DELETE FROM app_installations_cache WHERE id IN (
+    SELECT id FROM app_installations_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- search_issues_cache (GET /search/issues) ----
+
+-- name: GetSearchIssuesCache :one
+SELECT * FROM search_issues_cache WHERE token_fp = ? AND query_key = ?;
+
+-- name: UpsertSearchIssuesCache :exec
+INSERT INTO search_issues_cache (token_fp, query_key, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, query_key) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchSearchIssuesCache :exec
+UPDATE search_issues_cache SET last_used_at = ? WHERE token_fp = ? AND query_key = ?;
+
+-- name: DeleteExpiredSearchIssuesCache :exec
+DELETE FROM search_issues_cache WHERE expires_at <= ?;
+
+-- name: PruneSearchIssuesCacheLRU :exec
+DELETE FROM search_issues_cache WHERE id IN (
+    SELECT id FROM search_issues_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- user_repos_cache (GET /user/repos) ----
+
+-- name: GetUserReposCache :one
+SELECT * FROM user_repos_cache
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertUserReposCache :exec
+INSERT INTO user_repos_cache (token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, sort, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchUserReposCache :exec
+UPDATE user_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteExpiredUserReposCache :exec
+DELETE FROM user_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneUserReposCacheLRU :exec
+DELETE FROM user_repos_cache WHERE id IN (
+    SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
