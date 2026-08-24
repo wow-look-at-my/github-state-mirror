@@ -424,9 +424,9 @@ go-toolchain
 ```
 
 Binary is output to `build/server` (a GOOS=cosmo fat APE covering
-linux/amd64, darwin/arm64, and windows/amd64). gosmopolitan aliases GOOS=cosmo
-to `linux` for build-tag purposes, so third-party modules with no dedicated
-cosmo port build unmodified; there is no per-repo patching step.
+linux/amd64, darwin/arm64, and windows/amd64). The gosmopolitan fork aliases
+GOOS=cosmo to `linux` for build-tag matching, so third-party modules with no
+dedicated cosmo port build unmodified; there is no per-repo step.
 
 Start it through a shell (`sh build/server`): the kernel cannot exec
 an APE directly. The shell runs the boot script, which stages a runnable copy
