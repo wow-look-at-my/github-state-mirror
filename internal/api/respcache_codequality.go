@@ -11,27 +11,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached Code Quality setup read (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/code-quality/setup
-//
-// GitHub Code Quality's per-repo enablement configuration -- a large uncached
-// slice of the request log, a fleet sweep asking "is this repo enrolled" per
-// repo. Modeled from GitHub's OpenAPI description (schema `code-quality-setup`,
-// public preview): the answer is a small fixed record with NO url fields at
-// all, and the endpoint takes no query parameters, so the repo is the whole
-// key.
-//
-// STALENESS, stated plainly: this is CONFIG, and GitHub emits no webhook when
-// it changes. The mirror sees exactly one change signal -- a PATCH to this
-// same path that it proxies, which flushes the row before forwarding -- plus
-// `repository` events. A change made in the UI or by a client that does not go
-// through the mirror is invisible until the TTL, which is why the TTL here is
-// an hour rather than the usual 24. Both consumers of this answer re-poll on a
-// sweep, so a stale enrolment verdict costs one cycle.
+// GET /repos/{owner}/{repo}/code-quality/setup, tier 2 of the cache contract.
 
-// codeQualitySetupTTL is the PRIMARY bound on this row, not a backstop: see
-// the staleness note above.
+// The primary bound, not a backstop: see docs/cache/rest-routes.md
 const codeQualitySetupTTL = time.Hour
 
 // cachedCodeQualitySetup serves a repo's Code Quality configuration.
@@ -76,10 +58,7 @@ func (h *handlers) cachedCodeQualitySetup(w http.ResponseWriter, r *http.Request
 
 	doc, absorbed := absorbCodeQualitySetup(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 403 (feature not available to this caller), 404, 503, and any shape
-		// the model cannot hold: relayed verbatim, never stored. A 404 is
-		// deliberately NOT a cached verdict here -- unlike a missing git ref,
-		// nothing observable tells us when the feature becomes available.
+		// Non-200s relay unstored; see docs/cache/rest-routes.md.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -91,15 +70,8 @@ func (h *handlers) cachedCodeQualitySetup(w http.ResponseWriter, r *http.Request
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// patchCodeQualitySetup forwards the configuration WRITE (recorded as a write,
-// like every proxied mutation) after dropping the cached row. It exists only
-// for that flush: without it a caller could PATCH through the mirror and keep
-// reading its own stale answer for the full TTL.
-//
-// The flush runs BEFORE forwarding, deliberately. Flushing after would need
-// the response's outcome, and a failed PATCH that dropped the row costs one
-// miss -- while a successful PATCH whose flush was skipped serves a wrong
-// answer for an hour. Cheap in the wrong direction is the right direction.
+// Flushes before forwarding so the caller can't read back its own stale
+// config. see docs/cache/rest-routes.md
 func (h *handlers) patchCodeQualitySetup(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
 	if err := h.store.InvalidateCodeQualitySetup(r.Context(), owner, repo); err != nil {

@@ -16,23 +16,8 @@ import (
 // the last resort). docs/webhooks/invalidations.md is the inventory, with the
 // verdict for every flush that remains.
 
-// settleCommitCI lands a CI delivery on the cached commit-CI documents, at the
-// grain the delivery can actually move.
-//
-// The two surfaces are DISJOINT upstream: a commit status never appears in a
-// check-runs listing, and a check run never appears in a commit's statuses
-// (measured -- a repo whose Actions produce six check runs answers its
-// combined status with the one posted status and nothing else). Flushing all
-// three kinds on every CI delivery therefore threw away answers the delivery
-// could not have changed, on the routes the fleet polls hardest.
-//
-// Both delivery kinds then go further than flushing their own kinds, because
-// both CARRY the thing their documents hold: a `status` rewrites the two
-// status-shaped documents (SettleCommitCIFromStatus) and a `check_run`
-// rewrites the check-runs listing (ApplyCheckRunToCommitCI), each dropping
-// only what it cannot prove. A `check_suite` carries no runs and keeps the
-// flush. docs/webhooks/invalidations.md has the ordering measurements both
-// rewrites rest on.
+// settleCommitCI lands a CI delivery on the cached commit-CI documents, at the grain the delivery can move.
+// see docs/webhooks/invalidations.md ("The status rewrite", "The check-run rewrite")
 func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, repo string, event webhook.Event, refs []string) {
 	if event.Type == "check_run" {
 		// A check run is UPDATED in place upstream -- the same id moves
@@ -42,8 +27,6 @@ func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, re
 			if run, ok := ghdata.TrimCheckRunJSON(raw); ok {
 				// The single-check-run row (respcache_checkrun.go) is keyed by
 				// this run's own id, so the delivery is ALWAYS directly
-				// appliable -- unlike the list page below, there is no
-				// "does the stored answer still describe this run" question.
 				if err := d.store.ApplyCheckRunByID(ctx, owner, repo, run, time.Now(), ghdata.CheckRunCacheTTL); err != nil {
 					flush("check run by-id apply", scope, err)
 				}
@@ -80,18 +63,8 @@ func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, re
 	}, time.Now(), ghdata.CommitCICacheTTL))
 }
 
-// applyMergedPRBaseTip lands a merged PR's statement about its BASE branch:
-// the merge put `merge_commit_sha` on that branch, so the cached ref rows for
-// it are updated from the payload rather than dropped (the apply-the-payload
-// rule) -- in every spelling, since rows key the verbatim requested one.
-//
-// The push for that same merge says the same thing, and this is deliberately
-// the SECOND way to hear it. A delivery that never arrives is this mirror's
-// quietest failure and GitHub does not re-send one; a branch tip is the answer
-// where that hurts most, because a consumer reading the pre-merge tip
-// concludes there is nothing to do and never asks again. Two independent
-// deliveries have to be lost now, not one. Ordering safety and the merged-only
-// rule live in the store method and the parser.
+// applyMergedPRBaseTip writes a merged PR's merge_commit_sha onto its base branch's cached ref rows,
+// deliberately the SECOND way to hear a merge tip (the base push is the first). see docs/cache/stale-tip-repair.md
 func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, owner, repo string, event webhook.Event) {
 	tip, ok := webhook.ParseMergedPRBaseTip(event.Raw)
 	if !ok {
@@ -111,16 +84,8 @@ func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, own
 	}
 }
 
-// settleWorkflowJobs lands a `workflow_job` delivery on the run's cached job
-// answers. The delivery carries the whole job object -- labels, runner, every
-// step -- which is what those answers hold, so the job's entry is rewritten
-// inside each of them and the run is flushed only where it cannot be.
-//
-// That is what makes a RUNNING run cacheable at all: a fetch settles which
-// jobs belong to the run, and these deliveries keep their contents current.
-// The flush stays for what a delivery cannot answer -- a job the stored page
-// does not list (the run's membership moved), a different run_attempt, and a
-// payload the model cannot hold.
+// settleWorkflowJobs rewrites the run's cached job entry from the delivery, flushing only what it cannot answer.
+// see docs/webhooks/invalidations.md ("Live job state")
 func (d *WebhookDispatcher) settleWorkflowJobs(ctx context.Context, scope, owner, repo string, event webhook.Event, runID int64) {
 	if runID > 0 {
 		if raw, ok := webhook.WorkflowJobObject(event.Raw); ok {
@@ -157,15 +122,8 @@ func (d *WebhookDispatcher) settleWorkflowRuns(ctx context.Context, scope, owner
 	d.flushWorkflowRunsForSHA(ctx, scope, owner, repo, headSHA)
 }
 
-// applyOrFlushBranchesList settles a push's effect on the cached branches
-// pages. A page lists one entry per branch, and a tip-move changes only that
-// entry's sha -- which the push STATES in `after` -- so the pages are
-// rewritten in place rather than dropped (CLAUDE.md's apply-the-payload rule);
-// dropping them re-lists every branch of the repo on the next reader, which
-// for pr-minder's per-repo fork-point detection is the whole listing back over
-// HTTP for a sha we were handed. Only what the pages cannot be edited into
-// falls back to the flush: a create or a delete, which move page MEMBERSHIP,
-// and a payload naming no ref.
+// applyOrFlushBranchesList rewrites a tip-moved branch's entry in place from the push's `after`; only a
+// create/delete (page membership) or a payload naming no ref falls back to the flush.
 func (d *WebhookDispatcher) applyOrFlushBranchesList(ctx context.Context, scope, owner, repo, refName, after string, isTag bool) {
 	// A tag is not a branch: it never appears in the listing, so a tag push
 	// leaves the pages correct and there is nothing to do either way.

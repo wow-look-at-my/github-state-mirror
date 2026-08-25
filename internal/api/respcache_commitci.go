@@ -15,58 +15,14 @@ import (
 )
 
 // This file implements the cached commit-CI routes (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/commits/{ref}/status      (combined commit status)
-//	GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (check runs for a ref)
-//	GET /repos/{owner}/{repo}/commits/{ref}/statuses    (raw statuses LIST)
-//	GET /repos/{owner}/{repo}/statuses/{ref}            (its legacy alias)
-//
-// Fleet-wide CI watchers poll these endpoints per repo/branch/sha -- hundreds
-// of passthroughs per sweep in the request log -- and between CI events the
-// answers are stable. The required-builds hook paginates check-runs AND the
-// raw statuses list at per_page=100&page=N until a short page (consumer
-// survey 2026-07-11), so pagination is part of the cache key: per_page/page
-// are parsed like the PR-files route and a param-less request stores under
-// GitHub's defaults. The ref is treated as an OPAQUE key: a branch name
-// (slashes and all), a sha, or a tag is cached verbatim, never resolved, so
-// each spelling is its own snapshot. The /commits/* subtree's OTHER tails
-// (the single-commit read /commits/{sha}, /check-suites, /pulls, /comments,
-// ...) are not modeled and are forwarded to the passthrough proxy unchanged.
-//
-// The raw statuses list has TWO path spellings for one resource: the legacy
-// /repos/{owner}/{repo}/statuses/{ref} alias (what required-builds actually
-// sends) and the modern /commits/{ref}/statuses form. GitHub answers both
-// identically, so both registrations land in ONE handler and ONE row space
-// (kind = statuses_list, ref verbatim) -- a read through either spelling
-// warms the other.
-//
-// These routes deliberately do NOT read or write the commit_checks truth
-// table: its normalized per-context rows are lossy against these responses
-// (no timestamps, no descriptions, no run ids). Unifying the two is possible
-// future work; the whole trimmed document is snapshotted per exact request.
-//
-// Invalidation is the load-bearing part: status/check_run/check_suite events
-// flush the payload-named refs' rows (every kind, every page; repo-wide when
-// the payload names none), push flushes the pushed ref, and repository
-// flushes like every response cache. Net effect: snapshots only survive
-// while a repo's CI is quiet -- exactly when the fleet sweeps re-poll them.
-// A 24h TTL backstops missed deliveries.
 
-// commitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
-// stale snapshot being served. Webhooks settle these rows sooner; this is the
-// backstop. It lives in the store because a `status` delivery rewrites a
-// document there and must date it exactly as a fetch would.
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
 const (
-	// commitCIDefaultPerPage is GitHub's default page size on all three
-	// listing forms when the request does not send per_page.
+	// commitCIDefaultPerPage is GitHub's default page size across all three listing forms.
 	commitCIDefaultPerPage = 30
 
-	// commitCIMaxCachedPage caps which pages are modeled. The CI consumers
-	// page shallowly (a commit with >10 pages of statuses at per_page=100 is
-	// pathological); deeper pagination passes through.
+	// commitCIMaxCachedPage caps modeled pages; deeper pagination (pathological in practice) passes through.
 	commitCIMaxCachedPage = 10
 )
 
@@ -127,14 +83,9 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	h.passthrough(w, r, PassPath)
 }
 
-// statusesAlias serves GET /repos/{owner}/{repo}/statuses/{ref} -- the LEGACY
-// spelling of the raw statuses list, and the one the consumers actually send
-// (required-builds' listStatuses; survey 2026-07-11). The wildcard is the
-// whole ref (slashes and all); it lands in the same handler and the same
-// (kind = statuses_list) row space as the modern /commits/{ref}/statuses
-// form, since GitHub answers both identically. Only GET is registered, so
-// the required-builds status PUBLISH -- POST /repos/{o}/{r}/statuses/{sha} --
-// falls to MethodNotAllowed and the passthrough proxy, untouched.
+// statusesAlias serves the legacy /statuses/{ref} spelling of the raw
+// statuses list; POST falls to MethodNotAllowed and the passthrough proxy.
+// see docs/cache/rest-routes.md
 func (h *handlers) statusesAlias(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "*")
 	if ref == "" {
@@ -152,10 +103,6 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
-	// Only the default JSON representation with the modeled paging shape is
-	// cached: the check-runs filters (?check_name, ?status, ?filter, ?app_id)
-	// change the body's contents entirely and pass through, as does anything
-	// else parseCommitCIShape rejects.
 	if !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, PassAccept)
 		return
@@ -179,7 +126,8 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
 		slog.Warn("commit CI cache read failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	} else if ok {
-		h.serveCommitCI(w, r, c.Doc, true)
+		// The stored row's status is what was absorbed: 200 (a real snapshot) or 404 (an unknown-ref verdict).
+		h.serveCommitCI(w, r, c.Status, c.Doc, true)
 		return
 	}
 
@@ -191,30 +139,42 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	defer resp.Body.Close()
 
+	status := http.StatusOK
 	doc, absorbed := absorbCommitCI(kind, resp.StatusCode, body)
+	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {
+		// The 404 unknown-ref VERDICT is absorbed too, honest via the same flushes as a 200 row.
+		// see docs/cache/rest-routes.md
+		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
+			doc, absorbed, status = string(doc404), true, http.StatusNotFound
+		}
+	}
 	if overflow || !absorbed {
-		// Includes 404 (unknown ref -- it can be pushed later) and 5xx:
-		// relayed verbatim, never stored.
+		// 403 and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
 	if err := h.store.PutCachedCommitCI(r.Context(), ghdata.CachedCommitCI{
-		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Doc: doc,
+		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Status: status, Doc: doc,
 	}, perPage, page, now, commitCICacheTTL); err != nil {
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
-	h.serveCommitCI(w, r, doc, false)
+	h.serveCommitCI(w, r, status, doc, false)
 }
 
-// serveCommitCI writes the trimmed document. The doc is rendered once at
-// absorb time and stored verbatim, so hit and miss serve identical bytes.
-func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, doc string, hit bool) {
+// serveCommitCI writes the stored commit-CI document under the status it
+// absorbed (200 snapshot / 404 verdict). The doc is rendered once at absorb
+// time and stored verbatim, so hit and miss serve identical bytes.
+func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, status int, doc string, hit bool) {
 	if hit {
-		h.reqlog.observe(r, DispHit)
+		if status == http.StatusOK {
+			h.reqlog.observe(r, DispHit)
+		} else {
+			h.reqlog.observeStatus(r, DispHit, status)
+		}
 	}
-	writeRebuilt(w, http.StatusOK, []byte(doc), hit)
+	writeRebuilt(w, status, []byte(doc), hit)
 }
 
 // absorbCommitCI parses a commit-CI 200 into the trimmed document (rendered
@@ -248,12 +208,8 @@ func absorbCommitCI(kind string, status int, body []byte) (string, bool) {
 	}
 }
 
-// commitStatusItemJSON is one trimmed entry of the combined status's statuses
-// array: the state fields only. The per-status id/node_id, avatar_url/url,
-// and target_url are dropped -- no mirror-pointed consumer reads them (Step-0
-// survey, 2026-07-05); target_url is the one a future dashboard might want
-// back, and re-adding it is a one-line change here plus a pin in the no-URL
-// test.
+// commitStatusItemJSON is one trimmed entry of the combined status's statuses array: state fields only.
+// see docs/cache/rest-routes.md
 type commitStatusItemJSON struct {
 	Context     string  `json:"context"`
 	State       string  `json:"state"`
@@ -262,10 +218,7 @@ type commitStatusItemJSON struct {
 	UpdatedAt   string  `json:"updated_at"`
 }
 
-// combinedStatusJSON is the trimmed rebuild of a combined commit status:
-// {state, sha, total_count, statuses:[...]}. The full repository object and
-// the url/commit_url fields are dropped. sha is the RESOLVED tip the answer
-// described -- exactly why a push must flush branch-form rows.
+// combinedStatusJSON is the trimmed rebuild of a combined commit status; sha is the RESOLVED tip, which is why a push must flush branch-form rows.
 type combinedStatusJSON struct {
 	State      string                 `json:"state"`
 	SHA        string                 `json:"sha"`
@@ -317,15 +270,8 @@ func absorbCombinedStatus(trimmed []byte) (string, bool) {
 	return string(rendered), true
 }
 
-// statusListItemJSON is one trimmed entry of the raw statuses LIST. The
-// consumers' contract (required-builds' listStatuses, survey 2026-07-11):
-// context/state/description/target_url are read, deduplication is by context
-// FIRST-WINS relying on the response's newest-first order -- so the rebuild
-// preserves item order EXACTLY, and description/target_url are nullable
-// strings whose keys are ALWAYS emitted (null when null, matching GitHub).
-// target_url is a pinned exception to the no-URL doctrine (the hook renders
-// it as the build's details link); the per-status id/node_id, the creator
-// user object, and url/avatar_url stay dropped.
+// statusListItemJSON is one trimmed entry of the raw statuses LIST; item order must be preserved exactly (consumers dedupe by context FIRST-WINS).
+// see docs/cache/rest-routes.md
 type statusListItemJSON struct {
 	Context     string  `json:"context"`
 	State       string  `json:"state"`
@@ -369,9 +315,7 @@ func absorbStatusesList(trimmed []byte) (string, bool) {
 	return string(rendered), true
 }
 
-// The trimmed check-run shapes live in the store: a `check_run` delivery
-// rewrites one entry inside a stored page, so the render and the rewrite must
-// agree byte for byte and there is exactly one definition of each.
+// The trimmed check-run shapes live in the store, so a check_run delivery's rewrite and this render always agree byte for byte.
 type (
 	checkRunItemJSON = ghdata.StoredCheckRun
 	checkRunsJSON    = ghdata.StoredCheckRunsPage

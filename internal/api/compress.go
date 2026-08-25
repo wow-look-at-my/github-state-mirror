@@ -8,23 +8,9 @@ import (
 	"strings"
 )
 
-// Response compression for the DASHBOARD's own JSON/binary payloads.
-//
-// The origin is grey-clouded (Cloudflare proxying off, after throttling), so
-// nothing in front of the app compresses any more: if a payload is to arrive
-// compressed, this file is what compresses it. It is deliberately scoped to
-// the dashboard's buffered admin endpoints and is NOT wired into the GitHub
-// data plane — the cached-route rebuilds have a pinned response-header
-// contract, the passthrough proxy relays GitHub's own encoding untouched, and
-// the consistency check's NDJSON stream must keep flushing per line.
-//
-// gzip only, at BestSpeed. Every browser accepts gzip, so there is no
-// negotiation to get wrong, and on the shape that matters — the columnar
-// timeline payload — level 1 is 1006 KB in 24 ms against level 6's 952 KB in
-// 140 ms: 6% more bytes for a sixth of the CPU (docs/timeline-wire-format.md).
+// see docs/timeline-wire-format.md
 
-// compressMinBytes is the floor below which compressing costs more than it
-// saves (a small payload can even grow past the gzip header/trailer).
+// compressMinBytes is the floor below which gzip can grow the payload.
 const compressMinBytes = 1400
 
 // writeBody writes a fully-buffered response body, gzipped when the caller
@@ -50,8 +36,7 @@ func writeBody(w http.ResponseWriter, r *http.Request, contentType string, body 
 		}
 	}
 	if err != nil {
-		// Compression is an optimization; a failure must never cost the
-		// operator the payload.
+		// A compression failure must never cost the operator the payload.
 		slog.Warn("response gzip failed", "path", r.URL.Path, "error", err)
 		_, _ = w.Write(body)
 		return

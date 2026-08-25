@@ -9,34 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The out-of-order gate: what runs before every dispatch.
-//
-// GitHub orders nothing, so this service does. Each delivery states the moment
-// its view is from and the subject it is a view of (webhook.OrderOf); the
-// watermark for that subject says whether anything newer has already been
-// applied (ghdata.ClaimEventOrder). A superseded delivery does not write.
-//
-// This is the SECOND of two mechanisms, and the one with no distance limit.
-// The first is the reorder window (reorder.go): deliveries for one subject
-// arriving within a couple of seconds of each other are sorted by their own
-// clocks and all applied, oldest first. That window cannot be long -- every
-// delivery pays it in latency and GitHub's delivery timeout is single-digit
-// seconds -- so anything reversed by more than it lands here instead, where
-// the older view is refused rather than reordered.
-//
-// Refusing is not a lesser outcome for a snapshot: GitHub payloads are full
-// views, not deltas, so applying only the newest one lands on the same final
-// state that ordering them would have. The exception is a payload carrying
-// facts the newer one never restates, which is handled explicitly rather than
-// lost (see supersededStillAbsorbs).
-//
-// The numbers are kept (OrderingStats) rather than assumed: how often this
-// fires, how late the losers are, and which subjects produce them. An operator
-// reading "significant disruption" needs the distribution, not a boolean.
-
-// OutOfOrderSampleLimit bounds the retained recent-sample ring. Counters are
-// unbounded and cheap; samples are what an operator actually reads, and only
-// the recent ones matter.
+// OutOfOrderSampleLimit bounds the retained recent-sample ring; only the recent samples matter to an operator.
 const OutOfOrderSampleLimit = 50
 
 // OutOfOrderSample is one refused delivery, kept for the dashboard.
@@ -66,17 +39,13 @@ type OrderingStats struct {
 	unorderable int64 // the payload states no clock this service can use
 	failed      int64 // the watermark read/claim itself errored (applied anyway)
 
-	// Lateness distribution of the refused ones, in the two bands that mean
-	// different things operationally.
+	// Lateness distribution of the refused ones, in two bands that mean different things operationally.
 	withinGrace int64 // <= OutOfOrderGrace: ordinary delivery jitter
 	beyondGrace int64 // > OutOfOrderGrace: a redelivery, or a real gap
 	worst       time.Duration
 	totalLate   time.Duration
 
-	// What the reorder window did, as opposed to what the watermark did.
-	// `reordered` counts BATCHES the window actually re-sorted -- the number
-	// that says whether the hold is earning the latency it costs everything
-	// else, rather than how often it merely held something.
+	// What the reorder window did: reordered counts BATCHES it actually re-sorted, not just held.
 	held      int64
 	reordered int64
 	totalHeld time.Duration
@@ -86,22 +55,13 @@ type OrderingStats struct {
 	samples []OutOfOrderSample
 }
 
-// OutOfOrderGrace splits ordinary delivery jitter from something worth
-// investigating. Deliveries reversed by less than this are GitHub's own
-// asynchrony -- two events produced within a second of each other, sent over
-// separate connections. Beyond it, a delivery is late enough that something
-// held it: a redelivery from the failure log, a restart drain, a tunnel
-// hiccup. Both are refused identically; the split exists so the dashboard can
-// say which kind is happening.
 const OutOfOrderGrace = 10 * time.Second
 
 func NewOrderingStats() *OrderingStats {
 	return &OrderingStats{byEvent: map[string]int64{}}
 }
 
-// recordHeld notes one delivery's time in the reorder window, and recordWindow
-// the window it was configured with (reported so the dashboard's held/reordered
-// numbers can be read against the latency they cost).
+// recordHeld notes one delivery's time in the reorder window; recordWindow records the window it was configured with.
 func (s *OrderingStats) recordHeld(d time.Duration) {
 	s.bump(func() {
 		s.held++
@@ -133,9 +93,7 @@ type OrderingSnapshot struct {
 	ByEvent              map[string]int64   `json:"by_event,omitempty"`
 	Recent               []OutOfOrderSample `json:"recent,omitempty"`
 
-	// The reorder window's own numbers: how many deliveries it held, how many
-	// BATCHES it actually re-sorted, and the mean hold. A held count with a
-	// zero reordered count is the window costing latency and buying nothing.
+	// The reorder window's own numbers; a held count with zero reordered means the window buys nothing.
 	Held              int64   `json:"held"`
 	Reordered         int64   `json:"reordered"`
 	MeanHoldSeconds   float64 `json:"mean_hold_seconds"`
@@ -217,9 +175,7 @@ func (s *OrderingStats) recordSuperseded(sample OutOfOrderSample) {
 func (d *WebhookDispatcher) checkOrder(ctx context.Context, event webhook.Event) (superseded bool, out outcome) {
 	order, ok := webhook.OrderOf(event)
 	if !ok {
-		// No clock in the payload. Applying unconditionally is the honest
-		// answer -- refusing over a timestamp we never had would drop state --
-		// and the count says how much of the stream this is.
+		// No clock in the payload; applying unconditionally is honest, since refusing over a timestamp we never had would drop state.
 		d.ordering.recordUnorderable()
 		return false, outcome{}
 	}
@@ -257,20 +213,8 @@ func (d *WebhookDispatcher) checkOrder(ctx context.Context, event webhook.Event)
 	return true, outcome{disposition: webhook.DispSuperseded, detail: detail}
 }
 
-// supersededStillAbsorbs takes the parts of a superseded delivery that CANNOT
-// be stale, and reports whether it took any.
-//
-// This is the one thing a reordering buffer would have bought and refusal does
-// not: a payload can carry facts the newer view never restates. A push is the
-// only such payload today -- it carries up to 2,048 full commit objects, and a
-// later push to the same branch does not repeat the earlier one's commits. A
-// commit is immutable and content-addressed, so absorbing it out of order is
-// not a stale write at all; dropping it would just mean fetching it back
-// later.
-//
-// Everything else refused here is a whole-resource snapshot (a PR, a check
-// run, a status context), where the newer view states everything the older one
-// did.
+// supersededStillAbsorbs takes the parts of a superseded delivery that CANNOT be stale, and reports whether it took any.
+// see docs/webhooks/ordering.md
 func (d *WebhookDispatcher) supersededStillAbsorbs(ctx context.Context, event webhook.Event) bool {
 	if event.Type != "push" {
 		return false

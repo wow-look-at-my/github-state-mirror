@@ -340,13 +340,9 @@ func TestOwnerRepoVisibilities_NullOwner(t *testing.T) {
 func TestOrgQueryUntouched(t *testing.T) {
 	assert.NotContains(t, orgDataQuery, "autoMergeRequest")
 	assert.NotContains(t, orgDataQuery, "isArchived\n")
-	// visibility is an owner-query-only extra too: the locked query carries no
-	// visibility selection, which (via UpsertRepo's non-empty guard) is exactly
-	// why an org-query-sourced sync can never blank a stamped value.
+	// visibility is owner-query-only: UpsertRepo's non-empty guard means an org-query sync can never blank a stamped value.
 	assert.NotContains(t, orgDataQuery, "visibility")
-	// The repositories-connection totalCount is an owner-query-only extra (the
-	// progress hook's "N of M"); the only totalCount the locked query may carry
-	// is prFields' reviewRequests one.
+	// totalCount is owner-query-only (the progress hook's "N of M"); the locked query's only totalCount is prFields' reviewRequests one.
 	assert.NotContains(t, orgDataQuery, "totalCount\n")
 	assert.Contains(t, orgDataQuery, "labels(first: 10)")
 	assert.Contains(t, prFields, "labels(first: 10)")

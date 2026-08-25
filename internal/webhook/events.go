@@ -28,9 +28,7 @@ type Event struct {
 	// Org info
 	OrgLogin string
 
-	// GitHub App installation that produced this delivery (0 when absent). Used
-	// to pull an as-yet-uncached repo on demand, as that installation.
-	InstallationID int64
+	InstallationID int64 // the delivering App installation; 0 when absent
 
 	// Raw payload for anything that needs deeper inspection.
 	Raw json.RawMessage
@@ -110,12 +108,10 @@ func ParseEvent(eventType string, payload []byte) Event {
 // GraphQL org query) DO carry visibility, so this is the reveal layer's main
 // source of public/private truth.
 type repositoryObject struct {
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	Private  *bool  `json:"private"`
-	// Visibility is "public" / "private" / "internal"; older payloads may omit
-	// it, in which case Private decides.
-	Visibility    string  `json:"visibility"`
+	Name          string  `json:"name"`
+	FullName      string  `json:"full_name"`
+	Private       *bool   `json:"private"`
+	Visibility    string  `json:"visibility"` // public/private/internal; absent falls back to Private
 	HTMLURL       string  `json:"html_url"`
 	DefaultBranch string  `json:"default_branch"`
 	PushedAt      any     `json:"pushed_at"` // RFC3339 string, or unix seconds on some events
@@ -161,9 +157,7 @@ func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
 	return out, true
 }
 
-// repoVisibility folds the payload's visibility/private pair into the stored
-// value: the explicit visibility field wins ("internal" is kept as-is and is
-// NOT public for the reveal fast path); absent both, unknown.
+// repoVisibility: explicit visibility wins; "internal" is NOT public.
 func repoVisibility(visibility string, private *bool) string {
 	if visibility != "" {
 		return visibility
@@ -260,13 +254,6 @@ type CheckPayload struct {
 	Context string
 	State   string // normalized: SUCCESS / FAILURE / ERROR / PENDING
 	// Branches is every branch name the payload associates with the commit
-	// (empty names dropped): for a `status` event each branches[].name; for
-	// check_run/check_suite the suite's head_branch when non-empty. Together
-	// with SHA these are the ref SPELLINGS whose cached CI answers the event
-	// moved (commit_ci_cache keys the verbatim requested ref). NOTE: GitHub
-	// caps the status payload's branches array (~10 entries), so a commit on
-	// many branches can be under-reported -- acceptable, because branch-form
-	// CI rows are bounded by the 24h TTL and current consumers poll by sha.
 	Branches        []string
 	OnDefaultBranch bool // the check ran on the repo's default branch
 }

@@ -34,8 +34,7 @@ func TestCachedAppInstallations_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.appInstallationsHits))
-	// Verbatim: permissions/events (a trim would likely have dropped) ride
-	// through unchanged.
+	// Verbatim: permissions/events (a trim would likely have dropped) ride through unchanged.
 	assert.Contains(t, w1.Body.String(), `"permissions":{"contents":"read","metadata":"read"}`)
 	assert.Contains(t, w1.Body.String(), `"events":["push","pull_request"]`)
 

@@ -17,10 +17,6 @@ import (
 // merged and its closed delivery applied; the replayer asked GitHub to re-send
 // the failed one, and GitHub re-sent the payload it built at the time -- a
 // pre-merge view. Applying it put a merged PR back in the cache as open, where
-// it sat for 44 minutes with nothing to restate the close.
-//
-// A redelivery is indistinguishable from an ordinary late delivery, which is
-// why the fix is at the write and not in the replayer.
 
 // prPayloadAt is makePRPayload with the delivery's own updated_at, the field
 // that says WHEN the view it carries was taken.

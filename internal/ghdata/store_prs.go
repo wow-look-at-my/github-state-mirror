@@ -19,9 +19,7 @@ func (s *Store) ListOpenPRsByRepo(ctx context.Context, owner, repo string) ([]db
 	return s.q.ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Owner: owner, Repo: repo})
 }
 
-// UpsertPR merges one source's view of a PR into truth (see the query comment
-// for the COALESCE semantics), stamping touched_at. A view that cannot prove
-// it postdates a recorded close is refused (see prClosureBlocks).
+// UpsertPR merges one source's view of a PR into truth, stamping touched_at; a view that cannot prove it postdates a recorded close is refused.
 func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Time) error {
 	_, err := upsertPRTx(ctx, s.q, pr, rfc3339(now))
 	return err
@@ -100,26 +98,11 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, 
 	return s.q.PrunePRClosures(ctx, rfc3339(now.Add(-PRClosureRetention)))
 }
 
-// zeroSHA is git's null object id -- what a push payload's after reads for a
-// deleted ref. It never names a real tip, so it can never prove anything.
+// zeroSHA is git's null object id for a deleted ref; it never names a real tip.
 const zeroSHA = "0000000000000000000000000000000000000000"
 
-// NullPRMergeableByBranch un-resolves mergeable (and the test-merge sha) on
-// every open PR whose base or head is the pushed branch: GitHub recomputes
-// mergeability when either side moves and never webhooks the result, so the
-// last-known value is stale the moment the push lands. This keeps the
-// single-PR route's known-mergeable gate honest (it misses and re-fetches
-// instead of serving the pre-push answer). The nulled sha is remembered
-// (merge_stale_sha, stamped at now): the pushed branch provably moved, so a
-// refetch re-offering that exact sha is a pre-push answer and the absorb
-// paths refuse to re-resolve from it (see MergeStaleTTL). after is the push's
-// post-push tip sha: recorded with the branch (merge_stale_ref/
-// merge_stale_after) it makes the marker VERIFIABLE -- an answer whose
-// reported tip for the branch equals after provably post-dates the push and
-// is accepted even when it re-offers the remembered sha, healing a WRONG mark
-// (the marker stamped over an already-post-push sha by a late push delivery)
-// on the very next poll. An empty or all-zeros after (a deleted ref, or an
-// unknowing caller) records no proof: only the TTL unwedges then.
+// NullPRMergeableByBranch un-resolves mergeable (and remembers the nulled test-merge sha) on every open PR whose base or head is the pushed branch.
+// see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch, after string, now time.Time) error {
 	if branch == "" {
 		return nil
@@ -138,16 +121,8 @@ func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch
 	})
 }
 
-// NullPRMergeableOnTipMove un-resolves ONE PR's merge fields when the
-// incoming webhook doc reports a moved tip against the stored row: the head
-// sha changed (synchronize -- including fork heads, which emit no push
-// webhook to run the per-branch un-resolve) or the base ref was retargeted.
-// The payload's own moved-side ref+sha become the marker proof, exactly the
-// push-path semantics, so the following upsert's stale guard treats the
-// retained pre-move merge fields the payload carries as stale. Base ref OID
-// drift alone never triggers: a conflicted PR's payload freezes base.sha at
-// the last clean evaluation, so OID comparison would false-positive on every
-// dirty PR. Returns whether it stamped.
+// NullPRMergeableOnTipMove un-resolves ONE PR's merge fields when the incoming webhook doc reports a moved tip against the stored row.
+// see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.PullRequest, now time.Time) (bool, error) {
 	existing, err := s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
 		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
@@ -172,8 +147,7 @@ func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.Pul
 		return false, nil
 	}
 	if !ref.Valid || ref.String == "" || !after.Valid || after.String == "" {
-		// No usable proof tip: stamp the marker without proof columns (the
-		// TTL backstop still bounds it), never a half-filled proof.
+		// No usable proof tip: stamp without proof columns (TTL backstop still bounds it), never half-filled.
 		ref, after = sql.NullString{}, sql.NullString{}
 	}
 	return true, s.q.NullPRMergeableForPR(ctx, dbgen.NullPRMergeableForPRParams{
@@ -182,32 +156,16 @@ func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.Pul
 	})
 }
 
-// NullPRMergeableByRepo un-resolves merge fields on ALL the repo's open PRs --
-// the conservative fallback for a push whose payload didn't parse (the ref is
-// unknown, so any PR may be affected). It deliberately records NO
-// merge_stale_sha: the stale-by-definition invariant holds only for a branch
-// that provably moved, and marking an UNMOVED PR's sha stale would make its
-// (still valid) re-offered sha unabsorbable for the whole window.
+// NullPRMergeableByRepo un-resolves merge fields on ALL the repo's open PRs, deliberately marker-less -- the conservative fallback for an unparseable push.
+// see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableByRepo(ctx context.Context, owner, repo string) error {
 	return s.q.NullPRMergeableByRepo(ctx, dbgen.NullPRMergeableByRepoParams{
 		Owner: owner, Repo: repo,
 	})
 }
 
-// NullPRMergeableStateByHeadSHA un-resolves mergeable_state alone for the open
-// PRs on a head sha whose CI moved. A check or status result is the only thing
-// that flips unstable/blocked <-> clean, and it moves no tip -- so this is the
-// one merge field with no other invalidator, and without this a `blocked` from
-// a run that has since gone green would keep being served.
-//
-// mergeable and merge_commit_sha stay put: a check result cannot change
-// whether two trees conflict, and nulling them would make every check event
-// re-fetch every PR on that sha for an answer that did not move. No stale
-// marker either -- the marker refuses a re-offered PRE-PUSH test-merge sha,
-// and nothing pushed here.
-//
-// An empty sha is a payload that named none; it must not become a repo-wide
-// wildcard, so it is a no-op (the caller has already flushed what it could).
+// NullPRMergeableStateByHeadSHA un-resolves mergeable_state alone for the open PRs on a head sha whose CI moved.
+// see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableStateByHeadSHA(ctx context.Context, owner, repo, headSHA string) error {
 	if headSHA == "" {
 		return nil

@@ -13,15 +13,8 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// This file implements the cached personalized repo listing:
-//
-//	GET /user/repos
-//
-// Distinct from the org-repos GraphQL tier-1 query: this REST listing spans
-// every repo the token can see, across every owner, sorted however the
-// caller asked. Keyed by the bearer's fingerprint + the modeled query shape,
-// cached VERBATIM (see respcache_identity.go's file header). No webhook
-// interaction; see ghdata/respcache_userrepos.go for why.
+// Implements the cached GET /user/repos listing, distinct from the org-repos
+// GraphQL tier-1 query. See docs/cache/rest-routes.md.
 
 const (
 	userReposDefaultPerPage = 30

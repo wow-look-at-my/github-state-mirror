@@ -71,11 +71,6 @@ func newWorkflowRunsUpstream() *workflowRunsUpstream {
 	u := &workflowRunsUpstream{}
 	u.runs = func(w http.ResponseWriter, r *http.Request) {
 		// total_count deliberately EXCEEDS the page (GitHub's total matching
-		// count vs the page length -- exactly what pr-minder's per_page=1
-		// probe relies on), and the sha echoes the request's filter so
-		// distinct shas produce distinguishable docs. A request that names
-		// no sha (the repo-wide listing shape) still gets runs carrying a
-		// real one, exactly as GitHub answers it.
 		sha := strings.ToLower(r.URL.Query().Get("head_sha"))
 		if sha == "" {
 			sha = shaTip
@@ -125,7 +120,6 @@ func (u *workflowRunsUpstream) handler() http.Handler {
 			u.runs(w, r)
 		case strings.Contains(r.URL.Path, "/actions/runs/"):
 			// Deeper run-scoped paths (/actions/runs/{id}/jobs, ...): answer
-			// 200 so the passthrough tests can assert the forward happened.
 			atomic.AddInt32(&u.otherHits, 1)
 			servePRJSON(w, map[string]any{"forwarded": true})
 		case len(parts) == 3 && parts[0] == "repos":
@@ -246,7 +240,6 @@ func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
 
 	// The listing is state, not a stored document: run rows plus one
-	// completeness marker, and NOTHING in the per-commit snapshot table.
 	var runs, markers, snapshots int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs`).Scan(&runs))
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_list_cache`).Scan(&markers))

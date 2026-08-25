@@ -23,35 +23,20 @@ import (
 // act implementation brief.
 //
 // Values are never recorded. A body sample is reduced to its JSON SKELETON —
-// key names and value TYPES only, recursively — before anything is retained;
-// the raw bytes are discarded immediately. Query parameters keep their NAMES
-// (a value can carry a credential; a name cannot), matching the existing
-// pass_query rule.
 
 const (
-	// shapeStoreCap bounds the map. Route shapes come from normalizeRoute, a
-	// small fixed family; past the cap NEW shapes are dropped and known ones
-	// keep updating.
+	// shapeStoreCap bounds the map; past it, new shapes are dropped and known ones keep updating.
 	shapeStoreCap = 300
-	// shapeResampleAfter is how long a captured skeleton is trusted before the
-	// next passthrough on that route is sampled again. A route's response
-	// schema is effectively static, so this is about picking up variants (a
-	// different status, an added field), not freshness.
+	// shapeResampleAfter re-samples to catch a schema variant, not for freshness.
 	shapeResampleAfter = 30 * time.Minute
-	// shapeMaxSampleBytes caps how much of a response body is buffered to
-	// build a skeleton. Larger bodies stream through untouched and are simply
-	// not sampled (the skeleton of a truncated body would be a lie).
+	// shapeMaxSampleBytes caps buffering; a larger body streams through unsampled rather than lie via truncation.
 	shapeMaxSampleBytes = 256 << 10
-	// shapeMaxDecodedBytes bounds a gzip-decoded sample: the captured wire
-	// bytes are already capped at shapeMaxSampleBytes, but JSON commonly
-	// decompresses several times larger, and the decode runs against a
-	// trusted upstream (GitHub) rather than caller input.
+	// shapeMaxDecodedBytes bounds gzip decode; JSON expands far past the wire cap, and the source is trusted (GitHub).
 	shapeMaxDecodedBytes = 4 << 20
 	// shapeMaxPaths / shapeMaxNames bound the per-shape detail sets.
 	shapeMaxPaths = 3
 	shapeMaxNames = 24
-	// Skeleton bounds: a dynamic-key object (rare in GitHub's API) or a deep
-	// document must not produce an unbounded string.
+	// Skeleton bounds guard against a dynamic-key object or a deep document.
 	skeletonMaxDepth   = 6
 	skeletonMaxKeys    = 40
 	skeletonMaxKeyLen  = 64
@@ -66,24 +51,20 @@ type routeShape struct {
 	method string
 	route  string
 	seen   int64
-	// queryNames is the UNION of query parameter names seen on this route,
-	// each with how often it appeared — the shape guard's whole input. Names
-	// only, never values.
+	// queryNames counts how often each query parameter name appears; never values.
 	queryNames map[string]int64
 	accepts    map[string]int64
-	// callers are the verified display names (or short principal keys) that
-	// send this request: who breaks if the rebuild trims a field they read.
+	// callers are the verified display names or principal keys that send this request.
 	callers map[string]int64
-	// statuses tallies the upstream answers, so a route whose dominant answer
-	// is a 404 verdict is visible as such (that is a cacheable answer, not a
-	// failure).
+	// statuses tallies upstream answers; a dominant 404 is a cacheable verdict, not a failure.
 	statuses map[int]int64
 	// samplePaths are a few concrete paths, for recognizing the resource.
 	samplePaths []string
 
-	// The captured response, per status: skeleton is the key/type outline,
-	// contentType the response's own media type, bodyBytes its real size.
-	bodies       map[int]*bodySample
+	// bodies holds the captured response per status: skeleton, content type, size.
+	bodies map[int]*bodySample
+	// nonJSON records a sampled body confirmed not JSON, distinct from never sampled.
+	nonJSON      map[int]*nonJSONSample
 	lastSampleAt time.Time
 }
 
@@ -95,9 +76,16 @@ type bodySample struct {
 	At          string `json:"at"`
 }
 
-// shapeStore holds routeShapes. In-memory and reset on restart, on the
-// requestLog / ratemeter stance: this is a live operator view, not an audit
-// log, and it must not force a cache-nuking schema change.
+// nonJSONSample records one confirmed-non-JSON response: enough to explain
+// why no skeleton exists, never the bytes themselves.
+type nonJSONSample struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type,omitempty"`
+	Bytes       int    `json:"bytes"`
+	At          string `json:"at"`
+}
+
+// shapeStore holds routeShapes in memory; it resets on restart, never touching the schema.
 type shapeStore struct {
 	mu     sync.Mutex
 	shapes map[string]*routeShape
@@ -105,10 +93,8 @@ type shapeStore struct {
 
 func newShapeStore() *shapeStore { return &shapeStore{shapes: make(map[string]*routeShape)} }
 
-// wantsBody reports whether the next passthrough on this route should have its
-// response body sampled: nothing captured yet for it, or the last capture has
-// aged past shapeResampleAfter. Nil-receiver-safe (routers built without a
-// shape store, as some tests do).
+// wantsBody resamples when nothing is captured yet, or the last capture aged out.
+// see docs/dashboard/implementation-brief.md
 func (s *shapeStore) wantsBody(method, route string) bool {
 	if s == nil {
 		return false
@@ -142,8 +128,9 @@ func (s *shapeStore) observe(o observation) {
 		return
 	}
 	key := o.Method + " " + o.Route
+	attempted := len(o.Body) > 0
 	skeleton := ""
-	if len(o.Body) > 0 {
+	if attempted {
 		skeleton = jsonSkeleton(decodeSample(o.Body, o.ContentEncoding))
 	}
 	now := time.Now().UTC()
@@ -159,7 +146,7 @@ func (s *shapeStore) observe(o observation) {
 			method: o.Method, route: o.Route,
 			queryNames: map[string]int64{}, accepts: map[string]int64{},
 			callers: map[string]int64{}, statuses: map[int]int64{},
-			bodies: map[int]*bodySample{},
+			bodies: map[int]*bodySample{}, nonJSON: map[int]*nonJSONSample{},
 		}
 		s.shapes[key] = sh
 	}
@@ -175,12 +162,17 @@ func (s *shapeStore) observe(o observation) {
 	if len(sh.samplePaths) < shapeMaxPaths && !containsString(sh.samplePaths, o.Path) {
 		sh.samplePaths = append(sh.samplePaths, clampRoute(o.Path))
 	}
+	if !attempted {
+		return
+	}
+	// Advances whether or not it parsed as JSON: a confirmed-non-JSON status is
+	sh.lastSampleAt = now
 	if skeleton != "" {
+		delete(sh.nonJSON, o.Status)
 		sh.bodies[o.Status] = &bodySample{
 			Status: o.Status, ContentType: o.ContentType,
 			Bytes: len(o.Body), Skeleton: skeleton, At: now.Format(time.RFC3339),
 		}
-		sh.lastSampleAt = now
 		// Keep the per-status body map bounded the same way as everything
 		// else: statuses are few, but a pathological upstream must not grow it.
 		if len(sh.bodies) > shapeMaxNames {
@@ -188,6 +180,18 @@ func (s *shapeStore) observe(o observation) {
 				delete(sh.bodies, k)
 				break
 			}
+		}
+		return
+	}
+	delete(sh.bodies, o.Status)
+	sh.nonJSON[o.Status] = &nonJSONSample{
+		Status: o.Status, ContentType: o.ContentType,
+		Bytes: len(o.Body), At: now.Format(time.RFC3339),
+	}
+	if len(sh.nonJSON) > shapeMaxNames {
+		for k := range sh.nonJSON {
+			delete(sh.nonJSON, k)
+			break
 		}
 	}
 }
@@ -217,16 +221,17 @@ func containsString(ss []string, s string) bool {
 
 // routeShapeSnapshot is one shape in the brief payload.
 type routeShapeSnapshot struct {
-	Key         string        `json:"key"`
-	Method      string        `json:"method"`
-	Route       string        `json:"route"`
-	Seen        int64         `json:"seen"`
-	QueryNames  []countedName `json:"query_names,omitempty"`
-	Accepts     []countedName `json:"accepts,omitempty"`
-	Callers     []countedName `json:"callers,omitempty"`
-	Statuses    []countedInt  `json:"statuses,omitempty"`
-	SamplePaths []string      `json:"sample_paths,omitempty"`
-	Bodies      []bodySample  `json:"bodies,omitempty"`
+	Key         string          `json:"key"`
+	Method      string          `json:"method"`
+	Route       string          `json:"route"`
+	Seen        int64           `json:"seen"`
+	QueryNames  []countedName   `json:"query_names,omitempty"`
+	Accepts     []countedName   `json:"accepts,omitempty"`
+	Callers     []countedName   `json:"callers,omitempty"`
+	Statuses    []countedInt    `json:"statuses,omitempty"`
+	SamplePaths []string        `json:"sample_paths,omitempty"`
+	Bodies      []bodySample    `json:"bodies,omitempty"`
+	NonJSON     []nonJSONSample `json:"non_json,omitempty"`
 }
 
 type countedName struct {
@@ -259,6 +264,10 @@ func (s *shapeStore) snapshot() map[string]routeShapeSnapshot {
 			snap.Bodies = append(snap.Bodies, *b)
 		}
 		sort.Slice(snap.Bodies, func(i, j int) bool { return snap.Bodies[i].Status < snap.Bodies[j].Status })
+		for _, n := range sh.nonJSON {
+			snap.NonJSON = append(snap.NonJSON, *n)
+		}
+		sort.Slice(snap.NonJSON, func(i, j int) bool { return snap.NonJSON[i].Status < snap.NonJSON[j].Status })
 		out[key] = snap
 	}
 	return out
@@ -306,14 +315,8 @@ func decodeSample(body []byte, contentEncoding string) []byte {
 	return decoded
 }
 
-// jsonSkeleton reduces a JSON document to its KEY/TYPE outline: every scalar
-// becomes its type name, every array collapses to its first element's shape
-// (with the observed length), every object keeps its key names. No value ever
-// survives — this is the one property that makes retaining a sample of another
-// caller's response safe.
-//
-// Returns "" for anything that is not JSON (an opaque body has no shape to
-// model, which is itself the answer: such a route cannot be a tier-2 route).
+// jsonSkeleton reduces a document to its key/type outline; no value ever survives.
+// see docs/dashboard/implementation-brief.md
 func jsonSkeleton(body []byte) string {
 	var v any
 	if err := json.Unmarshal(body, &v); err != nil {
@@ -377,8 +380,7 @@ func writeSkeleton(sb *strings.Builder, v any, depth int) {
 	case bool:
 		sb.WriteString("bool")
 	case nil:
-		// A null is load-bearing information for a rebuild: the field is
-		// nullable and its key must still be emitted.
+		// A nullable field's key must still be emitted, so null is load-bearing.
 		sb.WriteString("null")
 	default:
 		sb.WriteString("unknown")

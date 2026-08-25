@@ -12,14 +12,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// WebhookDispatcher applies webhook events straight to the ONE GLOBAL TRUTH
-// STORE. There is no "is this repo cached for anyone?" gate and no on-demand
-// pull: a webhook is GitHub telling us the one true state changed, so every
-// stateful event is absorbed unconditionally -- the repos row is upserted from
-// the payload's own repository object when absent. Whether any caller can
-// READ the absorbed state is the reveal layer's problem, not the dispatcher's.
-// (Operator directive, 2026-07-03: "just because nobody has fetched something
-// doesn't mean we get to ignore updates from webhooks for it.")
 type WebhookDispatcher struct {
 	mgr      invalidator
 	store    *ghdata.Store
@@ -27,27 +19,18 @@ type WebhookDispatcher struct {
 	reorder  *reorderBuffer
 }
 
-// invalidator is the one freshness operation the dispatcher needs: marking
-// principals' sync markers stale after a structural change. Narrow so tests
-// can fake it.
+// invalidator is the one freshness operation the dispatcher needs; narrow so tests can fake it.
 type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
-// NewWebhookDispatcher builds a dispatcher with no reorder window: deliveries
-// dispatch the moment they arrive, and out-of-order ones are caught by the
-// watermark gate alone. Production passes a window
-// (NewWebhookDispatcherWindowed); tests that are not about ordering want zero
-// so they do not sleep through it.
+// NewWebhookDispatcher has no reorder window; production uses NewWebhookDispatcherWindowed instead.
 func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
 	return NewWebhookDispatcherWindowed(mgr, store, 0)
 }
 
-// NewWebhookDispatcherWindowed adds the reorder window: deliveries for one
-// subject arriving within it are sorted by their own clocks and applied
-// oldest-first, instead of the later-arriving older one being refused as
-// superseded. See reorder.go for why the window is small and why a uniform
-// delay would not work.
+// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-first.
+// see docs/webhooks/ordering.md
 func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
 	stats := NewOrderingStats()
 	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
@@ -56,9 +39,7 @@ func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window t
 // Ordering exposes what the out-of-order gate has seen, for the dashboard.
 func (d *WebhookDispatcher) Ordering() OrderingSnapshot { return d.ordering.Snapshot() }
 
-// outcome is the internal per-handler result: a disposition (one of the
-// webhook.Disp* constants) and a human-readable detail. Dispatch lifts it into
-// a webhook.DispatchResult.
+// outcome is a handler's result: a disposition plus a human-readable detail.
 type outcome struct {
 	disposition string
 	detail      string
@@ -72,11 +53,7 @@ func errored(detail string) outcome { return outcome{disposition: webhook.DispEr
 // what it did. It also records the delivery in the global webhook log so the
 // dashboard can show whether data was preserved.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
-	// The reorder window first: a delivery whose subject already has a batch
-	// open joins it and is dispatched in clock order rather than arrival
-	// order. The order is recomputed inside the gate below rather than
-	// threaded through -- one JSON unmarshal, against a buffer hold measured
-	// in seconds.
+	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
 	if order, ok := webhook.OrderOf(event); ok {
 		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
 			return res
@@ -116,26 +93,16 @@ func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event
 
 // handle routes an event to its handler, returning the outcome.
 func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) outcome {
-	// ORDER FIRST, before anything writes. GitHub orders nothing, so a view
-	// older than one already applied must not run at all -- not the apply, and
-	// not the invalidation either, which would drop rows a newer delivery just
-	// refreshed. What a superseded delivery still contributes is only what
-	// cannot be stale (its immutable commits); internal/sync/ordering.go.
+	// Order first: a superseded view must not apply or invalidate.
+	// see docs/webhooks/ordering.md
 	if superseded, out := d.checkOrder(ctx, event); superseded {
 		return out
 	}
 
-	// Cached-route invalidation runs alongside (never instead of) the normal
-	// apply logic, and is deliberately disposition-neutral: it is best-effort
-	// bookkeeping for the trimmed response caches and must not change what the
-	// delivery reports.
+	// Response-cache invalidation is best-effort and disposition-neutral; it never changes what the delivery reports.
 	d.invalidateResponseCaches(ctx, event)
 
-	// Keep the repos row current from the payload's own repository object.
-	// Every repo-scoped payload carries full_name / private / visibility /
-	// default_branch, so global truth learns about a repo from its FIRST
-	// webhook -- no fetch required. Disposition-neutral and best-effort; the
-	// per-event handlers below do the real work.
+	// Keeps the repos row current from the payload; global truth learns a repo from its first webhook, no fetch needed.
 	d.absorbRepoFromPayload(ctx, event)
 
 	switch event.Type {
@@ -182,13 +149,7 @@ func (d *WebhookDispatcher) absorbRepoFromPayload(ctx context.Context, event web
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParsePushPayload(event.Raw)
 	if err != nil {
-		// Even an unparseable push proves something moved in this repo, and a
-		// moved branch stales every affected PR's merge fields. The targeted
-		// per-branch un-resolve below needs the parsed ref, so conservatively
-		// un-resolve merge fields on ALL the repo's open PRs first (a
-		// wrongly-nulled row just re-fetches; a wrongly-kept one can serve a
-		// frozen pre-push answer) -- then fall back to the generic staleness
-		// marking.
+		// An unparseable push still proves something moved, so un-resolve mergeable repo-wide first.
 		if owner, name := event.RepoOwner(), event.RepoName(); owner != "" && name != "" {
 			if nerr := d.store.NullPRMergeableByRepo(ctx, owner, name); nerr != nil {
 				slog.Warn("webhook: repo-wide un-resolve PR mergeable failed", "repo", owner+"/"+name, "error", nerr)
@@ -210,12 +171,7 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
 		}
-		// A push to the DEFAULT branch likewise stales default_branch_status:
-		// the stored rollup describes the previous tip, nothing restates it
-		// until the new tip's first check event, and a tip with no CI at all
-		// would keep the old rollup forever (the COALESCE upsert can never
-		// clear it). Un-resolve it -- the NullPRMergeableByBranch analog; the
-		// next default-branch check event repopulates it.
+		// A push to the default branch also stales default_branch_status; the next check event repopulates it.
 		if d.isDefaultBranch(ctx, event, payload.Owner, payload.Repo, branch) {
 			if err := d.store.SetRepoDefaultBranchStatus(ctx, payload.Owner, payload.Repo, sql.NullString{}); err != nil {
 				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
@@ -270,9 +226,7 @@ func (d *WebhookDispatcher) absorbPushCommits(ctx context.Context, payload webho
 		}
 		commits = append(commits, ghdata.CachedGitCommit{
 			Owner: owner, Repo: repo, SHA: strings.ToLower(c.ID), Message: c.Message,
-			// The payload states one identity timestamp; GitHub's git-commit
-			// object dates author and committer separately, and for the pushed
-			// commits webhooks describe they are the same wall-clock instant.
+			// One payload timestamp serves both dates: webhooks report author and committer as the same instant.
 			AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.Timestamp,
 			CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.Timestamp,
 			TreeSHA: c.TreeID,
@@ -306,22 +260,9 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
-	// A non-completed check_suite delivery records NOTHING in truth. GitHub
-	// auto-creates a suite per sha for EVERY app with checks:write, and an app
-	// that runs no checks on the sha leaves its empty suite queued forever --
-	// so the PENDING row a requested/queued delivery would mint is a permanent
-	// ghost no later event clears, pinning the low-water-mark rollup at
-	// PENDING and re-poisoning last_commit_status on every PR upsert after
-	// every heal (the 2026-07-20 report's live-minting rollup cluster).
-	// Nothing real is lost: a genuine suite's pending phase is already carried
-	// by its own check_runs' queued/in_progress events, and GitHub's own
-	// statusCheckRollup ignores suites entirely -- this aligns the mirror's
-	// rollup inputs with GitHub's. Completed suites with real conclusions
-	// keep applying exactly as before (a completed suite whose conclusion
-	// normalizes to PENDING is dropped too: the suite is finished, so that
-	// row would be just as permanent). The response caches already flushed --
-	// handle() invalidates BEFORE the disposition logic, the queued-
-	// workflow_job precedent -- so the sha's commit-CI snapshots still moved.
+	// A non-completed check_suite records nothing: GitHub auto-creates a permanent-ghost PENDING
+	// suite for every app with checks:write, even one that never runs a check on the sha.
+	// see docs/webhooks/dispatch.md
 	if event.Type == "check_suite" && payload.State == "PENDING" {
 		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
 	}
@@ -369,9 +310,7 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 		return applied("renamed repo; upserted " + owner + "/" + name)
 
 	case "privatized", "publicized":
-		// absorbRepoFromPayload already stored the new visibility (the
-		// payload's repository object carries it); make the flip explicit so
-		// a missing/degenerate payload object cannot leave the fast path open.
+		// absorbRepoFromPayload already stored it; make the flip explicit against a degenerate payload.
 		vis := ghdata.VisibilityPrivate
 		if event.Action == "publicized" {
 			vis = ghdata.VisibilityPublic
@@ -383,17 +322,13 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 		return applied("visibility -> " + vis)
 
 	case "transferred":
-		// The new owner's object was upserted by absorbRepoFromPayload. The
-		// old owner's row (if any) is unknown from this payload alone; nudge
-		// both sides' syncs so grants and truth re-converge.
+		// The new owner's object was upserted already; nudge both sides' syncs so grants and truth re-converge.
 		d.invalidate(ctx, KindOrgRepos, owner)
 		return applied("transferred repo; upserted under " + owner)
 
 	default:
-		// created/edited/archived/unarchived and anything else carrying a
-		// repository object: the generic absorb above already applied it. A
-		// payload WITHOUT a parseable repository object has applied nothing,
-		// so fall back to marking syncs stale instead of claiming success.
+		// created/edited/archived/unarchived: the generic absorb above already applied it;
+		// fall back only if it couldn't parse a repository object.
 		if _, ok := webhook.ParseRepositoryPayload(event.Raw); !ok {
 			return d.invalidateRepoOrg(ctx, event, "repository payload missing repository object")
 		}

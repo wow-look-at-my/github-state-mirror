@@ -12,20 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 )
 
-// Subscriber-notification CRUD: /_mirror/subscriptions.
-//
-// The top-level /_mirror/* prefix is the RESERVED mirror-native namespace.
-// GitHub's API has no underscore-prefixed top-level paths, and chi-registered
-// routes always win over the NotFound passthrough proxy, so nothing under
-// /_mirror/* can ever collide with (or leak to) proxied GitHub traffic. New
-// mirror-native endpoints belong under this prefix.
-//
-// The routes are registered INSIDE requireAuth, so callers resolve to a
-// principal exactly like data routes (user:<id>, app:<id> via
-// X-Mirror-Identity, or a token fingerprint) and every subscription is owned
-// by the principal that created it. They deliberately do NOT go through the
-// reveal layer (they are not repo reads) and are not recorded in the GitHub
-// request log (only cached-route handlers and the passthrough record there).
+// Subscriber-notification CRUD, under the reserved /_mirror/* namespace.
+// see docs/notifications.md
 type subscriptionsAPI struct {
 	notifier *notify.Notifier
 }
@@ -44,8 +32,7 @@ func (s *subscriptionsAPI) routes(r chi.Router) {
 type subscriptionJSON struct {
 	ID        string `json:"id"`
 	Principal string `json:"principal,omitempty"`
-	// PrincipalName is Principal's recorded display name (from
-	// actor_identities); admin view only, like Principal.
+	// Principal's display name; admin view only, like Principal.
 	PrincipalName       string   `json:"principal_name,omitempty"`
 	URL                 string   `json:"url"`
 	Repos               []string `json:"repos"`

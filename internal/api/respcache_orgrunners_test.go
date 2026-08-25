@@ -32,8 +32,7 @@ func TestCachedOrgRunners_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.orgRunnersHits))
-	// Verbatim: the labels array (a trim would most likely have guessed
-	// wrong about) rides through unchanged.
+	// Verbatim: the labels array rides through unchanged, since a trim would likely guess wrong.
 	assert.Contains(t, w1.Body.String(), `"labels":[{"id":1,"name":"self-hosted","type":"read-only"}]`)
 	assert.Contains(t, w1.Body.String(), `"status":"online"`)
 

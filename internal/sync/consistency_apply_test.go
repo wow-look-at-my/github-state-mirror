@@ -149,8 +149,7 @@ func TestConsistencyChecker_Apply(t *testing.T) {
 	require.NoError(t, err, "missing repo must be absorbed")
 	assert.Equal(t, "private", repo2.Visibility)
 
-	// Absorbed: PR #1 with its armed auto-merge (the upsert cannot carry it
-	// from a GraphQL-shaped row; the explicit set must).
+	// Absorbed: PR #1's armed auto-merge, which only the explicit set can carry from a GraphQL-shaped row.
 	pr1, err := store.GetPullRequest(ctx, "org1", "repo1", 1)
 	require.NoError(t, err, "missing PR must be absorbed")
 	assert.Equal(t, "merge", pr1.AutoMergeMethod.String)
@@ -177,8 +176,7 @@ func TestConsistencyChecker_Apply(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "private", leak.Visibility, "the leak is closed")
 
-	// Corrected: default_branch_status set to NULL (the COALESCE upsert can
-	// never write this).
+	// Corrected: default_branch_status set to NULL, which the COALESCE upsert can never write.
 	repo1, err := store.GetRepo(ctx, "org1", "repo1")
 	require.NoError(t, err)
 	assert.False(t, repo1.DefaultBranchStatus.Valid, "a tip with no rollup must read NULL, not the stale FAILURE")

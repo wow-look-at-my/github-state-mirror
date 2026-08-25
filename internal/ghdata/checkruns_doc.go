@@ -6,20 +6,6 @@ import (
 )
 
 // The stored shape of GET /repos/{owner}/{repo}/commits/{ref}/check-runs
-// (commit_ci_cache, kind "check_runs").
-//
-// It lives here for the same reason the job shapes do: TWO writers render it
-// and both must produce the same bytes for the same check run -- the
-// fetch-on-miss path, and the `check_run` delivery that rewrites one entry
-// inside a stored page (ApplyCheckRunToCommitCI). The TRIM is here too, so
-// GitHub's check-run object has exactly one answer for what it becomes,
-// whether it arrived in a REST body or in a delivery.
-//
-// Field order is wire order. What is kept and what is dropped comes from the
-// 2026-07-11 consumer survey: required-builds reads output.title and renders
-// details_url/html_url, which are pinned exceptions to the no-URL doctrine;
-// `url`, node_id/external_id, check_suite, pull_requests and the rest of
-// `output` (unbounded display markdown) stay dropped.
 
 // StoredCheckRunApp is a check run's producing app, trimmed to its id -- the
 // one app field the known consumer contract branches on.

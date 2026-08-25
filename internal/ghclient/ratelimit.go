@@ -10,13 +10,7 @@ type RateLimitResource struct {
 	Reset     int64 `json:"reset"` // Unix epoch seconds when the window resets
 }
 
-// RateLimitResponse is the GET /rate_limit payload.
-//
-// Rate is GitHub's deprecated top-level alias for resources.core. GitHub still
-// sends it on every answer, so the mirror's own rebuild of this endpoint
-// (internal/api/respcache_ratelimit.go) sends it too: a caller that reads it
-// must not silently start reading nothing the day it points at the mirror.
-// Omitted when core is not known, never guessed.
+// RateLimitResponse is the GET /rate_limit payload; see docs/ghclient.md.
 type RateLimitResponse struct {
 	Resources map[string]RateLimitResource `json:"resources"`
 	Rate      *RateLimitResource           `json:"rate,omitempty"`

@@ -12,36 +12,22 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// defaultCacheMaxRows is the default per-table row ceiling for the response
-// caches (applied to ghdata.CacheMaxRows at startup). Pinned equal to that
-// var's own initializer by TestCacheMaxRowsDefaultMatchesGhdata.
+// defaultCacheMaxRows matches ghdata.CacheMaxRows' own initializer, pinned by TestCacheMaxRowsDefaultMatchesGhdata.
 const defaultCacheMaxRows int64 = 1_000_000
 
-// defaultRefreshInterval is the default periodic fleet-refresh cadence (see
-// REFRESH_INTERVAL).
+// defaultRefreshInterval is the default REFRESH_INTERVAL.
 const defaultRefreshInterval = 6 * time.Hour
 
-// defaultReplayInterval is the default cadence for the delivery-gap replayer
-// (see WEBHOOK_REPLAY_INTERVAL). Minutes, not hours: the window between a
-// lost delivery and its replay is a window in which the mirror serves an
-// answer it would not have served, and one of those answers is what stops a
-// PR from ever being updated.
+// defaultReplayInterval is minutes, not hours: the gap before a lost delivery is replayed can stall a PR forever.
 const defaultReplayInterval = 5 * time.Minute
 
-// defaultPassthroughDebounce / maxPassthroughDebounce bound the uncacheable-read
-// coalescing window (see PASSTHROUGH_DEBOUNCE). The max must stay in step with
-// internal/api's DebounceMaxWindow, which TestDebounceWindowBoundMatchesAPI
-// pins.
+// maxPassthroughDebounce must stay in step with internal/api's DebounceMaxWindow (TestDebounceWindowBoundMatchesAPI).
 const (
 	defaultPassthroughDebounce = 5 * time.Second
 	maxPassthroughDebounce     = 30 * time.Second
 )
 
-// defaultWebhookReorderWindow / maxWebhookReorderWindow bound the
-// delivery-reordering hold (see WEBHOOK_REORDER_WINDOW). GitHub gives a
-// webhook endpoint single-digit seconds to answer and every delivery waits
-// this window before dispatch, so a value near that limit would trade correct
-// ordering for the failed deliveries ordering exists to prevent.
+// maxWebhookReorderWindow stays under GitHub's single-digit-second delivery timeout.
 const (
 	defaultWebhookReorderWindow = 2 * time.Second
 	maxWebhookReorderWindow     = 5 * time.Second
@@ -51,44 +37,22 @@ type Config struct {
 	ListenAddr    string
 	DBPath        string
 	WebhookSecret string
-	// SubscriptionsDBPath is the subscriber-notification config DB — a
-	// SEPARATE SQLite file that survives the cache DB's schema nukes.
-	// Empty = derive from DBPath (github-mirror.db ->
-	// github-mirror-subscriptions.db; notify.DeriveDBPath, applied in
-	// cmd/server).
+	// SubscriptionsDBPath is a SEPARATE SQLite file; empty derives from DBPath (notify.DeriveDBPath).
 	SubscriptionsDBPath string
 	AllowedOrigins      []string
 	RefreshInterval     time.Duration
 	ReplayInterval      time.Duration
 
-	// PassthroughDebounce is how long an eligible uncacheable (passthrough) READ
-	// is held so identical concurrent requests can share one upstream call
-	// (internal/api/debounce.go). 0 disables coalescing and forwards
-	// immediately. The delay is deliberate on both counts: it collapses the
-	// fleet-sweep polling of unmodelable endpoints into one call per window,
-	// and it prices an uncacheable read into the caller's own latency.
+	// PassthroughDebounce holds an eligible uncacheable read so concurrent
 	PassthroughDebounce time.Duration
 
-	// WebhookReorderWindow is how long a delivery is held so other deliveries
-	// for the SAME subject can be sorted with it and applied oldest-first
-	// (internal/sync/reorder.go). 0 dispatches on arrival, leaving the
-	// watermark gate to refuse whatever arrives out of order. It is bounded
-	// hard: every delivery pays this in latency, and GitHub's own delivery
-	// timeout is single-digit seconds, so a window long enough to abandon a
-	// delivery must fail at startup rather than at 3am.
+	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-first; 0 skips straight to the watermark gate.
 	WebhookReorderWindow time.Duration
 
-	// CacheMaxRows is the per-table row ceiling for the response caches
-	// (cmd/server applies it to ghdata.CacheMaxRows at startup). One knob for
-	// every cache table: all but git_commits_cache are TTL-bounded, so for
-	// them the cap is only a runaway safety net; git_commits_cache (immutable
-	// rows, no TTL) is the one table that actually grows to the ceiling.
+	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
 	CacheMaxRows int64
 
-	// GitHub App credentials for background (periodic) refreshes. The service
-	// holds no static user token: API requests are authenticated by the
-	// caller's own Authorization header, and the only credential the service
-	// itself uses is this GitHub App (signed in per-installation).
+	// GitHub App credentials for background refreshes; the service holds no static user token otherwise.
 	GitHubAppID             string
 	GitHubAppPrivateKey     string // inline PEM (literal or \n-escaped)
 	GitHubAppPrivateKeyPath string // path to a PEM file (takes precedence)
@@ -151,10 +115,7 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// parseCacheMaxRows parses the CACHE_MAX_ROWS override for the response-cache
-// row ceiling. Absent/empty keeps the default; a value that is unparseable or
-// < 1 is an error (the server refuses to start) rather than a silent fallback
-// that would leave the operator running with a cap they didn't set.
+// parseCacheMaxRows parses CACHE_MAX_ROWS; unparseable or < 1 fails startup rather than silently falling back.
 func parseCacheMaxRows(s string) (int64, error) {
 	if s == "" {
 		return defaultCacheMaxRows, nil
@@ -169,11 +130,7 @@ func parseCacheMaxRows(s string) (int64, error) {
 	return n, nil
 }
 
-// parseRefreshInterval parses the REFRESH_INTERVAL override for the periodic
-// fleet-refresh cadence (a Go duration string, e.g. "6h" or "30m").
-// Absent/empty keeps the default; a value that is unparseable or not positive
-// is an error (the server refuses to start) rather than a silent fallback
-// that would leave the operator running with a cadence they didn't set.
+// parseRefreshInterval parses REFRESH_INTERVAL; unparseable or non-positive fails startup rather than silently falling back.
 func parseRefreshInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultRefreshInterval, nil
@@ -188,11 +145,7 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// parseReplayInterval parses the WEBHOOK_REPLAY_INTERVAL override for the
-// delivery-gap replayer. Absent/empty keeps the default; an explicit 0
-// disables the replayer entirely, which means accepting that a delivery
-// GitHub could not hand over stays missed. Unparseable or negative is an
-// error the server refuses to start on.
+// parseReplayInterval parses WEBHOOK_REPLAY_INTERVAL; an explicit 0 disables the replayer, accepting missed deliveries stay missed.
 func parseReplayInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultReplayInterval, nil
@@ -207,16 +160,7 @@ func parseReplayInterval(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// parsePassthroughDebounce parses the PASSTHROUGH_DEBOUNCE override for the
-// uncacheable-read coalescing window. Absent/empty keeps the default; an explicit
-// 0 disables coalescing (reads forward immediately). Unparseable, negative, or
-// implausibly long values are errors the server refuses to start on — the
-// window adds latency to every uncacheable read, so a fat-fingered "5m" must fail
-// loudly at boot instead of wedging the API.
-// parseWebhookReorderWindow parses WEBHOOK_REORDER_WINDOW. The ceiling is the
-// point at which holding a delivery starts risking GitHub's delivery timeout,
-// which would turn a latency knob into lost deliveries -- the exact failure the
-// reordering exists to reduce.
+// parseWebhookReorderWindow parses WEBHOOK_REORDER_WINDOW; the ceiling bounds risking GitHub's own delivery timeout.
 func parseWebhookReorderWindow(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultWebhookReorderWindow, nil
@@ -234,6 +178,7 @@ func parseWebhookReorderWindow(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// parsePassthroughDebounce parses PASSTHROUGH_DEBOUNCE; a fat-fingered value must fail loudly at boot, not wedge the API.
 func parsePassthroughDebounce(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultPassthroughDebounce, nil
@@ -251,19 +196,12 @@ func parsePassthroughDebounce(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// GitHubAppConfigured reports whether a GitHub App ID was provided. The private
-// key is validated separately (see AppPrivateKeyPEM) so a half-configured app is
-// surfaced as an error rather than silently ignored.
+// GitHubAppConfigured checks only the ID; AppPrivateKeyPEM validates the key separately.
 func (c Config) GitHubAppConfigured() bool {
 	return c.GitHubAppID != ""
 }
 
-// AppPrivateKeyPEM returns the GitHub App private key as PEM bytes, read from
-// GITHUB_APP_PRIVATE_KEY_PATH if set, otherwise from the inline
-// GITHUB_APP_PRIVATE_KEY value. Inline values may use \n-escaped newlines
-// (common when a PEM is stored in a single-line env var). It returns an error
-// only when a configured path cannot be read; a wholly unset key returns
-// (nil, nil) so the caller can treat the app as not configured.
+// AppPrivateKeyPEM prefers the path over the inline value; a wholly unset key returns (nil, nil), never an error.
 func (c Config) AppPrivateKeyPEM() ([]byte, error) {
 	if c.GitHubAppPrivateKeyPath != "" {
 		b, err := os.ReadFile(c.GitHubAppPrivateKeyPath)
@@ -285,9 +223,7 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// unescapeNewlines turns a single-line PEM that uses literal "\n" sequences into
-// a real multi-line PEM. If the value already contains real newlines it is
-// returned unchanged.
+// unescapeNewlines turns a literal "\n"-escaped single-line PEM into a real multi-line one; real newlines pass through.
 func unescapeNewlines(s string) string {
 	if strings.Contains(s, "\n") {
 		return s
@@ -295,9 +231,7 @@ func unescapeNewlines(s string) string {
 	return strings.ReplaceAll(s, `\n`, "\n")
 }
 
-// parseOrigins splits a comma-separated ALLOWED_ORIGINS value into a list of
-// allowed CORS origins. An empty value defaults to ["*"] (allow any origin),
-// which is safe because the mirror isolates data by token fingerprint.
+// parseOrigins defaults an empty ALLOWED_ORIGINS to ["*"], safe because the mirror isolates data by token fingerprint.
 func parseOrigins(s string) []string {
 	out := make([]string, 0)
 	for _, p := range strings.Split(s, ",") {
@@ -332,8 +266,7 @@ func sessionSecret(env string) []byte {
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand failure is fatal-ish; fall back to a fixed (insecure) key
-		// rather than crash. Operators should set SESSION_SECRET in production.
+		// Falls back to a fixed, insecure key rather than crash; set SESSION_SECRET in production.
 		slog.Error("could not generate session secret; set SESSION_SECRET", "error", err)
 		return []byte("insecure-fallback-session-key")
 	}

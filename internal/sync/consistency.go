@@ -15,16 +15,6 @@ import (
 
 // ConsistencyChecker compares the GLOBAL truth store against GitHub's live
 // state and reports the drift -- one comparison for the one cache. It fetches
-// the "source of truth" with the mirror's own GitHub App (the same credential
-// the periodic refresher uses), via the owner-agnostic repositoryOwner query,
-// so User-account installations are checked like Organizations.
-//
-// Check is strictly read-only. CheckAndApply additionally CORRECTS the drift
-// it found: it absorbs the fetched snapshot into truth (SyncOrgTruth under the
-// installation's principal), sets visibility/default_branch_status/
-// auto_merge_method from GitHub's answers (including nulls the COALESCE
-// upserts can never write), and reconciles contradicted commit_checks rows so
-// the correction survives the next webhook (see applyOwner).
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
@@ -37,9 +27,6 @@ func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, fresh *fres
 }
 
 // Available reports whether the checker can run. The consistency check needs the
-// GitHub App to fetch source of truth; without it there is no server-side
-// credential able to read repo/PR data (the dashboard's OAuth login is
-// read:user only).
 func (c *ConsistencyChecker) Available() bool { return c.app != nil }
 
 // InstallationRateLimit is the GitHub rate-limit status for one App installation
@@ -74,9 +61,6 @@ func (c *ConsistencyChecker) RateLimits(ctx context.Context) ([]InstallationRate
 			continue
 		}
 		// Label the poll with the installation's stable principal (the same
-		// key the background refresher runs under), so the passive rate meter
-		// records it there instead of under an hourly-rotating token
-		// fingerprint — plus the account login as its display name.
 		tctx := actor.WithActor(ghclient.WithToken(ctx, token), AppInstallationActor(inst.ID))
 		if inst.Account.Login != "" {
 			tctx = actor.WithName(tctx, inst.Account.Login)
@@ -99,14 +83,10 @@ type ConsistencyReport struct {
 	FetchedAs   string `json:"fetched_as"`   // identity used to read GitHub (the truth source)
 	GeneratedAt string `json:"generated_at"` // RFC3339
 	// CheckStartedAt is when the run began, captured BEFORE any GitHub fetch:
-	// a GitHub-side timestamp at or after it proves the resource moved while
-	// the check ran (the raced_during_check classification's anchor).
 	CheckStartedAt string    `json:"check_started_at"`
 	OrgsChecked    []string  `json:"orgs_checked"` // owners actually re-fetched and diffed
 	OrgsSkipped    []OrgSkip `json:"orgs_skipped,omitempty"`
 	// TruthFreshness is, per owner, the most recent org list-sync any
-	// principal ran (the fetch that refreshes global truth), so drift can be
-	// read against how stale truth actually is.
 	TruthFreshness map[string]ScopeFreshness `json:"truth_freshness,omitempty"`
 	Summary        CheckSummary              `json:"summary"`
 	// Applied tallies apply-mode corrections; nil on a read-only check.
@@ -122,7 +102,6 @@ type ScopeFreshness struct {
 	Error         string `json:"error,omitempty"`           // last fetch error, if any
 	Principal     string `json:"principal,omitempty"`       // whose sync marker this is
 	// PrincipalName is Principal's recorded display name (user login / app
-	// slug / installation account login) from actor_identities, when known.
 	PrincipalName string `json:"principal_name,omitempty"`
 }
 
@@ -142,25 +121,15 @@ type CheckSummary struct {
 	ReposOnlyInCache  int `json:"repos_only_in_cache"`
 	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
 	// ReposOnlyOnGitHubPrivate is the subset of ReposOnlyOnGitHub that are
-	// private/internal on GitHub -- under the global model these are repos NO
-	// principal has synced or webhooked yet (truth is lazy), not per-caller
-	// blind spots.
 	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
 	// ReposOnlyInCacheArchived is the subset of ReposOnlyInCache that are
-	// archived (on GitHub or in the cached row): archived repos are excluded
-	// from the org data fetch by design, so these are expected, not drift.
 	ReposOnlyInCacheArchived int `json:"repos_only_in_cache_archived"`
 	PRsOnlyInCache           int `json:"prs_only_in_cache"`
 	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
 	FieldMismatches          int `json:"field_mismatches"`
 	// VisibilityLeaks counts repos cached PUBLIC that GitHub says are
-	// private/internal -- the dangerous direction: the reveal fast path is
-	// serving them to any authenticated caller.
 	VisibilityLeaks int `json:"visibility_leaks"`
 	// RacedDuringCheck counts informational raced_during_check entries: the
-	// GitHub-side value moved at/after the check's start (a push or head move
-	// landing WHILE the check ran), so the difference is race, not drift.
-	// Deliberately NOT counted into FieldMismatches.
 	RacedDuringCheck int `json:"raced_during_check"`
 }
 
@@ -190,20 +159,14 @@ type Discrepancy struct {
 	Cached string `json:"cached,omitempty"`
 	GitHub string `json:"github,omitempty"`
 	// Visibility is the live visibility ("private"/"internal") on an
-	// only_on_github repo: global truth simply has not absorbed it yet (no
-	// webhook, no principal's sync) -- not necessarily a cache failure.
 	Visibility string `json:"visibility,omitempty"`
 	// Archived marks an only_in_cache repo whose absence from the org data is
-	// explained by archival (expected, not drift).
 	Archived bool `json:"archived,omitempty"`
 	// Title/UpdatedAt/TouchedAt carry the cached row's detail on
-	// pr only_in_cache entries, so the operator can triage without a browse.
 	Title     string `json:"title,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 	TouchedAt string `json:"touched_at,omitempty"`
 	// ServedNow marks a PR-existence discrepancy whose repo has a LIVE
-	// pulls-list marker: the cached (wrong) list is being served right now.
-	// Without a marker the next list read misses, re-fetches, and self-heals.
 	ServedNow bool   `json:"served_now,omitempty"`
 	Note      string `json:"note,omitempty"`
 	// Fix is a short remediation hint for this discrepancy class.
@@ -211,15 +174,11 @@ type Discrepancy struct {
 }
 
 // Check runs the read-only consistency check for the global truth store. When
-// orgFilter is non-empty only that owner is checked; otherwise every owner
-// with cached repos is checked. The cache is never modified.
 func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
 	return c.run(ctx, orgFilter, false, nil)
 }
 
 // CheckAndApply runs the consistency check and then CORRECTS the drift from
-// the same fetched snapshot (see applyOwner). The report's discrepancies show
-// the PRE-apply state; Applied tallies the corrections written.
 func (c *ConsistencyChecker) CheckAndApply(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
 	return c.run(ctx, orgFilter, true, nil)
 }
@@ -230,8 +189,6 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 	}
 
 	// checkStart anchors the raced_during_check classification; captured
-	// BEFORE any GitHub fetch so "GitHub's timestamp >= checkStart" can only
-	// mean the resource moved while the check was in progress.
 	checkStart := time.Now().UTC()
 
 	report := &ConsistencyReport{
@@ -300,8 +257,6 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		progress.emit(ProgressEvent{Phase: "owner", Owner: owner, Index: i + 1, Total: len(owners)})
 
 		// The owner's most-recent sync staleness, whether or not the owner
-		// ends up checked -- long-unsynced truth explains drift. (In apply
-		// mode this reads the PRE-apply marker; the apply stamps a fresh one.)
 		c.recordTruthFreshness(ctx, report, owner, actorNames)
 
 		skip := func(reason string) {
@@ -323,7 +278,6 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		fetchCtx := ghclient.WithToken(ctx, token)
 		fetchStart := time.Now()
 		// Per fetched page (5 repos each), report how far along the owner's
-		// repo fetch is -- the dominant cost of a large owner's check.
 		var onPage ghclient.OwnerPageFunc
 		if progress != nil {
 			onPage = func(fetched, total int) {
@@ -337,10 +291,6 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		}
 
 		// Repo visibility + archive state as the App sees it, via the
-		// checker-private query (NEVER the shared cached-route query).
-		// Best-effort: without it the diff still runs, but visibility diffs
-		// and missing-repo private/archived classification are unavailable --
-		// which the report says out loud instead of silently reading as clean.
 		progress.emit(ProgressEvent{Phase: "visibility", Owner: owner})
 		visibility, verr := c.gh.OwnerRepoVisibilities(fetchCtx, owner)
 		if verr != nil {
@@ -360,7 +310,6 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 				report.Notes = append(report.Notes, fmt.Sprintf("owner %s: apply failed partway: %v", owner, err))
 			}
 			// Snapshot the tally: the report's pointer keeps mutating as later
-			// owners apply, so the event must carry its own copy.
 			applied := *report.Applied
 			progress.emit(ProgressEvent{Phase: "applied", Owner: owner, Applied: &applied})
 		}

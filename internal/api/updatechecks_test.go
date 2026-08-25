@@ -37,6 +37,3 @@ func TestUnregisteredPathAnswers401NotFound(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code,
 		"an unrouted path falls through to the passthrough proxy, which rejects a tokenless request")
 }
-
-// The failing half of health lives with the thing it asserts:
-// TestPingFailsOnAClosedDatabase in internal/ghdata.

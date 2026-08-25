@@ -11,26 +11,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached git-commit route (tier 2 of the cache
-// contract, like respcache.go, which it was split out of):
-//
-//	GET /repos/{owner}/{repo}/git/commits/{sha}
-//
-// isFullHexSHA (shared by the commits-list, commit-CI, and workflow-runs
-// routes) lives here with its primary user.
+// Implements GET /repos/{owner}/{repo}/git/commits/{sha} (tier 2).
 
-// gitCommitMissTTL bounds a cached git-commit 404 verdict. Round 1
-// deliberately did NOT cache these ("a missing sha can be pushed later");
-// round 2 bounds that concern with this expiry PLUS the clear-on-upsert
-// invariant (every real commit absorb -- fetch, push payload, commits-list,
-// compare -- clears its sha's marker via ghdata.upsertGitCommit), because
-// the dominant traffic is pr-minder's mergeWouldBeEmpty re-reading GC'd
-// test-merge shas on every fleet sweep: a sha GitHub has garbage-collected
-// 404s FOREVER, and each of those reads used to be a fresh upstream 404.
-// Consumers fail open on a 404 (mergeWouldBeEmpty treats it as "cannot
-// verify, run the update"), so the rare wrong-marker window -- a sha pushed
-// while its marker lives but before any absorb path sees the commit -- is
-// safe as well as bounded.
+// gitCommitMissTTL bounds a cached git-commit 404 verdict; consumers fail open on 404.
 const gitCommitMissTTL = 24 * time.Hour
 
 // cachedGitCommit serves a git commit from absorbed state. Commits are
@@ -209,6 +192,5 @@ func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.C
 	}, true
 }
 
-// isFullHexSHA is ghdata's, aliased so the routes and the storage layer that
-// validates what they write agree on what a sha is. See ghdata.IsFullHexSHA.
+// isFullHexSHA aliases ghdata.IsFullHexSHA so routes and storage agree on the definition.
 var isFullHexSHA = ghdata.IsFullHexSHA

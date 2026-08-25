@@ -11,12 +11,9 @@ const (
 	OutcomeDelivered = "delivered"
 	// OutcomeFailed: every attempt failed (a terminal failure).
 	OutcomeFailed = "failed"
-	// OutcomeDisabled: a terminal failure that also tripped the auto-disable
-	// threshold.
+	// OutcomeDisabled: a terminal failure that also tripped auto-disable.
 	OutcomeDisabled = "disabled"
-	// OutcomeGated: the reveal gate blocked the notification (no public
-	// visibility and no live grant — or the gate could not decide, which
-	// fails closed).
+	// OutcomeGated: the reveal gate blocked the notification; see docs/notifications.md.
 	OutcomeGated = "gated"
 )
 
@@ -25,9 +22,7 @@ type Attempt struct {
 	At             string `json:"at"` // RFC3339Nano UTC
 	SubscriptionID string `json:"subscription_id"`
 	Principal      string `json:"principal"`
-	// PrincipalName is Principal's recorded display name. The notify package
-	// never sets it — the admin handler joins it from actor_identities when
-	// serving the activity view (display-only decoration).
+	// PrincipalName is joined in by the admin handler; see docs/notifications.md.
 	PrincipalName string `json:"principal_name,omitempty"`
 	Event         string `json:"event"`
 	Action        string `json:"action,omitempty"`
@@ -50,10 +45,7 @@ type Counters struct {
 // activityRingCap bounds the recent-attempts ring.
 const activityRingCap = 512
 
-// activityLog is the in-memory, bounded record of recent delivery attempts
-// plus cumulative counters — the requestLog stance: a live operational view,
-// not an audit log. Deliberately unpersisted (it resets on restart); methods
-// are safe for concurrent use and no-op on a nil receiver.
+// activityLog: a live operational view, not an audit log; see docs/notifications.md.
 type activityLog struct {
 	mu       sync.Mutex
 	counters Counters

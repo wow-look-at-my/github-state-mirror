@@ -11,12 +11,8 @@ import (
 // from -- so both parse strictly: a payload with no identifiable job or run
 // is an error, never a guess.
 
-// WorkflowJobPayload is a GitHub Actions job's state parsed from a
-// workflow_job webhook. Only the in_progress and completed actions are
-// tracked (the dispatcher drops queued/waiting churn); this struct carries just
-// what the global workflow_jobs table stores. Empty string means the payload
-// didn't report the field (e.g. Conclusion until completed, RunnerName until a
-// runner is assigned).
+// WorkflowJobPayload is a GitHub Actions job's state parsed from a workflow_job webhook; empty string means the field was not reported yet.
+// see docs/webhooks/response-cache-invalidation.md
 type WorkflowJobPayload struct {
 	Owner        string
 	Repo         string
@@ -94,12 +90,6 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 	return p, nil
 }
 
-// ParseWorkflowRunHeadSHA extracts workflow_run.head_sha from a workflow_run
-// webhook payload ("" when absent or unparseable). Deliberately minimal: the
-// dispatcher's only use for the event is flushing that sha's cached
-// workflow-runs pages -- a startup_failure run creates no jobs, check runs,
-// or statuses, so this delivery is the sole signal the cached listing moved
-// -- and nothing else reads the payload.
 func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
 	sha, _ := ParseWorkflowRunIdentity(raw)
 	return sha
@@ -122,11 +112,8 @@ func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64)
 	return body.WorkflowRun.HeadSHA, body.WorkflowRun.ID
 }
 
-// WorkflowRunPayload is an Actions run's state parsed from a workflow_run
-// webhook -- the authoritative per-run signal, and the only one for a run
-// that creates no jobs at all (a startup_failure, or a run held by a
-// concurrency group). Empty string means the payload did not report the
-// field (Conclusion until completed, RunStartedAt until it starts).
+// WorkflowRunPayload is an Actions run's state parsed from a workflow_run webhook, the only signal for a run that creates no jobs at all.
+// see docs/webhooks/response-cache-invalidation.md
 type WorkflowRunPayload struct {
 	Owner        string
 	Repo         string

@@ -25,8 +25,7 @@ func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", testSHA, 50, 2, `{"total_count":2}`, now, time.Hour))
 	require.NoError(t, s.PutCachedWorkflowRuns(ctx, "org1", "repo1", otherTestSHA, 30, 1, `{"total_count":3}`, now, time.Hour))
 
-	// Keys normalize (URL casing folds) and the pagination shape is part of
-	// the key: each shape is its own row.
+	// Keys normalize (URL casing folds), and the pagination shape is part of the key.
 	doc, ok, err := s.GetCachedWorkflowRuns(ctx, "ORG1", "REPO1", testSHA, 30, 1, now)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -87,8 +86,7 @@ func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 	require.NoError(t, s.ApplyWorkflowRun(ctx, run(3, "queued", "3"), now))
 	require.Len(t, queued(), 3, "three runs are queued")
 
-	// One run starts. Only that run leaves the backlog; the other two are
-	// still served from the same rows, never re-fetched.
+	// One run starts; only it leaves the backlog, the others stay served from the same rows.
 	require.NoError(t, s.ApplyWorkflowRun(ctx, run(2, "in_progress", "4"), now))
 	rows := queued()
 	require.Len(t, rows, 2, "exactly one run left the backlog")
@@ -100,8 +98,7 @@ func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 	require.Len(t, running, 1)
 	assert.EqualValues(t, 2, running[0].RunID, "the moved run is now in the in_progress view")
 
-	// Filters compose, and owner/repo keys fold URL casing like every other
-	// table.
+	// Filters compose, and owner/repo keys fold URL casing like every other table.
 	_, total, err = s.ListWorkflowRuns(ctx, "ORG1", "REPO1", WorkflowRunFilter{Status: "queued", HeadBranch: "main"}, 100, 1)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, total)
@@ -215,9 +212,7 @@ func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, total, "the omitted run is gone; the listed ones stay")
 
-	// An EMPTY complete answer means nothing matches any more -- not "keep
-	// everything" (NOT IN () is also a SQLite syntax error, so this is the
-	// sentinel path).
+	// An empty complete answer means nothing matches (NOT IN () is a SQLite syntax error).
 	require.NoError(t, s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, nil))
 	_, total, err = s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
 	require.NoError(t, err)
@@ -364,7 +359,7 @@ func TestInvalidateCommitCIForRef(t *testing.T) {
 	put := func(ref, kind string, perPage, page int) {
 		t.Helper()
 		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind, Doc: `{"seeded":true}`,
+			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind, Status: 200, Doc: `{"seeded":true}`,
 		}, perPage, page, now, time.Hour))
 	}
 	serves := func(ref, kind string, perPage, page int) bool {

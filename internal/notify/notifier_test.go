@@ -329,8 +329,7 @@ func TestNotifierPublicRepoDeliveredToAnyone(t *testing.T) {
 }
 
 func TestNotifierUnknownVisibilityGated(t *testing.T) {
-	// The repo is absent from truth entirely (e.g. the delivery itself
-	// deleted it and the cascade removed the row): fail closed, grant-only.
+	// The repo is absent from truth entirely: fail closed, grant-only.
 	access := newFakeAccess()
 	n, st := newTestNotifier(t, access, nil)
 

@@ -8,26 +8,8 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Streaming mode for the admin consistency check / reconcile:
-//
-//	GET  /api/cache/check?stream=1[&org=<o>]
-//	POST /api/cache/check?stream=1&apply=true[&org=<o>]
-//
-// A real fleet run takes minutes (per owner: the paginated GetOwnerData fetch
-// at 5 repos/page, the visibility fetch, the diff, and in apply mode the
-// corrections), so with ?stream=1 the endpoint answers application/x-ndjson
-// and writes one JSON line per checker progress event, flushing after every
-// line so the reverse proxy in front (Cloudflare) relays them live instead of
-// buffering the whole run. The FINAL line is
-//
-//	{"phase":"report","report":<ConsistencyReport>}
-//
-// carrying the exact report the non-stream path returns -- or, when the run
-// fails after the 200 has already been committed,
-//
-//	{"phase":"error","error":"..."}
-//
-// Non-stream requests are untouched: one buffered application/json report.
+// Streaming mode for the admin consistency check / reconcile.
+// see docs/dashboard/operator-tooling.md
 
 // checkStreamLine is one NDJSON line: a checker progress event, extended with
 // the terminal report/error fields for the final line.
@@ -48,8 +30,7 @@ func (d *dashboard) streamCacheCheck(w http.ResponseWriter, r *http.Request, org
 		return false
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
-	// The line stream must reach the operator live: never cached, and
-	// buffering proxies (nginx honors X-Accel-Buffering) told not to hold it.
+	// Never cache; tell proxies not to buffer this.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 
@@ -67,16 +48,12 @@ func (d *dashboard) streamCacheCheck(w http.ResponseWriter, r *http.Request, org
 	if apply {
 		run = d.checker.CheckAndApplyWithProgress
 	}
-	// The run deliberately stays on r.Context(): the operator closing the
-	// modal (aborting the fetch) cancels it mid-flight. That is safe -- a
-	// read-only check writes nothing, and every apply correction is
-	// idempotent, so a re-run simply redoes the remainder.
+	// Stays on r.Context(): a check writes nothing and apply is idempotent, so cancelling mid-run is safe.
 	report, err := run(r.Context(), org, func(ev syncpkg.ProgressEvent) {
 		writeLine(checkStreamLine{ProgressEvent: ev})
 	})
 	if err != nil {
-		// The 200 + partial body is already committed; the error line IS the
-		// error channel (mirrors the non-stream 502 body text).
+		// The error line is the error channel; it mirrors the non-stream 502 body.
 		slog.Warn("consistency check failed", "apply", apply, "stream", true, "error", err)
 		writeLine(checkStreamLine{ProgressEvent: syncpkg.ProgressEvent{Phase: "error"}, Error: "consistency check failed: " + err.Error()})
 		return true

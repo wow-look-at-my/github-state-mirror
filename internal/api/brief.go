@@ -12,22 +12,8 @@ import (
 	"time"
 )
 
-// The implementation BRIEF: `GET /api/brief`, behind the dashboard's "Copy
-// implementation brief" button.
-//
-// Modeling a new cached route used to start with a human copy-pasting the
-// Requests tab into a chat window — which loses the two things that actually
-// decide the design (the query shapes callers send, and the SHAPE of what
-// GitHub answers) and carries a lot of noise that does not. This assembles the
-// whole picture server-side, from the request-group counters (requestgroups.go)
-// joined to the sampled shapes (shapes.go), and renders it as one Markdown
-// document: the uncached routes ranked by traffic, each with its reasons,
-// query-parameter names, callers, upstream statuses, and the key/type skeleton
-// of the response — followed by this repo's own tier-2 checklist, so the brief
-// is directly actionable rather than a pile of numbers.
-//
-// It contains no values: query parameters appear by NAME, response bodies as
-// key/type skeletons. Admin-only, like every other operator view.
+// GET /api/brief joins uncached-route counters to captured shapes.
+// see docs/dashboard/implementation-brief.md
 
 // briefPayload is the JSON form. Markdown is the deliverable the button
 // copies; the structured fields ride along so the same endpoint is usable
@@ -81,8 +67,7 @@ func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, l
 type briefView struct {
 	GeneratedAt string
 	Total       int64
-	// Dispositions is the totals line, in a fixed reading order rather than
-	// map order.
+	// Fixed reading order, not map order.
 	Dispositions []dispositionCount
 	// PassthroughTotal is the denominator for "% of all passthroughs".
 	PassthroughTotal int64
@@ -95,17 +80,10 @@ type dispositionCount struct {
 	Count int64
 }
 
-// briefTemplate is the document (brief.md.tmpl) -- kept as Markdown in its own
-// file so editing a heading or a bullet is editing Markdown. text/template,
-// NOT html/template: this is Markdown for a human and a model to read, and
-// HTML-escaping would mangle every `<`, `&`, and quote in a captured path or
-// skeleton.
-//
 //go:embed brief.md.tmpl
 var briefTemplate string
 
-// briefTmpl is parsed once at init: a template typo is then a startup panic in
-// every test and every boot, not a broken response some Tuesday.
+// Parsed at init, so a template syntax error panics at startup, not at request time.
 var briefTmpl = template.Must(template.New("brief").Funcs(briefFuncs).Parse(briefTemplate))
 
 // briefFuncs are the computations the document needs. Each is a pure function
@@ -153,9 +131,7 @@ func renderBrief(snap requestLogSnapshot, cands []briefCandidate, generatedAt st
 	}
 	var b strings.Builder
 	if err := briefTmpl.Execute(&b, view); err != nil {
-		// The template is parsed at init and its data is plain structs, so an
-		// execution error means a template edit no test exercised. Say so in
-		// the document rather than serving a silent half-brief.
+		// An execution error here means an untested template edit; say so in the document.
 		slog.Error("render implementation brief failed", "error", err)
 		return "# github-state-mirror — uncached traffic brief\n\nThe brief template failed to render: " + err.Error() + "\n"
 	}

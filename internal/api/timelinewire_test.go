@@ -13,9 +13,7 @@ import (
 	"github.com/wow-look-at-my/js-snippets/timelinewire"
 )
 
-// The format, the mapping, and the tests for both are js-snippets'. What is
-// ours is the VOCABULARY -- the `wire:` tags on reqtimeline.Event -- and the
-// chart's agreement with it. That is all these tests cover.
+// Covers only the vocabulary (the `wire:` tags) and the chart's agreement with it -- see docs/timeline-wire-format.md.
 
 func mustEncodeTimeline(t *testing.T, snap reqtimeline.Snapshot) []byte {
 	t.Helper()
@@ -147,9 +145,7 @@ func tsField(t *testing.T, src []byte, field string) string {
 	return string(m[1])
 }
 
-// The size claim, asserted rather than quoted. This is the regression guard for
-// the whole feature: a change that quietly reverted to per-event strings would
-// still round-trip, and only this test would notice.
+// Guards the whole feature: a revert to per-event strings would still round-trip, and only this test would notice.
 func TestTimelineWireIsMuchSmallerThanJSON(t *testing.T) {
 	tl := reqtimeline.New()
 	base := time.Now().UTC().Add(-24 * time.Hour)
@@ -161,9 +157,7 @@ func TestTimelineWireIsMuchSmallerThanJSON(t *testing.T) {
 	snap := tl.Snapshot(0)
 	wire := len(mustEncodeTimeline(t, snap))
 	perEvent := float64(wire) / float64(len(snap.Events))
-	// Measured ~24 B/event on realistic mixed traffic (docs/timeline-wire-format.md);
-	// this uniform corpus is friendlier, so 40 is a loose ceiling that only a
-	// real regression trips.
+	// Measured ~24 B/event on real traffic (docs/timeline-wire-format.md); 40 is a loose ceiling.
 	assert.LessOrEqual(t, perEvent, 40.0,
 		"columnar payload is %.1f B/event (%d bytes) — expected well under 40", perEvent, wire)
 

@@ -19,47 +19,14 @@ import (
 //	GET /repos/{owner}/{repo}/hooks
 //	GET /orgs/{org}/hooks
 //
-// Together the largest genuinely unrouted slice of the request log after the
-// runs listing: 6045 and 2016 forwards in one process, a fleet sweep asking
-// "is our hook on this repo / this org" over and over.
-//
-// KEYED BY THE CREDENTIAL, and here that is a security decision rather than a
-// correctness one. These are ADMIN-only reads: GitHub refuses them to a caller
-// who can merely READ the repository. The reveal layer proves exactly that
-// READ access -- and its public fast path admits ANY authenticated principal
-// without asking GitHub anything -- so a global row behind the ordinary gate
-// would hand a read-only caller the repo's webhook endpoints. A row keyed by
-// the bearer's fingerprint is self-gating instead: it can only ever be
-// replayed to the exact credential GitHub already answered it for, which needs
-// no new authorization machinery to be correct.
-//
-// What that costs is sharing: two credentials asking about the same repo each
-// pay their own fetch. A GLOBAL row would need an admin oracle
-// (`permissions.admin` on the repository object, or the installation's own
-// permission set) -- docs/cache/rest-routes.md carries that design and, more
-// importantly, the arithmetic that decides whether it would actually pay for
-// this fleet's traffic. It is not obvious that it would.
-//
-// STALENESS, stated plainly: the TTL is the primary bound, not a backstop.
-// GitHub's `meta` event looks like the invalidation signal and is NOT one --
-// it is delivered only to the webhook being deleted, so another hook's
-// deletion is something the mirror never hears about. What the mirror does see
-// is a write it PROXIES on these same paths (flushed before forwarding, across
-// every credential, since one caller's hook change moves everyone's answer)
-// and `repository` events. A change made in the UI, or by a client that does
-// not go through the mirror, is invisible until the TTL -- which is why it is
-// minutes.
+// Keyed by the bearer's fingerprint: an admin-only read, so a global row
 
 const (
-	// hooksCacheTTL is the PRIMARY bound on a row: see the staleness note
-	// above. A hook reconciler working from a stale listing could create a
-	// duplicate webhook, so this stays short even though the mirror flushes
-	// on every write it proxies.
+	// hooksCacheTTL stays short: a reconciler working from a stale listing could create a duplicate webhook.
 	hooksCacheTTL = 5 * time.Minute
 
 	hooksDefaultPerPage = 30
-	// hooksMaxCachedPage caps the modeled pages; deeper pagination passes
-	// through. No repo or org in this fleet has more than a handful of hooks.
+	// hooksMaxCachedPage caps modeled pages; deeper pagination passes through.
 	hooksMaxCachedPage = 10
 )
 
@@ -79,8 +46,7 @@ func (h *handlers) cachedOrgHooks(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghdata.HooksTarget) {
 	token := bearerToken(r)
 	if token == "" {
-		// requireAuth already rejects these; belt and braces so a row can
-		// never be stored (or served) under an empty credential key.
+		// requireAuth already rejects these; belt-and-braces against an empty credential key.
 		h.passthrough(w, r, PassIdentity)
 		return
 	}
@@ -113,10 +79,7 @@ func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghd
 
 	doc, absorbed := absorbHooks(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 403 (the caller is not an admin), 404, 5xx, and any shape the model
-		// cannot hold: relayed verbatim, never stored. A 403 is deliberately
-		// NOT a cached verdict -- a permission grant is exactly the kind of
-		// thing that changes without any event reaching the mirror.
+		// 403/404/5xx and unmodeled shapes relay unstored; a permission grant can change with no event reaching the mirror.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -127,15 +90,8 @@ func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghd
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// writeRepoHooks / writeOrgHooks forward a hook WRITE (recorded as a write,
-// like every proxied mutation) after dropping that target's cached listings
-// ACROSS EVERY CREDENTIAL -- a hook one caller creates changes the answer every
-// caller gets, so a per-credential flush would leave the others reconciling
-// against a listing that no longer exists and creating duplicates.
-//
-// The flush runs BEFORE forwarding, on the Code Quality route's reasoning: a
-// failed write that dropped the rows costs one miss, while a successful write
-// whose flush was skipped serves a wrong answer for the whole TTL.
+// writeRepoHooks / writeOrgHooks flush hooks across every credential, before forwarding the write.
+// see docs/cache/rest-routes.md
 func (h *handlers) writeRepoHooks(w http.ResponseWriter, r *http.Request) {
 	h.flushHooksThenForward(w, r, ghdata.RepoHooksTarget(chi.URLParam(r, "owner"), chi.URLParam(r, "repo")))
 }
@@ -181,13 +137,8 @@ func parseHooksShape(q url.Values) (perPage, page int64, ok bool) {
 	return perPage, page, true
 }
 
-// hookJSON is one trimmed hook. GitHub's API self-links (url, test_url,
-// ping_url, deliveries_url) are dropped; `config.url` is KEPT and is a pinned
-// exception to the no-URL rule, on grounds the other exceptions do not need:
-// it is not a link into GitHub's API but the hook's own destination, the field
-// that says WHICH hook this is. A listing without it does not answer the
-// question the endpoint exists for, so trimming it would not be a trimmed
-// answer but a broken one.
+// hookJSON is one trimmed hook. config.url is a pinned no-URL exception: it is the hook's own destination, not a link into GitHub's API.
+// see docs/cache/rest-routes.md
 type hookJSON struct {
 	ID           int64                 `json:"id"`
 	Type         string                `json:"type,omitempty"`
@@ -200,12 +151,7 @@ type hookJSON struct {
 	LastResponse *hookLastResponseJSON `json:"last_response,omitempty"`
 }
 
-// hookConfigJSON preserves PRESENCE exactly, the PR-files route's stance for
-// optional fields: GitHub omits `secret` entirely when no secret is set and
-// sends a fixed mask when one is, so the key's presence is itself the answer
-// to "is a secret configured" and must not be invented or dropped.
-// `insecure_ssl` is documented as either a string or a number, so it rides as
-// raw JSON rather than being coerced into one of them.
+// hookConfigJSON preserves secret's PRESENCE exactly (a fixed mask means one is set); insecure_ssl rides as raw JSON since GitHub documents it as either a string or a number.
 type hookConfigJSON struct {
 	URL         string          `json:"url,omitempty"`
 	ContentType string          `json:"content_type,omitempty"`
@@ -213,10 +159,7 @@ type hookConfigJSON struct {
 	Secret      *string         `json:"secret,omitempty"`
 }
 
-// hookLastResponseJSON is the delivery outcome GitHub attaches to a repo hook.
-// It moves with every delivery and no webhook names the change, so within the
-// TTL it is honestly stale -- but omitting a key a consumer branches on would
-// be worse than serving it a few minutes old.
+// hookLastResponseJSON is honestly TTL-stale: it moves with every delivery, and no webhook names the change.
 type hookLastResponseJSON struct {
 	Code    *int64  `json:"code"`
 	Status  string  `json:"status"`

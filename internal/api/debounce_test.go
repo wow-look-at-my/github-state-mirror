@@ -15,9 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// countingUpstream is a stand-in for the GitHub passthrough proxy: it records
-// every call that actually reached "upstream" and echoes an identifying body,
-// so a test can prove how many round trips N inbound requests cost.
+// countingUpstream: see docs/testing/test-harness.md.
 type countingUpstream struct {
 	calls   int32
 	body    func(r *http.Request) string
@@ -213,8 +211,7 @@ func TestDebounce_IneligibleRequestsForwardImmediately(t *testing.T) {
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := &countingUpstream{}
-			// A window far longer than the assertion below tolerates: if the
-			// request were held, the test would take a second, not ~0.
+			// A window far longer than the assertion below tolerates.
 			d := NewDebouncer(2 * time.Second)
 			t.Cleanup(func() { d.Drain(2 * time.Second) })
 			h := d.Wrap(u.handler())
@@ -286,8 +283,7 @@ func TestDebounce_WaiterCancellationDoesNotKillTheBatch(t *testing.T) {
 	t.Cleanup(func() { d.Drain(3 * time.Second) })
 	h := d.Wrap(u.handler())
 
-	// The first arrival — whose request is the one cloned for the batch —
-	// disconnects almost immediately.
+	// The first arrival, whose request is cloned for the batch, disconnects almost immediately.
 	gone := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -412,27 +408,16 @@ func TestDebounce_NilIsInert(t *testing.T) {
 	d.Drain(time.Second)
 }
 
-// TestDebounce_ThroughRouterRecordsStats drives the real router so the
-// dashboard's side of the feature is covered: each waiter is still recorded as
-// its own passthrough (with its reason), and the route group reports both the
-// requests held and the upstream calls coalescing avoided.
+// TestDebounce_ThroughRouterRecordsStats: see docs/testing/test-harness.md.
 func TestDebounce_ThroughRouterRecordsStats(t *testing.T) {
 	svc := configuredAuth(t)
 	u := newWorkflowRunsUpstream()
-	// The window must outlast the spread between the first and last waiter
-	// ARRIVING at the debouncer, or the batch splits and only n-2 calls are
-	// saved. Through the real router that spread is real work, not scheduling
-	// noise: an unseen token costs requireAuth a GET /user round trip and the
-	// reveal layer a repo probe plus its grant write, and four goroutines race
-	// each other for the same SQLite writer to do it. So warm both below
-	// before firing, and keep a window wide enough to absorb what a loaded
-	// runner still adds -- this assertion has failed in CI at 100ms.
+	// Window must outlast the arrival spread, or the batch splits; see docs/testing/test-harness.md.
 	s := newFullTestStackDebounced(t, svc, u.handler(), 500*time.Millisecond)
 
 	const n = 4
 	target := "/repos/org1/repo1/actions/runs?event=push&per_page=100"
-	// A different route shape, so it lands in its own request group and none of
-	// the assertions below can see it.
+	// A different route shape, invisible to the assertions below.
 	warm := do(t, s.router, authedReq("GET", "/repos/org1/repo1", nil))
 	require.Equal(t, http.StatusOK, warm.Code, "the warm-up must actually resolve the caller")
 

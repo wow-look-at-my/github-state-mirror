@@ -13,16 +13,8 @@ type PushPayload struct {
 	Repo  string
 	Ref   string // e.g. "refs/heads/main"
 	// RefName is the pushed ref's SHORT name -- "main" for refs/heads/main,
-	// "v1.2.3" for refs/tags/v1.2.3 -- or "" when the ref is neither a branch
-	// nor a tag. Unlike Branch() it covers tags too: the response caches key
-	// rows by the REQUESTED ref spelling, and a tag push moves that ref's
-	// ref-relative answers just like a branch push, so the per-ref cache
-	// invalidation wants both ("" makes it fall back repo-wide).
 	RefName string
 	// DefaultBranch is repository.default_branch from the payload ("" when
-	// absent), so the dispatcher can tell a default-branch push -- which also
-	// owns the empty-ref-keyed (default-branch-relative) cache rows --
-	// without a DB read.
 	DefaultBranch string
 	PushedAt      string // RFC3339
 
@@ -55,9 +47,6 @@ func shortRefName(ref string) string {
 }
 
 // PushCommit is one commit object from a push payload. The payload states the
-// commit's id, tree id, message, timestamp, and author/committer identities --
-// exactly the state GET /repos/{o}/{r}/git/commits/{sha} returns -- but NOT
-// its parents; those are derived (see ChainedCommits).
 type PushCommit struct {
 	ID             string
 	TreeID         string
@@ -142,21 +131,10 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 }
 
 // maxChainedPushCommits is the payload size at which parent derivation stops
-// trusting the commits array: GitHub caps the array (larger pushes are
-// truncated), and a truncated array breaks the before -> commits[0] chain.
 const maxChainedPushCommits = 20
 
 // ChainedCommits returns the pushed commits with a trustworthy linear parent
 // chain -- commits[0]'s parent is `before`, each subsequent commit's parent is
-// its predecessor -- or nil when the derivation cannot be trusted: a forced
-// push (before is not the parent), a new ref (before is all zeros), a
-// possibly-truncated array, or an array whose last id is not `after`
-// (non-linear ordering). A pushed MERGE commit is the one case the payload
-// cannot reveal (its extra parents are simply absent from the chain); the real
-// consumer of cached parents -- pr-minder's test-merge inspection -- only
-// reads parents on refs/pull/N/merge commits, which never arrive via push
-// payloads (always fetch-sourced). So the chain is absorbed for the common
-// linear push and dropped whenever any signal says otherwise.
 func (p PushPayload) ChainedCommits() []PushCommit {
 	n := len(p.Commits)
 	if n == 0 || n >= maxChainedPushCommits || p.Forced {
@@ -171,7 +149,6 @@ func (p PushPayload) ChainedCommits() []PushCommit {
 }
 
 // ParentForChained returns the derived parent sha for the i-th commit of a
-// ChainedCommits slice: `before` for the first, the previous commit otherwise.
 func (p PushPayload) ParentForChained(chain []PushCommit, i int) string {
 	if i == 0 {
 		return p.Before

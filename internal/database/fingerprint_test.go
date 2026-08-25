@@ -67,8 +67,7 @@ func TestOpen_CommentOnlySchemaChangeKeepsTheCache(t *testing.T) {
 	_, err = db1.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.NoError(t, err)
 
-	// What the previous binary would have recorded had its schema.sql carried
-	// different prose around identical tables.
+	// Simulates the previous binary's fingerprint after a comment-only schema.sql edit.
 	_, err = db1.Exec("UPDATE schema_version SET fingerprint = ?", schemaFingerprint("-- reworded\n"+schemaSQL))
 	require.NoError(t, err)
 	require.NoError(t, db1.Close())

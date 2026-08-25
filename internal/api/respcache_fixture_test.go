@@ -35,7 +35,6 @@ const (
 )
 
 // goodAppJWT is the bearer the fake GitHub verifies as app id 777; any other
-// bearer on GET /app is rejected, like the real endpoint.
 const goodAppJWT = "good-app-jwt"
 
 // respCacheUpstream is a fake GitHub for the cached-route tests: it stubs
@@ -60,11 +59,6 @@ type respCacheUpstream struct {
 	checkRunHits     int32
 	matchingRefsHits int32
 	// userHits/appHits count EVERY upstream call to /user and /app, including
-	// requireAuth's own identity resolution (ResolveTokenIdentity /
-	// VerifyAppIdentity) -- not just the identity route handlers' own miss
-	// fetches, because both land on the same fake-GitHub path and cannot be
-	// told apart here. See respcache_identity_test.go for what that means for
-	// the exact counts a test may assert.
 	userHits             int32
 	appHits              int32
 	userOrgsHits         int32
@@ -79,34 +73,25 @@ type respCacheUpstream struct {
 	// branches answers GET /repos/{o}/{r}/branches; settable per test.
 	branches func(w http.ResponseWriter, r *http.Request)
 	// gitRef answers GET /repos/{o}/{r}/git/ref/{ref}; settable per test
-	// (the verdict tests answer 404).
 	gitRef func(w http.ResponseWriter, r *http.Request)
 	// runJobs answers GET /repos/{o}/{r}/actions/runs/{id}/jobs and job
-	// answers GET /repos/{o}/{r}/actions/jobs/{id}; settable per test (the
-	// live-job tests answer an in_progress job).
 	runJobs func(w http.ResponseWriter, r *http.Request)
 	job     func(w http.ResponseWriter, r *http.Request)
 	// codeQuality answers GET/PATCH /repos/{o}/{r}/code-quality/setup;
-	// settable per test (the relay tests answer 403).
 	codeQuality func(w http.ResponseWriter, r *http.Request)
 	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
-	// test (the miss-marker tests answer 404).
 	gitCommit func(w http.ResponseWriter, r *http.Request)
 	// label answers GET/PATCH/DELETE /repos/{o}/{r}/labels/{name}; settable
-	// per test (the write tests recolour it).
 	label func(w http.ResponseWriter, r *http.Request)
 	// installRepos answers GET /installation/repositories; settable per test
-	// (the per-credential test varies the body by bearer).
 	installRepos func(w http.ResponseWriter, r *http.Request)
 	// hooks answers the repo and org hook listings AND their write verbs;
-	// settable per test (the refusal test answers 403).
 	hooks func(w http.ResponseWriter, r *http.Request)
 	// gitTree answers GET /repos/{o}/{r}/git/trees/{sha}; settable per test.
 	gitTree func(w http.ResponseWriter, r *http.Request)
 	// checkRun answers GET /repos/{o}/{r}/check-runs/{id}; settable per test.
 	checkRun func(w http.ResponseWriter, r *http.Request)
 	// matchingRefs answers GET /repos/{o}/{r}/git/matching-refs/heads/*;
-	// settable per test.
 	matchingRefs func(w http.ResponseWriter, r *http.Request)
 	// userOrgs answers GET /user/orgs; settable per test.
 	userOrgs func(w http.ResponseWriter, r *http.Request)
@@ -119,9 +104,6 @@ type respCacheUpstream struct {
 	// searchIssues answers GET /search/issues; settable per test.
 	searchIssues func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
-	// per test. The default reports a PRIVATE repo, so callers earn grants.
-	// The bare-repo route's miss fetches land here too, so probeHits counts
-	// BOTH reveal probes AND cachedRepo fetches.
 	probe func(w http.ResponseWriter, r *http.Request)
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
@@ -169,7 +151,6 @@ func newRespCacheUpstream() *respCacheUpstream {
 		})
 	}
 	// The URL-stuffed default bodies live next to their route tests:
-	// respcache_pullfiles_test.go / respcache_branches_test.go.
 	u.pullFiles = defaultPullFilesUpstream
 	u.branches = defaultBranchesUpstream
 	u.gitRef = defaultGitRefUpstream
@@ -195,11 +176,6 @@ func (u *respCacheUpstream) handler() http.Handler {
 		switch {
 		case r.URL.Path == "/user":
 			// Per-user partitioning resolves every bearer token here (id AND
-			// login required). Answer the shared test identity for testToken
-			// and a DISTINCT user for any other token, so cross-credential
-			// tests exercise two separate user scopes. Counts EVERY call --
-			// requireAuth's own resolution included, see the userHits field
-			// doc.
 			atomic.AddInt32(&u.userHits, 1)
 			if r.Header.Get("Authorization") == "Bearer "+testToken {
 				_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -236,8 +212,6 @@ func (u *respCacheUpstream) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
 		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
 			// The reveal probe (and the cachedRepo route's miss fetch): is
-			// this repo visible to the caller's token? Anchored, so the
-			// deeper-path cases below can never be shadowed by it.
 			atomic.AddInt32(&u.probeHits, 1)
 			u.probe(w, r)
 		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
@@ -324,8 +298,6 @@ func do(t *testing.T, router http.Handler, req *http.Request) *httptest.Response
 
 // writeJSON renders a fake-GitHub body. Every fixture builds its document as
 // a Go value and marshals it: JSON text is never assembled from string pieces,
-// because nothing about + or a format verb escapes what the value contains
-// (internal/guards' marshalling check fails the build over it).
 func writeGitHubJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	body, err := json.Marshal(v)
@@ -337,9 +309,6 @@ func writeGitHubJSON(w http.ResponseWriter, v any) {
 }
 
 // mustJSONString marshals a document a test needs as a string: an expected
-// body, a request body, a raw delivery. It panics rather than returning an
-// error because most callers are fake-upstream closures with no *testing.T in
-// scope, and a fixture that cannot marshal is a broken test either way.
 func mustJSONString(v any) string {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -350,9 +319,6 @@ func mustJSONString(v any) string {
 
 // postWebhookJSON delivers a webhook whose payload is MARSHALLED from a Go
 // value. Prefer it whenever a delivery carries a runtime value: splicing one
-// between a JSON literal's own quotes escapes nothing (internal/guards'
-// json-splice check fails the build over it), and a map literal reads as
-// clearly as the document it becomes.
 func postWebhookJSON(t *testing.T, router http.Handler, event string, payload map[string]any) {
 	t.Helper()
 	body, err := json.Marshal(payload)

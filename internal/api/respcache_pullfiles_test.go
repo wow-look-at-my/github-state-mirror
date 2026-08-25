@@ -179,7 +179,6 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 	}
 
 	// The last modeled page (GitHub's 3000-file cap = 30 pages at per_page=100,
-	// plus margin) is cacheable; the page-cap boundary sits at exactly 40.
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files?page=40", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "page 40 is within the modeled cap")

@@ -156,9 +156,7 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits), "hit must not call upstream")
 
-	// Absorb-don't-byte-cache: the listed commits are global git_commits_cache
-	// rows, so the single git-commit route hits without its own fetch ever
-	// having happened (this fake 404s that endpoint -- a miss could not serve).
+	// Listed commits also become global git_commits_cache rows.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "list-absorbed commits must serve the single git-commit route")
@@ -231,8 +229,7 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader), "non-default Accept must pass through")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits))
 
-	// The single-commit endpoint is a DIFFERENT path and stays passthrough
-	// (this fake does not serve it, so the proxied answer is its 404).
+	// /commits/{sha} is a different path and passes through; this fake 404s it.
 	wc := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/"+shaCommit, nil))
 	assert.Equal(t, http.StatusNotFound, wc.Code)
 	assert.Empty(t, wc.Header().Get(cacheHeader), "/commits/{sha} must not hit the cached list route")

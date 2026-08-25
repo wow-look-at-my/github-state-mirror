@@ -25,9 +25,7 @@ type timelinePayload struct {
 	Now            string              `json:"now"`
 }
 
-// eventsWhere filters a snapshot's events by disposition, so assertions stay
-// robust as more sources record onto the shared ring (e.g. requireAuth's
-// ghclient /user resolution).
+// eventsWhere filters by disposition, so assertions stay robust as more sources record onto the shared ring.
 func eventsWhere(snap reqtimeline.Snapshot, disposition string) []reqtimeline.Event {
 	var out []reqtimeline.Event
 	for _, e := range snap.Events {
@@ -114,9 +112,7 @@ func TestTimeline_SinceCursor(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-// TestTimeline_WebhookDeliveryRecorded: a verified delivery through the
-// router lands in the timeline ring with its real fields and a measured
-// duration — and the webhook response itself is unchanged.
+// TestTimeline_WebhookDeliveryRecorded: a verified delivery lands in the ring with a measured duration.
 func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 	s := newFullTestStack(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -143,8 +139,7 @@ func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 	assert.False(t, e.Start.IsZero(), "start must be stamped")
 	assert.GreaterOrEqual(t, e.DurMs, int64(0), "duration is a real measurement")
 
-	// An unverified delivery is recorded too — on the FIXED unverified lane
-	// (never a lane from its untrusted headers), claimed type as detail.
+	// An unverified delivery lands on the FIXED unverified lane, never a lane from its untrusted headers.
 	bad := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	bad.Header.Set("X-GitHub-Event", "pull_request")
 	bad.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
@@ -157,12 +152,7 @@ func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 	assert.Empty(t, unverified[0].EventType, "untrusted type must not populate trusted fields")
 }
 
-// TestTimeline_PassthroughRecorded: a request the passthrough proxy forwards
-// puts BOTH legs on the chart — the inbound request the mirror served, and
-// the mirror→GitHub call it made to serve it. The outbound leg is its own
-// event for the same reason a cached-route miss's fetch is: it is a real
-// request against real rate-limit budget, and under debouncing the two counts
-// stop matching (many inbound bars, one call to GitHub inside them).
+// TestTimeline_PassthroughRecorded: a forwarded request puts BOTH the inbound and outbound legs on the chart.
 func TestTimeline_PassthroughRecorded(t *testing.T) {
 	s := newFullTestStack(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -187,17 +177,12 @@ func TestTimeline_PassthroughRecorded(t *testing.T) {
 	assert.Equal(t, "GET /repos/{owner}/{repo}/git/refs/heads/…", e.Lane)
 	assert.Equal(t, DispPassthrough, e.Disposition)
 	assert.Equal(t, http.StatusOK, e.Status)
-	// The passthrough sits outside requireAuth, so the caller labels as a
-	// token fingerprint (the request log's exact behavior).
+	// Outside requireAuth, so the caller labels as a token fingerprint.
 	assert.True(t, strings.HasPrefix(e.Actor, "token:"), "actor %q", e.Actor)
 	assert.GreaterOrEqual(t, e.DurMs, int64(0))
 }
 
-// TestTimeline_EveryExchangeRecorded: one cached-route miss puts EVERY real
-// exchange on the chart — requireAuth's own /user resolution (the ghclient
-// transport observer), the reveal probe, the mirror→GitHub upstream leg, and
-// the inbound request itself (end-to-end). The follow-up HIT is recorded too:
-// a served request is never concealed just because no upstream call happened.
+// TestTimeline_EveryExchangeRecorded: one cached-route miss puts every real exchange on the chart, end to end.
 func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 	u := newRespCacheUpstream()
 	s := newFullTestStack(t, testAuth(), u.handler())
@@ -208,8 +193,7 @@ func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 
 	snap := s.timeline.Snapshot(0)
 
-	// requireAuth resolved the bearer via ghclient GET /user — an "internal"
-	// exchange, labeled by credential shape (no principal in ctx yet).
+	// requireAuth's own GET /user resolution is its own "internal" exchange.
 	internal := eventsWhere(snap, "internal")
 	require.Len(t, internal, 1)
 	assert.Equal(t, "/user", internal[0].Route)
@@ -245,9 +229,7 @@ func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 	assert.Len(t, eventsWhere(s.timeline.Snapshot(0), "upstream"), 1)
 }
 
-// TestTimeline_OAuthRelayRecorded: the github.com login relay's upstream call
-// is timed onto the chart under the mirror's fixed relay lane, anonymous
-// actor.
+// TestTimeline_OAuthRelayRecorded: the login relay's upstream call is timed onto the fixed relay lane.
 func TestTimeline_OAuthRelayRecorded(t *testing.T) {
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -307,11 +289,7 @@ func TestTimeline_ColumnarNegotiated(t *testing.T) {
 	assert.Equal(t, uint64(2), h.MaxID)
 }
 
-// TestTimeline_ReadableByDefault: a caller that does not name the wire type
-// by exact media type — curl's */*, a browser, an operator with jq — gets
-// readable JSON. That second encoding is safe ONLY because the chart refuses
-// it; TestTimelineClientRefusesJSON is the other half of this contract and
-// they are meant to be read together.
+// TestTimeline_ReadableByDefault: a caller not naming the exact wire media type gets readable JSON.
 func TestTimeline_ReadableByDefault(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -334,10 +312,7 @@ func TestTimeline_ReadableByDefault(t *testing.T) {
 	}
 }
 
-// TestTimeline_GzipWhenAccepted: the origin is grey-clouded, so the app is
-// what compresses. A payload past the floor comes back gzipped for a client
-// that accepts it, byte-identical to the uncompressed answer once inflated —
-// and a client that does not accept gzip still gets plain bytes.
+// TestTimeline_GzipWhenAccepted: the app itself compresses a payload past the floor, since the origin is grey-clouded.
 func TestTimeline_GzipWhenAccepted(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -374,9 +349,7 @@ func TestTimeline_GzipWhenAccepted(t *testing.T) {
 	require.NoError(t, err)
 	inflated, err := io.ReadAll(zr)
 	require.NoError(t, err)
-	// Not a byte comparison: each response stamps its own `now`, so the two
-	// payloads legitimately differ in the preamble. What must be identical is
-	// the events they carry.
+	// Not a byte comparison: each response stamps its own `now` in the preamble.
 	plainEvents, _ := decodeTimeline(t, plain.Body.Bytes())
 	inflatedEvents, _ := decodeTimeline(t, inflated)
 	assert.Equal(t, plainEvents, inflatedEvents, "gzip must not change the payload")
@@ -410,10 +383,7 @@ func TestTimeline_NoGzipForTinyPayloads(t *testing.T) {
 	assert.Empty(t, w.Header().Get("Content-Encoding"))
 }
 
-// TestTimeline_WindowedRead: ?from/?to is the chart's async-history read — the
-// hour it paints, not the day it retains. It must return exactly the
-// overlapping events, keep reporting the LIVE cursor (history never advances
-// it), and reject a shape that would silently answer the wrong question.
+// TestTimeline_WindowedRead: ?from/?to returns overlapping events but never advances the LIVE cursor.
 func TestTimeline_WindowedRead(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

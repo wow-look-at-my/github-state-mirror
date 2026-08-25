@@ -42,15 +42,8 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 		return applied(fmt.Sprintf("removed closed PR #%d", payload.PR.Number))
 	}
 
-	// A tip move reported by the PR's own payload (synchronize head move,
-	// base retarget) stales the stored merge fields BEFORE the upsert: the
-	// payload carries RETAINED pre-move values, and a fork head gets no push
-	// webhook to un-resolve them. The stamped marker's proof is the
-	// payload's own moved-side ref+sha, guarding later lagged re-offers of
-	// the invalidated sha; the payload's OWN merge fields describe the
-	// pre-move tip by definition, so they are stripped from this upsert
-	// outright (a sha-less retained mergeable would otherwise slip past the
-	// sha-anchored marker).
+	// A tip move (synchronize, base retarget) stales the payload's own retained pre-move merge fields.
+	// see docs/cache/rest-routes.md (NullPRMergeableOnTipMove)
 	if moved, err := d.store.NullPRMergeableOnTipMove(ctx, payload.PR, time.Now()); err != nil {
 		slog.Warn("webhook: tip-move un-resolve failed", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
 	} else if moved {
@@ -71,7 +64,6 @@ func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Ev
 }
 
 func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) outcome {
-	// The review payload embeds the full pull_request, so apply it like a
-	// pull_request event.
+	// The review payload embeds the full pull_request; apply it the same way.
 	return d.applyPRPayload(ctx, event)
 }

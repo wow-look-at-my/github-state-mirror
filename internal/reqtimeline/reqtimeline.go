@@ -49,17 +49,12 @@ const (
 // TestTimelineSchemaMatchesChart, since a mismatch encodes perfectly and only
 // fails in the browser.
 type Event struct {
-	// ID is a monotonically increasing sequence number — the client's merge
-	// key and the ?since= cursor.
+	// ID: see docs/dashboard/timeline-ring.md.
 	ID   uint64 `json:"id" wire:"id,deltau"`
 	Kind string `json:"kind" wire:"kind,string"`
-	// Lane is the swimlane this event renders on: "⇐ <event type>" for
-	// webhooks, "<METHOD> <route shape>" (normalizeRoute's bounded families)
-	// for requests — never a per-URL lane.
+	// Lane: see docs/dashboard/timeline-ring.md.
 	Lane string `json:"lane" wire:"lane,string"`
-	// Start is when handling/fetching began; DurMs is the real measured
-	// duration in milliseconds (0 for a sub-millisecond event — still its
-	// true rounding, never a fabricated instant).
+	// Start/DurMs: see docs/dashboard/timeline-ring.md.
 	Start time.Time `json:"start" wire:"start,deltaz"`
 	DurMs int64     `json:"dur_ms" wire:"dur,plain"`
 
@@ -75,17 +70,14 @@ type Event struct {
 	Method string `json:"method,omitempty" wire:"method,string"`
 	Route  string `json:"route,omitempty" wire:"route,string"`
 	Status int    `json:"status,omitempty" wire:"status,plain"`
-	// Actor is the caller's principal/label key; ActorName its verified
-	// display name when one is known (display-only, like the request log).
+	// Actor/ActorName: see docs/dashboard/timeline-ring.md.
 	Actor     string `json:"actor,omitempty" wire:"actor,string"`
 	ActorName string `json:"actor_name,omitempty" wire:"actor_name,string"`
 
-	// Detail is a short free-form tooltip line (e.g. an unverified delivery's
-	// claimed event type). Metadata only — never bodies or secrets.
+	// Detail is a short free-form tooltip line; never bodies or secrets.
 	Detail string `json:"detail,omitempty" wire:"detail,string"`
 
-	// Notify fields: the delivery target's host, the 1-based attempt number,
-	// and whether this attempt was terminal (success, or the last retry).
+	// Notify fields: see docs/dashboard/timeline-ring.md.
 	Target  string `json:"target,omitempty" wire:"target,string"`
 	Attempt int    `json:"attempt,omitempty" wire:"attempt,plain"`
 	Final   bool   `json:"final,omitempty" wire:"final,bits"`
@@ -104,10 +96,7 @@ type Recorder struct {
 	retention time.Duration
 	maxEvents int
 	nextID    uint64
-	// events[head:] are the live entries, ordered by insertion (≈ end time,
-	// since events are recorded at completion) and therefore by ID. head is
-	// advanced on eviction and the slice compacted periodically so the
-	// backing array cannot grow unboundedly.
+	// events[head:]: see docs/dashboard/timeline-ring.md.
 	events []Event
 	head   int
 	// now is the clock; injectable by tests.
@@ -261,8 +250,7 @@ func (r *Recorder) evictLocked(now time.Time) {
 // max ID (the client's next cursor), and the retention boundary.
 type Snapshot struct {
 	Events []Event
-	// MaxID is the newest assigned event ID — the client's next ?since=
-	// cursor. It keeps advancing even when every event has been evicted.
+	// MaxID: see docs/dashboard/timeline-ring.md.
 	MaxID uint64
 	// RetentionStart is now-retention: nothing older is retained.
 	RetentionStart time.Time
@@ -294,13 +282,11 @@ func (r *Recorder) SnapshotRange(from, to time.Time) Snapshot {
 	if to.IsZero() {
 		to = now
 	}
-	// Live entries are ordered by END time, so the first candidate is the
-	// first whose end is at/after `from`.
+	// Live entries are end-ordered; see docs/dashboard/timeline-ring.md.
 	i := sort.Search(len(live), func(i int) bool { return !live[i].end().Before(from) })
 	out := make([]Event, 0, len(live)-i)
 	for _, e := range live[i:] {
-		// An event overlaps the range if it starts before the end of it. (The
-		// end-ordering above already established e.end() >= from.)
+		// An event overlaps the range if it starts before the end of it.
 		if e.Start.Before(to) {
 			out = append(out, e)
 		}

@@ -28,8 +28,7 @@ func TestDispatch_PullRequestSynchronize_UnresolvesMergeFields(t *testing.T) {
 	require.Equal(t, "MERGEABLE", row.Mergeable.String, "seed must be resolved")
 	require.Equal(t, "abc123", row.HeadRefOid.String)
 
-	// A fork-head synchronize: new head sha, mergeable retained true (the
-	// pre-move answer GitHub redelivers before its recompute finishes).
+	// New head sha, mergeable retained true (GitHub's pre-move redelivery).
 	moved := prPayloadWithHead(t, "synchronize", 42, "def789")
 	require.Equal(t, webhook.DispApplied,
 		dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", moved)).Disposition)

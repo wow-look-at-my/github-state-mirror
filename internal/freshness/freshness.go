@@ -6,10 +6,7 @@ import (
 	"time"
 )
 
-// GlobalActor marks a freshness row that tracks a piece of GLOBAL truth (any
-// caller's fetch refreshes it for everyone) rather than one principal's own
-// marker. It must be set explicitly on the ResourceID -- an empty Actor is
-// filled from the request context (the caller's principal).
+// GlobalActor must be set explicitly; an empty Actor fills from the caller's principal.
 const GlobalActor = "global"
 
 // ResourceID uniquely identifies any cacheable resource.
@@ -49,10 +46,7 @@ type Metadata struct {
 	RetryAfter    *time.Time
 }
 
-// TriggerSource describes what caused a refresh (recorded in the refresh log).
-// TriggerLazy is a caller's read finding the resource stale; TriggerPeriodic is
-// the background refresher. (The old TriggerWebhook is gone: webhooks apply
-// payload state directly and never fetch.)
+// TriggerSource is what caused a refresh. Webhooks never fetch; they apply
 type TriggerSource string
 
 const (

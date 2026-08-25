@@ -15,75 +15,25 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
-// Passthrough DEBOUNCING — request coalescing for the reads the cache
-// deliberately cannot model (operator directive, 2026-07-26).
-//
-// These are the reads NO cached route models YET (see the passthrough reason
-// vocabulary in requestlog.go). Every one of them is unfinished work rather
-// than a settled verdict, and coalescing is not a substitute for modeling it
-// -- the route groups' debounced/upstream_saved pair exists to say so out
-// loud. But while a shape is still forwarding, N identical polls arriving
-// inside a few seconds do not need N round trips to GitHub.
-//
-// So an eligible passthrough is HELD for a short window (default 5s) instead
-// of being forwarded immediately. Every identical request arriving during the
-// window joins the same batch; when the window closes, ONE upstream call is
-// made and its response is served to every member. Two properties follow, and
-// both are intended:
-//
-//  1. Upstream volume collapses to at most one call per (request, window).
-//  2. Uncacheable endpoints become visibly SLOW. That is a feature, not a
-//     regression — it prices the cost of an unmodelable read into the caller's
-//     own latency and pushes consumers toward the cached shapes. The
-//     X-GSM-Debounce headers make the charge legible rather than mysterious.
-//
-// THE SECURITY PROPERTY, which must never regress: a batch is keyed by the
-// CALLER'S CREDENTIAL (a SHA-256 fingerprint of the bearer token), so a
-// response is only ever shared between requests that presented the SAME
-// token. The passthrough proxy has no reveal gate — it forwards the caller's
-// Authorization and lets GitHub decide — so sharing one caller's answer with
-// another's request would hand out data GitHub never agreed to show them.
-// Identical token + identical request = provably identical answer; anything
-// less than identical gets its own batch. Everything else that can change a
-// response (the URL verbatim, Accept, the API version) is in the key too, and
-// requests whose answer depends on caller state the key cannot capture
-// (conditional and Range reads) are never debounced at all.
-//
-// Only idempotent GET reads are eligible. A mutation is never coalesced: two
-// identical POSTs are two distinct intents, not one answer shared twice.
+// Passthrough debouncing coalesces identical in-flight, unmodeled reads
+// behind a caller-credential key. See docs/cache/three-tier-contract.md.
 
 const (
-	// debounceMaxBatches bounds the in-flight batch map. Each batch lives at
-	// most one window plus its fetch, so real traffic never approaches this;
-	// the cap is the runaway backstop for a caller minting endless distinct
-	// URLs. When full, requests are forwarded directly (correct, just
-	// uncoalesced) rather than queued behind a full map.
+	// debounceMaxBatches is the runaway backstop; past it requests forward uncoalesced.
 	debounceMaxBatches = 1024
 
-	// debounceMaxBodyBytes caps the buffered upstream response. Fanning a
-	// response out to N waiters means holding it in memory, so an unbounded
-	// body must not be buffered. The cap matches the cached routes' absorb
-	// limit; a response past it makes the batch unusable and every waiter
-	// falls back to its own direct passthrough (correct, just uncoalesced).
+	// debounceMaxBodyBytes caps the buffered response; past it every waiter falls back to its own passthrough.
 	debounceMaxBodyBytes = 8 << 20 // 8 MiB
 
-	// debounceFetchTimeout bounds the batch's own upstream call. The fetch
-	// runs on a context DETACHED from every waiter (the freshness-fetch
-	// doctrine): one caller hanging up must not cancel the answer the rest of
-	// the batch is still waiting for.
+	// debounceFetchTimeout bounds the batch's call on a context detached from every waiter.
 	debounceFetchTimeout = 60 * time.Second
 
-	// debounceHeader reports how long this response was held (e.g. "4998ms"),
-	// and debounceBatchHeader how many requests shared it. Together they make
-	// the cost of an uncacheable read legible to the caller that paid it.
+	// debounceHeader reports the hold time; debounceBatchHeader the batch size.
 	debounceHeader      = "X-GSM-Debounce"
 	debounceBatchHeader = "X-GSM-Debounce-Batch"
 )
 
-// DebounceMaxWindow is the largest hold internal/config will accept for
-// PASSTHROUGH_DEBOUNCE. Exported so the config parser and this package cannot
-// drift apart on what counts as a plausible window (a fat-fingered "5m" would
-// wedge every uncacheable read for five minutes).
+// DebounceMaxWindow caps PASSTHROUGH_DEBOUNCE; exported so config validation matches this cap.
 const DebounceMaxWindow = 30 * time.Second
 
 // Debouncer coalesces identical in-flight passthrough reads. The zero value is
@@ -99,14 +49,11 @@ type Debouncer struct {
 	batches map[string]*debounceBatch
 	stopped bool
 
-	// stopCh is closed by Drain to cut every pending window sleep short: at
-	// shutdown a batch's waiters are still on the wire, so the right move is
-	// to fetch and answer them NOW, not to make shutdown wait out the window.
+	// stopCh is closed by Drain to answer every waiter now instead of waiting out its window.
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
-	// inflight tracks running batches so Drain can wait them out before the
-	// process tears down (the freshness.Manager / notify.Notifier pattern).
+	// inflight lets Drain wait out running batches before shutdown.
 	inflight sync.WaitGroup
 }
 
@@ -124,9 +71,7 @@ func NewDebouncer(window time.Duration) *Debouncer {
 	}
 }
 
-// attach wires the observability sinks. Separate from NewDebouncer because
-// cmd/server constructs the Debouncer (it owns Drain) while the request log
-// and timeline ring are built inside NewRouter.
+// attach wires the observability sinks built inside NewRouter, after cmd/server's own NewDebouncer call.
 func (d *Debouncer) attach(reqlog *requestLog, timeline *reqtimeline.Recorder) {
 	if d == nil {
 		return
@@ -176,8 +121,7 @@ func (d *Debouncer) Wrap(next http.Handler) http.Handler {
 		}
 		b := d.join(key, r, next)
 		if b == nil {
-			// Draining, or the batch map is full: forward directly. Always
-			// correct — coalescing is an optimization, never a gate.
+			// Draining or batch map full: forward directly (coalescing is an optimization, never a gate).
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -186,13 +130,11 @@ func (d *Debouncer) Wrap(next http.Handler) http.Handler {
 		select {
 		case <-b.done:
 		case <-r.Context().Done():
-			// This caller hung up. The batch fetch is detached and continues
-			// for everyone else; nothing to write.
+			// This caller hung up; the detached fetch continues for everyone else.
 			return
 		}
 		if b.res == nil {
-			// The batch produced nothing replayable (an oversized body). Pay
-			// for our own call rather than serving a truncated answer.
+			// Nothing replayable (oversized body): pay for our own call instead of serving a truncated one.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -216,10 +158,7 @@ func (d *Debouncer) join(key string, r *http.Request, next http.Handler) *deboun
 		}
 		b = &debounceBatch{done: make(chan struct{})}
 		d.batches[key] = b
-		// The batch's own request is a clone of the first arrival's on a
-		// DETACHED context: every member presented the same credential (the
-		// key proves it), so this one request speaks for all of them, and no
-		// single waiter's disconnect may cancel it.
+		// Detached clone: one shared credential backs every waiter, so no single disconnect cancels it.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), debounceFetchTimeout)
 		d.inflight.Add(1)
 		go d.run(key, b, r.Clone(ctx), cancel, next)
@@ -243,9 +182,7 @@ func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel 
 	case <-req.Context().Done(): // the detached fetch budget expired
 	}
 
-	// Close the batch: from here a new arrival opens a fresh one, so a
-	// response can never be served to a request that arrived after the call
-	// it is answering was already issued.
+	// Close the batch: a later arrival opens a fresh one rather than reusing this answer.
 	d.mu.Lock()
 	if d.batches[key] == b {
 		delete(d.batches, key)
@@ -254,11 +191,7 @@ func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel 
 	d.mu.Unlock()
 
 	bw := &bufferingWriter{header: make(http.Header), status: http.StatusOK, limit: debounceMaxBodyBytes}
-	// The batch's one mirror→GitHub leg goes on the chart from the proxy's
-	// own transport (TimelineProxyObserver), which is where every passthrough
-	// call passes whether or not it was batched. Recording it here as well
-	// would double-count exactly the batched ones — and recording it ONLY
-	// here is how the unbatched majority stayed off the chart.
+	// Already charted by the proxy's own transport; recording it again would double-count batched calls.
 	next.ServeHTTP(bw, req)
 
 	if bw.overflow {
@@ -300,39 +233,15 @@ func (d *Debouncer) recordServed(r *http.Request) {
 	d.reqlog.addDebounced(r.Method, normalizeRoute(r.URL.Path), 1, 0)
 }
 
-// recordSaved counts the upstream calls this batch avoided: a batch of n
-// served n requests with one call, so n-1 never happened. A batch of one saved
-// nothing — it only paid the window — and reporting that honestly is the point
-// (see the two-counter note on routeGroup).
+// recordSaved counts calls avoided: n requests served by one call save n-1; a batch of one saves nothing.
 func (d *Debouncer) recordSaved(r *http.Request, batchSz int) {
 	if batchSz > 1 {
 		d.reqlog.addDebounced(r.Method, normalizeRoute(r.URL.Path), 0, int64(batchSz-1))
 	}
 }
 
-// debounceKey derives the coalescing key for a request, reporting false when
-// the request must not be debounced at all.
-//
-// ELIGIBILITY (all required):
-//   - GET. Reads only — a mutation is an intent, not a shared answer — and
-//     GET is the only method GitHub's API answers idempotently. HEAD is
-//     excluded too: it is rare here and its bodyless response would need its
-//     own replay path.
-//   - A bearer token. It is the key's security component; a tokenless request
-//     is 401'd by the proxy without an upstream call anyway.
-//   - No request body. A GET with one is pathological and unmodeled.
-//   - No conditional or Range headers. If-None-Match / If-Modified-Since /
-//     If-Match / If-Unmodified-Since turn the answer into a function of what
-//     THIS caller already holds (a 304 against their etag), and Range makes it
-//     a slice of it. Sharing one caller's 304 — or one caller's byte range —
-//     with another is simply a wrong answer, so these are never coalesced.
-//
-// THE KEY covers everything that can change the response: the method, the
-// request URI verbatim (path + raw query — two spellings of the same query
-// just miss each other, which costs a coalesce, never correctness), the
-// credential fingerprint, and the content-negotiation headers. Components are
-// length-delimited before hashing so no concatenation of one field can imitate
-// another, and the digest keeps the map key bounded whatever the caller sends.
+// debounceKey derives the coalescing key, reporting false when the request must not be debounced.
+// see docs/cache/three-tier-contract.md
 func debounceKey(r *http.Request) (string, bool) {
 	if r.Method != http.MethodGet {
 		return "", false
@@ -383,11 +292,7 @@ func writeDebounced(w http.ResponseWriter, res *bufferedResponse, waited time.Du
 	_, _ = w.Write(res.body)
 }
 
-// bufferingWriter captures a handler's whole response in memory so it can be
-// replayed to several waiters. Past limit it stops storing and reports
-// overflow: the partial bytes are useless, so the batch is abandoned rather
-// than serving anyone a truncated body. Writes keep reporting success so the
-// proxy's copy loop drains the upstream connection cleanly.
+// bufferingWriter captures a response for replay to several waiters.
 type bufferingWriter struct {
 	header      http.Header
 	status      int
@@ -419,7 +324,5 @@ func (b *bufferingWriter) Write(p []byte) (int, error) {
 	return b.body.Write(p)
 }
 
-// Flush satisfies http.Flusher, which httputil.ReverseProxy probes for when
-// streaming. Buffering means there is nothing to flush until the batch
-// completes.
+// Flush satisfies http.Flusher; buffering means there is nothing to flush until the batch completes.
 func (b *bufferingWriter) Flush() {}

@@ -151,7 +151,6 @@ func TestSubscriptionsPerPrincipalCap(t *testing.T) {
 	stack := newFullTestStack(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}), twoUserGH())
 
 	// Fill the cap directly through the store (same principal requireAuth
-	// resolves the test token to).
 	st := stack.notifier.Store()
 	for i := 0; i < notify.MaxPerPrincipal; i++ {
 		_, err := st.Create(context.Background(), testUserActor, notify.NewSubscription{
@@ -241,7 +240,6 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	// A recorded identity for the subscription's principal: the operator view
-	// resolves it to the login.
 	require.NoError(t, stack.store.RecordActorIdentity(context.Background(), "user:42", "octocat"))
 
 	// Drive one delivery so the recent-attempts ring has an entry to decorate.
@@ -272,7 +270,6 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 
 	// Admin: the operator view — counters, recent, ALL subscriptions with
-	// principals, secrets structurally absent.
 	req = httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()

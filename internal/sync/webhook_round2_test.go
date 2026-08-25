@@ -11,12 +11,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// This file covers round 2's per-ref invalidation matrix end to end through
-// the dispatcher: pushes flush exactly the pushed ref's slice of the
-// ref-keyed caches (falling back repo-wide only without a usable ref),
-// CI/workflow_job events flush the refs/shas their payloads name, and
-// pull_request events clear the PR's pull-diff-406 verdict.
-
 const (
 	r2SHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	r2OtherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

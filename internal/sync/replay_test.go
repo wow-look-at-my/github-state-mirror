@@ -16,9 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// replayStore is an in-memory stand-in for the replay bookkeeping. The real
-// one is a two-column table; what these tests are about is the decisions the
-// replayer makes on top of it.
+// replayStore is an in-memory stand-in for the real two-column replay bookkeeping table.
 type replayStore struct {
 	mu       sync.Mutex
 	asked    map[int64]bool

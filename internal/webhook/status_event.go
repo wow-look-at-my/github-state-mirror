@@ -5,12 +5,8 @@ import (
 	"strings"
 )
 
-// StatusEvent is a `status` delivery read as what it is: one commit status,
-// whole. ParseCheckPayload reads the same body for the TRUTH side and
-// normalizes as it goes (it prefixes the context with "status:" and folds the
-// state into the mirror's own vocabulary), which is right for commit_checks
-// and useless for rebuilding a response document -- that needs GitHub's own
-// spelling of every field the document holds.
+// StatusEvent keeps GitHub's own field spelling, unlike ParseCheckPayload's
+// normalized truth-side reading of the same body.
 type StatusEvent struct {
 	SHA         string
 	Context     string

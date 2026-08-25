@@ -13,35 +13,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The reveal layer: WHO may read a piece of global truth.
-//
-// The truth store is global (one row per resource; webhooks and any caller's
-// fetches all feed it), so serving cached state must be gated per caller.
-// GitHub itself is the permission oracle -- the mirror never invents an
-// authorization model, it only caches GitHub's own answers:
-//
-//   1. PUBLIC fast path: the repo's webhook/REST-learned visibility is
-//      'public' -> any authenticated principal may read its cached state. A
-//      repo whose visibility is unknown ('', e.g. seeded only by the
-//      identity-locked GraphQL fetch, which cannot carry visibility) is
-//      treated as PRIVATE -- fail closed.
-//   2. GRANT: the principal holds an unexpired access_grants row for the
-//      repo, earned from GitHub's own answers to that principal's requests
-//      (an org list-sync with their token, or an earlier probe).
-//   3. DENY VERDICT: GitHub authoritatively told this principal "no" (404 /
-//      non-rate-limit 403) for this exact resource within the deny TTL ->
-//      serve that answer again without asking GitHub.
-//   4. PROBE: otherwise ask GitHub: GET /repos/{owner}/{repo} with the
-//      caller's own token (buildhost's canAccessRepo pattern). 200 proves
-//      access -> absorb the (canonical, visibility-carrying) repository
-//      object into truth, record a grant, proceed. 404/authoritative-403 ->
-//      record a deny verdict, relay the answer. Transient failures (5xx,
-//      429, rate-limited 403, network) are relayed but NEVER cached -- a
-//      hiccup must not pin a caller out (or in).
-//
-// The probe costs one upstream call on a principal's FIRST touch of a
-// non-public repo (per grant TTL); it also heals unknown-visibility rows,
-// since the probe response carries visibility for everyone's benefit.
+// The reveal layer: WHO may read a piece of global truth. GitHub is the
+// permission oracle -- public repo, a live grant, a cached deny verdict, or a
+// live probe with the caller's own token decide it, in that order.
+// see docs/reveal-layer.md
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
@@ -76,8 +51,7 @@ const (
 	revealAllowed revealOutcome = iota
 	// revealDenied: GitHub said no (now or recently); serve the verdict.
 	revealDenied
-	// revealError: could not decide (transient probe/store failure); the
-	// request fails 502 without caching anything.
+	// revealError: could not decide (transient failure); the request fails 502 without caching anything.
 	revealError
 )
 
@@ -129,10 +103,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 // (GET /repos/{owner}/{repo} with their token) and records the answer.
 func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind, resourceKey string) (revealOutcome, ghdata.DenyVerdict, bool) {
 	ctx := r.Context()
-	// A probe is a real mirror→GitHub exchange and goes on the chart under
-	// its own disposition; the client's transport does the recording (see
-	// TimelineUpstreamObserver), including the failure case, where no
-	// response arrives at all.
+	// The transport charts this as a real mirror->GitHub exchange under dispProbe, failures included.
 	req, err := http.NewRequestWithContext(withUpstreamDisposition(ctx, dispProbe),
 		http.MethodGet, h.gh.BaseURL()+"/repos/"+owner+"/"+repo, nil)
 	if err != nil {
@@ -178,10 +149,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 
 	case resp.StatusCode == http.StatusNotFound,
 		resp.StatusCode == http.StatusForbidden && !upstreamRateLimited(resp):
-		// Authoritative "no". Their truth: relay it, and remember it briefly
-		// so a poll doesn't hammer GitHub. (404 is deliberately keyed to the
-		// exact resource, not the repo: GitHub's 404 cannot be told apart
-		// from "resource missing inside a repo you CAN see".)
+		// 404 is keyed to the exact resource, not the repo: GitHub's 404 can't be told apart from a readable repo's missing resource.
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
 			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {

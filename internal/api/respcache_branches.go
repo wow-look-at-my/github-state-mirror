@@ -14,40 +14,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached branches-list route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/branches
-//
-// pr-minder's auto_open_pr fork-point detection lists every branch tip
-// (listBranchHeads) per repo, and the pr-minder-reconcile hook repeats that
-// over a fleet slice every 5 minutes -- the second-largest passthrough slice
-// before this route existed. The whole trimmed branches page is rendered
-// ONCE at absorb time and stored verbatim per exact request shape (owner,
-// repo, per_page, page), like the compare doc, so hit and miss serve
-// identical bytes. Consumers read name + commit.sha; protected rides along
-// (a cheap, always-present bool). commit.url, the protection object, and
-// protection_url are dropped.
-//
-// A listing moves whenever a branch is created, deleted, or its tip
-// advances -- all of which arrive as push events (a delete carries
-// deleted=true). A tip-move is applied into the stored pages from the push's
-// own `after` (ghdata.ApplyPushedBranchTip); only the membership changes flush
-// the repo's snapshots, with the 24h TTL as the missed-delivery backstop.
-// Because a page can be rewritten in place, its render must be reproducible
-// byte-for-byte outside this package -- hence marshalTrimmed delegating to
-// ghdata.MarshalCacheDoc. There is no
-// doc-size cap: the item shape has no unbounded field, and the 8 MiB
-// fetchUpstream cap bounds the raw body. The single-branch read
-// /branches/{branch} is a different shape and stays passthrough.
+// Cached branches-list route (tier 2 of the cache contract, like respcache.go): GET /repos/{owner}/{repo}/branches
+// see docs/cache/rest-routes.md
 
 const (
-	// branchesDefaultPerPage is GitHub's default page size for the branches
-	// list when the request does not send per_page.
+	// branchesDefaultPerPage is GitHub's default page size when per_page is absent.
 	branchesDefaultPerPage = 30
 
-	// branchesMaxCachedPage caps which pages are modeled. Consumers page
-	// shallowly; deeper pagination passes through.
+	// branchesMaxCachedPage caps which pages are modeled; deeper pagination passes through.
 	branchesMaxCachedPage = 10
 )
 
@@ -139,9 +113,7 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// branchListItemJSON is one trimmed entry of the branches page: exactly what
-// the consumers read (name + commit.sha) plus the always-present protected
-// bool. commit.url, the protection object, and protection_url stay dropped.
+// branchListItemJSON is one trimmed entry: name + commit.sha + the always-present protected bool.
 type branchListItemJSON struct {
 	Name      string     `json:"name"`
 	Commit    gitSHAJSON `json:"commit"`

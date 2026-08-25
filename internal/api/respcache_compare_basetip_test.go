@@ -41,9 +41,7 @@ func TestCachedCompare_MovedBaseBranchIsNotServed(t *testing.T) {
 	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits))
 
-	// The absorbed answer was computed against shaBase (upstreamCompare's
-	// base_commit). Move the branch off it and the row describes a base that
-	// no longer exists as a tip.
+	// Move the branch off shaBase, the tip the absorbed answer was computed against.
 	setKnownTip(t, store, shaCommit)
 
 	w := do(t, router, authedReq("GET", target, nil))

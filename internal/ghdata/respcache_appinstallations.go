@@ -10,13 +10,6 @@ import (
 )
 
 // State for GET /app/installations (every installation of the calling App --
-// distinct from repo_installation_cache, which answers "does the app cover
-// THIS repo/owner"). Keyed by the verified app id, per-page, cached VERBATIM
-// (identical-or-passthrough, see api/respcache_identity.go's file header): a
-// listing of full installation objects has no consumer survey to trim
-// against safely. `installation`/`installation_repositories` deliveries
-// flush the owning app's pages when the payload names its app_id
-// (api/respcache_appinstallations.go); TTL is the backstop otherwise.
 
 // AppInstallationsCacheTTL bounds a stale answer for a missed delivery.
 const AppInstallationsCacheTTL = time.Hour
@@ -58,8 +51,6 @@ func (s *Store) PutCachedAppInstallations(ctx context.Context, appKey string, pe
 }
 
 // InvalidateAppInstallationsForApp drops every cached page for one App --
-// the installation/installation_repositories delivery flush, when the
-// payload names the owning app_id.
 func (s *Store) InvalidateAppInstallationsForApp(ctx context.Context, appKey string) error {
 	return s.q.DeleteAppInstallationsCacheForApp(ctx, appKey)
 }

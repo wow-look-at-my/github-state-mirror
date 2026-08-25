@@ -9,10 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// PR commits-list tests (GET /repos/{owner}/{repo}/pulls/{number}/commits).
-// The fake upstream is the commits-list one (respcache_commits_test.go): it
-// answers any path ending in /commits, which is the point — GitHub gives both
-// routes the same item shape, and this route reuses that storage.
+// PR commits-list tests (GET /repos/{owner}/{repo}/pulls/{number}/commits): this route reuses the repo commits-list storage.
 
 func TestCachedPullCommits_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
@@ -49,9 +46,7 @@ func TestCachedPullCommits_DoesNotCollideWithRepoCommits(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
-// A pull_request delivery flushes THAT PR's snapshots — the per-PR signal
-// that also covers fork heads, whose pushes never reach us — and leaves other
-// PRs alone.
+// A pull_request delivery flushes only THAT PR's snapshots, leaving other PRs alone.
 func TestCachedPullCommits_PullRequestEventFlushesThatPR(t *testing.T) {
 	router, _, _, _ := commitsCacheStack(t)
 
@@ -111,9 +106,7 @@ func TestCachedPullCommits_ShapeGuardsPassThrough(t *testing.T) {
 	}
 }
 
-// The dispatcher restates this key (internal/sync cannot import internal/api).
-// Both sides pin the same literal; the pull_request flush test above proves
-// they still meet end to end.
+// The dispatcher restates this key literal (internal/sync cannot import internal/api).
 func TestPullCommitsRefKeyLiteral(t *testing.T) {
 	assert.Equal(t, "pull/7/commits", pullCommitsRefKey(7))
 }

@@ -11,16 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached App-installations listing:
-//
-//	GET /app/installations
-//
-// JWT-verified like /app itself (outside requireAuth), keyed by the verified
-// app id, cached VERBATIM (see respcache_identity.go's file header). A
-// `installation`/`installation_repositories` delivery flushes the owning
-// app's pages -- see installationWebhookAppKey in webhook.go for how that
-// app id is recovered from the delivery.
-
+// Cached GET /app/installations, JWT-verified, keyed by app id.
 const (
 	appInstallationsDefaultPerPage = 30
 	appInstallationsMaxCachedPage  = 10

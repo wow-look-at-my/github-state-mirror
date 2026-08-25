@@ -9,17 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// The identity/self routes (tier 2 of the cache contract):
-//
-//	GET /app          -- the calling App's own metadata (JWT-verified)
-//	GET /user          -- the calling token's own GitHub user profile
-//	GET /user/orgs     -- the calling token's own org memberships
-//
-// None of these has a per-repo scope, and none has a webhook signal: App
-// metadata carries no delivery at all, and GitHub sends nothing for a user's
-// own profile edits or org membership changes (the same gap CLAUDE.md already
-// names as the `organization`/`membership` payload-unused exception). TTL is
-// therefore the PRIMARY bound, the hooks_cache precedent, not a backstop.
+// Storage for the identity/self routes (GET /app, /user, /user/orgs): TTL is the
 
 // IdentityCacheTTL bounds how long a stale identity answer may be served.
 const IdentityCacheTTL = 30 * time.Minute

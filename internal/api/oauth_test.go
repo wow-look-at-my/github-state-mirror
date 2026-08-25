@@ -157,7 +157,6 @@ func TestOAuthAccessToken_DeviceGrantPassthrough(t *testing.T) {
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		// GitHub answers a still-pending device grant with HTTP 200 + an error
-		// JSON body (not an RFC 6749 400); the relay passes it through as-is.
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, pendingJSON)
 	}))

@@ -194,9 +194,7 @@ func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
 // surfaces on /api/ratelimit — the end-to-end passive-observation path.
 func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	svc := configuredAuth(t)
-	// The reset must be in the FUTURE: the ratemeter lazily prunes
-	// observations whose reset moment has passed, and this test exercises the
-	// observation path, not the aging rule.
+	// Must be future: the ratemeter lazily prunes observations whose reset moment has passed.
 	reset := time.Now().Add(time.Hour).Unix()
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "5000")
@@ -208,8 +206,7 @@ func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
 
-	// An unknown route falls through to the passthrough proxy (no requireAuth,
-	// so the identity is the token-fingerprint label).
+	// No requireAuth here, so the identity is the token-fingerprint label.
 	req := httptest.NewRequest("GET", "/meta", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	w := httptest.NewRecorder()
@@ -255,8 +252,7 @@ func TestRateLimit_ObservedGroupsByPrincipal(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
 
-	// A cached route: the reveal probe + miss fetch both hit the fake GitHub
-	// with the requireAuth principal in context.
+	// A cached route: the reveal probe and miss fetch both carry the requireAuth principal.
 	req := httptest.NewRequest("GET", "/repos/org1/repo1/contents/README.md", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	w := httptest.NewRecorder()

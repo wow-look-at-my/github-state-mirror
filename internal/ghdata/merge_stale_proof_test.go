@@ -85,8 +85,7 @@ func TestAbsorbSinglePull_WrongMarkHealsOnPushProof(t *testing.T) {
 	row := getPR(t, s, 7)
 	require.Equal(t, staleShaB, row.MergeStaleSha.String, "the wrong mark: the fresh sha is stamped stale")
 
-	// The next poll re-offers the SAME (correct) answer: its base tip matches
-	// the push's after, so it is provably post-push and must be accepted.
+	// Re-offers the same answer; its base tip matches the push's after, so it must be accepted.
 	stale, err = s.AbsorbSinglePull(ctx, postPush, nil, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.False(t, stale, "a post-push-proven answer must not be rejected")
@@ -144,8 +143,7 @@ func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
 	// The push moved the base to pushedBaseTip; the marker carries the proof.
 	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
 
-	// GitHub's recompute lags: the refetch re-offers the invalidated sha,
-	// still reporting the OLD base tip (restPR's default) -- no proof.
+	// GitHub's recompute lags: the refetch re-offers the invalidated sha with the OLD base tip.
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.True(t, stale, "a pre-push answer must stay rejected")
@@ -166,8 +164,7 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// The wrong-mark state: the post-push answer absorbed, then stamped stale
-	// by the late push delivery.
+	// The wrong-mark state: post-push answer absorbed, then stamped stale by the late delivery.
 	postPush := restPR(7, "MERGEABLE", staleShaB)
 	postPush.BaseRefOid = sql.NullString{String: pushedBaseTip, Valid: true}
 	_, err := s.AbsorbSinglePull(ctx, postPush, nil, now)
@@ -181,8 +178,7 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 	assert.False(t, row.MergeCommitSha.Valid)
 	assert.Equal(t, staleShaB, row.MergeStaleSha.String)
 
-	// The matching base tip: the SQL proof resolves the row + clears the
-	// marker -- all four columns.
+	// The matching base tip: the SQL proof resolves the row and clears the marker.
 	require.NoError(t, s.UpsertPRWithChecks(ctx, postPush, nil, now.Add(2*time.Minute)))
 	row = getPR(t, s, 7)
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String, "the SQL tip proof must accept the payload")
@@ -222,16 +218,13 @@ func TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow(t *testing.T) 
 	require.NoError(t, err)
 	require.False(t, stale)
 
-	// A base push 60s ago: marker + proof recorded. The proof will NOT match
-	// the dirty doc -- its base tip is frozen at the last clean evaluation.
+	// A base push 60s ago records marker + proof; the proof won't match the frozen dirty doc.
 	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now.Add(-time.Minute)))
 	row := getPR(t, s, 7)
 	require.Equal(t, staleShaA, row.MergeStaleSha.String)
 	require.Equal(t, pushedBaseTip, row.MergeStaleAfter.String)
 
-	// GitHub's post-push answer: still CONFLICTING, same retained sha, frozen
-	// pre-push base tip (restPR's default != pushedBaseTip). Tip proof fails,
-	// but the marker is past the lag window: accepted.
+	// Still CONFLICTING with the frozen pre-push base tip: tip proof fails, but the lag window has passed.
 	stale, err = s.AbsorbSinglePull(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now)
 	require.NoError(t, err)
 	assert.False(t, stale, "a dirty-retained CONFLICTING answer past the lag window must be accepted")
@@ -316,8 +309,7 @@ func TestUpsertPRWithChecks_DirtyRetainedParity(t *testing.T) {
 	assert.False(t, row.MergeCommitSha.Valid)
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String)
 
-	// A CONFLICTING same-sha payload past the lag window: accepted by the SQL
-	// exemption, marker cleared -- all four columns.
+	// A CONFLICTING same-sha payload past the lag window: accepted, marker cleared.
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPR(7, "CONFLICTING", staleShaA), nil, now))
 	row = getPR(t, s, 7)
 	assert.Equal(t, "CONFLICTING", row.Mergeable.String, "SQL: the dirty-retained payload must be accepted")

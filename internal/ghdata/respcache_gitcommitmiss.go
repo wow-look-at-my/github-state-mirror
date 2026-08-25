@@ -10,21 +10,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// This file is the storage layer for the git-commit 404 miss markers:
-//
-//	GET /repos/{owner}/{repo}/git/commits/{sha} answering 404
-//
-// git_commits_cache never stores a 404 (a missing sha can be pushed later),
-// which left one consumer pattern uncached forever: pr-minder's
-// mergeWouldBeEmpty re-reads a GC'd test-merge sha on every fleet sweep, and
-// each read was a fresh upstream 404. A git_commit_miss_cache row caches
-// that verdict, bounded by expires_at, keyed (owner, repo, sha); doc holds
-// the rendered 404 body. The un-miss path is the load-bearing part: EVERY
-// real git-commit upsert clears the sha's marker (ghdata.upsertGitCommit --
-// the single funnel all absorb paths share), so a sha that later
-// materializes stops answering 404 immediately rather than waiting out the
-// TTL. WHO may read a cached verdict is the reveal layer's job
-// (internal/api).
+// Storage layer for the git-commit 404 miss markers (git_commit_miss_cache).
+// See docs/cache/rest-routes.md for why they exist and the clear-on-upsert invariant.
 
 // GetCachedGitCommitMiss returns the cached 404 body for a sha, or
 // ("", false) on a miss (no marker, or an expired one). A hit refreshes the
@@ -66,21 +53,14 @@ func (s *Store) PutCachedGitCommitMiss(ctx context.Context, owner, repo, sha, do
 	return s.q.PruneGitCommitMissCacheLRU(ctx, CacheMaxRows)
 }
 
-// ClearGitCommitMiss drops one sha's 404 marker. The absorb paths run it via
-// upsertGitCommit whenever a real commit is stored (the invariant that keeps
-// a marker from shadowing a commit that now exists); it is also exported for
-// the API layer's own direct use. owner/repo/sha are normalized here so
-// callers can pass any casing.
+// ClearGitCommitMiss drops one sha's 404 marker; upsertGitCommit calls this on every real commit absorb.
 func (s *Store) ClearGitCommitMiss(ctx context.Context, owner, repo, sha string) error {
 	return s.q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Sha: strings.ToLower(sha),
 	})
 }
 
-// InvalidateGitCommitMissCache drops every 404 marker for a repo -- the
-// repository webhook flush (a renamed/recreated repo's old verdicts must not
-// keep answering). owner/repo are normalized here so callers can pass
-// payload casing.
+// InvalidateGitCommitMissCache is the repository-event flush: a renamed/recreated repo's old verdicts must not keep answering.
 func (s *Store) InvalidateGitCommitMissCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteGitCommitMissCacheByRepo(ctx, dbgen.DeleteGitCommitMissCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),

@@ -13,15 +13,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached org self-hosted-runners listing:
-//
-//	GET /orgs/{org}/actions/runners
-//
-// Keyed by the bearer's fingerprint (an admin-scoped read, the hooks_cache
-// precedent), cached VERBATIM rather than trimmed -- see
-// respcache_identity.go's file header for why this package prefers a
-// byte-identical cache over guessing a field subset with no consumer survey.
-// Short TTL: no webhook announces a runner's status changing.
+// Cached org self-hosted-runners listing: GET /orgs/{org}/actions/runners
+// see docs/cache/rest-routes.md
 
 const (
 	orgRunnersDefaultPerPage = 30
@@ -63,9 +56,7 @@ func (h *handlers) cachedOrgRunners(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if overflow || resp.StatusCode != http.StatusOK || !json.Valid(body) {
-		// 403 (not an admin) is deliberately NOT a cached verdict, same
-		// reasoning as the hooks route: a permission grant can change with no
-		// event reaching the mirror.
+		// 403 (not an admin) is deliberately not a cached verdict: a permission grant can change silently.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}

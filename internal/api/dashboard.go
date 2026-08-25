@@ -20,34 +20,17 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Embedded dashboard assets. Only the files the production page references are
-// embedded; src/*.ts and the preview-only demo-data.js are deliberately left
-// out. assets/*.js is a BUILD OUTPUT — `npm run build` (tsc) emits it from
-// src/*.ts and it is gitignored, so run that before building this package or
-// the embed below fails to resolve (CI builds it in the same job, ahead of the
-// Go build). A new asset must also be added to newDashboard's hashed-name
-// rewrite and to the CI preview job's copied-assets list
-// (.github/workflows/ci.yml).
-//
 //go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
-// dashboard serves the login flow, the static page, and the cache-stats API.
-// Its authorization model is by GitHub login (via OAuth session), distinct from
-// the bearer-token + per-user partition model that guards the data API. It never
-// serves one scope's cached rows to another user — it only reports counts and
-// freshness metadata, grouped by login for convenience.
-// contentAsset is an embedded asset served at a content-addressed URL — the
-// filename embeds a hash of the content. A new deploy with changed JS/CSS yields
-// a new URL, so browsers and the CDN/proxy fetch the new file immediately
-// instead of serving a stale copy until a cache TTL expires. Because the URL is
-// unique per content, it is served with a long-lived, immutable cache header.
+// contentAsset is an embedded asset served at a content-addressed URL.
 type contentAsset struct {
 	url         string // e.g. "/assets/app.1a2b3c4d5e.js"
 	content     []byte
 	contentType string
 }
 
+// dashboard authorizes by GitHub login, never by the bearer-token/reveal model. See docs/dashboard/dashboard.md.
 type dashboard struct {
 	auth    *auth.Service
 	store   *ghdata.Store
@@ -56,29 +39,19 @@ type dashboard struct {
 	assets  []contentAsset
 	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
-	// meter is the passively observed rate-limit store (X-RateLimit-* headers
-	// recorded off upstream responses) surfaced on the "Rate limit" tab.
+	// meter is the passively observed rate-limit store behind the "Rate limit" tab.
 	meter *ratemeter.Store
-	// notifier backs the admin-only GET /api/notifications JSON view
-	// (subscriber-notification activity + all subscriptions). Nil-safe.
+	// notifier backs the admin-only GET /api/notifications JSON view. Nil-safe.
 	notifier *notify.Notifier
-	// dbPath is the SQLite database file path (DB_PATH), statted per request
-	// by handleRequests to report the cache's on-disk footprint.
+	// dbPath (DB_PATH) is statted per request to report the cache's on-disk footprint.
 	dbPath string
-	// timeline is the in-memory timed-traffic ring (webhook deliveries +
-	// proxied requests) behind the admin-only GET /api/timeline. Nil-safe.
+	// timeline is the in-memory timed-traffic ring behind GET /api/timeline. Nil-safe.
 	timeline *reqtimeline.Recorder
-	// shapes is the captured request/response shape of uncached traffic
-	// (shapes.go) behind the admin-only GET /api/brief. Nil-safe.
+	// shapes captures uncached traffic's request/response shape for GET /api/brief. Nil-safe.
 	shapes *shapeStore
-	// appEvents reports the event types the GitHub App is subscribed to,
-	// straight from GitHub. It is what the Webhooks tab's missing-subscription
-	// check reads; nil (no App configured) means the check reports nothing
-	// rather than guessing from traffic.
+	// appEvents reports the App's subscribed events; nil skips the missing-subscription check.
 	appEvents func(context.Context) ([]string, error)
-	// ordering reports what the out-of-order delivery gate has seen (counts,
-	// lateness bands, recent refusals). Nil-safe: without it the Webhooks tab
-	// simply omits the panel.
+	// ordering reports the out-of-order delivery gate's stats; nil omits the Webhooks tab panel.
 	ordering func() syncpkg.OrderingSnapshot
 }
 
@@ -97,10 +70,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	timelineName := hashedAssetName("timeline", "js", timelineJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
-	// Rewrite the served HTML to point at the content-addressed URLs. The
-	// committed index.html keeps the stable names (assets/app.js) so the
-	// backend-free CI styling preview still resolves them; only the HTML the Go
-	// server hands out references the hashed URLs.
+	// The committed index.html keeps the stable names so the CI preview still resolves them.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
 	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
 	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
@@ -144,9 +114,7 @@ func hashedAssetName(stem, ext string, content []byte) string {
 	return stem + "." + hex.EncodeToString(sum[:])[:10] + "." + ext
 }
 
-// routes registers the dashboard's routes on r. These sit outside requireAuth:
-// they authenticate via the session cookie (or nothing, for the public page),
-// never a bearer token.
+// routes sit outside requireAuth: they authenticate via the session cookie, never a bearer token.
 func (d *dashboard) routes(r chi.Router) {
 	r.Get("/", d.serveIndex)
 
@@ -154,8 +122,7 @@ func (d *dashboard) routes(r chi.Router) {
 	if err != nil {
 		panic("sub embedded assets: " + err.Error())
 	}
-	// Serve the content-addressed asset URLs with an immutable, long-lived cache;
-	// fall back to the stable filenames (assets/app.js) via the file server.
+	// Falls back to the stable filenames (assets/app.js) for anything not content-addressed.
 	fileServer := http.StripPrefix("/assets/", http.FileServer(http.FS(assetsSub)))
 	r.Handle("/assets/*", d.serveAssets(fileServer))
 
@@ -170,10 +137,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/requests", d.handleRequests)
 	r.Get("/api/timeline", d.handleTimeline)
 
-	// Admin-only: browse the actual cached rows for one scope, run a consistency
-	// check that re-fetches the source of truth from GitHub (GET = read-only;
-	// POST ?apply=true additionally reconciles the drift), and read the GitHub
-	// App's rate-limit status.
+	// Admin-only truth browse and consistency check/reconcile; see docs/dashboard/operator-tooling.md.
 	r.Get("/api/cache/data", d.handleCacheData)
 	r.Get("/api/cache/check", d.handleCacheCheck)
 	r.Post("/api/cache/check", d.handleCacheCheck)
@@ -182,9 +146,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/brief", d.handleBrief)
 }
 
-// serveAssets serves the content-addressed asset URLs (immutable cache) and
-// delegates everything else under /assets/ to the embedded file server (the
-// stable filenames, e.g. assets/app.js).
+// serveAssets serves content-addressed URLs directly, else delegates to fileServer.
 func (d *dashboard) serveAssets(fileServer http.Handler) http.HandlerFunc {
 	byURL := make(map[string]contentAsset, len(d.assets))
 	for _, a := range d.assets {
@@ -265,11 +227,8 @@ const signinFailedHTML = `<!doctype html>
 </html>
 `
 
-// signinFailed answers a callback failure with the retry page at a 4xx status.
-// NEVER a 5xx here: Cloudflare replaces origin 5xx bodies with its own bare
-// error page, which stranded the operator on a context-free "502 Bad Gateway"
-// dead end when a GitHub exchange failed (incident 2026-07-19T02:15Z). The
-// caller logs the actual failure; the browser gets a way to retry.
+// signinFailed answers a callback failure with the retry page at 4xx, NEVER 5xx.
+// See docs/dashboard/dashboard.md for why.
 func signinFailed(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

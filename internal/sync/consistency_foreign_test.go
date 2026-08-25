@@ -63,7 +63,6 @@ func TestConsistencyChecker_ForeignCollaboratorNodesDropped(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows, "the foreign node's PRs are dropped with it")
 
 	// The junk rows were self-identifying (name_with_owner != owner/name);
-	// everything absorbed now satisfies the invariant.
 	repos, err := store.AllRepos(ctx)
 	require.NoError(t, err)
 	require.NotEmpty(t, repos)

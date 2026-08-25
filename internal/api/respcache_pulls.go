@@ -15,68 +15,23 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached PR REST routes (tier 2 of the cache
-// contract, like respcache.go):
-//
-//   - GET /repos/{owner}/{repo}/pulls          (open-PR list)
-//   - GET /repos/{owner}/{repo}/pulls/{number} (single PR)
-//   - GET /repos/{owner}/{repo}/installation   (App-JWT authed, like the mint)
-//
-// The PR routes absorb into the SAME pull_requests/pr_labels tables the
-// webhook dispatcher maintains, so pull_request webhooks keep served state
-// current without invalidating anything. What gates serving:
-//
-//   REVEAL (both PR routes): the caller must pass the reveal layer first --
-//   public repo, a fresh grant, or a probe against GitHub (reveal.go). A
-//   cached deny verdict answers repeat probes without touching GitHub.
-//
-//   LIST: a per-repo GLOBAL "open-PR list complete" marker (pulls_list_cache)
-//   proves the rows are the WHOLE open set. Absorbing a complete unfiltered
-//   page sets it (24h TTL backstop); webhooks never touch it (they ARE the
-//   maintenance). A rebuilt list as long as the request's per_page may be
-//   truncated upstream -- served as a miss, never from state.
-//
-//   SINGLE (open): the row must be rest-complete, RECENTLY TOUCHED
-//   (PRRowFresh -- the staleness backstop for a missed `closed` delivery),
-//   AND its mergeable KNOWN. GitHub computes `mergeable` lazily and pr-minder
-//   polls this endpoint waiting for it to resolve, so an unknown/null
-//   mergeable always misses (fetch + absorb the computed answer) -- the cache
-//   must never wedge that poll. Branch pushes un-resolve the stored value
-//   (see NullPRMergeableByBranch) so a known answer can't go silently stale
-//   after either side moves.
-//
-//   SINGLE (closed): a fetched CLOSED/merged PR is absorbed as a rendered
-//   whole-doc snapshot (closed_pull_cache) -- the open-only pull_requests
-//   invariant is untouched (the stale open row is still deleted; closed PRs
-//   live only in the doc side table). pull_request events flush the PR's doc
-//   (reopen/edit/relabel); a push never does (it cannot mutate a closed PR);
-//   the 24h TTL backstop bounds missed deliveries, like PRRowFresh.
-//
-//   DIFF READS (the single-PR route with the diff media type) get the
-//   406-verdict flow in respcache_pulldiff.go; any OTHER non-default Accept
-//   (raw/html/full, a multi-range Accept) passes through exactly as before.
+// Cached PR REST routes (tier 2 of the cache contract, like respcache.go): the open-PR list, the single PR,
+// and the repo installation lookup. see docs/cache/rest-routes.md
 
 const (
-	// pullsListCacheTTL bounds how long a MISSED pull_request delivery could
-	// leave a stale absorbed list being served. Webhooks are the maintenance;
-	// this is only the backstop.
+	// pullsListCacheTTL is only the backstop for a missed pull_request delivery; webhooks are the maintenance.
 	pullsListCacheTTL = 24 * time.Hour
 
-	// closedPullCacheTTL bounds how long a MISSED pull_request delivery
-	// (reopen/edit/relabel) could leave a stale closed-PR doc being served --
-	// the same accepted staleness class as PRRowFresh.
+	// closedPullCacheTTL is the same accepted staleness class as PRRowFresh, for a missed reopen/edit/relabel.
 	closedPullCacheTTL = 24 * time.Hour
 
-	// pullsDefaultPerPage is GitHub's default page size for the list route
-	// when the request does not send per_page.
+	// pullsDefaultPerPage is GitHub's default page size when per_page is absent.
 	pullsDefaultPerPage = 30
 )
 
 // ---- GET /repos/{owner}/{repo}/pulls ----
 
 // pullsListShape is a parsed, cacheable /pulls query: the shapes pr-minder
-// sends (state=open + per_page/page, optionally head=owner:branch) plus the
-// bare default. Anything else passes through.
 type pullsListShape struct {
 	perPage int
 	head    string // "" = unfiltered; else "owner:branch"
@@ -202,9 +157,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("pulls list cache read failed", "owner", owner, "repo", repo, "error", err)
 		} else if allRestComplete(rows) {
 			filtered := filterPullRows(rows, shape.head, shape.base)
-			// Pagination guard: a rebuilt list as long as the requested page
-			// could be truncated upstream -- only a provably-single-page
-			// answer is served from state.
+			// Only a provably-single-page answer is served from state; a full page may continue upstream.
 			if len(filtered) < shape.perPage {
 				h.servePullsList(w, r, filtered, labelsByPR, true)
 				return
@@ -226,10 +179,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	// The response proves the COMPLETE open set only when it is unfiltered
-	// and not a full page (a full page may continue upstream). A filtered or
-	// full-page response still absorbs rows -- useful state -- but sets no
-	// completeness marker.
+	// Only an unfiltered, not-full page proves the complete open set; a filtered or full page still absorbs rows.
 	complete := shape.head == "" && shape.base == "" && len(rows) < shape.perPage
 	absorbOwner, absorbRepo := owner, repo
 	if len(rows) > 0 {
@@ -250,12 +200,7 @@ func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows [
 	items := make([]pullListItemJSON, 0, len(rows))
 	now := time.Now()
 	for _, pr := range rows {
-		// The single-PR route's stale-sha belt, applied to the list tier: a
-		// row somehow holding the push-invalidated test-merge sha must not
-		// serve it from ANY rebuild (the guarded writes null it instead, so
-		// this is belt and braces exactly like the single-PR hit gate).
-		// Gate rather than omit: the REST list shape genuinely carries
-		// merge_commit_sha, so the field stays for valid rows.
+		// Belt and braces, like the single-PR hit gate: a row must never serve a push-invalidated test-merge sha.
 		if ghdata.PRMergeShaStale(pr, now) {
 			pr.MergeCommitSha = sql.NullString{}
 		}
@@ -273,9 +218,7 @@ func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows [
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// allRestComplete reports whether every row can be rebuilt as a REST response
-// (GraphQL-sourced rows cannot; SetRepoPRs also clears the list marker, so
-// this is belt and braces).
+// allRestComplete reports whether every row can be rebuilt as a REST response (GraphQL-sourced rows cannot).
 func allRestComplete(rows []dbgen.PullRequest) bool {
 	for _, pr := range rows {
 		if !ghdata.PRRestComplete(pr) {
@@ -400,12 +343,6 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	if staleRejected {
-		// The fetch re-offered the test-merge sha a push just invalidated: a
-		// pre-push answer (GitHub's recompute lag), stored unresolved above.
-		// Serve it unresolved too -- exactly what GitHub answers once its
-		// recompute actually starts -- never the value the mirror just proved
-		// stale; the consumer's resolve-poll carries on and every poll misses
-		// (re-triggering the recompute) until GitHub serves a fresh sha.
 		pr.Mergeable = sql.NullString{}
 		pr.MergeableState = sql.NullString{}
 		pr.MergeCommitSha = sql.NullString{}
@@ -426,29 +363,16 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// mergeableKnown reports whether the row's merge answer is resolved -- BOTH
-// facets of it. NULL (unresolved / un-resolved by a branch push) and the
-// GraphQL "UNKNOWN" both gate the single-PR route to a miss so pr-minder's
-// resolve-poll always reaches GitHub.
-//
-// mergeable_state is part of the gate rather than a field that rides along: a
-// CI event un-resolves it alone (unstable/blocked <-> clean moves no tip), and
-// were it not gated here that row would keep HITTING and serving a state
-// GitHub has since left -- a cached answer nothing re-asks, which is the exact
-// failure this field exists to end. A hit must mean every merge answer in the
-// document is one GitHub currently stands behind.
+// mergeableKnown gates both mergeable and mergeable_state, so a hit never serves a state GitHub has since left.
+// see docs/cache/rest-routes.md
 func mergeableKnown(pr dbgen.PullRequest) bool {
 	return pr.Mergeable.Valid &&
 		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING") &&
 		pr.MergeableState.Valid && pr.MergeableState.String != "" && pr.MergeableState.String != "unknown"
 }
 
-// diffStatsKnown reports whether the row carries the additions/deletions only
-// a SINGLE-PR answer supplies. A row built from the /pulls LIST (or a webhook,
-// or a GraphQL sync) has none, and its mergeable can still be resolved
-// independently -- so without this gate such a row would hit and serve
-// `"additions": null` forever, with nothing to heal it short of a push. One
-// miss re-absorbs the stats from GitHub and every later read hits.
+// diffStatsKnown gates on additions/deletions, which only a single-PR answer supplies.
+// see docs/cache/rest-routes.md
 func diffStatsKnown(pr dbgen.PullRequest) bool {
 	return pr.Additions.Valid && pr.Deletions.Valid
 }
@@ -466,8 +390,7 @@ func nullableStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
-// normalizeRESTTime folds a REST timestamp to the fixed-width UTC RFC3339
-// form the schema stores (mirrors the webhook package's normaliseTime).
+// normalizeRESTTime folds a REST timestamp to the fixed-width UTC RFC3339 form the schema stores.
 func normalizeRESTTime(s string) string {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {

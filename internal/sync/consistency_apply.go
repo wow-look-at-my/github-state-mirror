@@ -35,10 +35,7 @@ func (c *ConsistencyChecker) applyOwner(
 	now := time.Now()
 	principal := AppInstallationActor(inst.ID)
 
-	// 1. Absorb the snapshot: repos + open PRs + labels upserted, stale
-	// cached-open PRs deleted (grace-guarded reconcile), the principal's
-	// grants replace-synced. Tally intent against the pre-apply cache -- the
-	// same view the diff used.
+	// 1. Absorb the snapshot; tally intent against the pre-apply cache the diff used.
 	sync := ghdata.OrgSyncData{Repos: data.Repos, PRsByRepo: data.PRsByRepo, LabelsByPR: data.LabelsByPR}
 	if err := c.store.SyncOrgTruth(ctx, owner, sync, principal, fetchStart, now); err != nil {
 		return fmt.Errorf("sync truth: %w", err)
@@ -99,10 +96,6 @@ func (c *ConsistencyChecker) applyOwner(
 
 		repoKey := owner + "/" + r.Name
 		for _, fpr := range data.PRsByRepo[r.NameWithOwner] {
-			// 4. The commit_checks stick rule. GitHub's rollup for the PR's
-			// FRESH head sha is the verdict; the webhook-aggregated rows are
-			// corrected by deletion, never by synthesizing per-check rows (a
-			// fabricated completed row would be tomorrow's ghost).
 			sha := ns(fpr.HeadRefOid)
 			ghRollup := ns(fpr.LastCommitStatus)
 			if sha != "" {
@@ -126,9 +119,7 @@ func (c *ConsistencyChecker) applyOwner(
 						ap.CheckRowsDeleted += len(states)
 					}
 				case "":
-					// GitHub reports NO rollup (e.g. the head advanced to a
-					// commit with no checks). Leftover rows or a non-NULL
-					// cached column are stale state from a previous sha.
+					// GitHub reports NO rollup; leftover rows or a non-NULL cached column are stale state from a previous sha.
 					states, err := c.store.CommitCheckStates(ctx, owner, r.Name, sha)
 					if err != nil {
 						return err
@@ -145,15 +136,10 @@ func (c *ConsistencyChecker) applyOwner(
 						ap.CheckRowsDeleted += len(states)
 					}
 				default:
-					// PENDING/EXPECTED: not a terminal verdict -- completions
-					// will recompute; touching rows here only loses real state.
+					// PENDING/EXPECTED: not terminal; completions will recompute, so touching rows here only loses real state.
 				}
 			}
 
-			// 5. auto_merge_method: the upsert never applies it from
-			// GraphQL-shaped rows, so a mismatch needs the explicit set
-			// (including NULL -- a stale armed flag silently disables
-			// pr-minder's merge backstop).
 			cachedArm := ""
 			if cpr, ok := cachedPRs[repoKey][fpr.Number]; ok {
 				cachedArm = ns(cpr.AutoMergeMethod)

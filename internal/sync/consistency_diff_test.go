@@ -14,9 +14,7 @@ import (
 
 // TestRepoFieldDiffs_Table covers the new repo field comparisons.
 func TestRepoFieldDiffs_Table(t *testing.T) {
-	// checkStart is well after every base timestamp, so the pre-existing cases
-	// all read as strictly-before-the-check drift; the raced_* cases place
-	// GitHub's value at/after it.
+	// checkStart is well after every base timestamp; the raced_* cases place GitHub's value at/after it.
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	base := func() dbgen.Repo {
 		return dbgen.Repo{
@@ -162,8 +160,7 @@ func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 	assert.Equal(t, "master", diffs[0].GitHub)
 	assert.Empty(t, diffs[0].Note)
 
-	// GitHub reported NO default branch ref: the github side is an explicit
-	// marker (surviving the JSON omitempty), plus a note explaining why.
+	// GitHub reported NO default branch ref: an explicit marker, plus a note explaining why.
 	c, g = base, base
 	g.DefaultBranch = sql.NullString{}
 	diffs = repoFieldDiffs("o", "r", c, g, nil, checkStart)

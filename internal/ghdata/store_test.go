@@ -128,8 +128,7 @@ func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 	}
 	repos := []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}}
 
-	// Truth holds PRs 1 (stale, closed upstream long ago -- its webhook was
-	// missed) and 2. Backdate their touched_at beyond the grace window.
+	// Truth holds PRs 1 (stale, closed upstream, webhook missed) and 2; backdate touched_at beyond the grace window.
 	require.NoError(t, s.UpsertPR(ctx, mkPR(1, "stale"), now.Add(-time.Hour)))
 	require.NoError(t, s.UpsertPR(ctx, mkPR(2, "kept"), now.Add(-time.Hour)))
 	// PR 3 was JUST webhook-applied -- inside the grace window.
@@ -260,8 +259,7 @@ func TestPruneAccessControl(t *testing.T) {
 	counts, err := s.GlobalDataCounts(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), counts.Grants, "the expired grant row is gone")
-	// GetDenyVerdict filters expiry in Go, so read the raw rows to prove the
-	// expired one was actually deleted.
+	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired one was actually deleted.
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-expired"})
 	assert.Equal(t, sql.ErrNoRows, err, "the expired deny row is gone")
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-live"})

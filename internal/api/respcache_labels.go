@@ -11,29 +11,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached single-label read (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/labels/{name}
-//
-// A label DEFINITION -- "does auto-pr-merge exist here, and what colour is
-// it" -- asked per repo per sweep by pr-minder's label reconciliation (1313
-// forwards in one process, all of them 200s).
-//
-// The invalidation signal is exact and already subscribed: `label` deliveries
-// carry created/edited/deleted, and the dispatcher already applies them to the
-// pr_labels truth rows. The grain here is the REPO rather than the name,
-// because a rename moves two names in one delivery and because one label
-// answers under every spelling a caller might request. Label events are rare
-// and a repo holds a handful of labels, so repo-wide costs nothing.
-//
-// Only the 200 is stored. The absent answer is deliberately NOT a cached
-// verdict: an ensure-then-create caller would read its own stale 404 in the
-// seconds before the `label` delivery lands and try to create the label
-// twice, and with essentially every observed answer a 200 the verdict would
-// buy nothing for that risk.
+// The cached single-label read (GET /repos/{owner}/{repo}/labels/{name}); see docs/cache/rest-routes.md.
 
-// labelCacheTTL backstops a missed `label` delivery. Label definitions are
-// otherwise static, so this is the long TTL.
+// labelCacheTTL: see docs/cache/rest-routes.md.
 const labelCacheTTL = 24 * time.Hour
 
 // cachedLabel serves one label definition from a stored snapshot, fetching and
@@ -84,9 +64,7 @@ func (h *handlers) cachedLabel(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbLabel(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 404 (no such label -- see the header note on why it is not a
-		// verdict), 5xx, and any shape the model cannot hold: relayed
-		// verbatim, never stored.
+		// 404, 5xx, and any unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -98,14 +76,7 @@ func (h *handlers) cachedLabel(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// writeLabel forwards a label WRITE (recorded as a write, like every proxied
-// mutation) after dropping the repo's cached labels. `label` deliveries flush
-// these rows too, but they arrive seconds later -- long enough for a caller
-// that edits a label through the mirror to read back its own stale answer.
-//
-// The flush runs BEFORE forwarding, on the Code Quality route's reasoning: a
-// failed write that dropped the rows costs one miss, while a successful write
-// whose flush was skipped serves a wrong answer for the full TTL.
+// writeLabel flushes the repo's cached labels, then forwards; see docs/cache/rest-routes.md.
 func (h *handlers) writeLabel(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
 	if err := h.store.InvalidateLabelCache(r.Context(), owner, repo); err != nil {

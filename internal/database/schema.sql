@@ -443,6 +443,17 @@ CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 -- unknown), repository flushes the whole repo like everywhere else;
 -- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
 -- lowercased like the other cached-route tables.
+--
+-- status is the upstream answer the row absorbed (the compare_cache
+-- precedent): 200, a real snapshot in one of the three per-kind shapes above,
+-- or 404, an expiring unknown-ref miss marker -- CI status watchers re-poll a
+-- ref until it settles, and a ref that never resolves re-earns the same 404
+-- on every sweep, exactly like compare's fork-PR case. A 403 is NEVER
+-- absorbed here: unlike a 404, it is a fact about the CALLER's credential
+-- (fine-grained PATs cannot use the Checks API at all), not about the repo or
+-- ref, and this table carries no actor column -- caching it would serve a
+-- stale denial to a differently-scoped caller (an App installation token,
+-- say) who could get a real answer from the same request.
 CREATE TABLE commit_ci_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased
@@ -451,7 +462,8 @@ CREATE TABLE commit_ci_cache (
     kind         TEXT NOT NULL,              -- 'status' | 'check_runs' | 'statuses_list'
     per_page     INTEGER NOT NULL,           -- default 30 for param-less requests
     page         INTEGER NOT NULL,           -- default 1 for param-less requests
-    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
+    doc          TEXT NOT NULL,              -- trimmed document as JSON (per-kind snapshot, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning

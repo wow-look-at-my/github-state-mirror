@@ -90,6 +90,41 @@ could not catch this: it was anchored on the wrong row. The PR rows work as
 evidence precisely because they arrive on a DIFFERENT delivery and a different
 route.
 
+## The narrower, earlier mechanism: `baseBranchMoved` (`compare_cache`)
+
+`baseBranchMoved` (`internal/ghdata/respcache_compare.go`) reports whether the
+base branch has moved off the tip a cached comparison row was computed
+against -- a row it can PROVE is stale, whatever happened to the flush that
+should have dropped it.
+
+The flush is still the primary mechanism, and it is not going anywhere. This
+is the belt for the case that actually bit: a `behind_by` answer outlives the
+push that changed it, and the consumer reading it (pr-minder's "does this PR
+need its branch updated?" gate) concludes there is nothing to do. Nothing
+about that failure is self-correcting -- the wrong answer is what stops the
+work that would produce a new one -- so it sits until the 24h TTL. GitHub
+hands us the way out in the answer itself: `base_commit.sha` says which base
+tip the comparison describes, and `git_ref_cache` says which tip the branch is
+on NOW, because a push APPLIES its own `after` there (`ApplyPushedRefTip`).
+Two facts already held, compared on read.
+
+Unknown beats guessing in only one direction here. A row with no stated base
+tip, a base side that is a sha (immutable -- nothing to move), or a branch
+whose tip was never observed all fall through to the existing contract:
+flush, then TTL. Refusing to serve those would not make one of them fresher;
+it would just turn every first comparison into a permanent miss. What this
+rejects is the narrow, provable case: the tip is known, and it is not the one
+in the row.
+
+The HEAD side gets no equivalent check. GitHub states no head tip, and
+deriving one from the last element of `commits` is wrong the moment a
+comparison exceeds GitHub's 250-commit cap -- a silently truncated list whose
+tail is not the head. The head side keeps the flush and the TTL.
+
+This mechanism is anchored on `git_ref_cache`, which is why it could not catch
+the incident above: that row was itself the one gone stale (see "What
+happened" above).
+
 ## What is still uncovered
 
 A branch with no open PR based on it, whose push delivery is lost, stays stale

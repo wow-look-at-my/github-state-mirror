@@ -95,16 +95,14 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a pull_request event must flush the PR's 406 verdict")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 
-	// The v3-suffixed spelling of the same media type shares the flow (and
-	// the row the previous miss stored).
+	// The v3-suffixed spelling of the same media type shares the flow and the stored row.
 	req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
 	req.Header.Set("Accept", "application/vnd.github.v3.diff")
 	w4 := do(t, router, req)
 	require.Equal(t, http.StatusNotAcceptable, w4.Code)
 	assert.Equal(t, "hit", w4.Header().Get(cacheHeader), "both diff media-type spellings share the verdict row")
 
-	// A multi-range Accept is NOT the consumer shape: plain passthrough,
-	// GitHub's own body verbatim (documentation_url and all).
+	// A multi-range Accept is not the consumer shape: plain passthrough, GitHub's body verbatim.
 	req = authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
 	req.Header.Set("Accept", "application/vnd.github.diff, application/json")
 	w5 := do(t, router, req)
@@ -180,9 +178,7 @@ func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 		pr["merged"] = true
 		servePRJSON(w, pr)
 	}
-	// The known-mergeable row still hits until some signal moves it; a base
-	// push (the usual close companion) or TTL would; simulate the direct
-	// re-read after a push un-resolves it.
+	// The known-mergeable row still hits until a signal moves it; simulate the push that un-resolves it.
 	postWebhookJSON(t, router, "push", map[string]any{
 		"ref": "refs/heads/feature", "before": shaCommit, "after": shaTip,
 		"repository": fixtureRepo(),
@@ -232,8 +228,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, "miss", w.Header().Get(cacheHeader))
 
-	// The cached doc survives with merged: true (GitHub's answer, not the
-	// open rebuild's by-definition false) and mergeable PRESENT as null.
+	// The cached doc keeps merged: true (GitHub's answer) and mergeable present as null.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	require.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -245,10 +240,8 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	assert.Nil(t, mv, "a closed PR's mergeable is null")
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
-	// The PR reopens: GitHub now answers open, and the reopened event must
-	// flush the doc so the next read cannot serve it stale. (The event's own
-	// payload also re-seeds the open row -- with an unresolved mergeable, so
-	// the read still reaches GitHub.)
+	// The PR reopens: the reopened event flushes the closed doc so the next read is not stale.
+	// Its payload also re-seeds the open row with an unresolved mergeable, so the read still reaches GitHub.
 	u.single = func(w http.ResponseWriter, r *http.Request) {
 		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = true
@@ -256,8 +249,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 		servePRJSON(w, pr)
 	}
 	reopenedPR := upstreamPR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
-	// A reopen postdates the close it undoes -- GitHub stamps updated_at on
-	// both -- and the closure record makes the mirror require that.
+	// A reopen postdates the close it undoes; the closure record requires updated_at to prove it.
 	reopenedPR["updated_at"] = "2026-07-03T10:00:00Z"
 	postWebhook(t, router, "pull_request", prEvent("reopened", reopenedPR))
 
@@ -270,8 +262,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	assert.Equal(t, "open", reopened["state"], "the fresh answer is the OPEN PR, never the stale closed doc")
 	assert.Equal(t, false, reopened["merged"])
 
-	// Steady state: the absorbed open row (known mergeable) hits, and the
-	// closed doc is gone from the side table.
+	// Steady state: the absorbed open row (known mergeable) hits; the closed doc is gone.
 	w4 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w4.Header().Get(cacheHeader))
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
@@ -313,10 +304,7 @@ func TestCachedPull_DiffStats(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 	assert.JSONEq(t, w1.Body.String(), w2.Body.String(), "hit and miss must rebuild identically")
 
-	// A different PR reaches the row space only through the LIST (no stats)
-	// plus a webhook that resolves mergeable. Rest-complete and
-	// mergeable-known, but with nothing to answer additions with -- so the
-	// single-PR read must MISS, and one fetch heals it into a hit.
+	// A different PR reaches this row only via the LIST (no stats) plus a webhook resolving mergeable.
 	list := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?state=open&per_page=100", nil))
 	require.Equal(t, http.StatusOK, list.Code)
 	var listed []map[string]any

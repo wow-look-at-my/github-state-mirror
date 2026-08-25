@@ -54,8 +54,7 @@ func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 	seedResolvedOpenPR(t, store, 7, "main", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	seedResolvedOpenPR(t, store, 8, "dev", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
-	// "ref" with the wrong type breaks ParsePushPayload; ParseEvent still
-	// extracts the repo, so the fallback knows which repo moved.
+	// "ref" with the wrong type breaks ParsePushPayload; ParseEvent still extracts the repo for the fallback.
 	raw := []byte(`{"ref": 123, "repository": {"name": "repo1", "owner": {"login": "org1"}}}`)
 	result := d.Dispatch(ctx, webhook.ParseEvent("push", raw))
 	assert.Equal(t, webhook.DispInvalidated, result.Disposition)
@@ -88,8 +87,7 @@ func TestOnPush_MergeInvalidationSurvivesPushedAtFailure(t *testing.T) {
 	staleSha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	seedResolvedOpenPR(t, store, 7, "main", staleSha)
 
-	// Break every repos-table step (absorbRepoFromPayload, SetRepoPushedAt,
-	// the default-branch status reset) while pull_requests keeps working.
+	// Break every repos-table step (absorb, SetRepoPushedAt, default-branch reset) while pull_requests keeps working.
 	_, err = db.Exec(`ALTER TABLE repos RENAME TO repos_broken`)
 	require.NoError(t, err)
 

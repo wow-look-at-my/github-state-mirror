@@ -11,80 +11,15 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// This file is the storage layer for the cached PR REST routes:
-//
-//	GET /repos/{owner}/{repo}/pulls          (the open-PR list)
-//	GET /repos/{owner}/{repo}/pulls/{number} (a single open PR)
-//
-// The PR routes do not get their own state table: they absorb into (and
-// rebuild from) the GLOBAL pull_requests + pr_labels tables the webhook
-// dispatcher and the GraphQL org sync already maintain. What is here is
-//
-//   - the pulls_list_cache marker ("the global pull_requests rows hold this
-//     repo's COMPLETE open-PR set"), which is what makes serving a LIST from
-//     state sound: rows alone cannot prove nothing is missing;
-//   - rest-completeness (PRRestComplete): GraphQL-sourced rows lack the
-//     REST-only columns and can never be rebuilt as a REST response;
-//   - a row-staleness backstop (PRRowFresh): a missed `closed` delivery would
-//     otherwise serve a stale open PR forever, so a row untouched for longer
-//     than PRRowTTL is treated as a miss and re-fetched.
-//
-// WHO may read the rebuilt answers is the reveal layer's job (internal/api).
+// Storage layer for the cached PR REST routes; absorbs into and rebuilds
 
-// PRRowTTL is the single-PR staleness backstop: a row whose touched_at is
-// older than this is not served by the cached single-PR route (it re-fetches
-// instead). Webhooks and absorbs stamp touched_at, so any live PR stays well
-// inside the window; only a PR that stopped producing events -- e.g. one whose
-// close delivery was missed -- ages out. Variable for tests.
+// Single-PR staleness backstop; a stale row misses rather than serves stale.
 var PRRowTTL = 24 * time.Hour
 
-// MergeStaleTTL bounds how long a push-invalidated test-merge sha
-// (merge_stale_sha, stamped merge_stale_at by NullPRMergeableByBranch) keeps
-// rejecting re-offered answers as stale. Within the window a refetch offering
-// that exact sha is a pre-push answer (a base/head tip change always changes
-// the sha of a SUCCESSFUL test merge) and is stored unresolved -- UNLESS the
-// answer carries the push-tip proof (pushProvenPostPush: its reported tip for
-// the marked branch equals the push's after sha), which demonstrates the
-// answer post-dates the push, OR it is a CONFLICTING answer past
-// MergeStaleConflictingWindow (a dirty PR retains its last-good sha and
-// legitimately re-offers it with mergeable:false -- see that const). The tip
-// proof is what heals the wrong-mark race -- a fetch absorbed AFTER GitHub's
-// recompute but BEFORE the (late) push delivery lands stores the FRESH sha,
-// which the push then wrongly marks stale -- on the very next
-// post-push-proven absorb. The TTL is only the OUTER backstop behind both
-// exemptions, for a wrong mark whose answers never demonstrate the tip (a
-// marker recorded without a usable push after, or GitHub's reported tip
-// lagging): past the window a re-offered sha is accepted regardless. An hour
-// is orders of magnitude above GitHub's recompute lag under active polling
-// (each rejected miss re-triggers the recompute) while bounding that
-// worst case.
-//
-// This is a const, not a test-settable var, because the SAME window is
-// hardcoded in queries/ghdata.sql as the strftime '-1 hour' cutoffs inside
-// UpsertPullRequest -- change both together. Tests age the MARKER instead
-// (NullPRMergeableByBranch takes the stamp time).
+// How long a push-invalidated test-merge sha keeps rejecting re-offered answers.
 const MergeStaleTTL = time.Hour
 
-// MergeStaleConflictingWindow bounds how long the stale marker may reject a
-// CONFLICTING same-sha answer. The invariant behind the marker -- a tip
-// change always changes the test-merge sha -- holds only for SUCCESSFUL test
-// merges: a conflicted (dirty) PR gets NO new test merge, so GitHub keeps
-// returning the RETAINED last-good merge_commit_sha (and a base.sha frozen at
-// the last clean evaluation, which is why the push-tip proof cannot rescue
-// this case) alongside a fresh mergeable:false. Sha equality on a CONFLICTING
-// answer is therefore only evidence of pre-push-ness within possible GitHub
-// read-replica lag -- seconds; 30s is a generous ~x10 margin. Past it, a
-// CONFLICTING same-sha answer is the dirty-retained pattern and MUST be
-// accepted: rejecting it wedged every conflicted PR to mergeable:null for the
-// whole MergeStaleTTL after EVERY base push (the pr-minder conflict-settle
-// stall -- live evidence: wow-look-at-my/webhooks#44/#124, 2026-07-17).
-// MERGEABLE (and unresolved) same-sha offers keep the full MergeStaleTTL
-// rejection: a successful test merge really does always mint a new sha, so
-// resolved-true + same sha => pre-push.
-//
-// Like MergeStaleTTL, this is a const because the SAME window is hardcoded in
-// queries/ghdata.sql as the strftime '-30 seconds' cutoffs inside
-// UpsertPullRequest -- change both together.
+// How long the stale marker may reject a CONFLICTING same-sha answer.
 const MergeStaleConflictingWindow = 30 * time.Second
 
 // mergeStaleMarkerLive reports whether the row carries a live
@@ -103,38 +38,19 @@ func mergeStaleMarkerLive(pr dbgen.PullRequest, now time.Time) bool {
 
 // staleShaOffered reports whether offered is exactly the test-merge sha a
 // recent push invalidated on the existing row -- presumed pre-push, because
-// the push moved the PR's base or head and a tip change always changes the
-// sha of a SUCCESSFUL test merge. Deliberately raw: the two exemptions that
-// can overrule the presumption -- the push-tip proof (pushProvenPostPush) and
-// the dirty-retained CONFLICTING pattern (conflictingPastReplicaLag) -- are
-// applied by the absorbing callers, never here. Mirrors UpsertPullRequest's
-// SQL stale guard; keep the two in sync.
 func staleShaOffered(existing dbgen.PullRequest, offered sql.NullString, now time.Time) bool {
 	return mergeStaleMarkerLive(existing, now) &&
 		offered.Valid && offered.String != "" && offered.String == existing.MergeStaleSha.String
 }
 
-// PRMergeShaStale reports whether the row's OWN merge_commit_sha is the
-// push-invalidated one. The guarded writes never store that state (the sha is
-// nulled instead), so this is belt and braces for the single-PR hit gate: a
-// row that somehow holds the provably-stale sha must miss, never serve it.
-// Deliberately raw equality -- no push-tip proof consulted: a miss here just
-// re-fetches, and the ABSORB paths are where the proof decides.
+// Belt-and-braces: a row holding the push-invalidated sha must miss.
+// see docs/cache/merge-stale-sha.md
 func PRMergeShaStale(pr dbgen.PullRequest, now time.Time) bool {
 	return staleShaOffered(pr, pr.MergeCommitSha, now)
 }
 
-// pushProvenPostPush reports whether the incoming doc provably post-dates the
-// push that stamped the existing row's stale marker: the marker remembers
-// WHICH branch that push moved (merge_stale_ref) and its post-push tip
-// (merge_stale_after), so an answer whose reported tip for that branch --
-// base_ref_oid when the marked ref is the base, head_ref_oid when it is the
-// head -- equals the push's after sha reflects the push and cannot be the
-// pre-push answer the marker exists to reject. A marker recorded without the
-// proof columns (no usable push after) proves nothing, as does an answer
-// whose reported tip is anything else (older OR newer -- only an exact match
-// demonstrates; a mismatch keeps the old reject-until-TTL behavior). Mirrors
-// UpsertPullRequest's SQL tip proof; keep the two in sync.
+// Reports whether the incoming doc's tip proves it post-dates the marking push.
+// see docs/cache/merge-stale-sha.md
 func pushProvenPostPush(existing, incoming dbgen.PullRequest) bool {
 	if !existing.MergeStaleRef.Valid || existing.MergeStaleRef.String == "" ||
 		!existing.MergeStaleAfter.Valid || existing.MergeStaleAfter.String == "" {
@@ -149,18 +65,8 @@ func pushProvenPostPush(existing, incoming dbgen.PullRequest) bool {
 		incoming.HeadRefOid.Valid && incoming.HeadRefOid.String == after
 }
 
-// conflictingPastReplicaLag reports whether the incoming answer is a
-// CONFLICTING one offered against a marker old enough that read-replica lag
-// can no longer explain the same-sha match: the dirty-retained pattern. A
-// conflicted PR gets NO new test merge, so GitHub re-offers the RETAINED
-// last-good sha with a fresh mergeable:false (and a base.sha frozen at the
-// last clean evaluation, which is why pushProvenPostPush cannot rescue it) --
-// such an answer must be accepted or every conflicted PR wedges to null after
-// every base push. Within MergeStaleConflictingWindow the answer could still
-// be a genuinely pre-push read served by a lagging replica, so the marker
-// keeps rejecting; a non-CONFLICTING answer never qualifies (a successful
-// test merge always mints a new sha). Mirrors UpsertPullRequest's SQL
-// '-30 seconds' exemption; keep the two in sync.
+// A CONFLICTING same-sha answer past replica lag is dirty-retained, not stale.
+// see docs/cache/merge-stale-sha.md
 func conflictingPastReplicaLag(existing, incoming dbgen.PullRequest, now time.Time) bool {
 	if !incoming.Mergeable.Valid || incoming.Mergeable.String != "CONFLICTING" {
 		return false
@@ -175,21 +81,15 @@ func conflictingPastReplicaLag(existing, incoming dbgen.PullRequest, now time.Ti
 	return now.Sub(t) >= MergeStaleConflictingWindow
 }
 
-// PRRestComplete reports whether a pull_requests row carries the REST-only
-// fields the cached /pulls routes rebuild from. GraphQL-sourced rows
-// (identity-locked selection set) lack them and must be treated as misses.
-// node_id and base.sha are always present in REST responses and webhook
-// payloads and never in the GraphQL selection, so they are the signal; author
-// is required by the rebuild shape.
+// GraphQL-sourced rows lack these REST-only fields and must miss.
+// see docs/cache/rest-routes.md
 func PRRestComplete(pr dbgen.PullRequest) bool {
 	return pr.NodeID.Valid && pr.NodeID.String != "" &&
 		pr.BaseRefOid.Valid && pr.BaseRefOid.String != "" &&
 		pr.AuthorLogin.Valid && pr.AuthorLogin.String != ""
 }
 
-// PRRowFresh reports whether the row was touched (webhook-applied or absorbed)
-// recently enough to serve from the single-PR route. An unparseable/empty
-// touched_at reads as stale (fail to a re-fetch, never to stale state).
+// Stale/unparseable touched_at fails to a re-fetch, never to stale state.
 func PRRowFresh(pr dbgen.PullRequest, now time.Time) bool {
 	if pr.TouchedAt == "" {
 		return false
@@ -326,11 +226,7 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 		}
 	}
 	if complete {
-		// Drop open rows the complete response does not contain: they closed
-		// (or never existed) upstream -- unless a racing webhook touched them
-		// inside the grace window. Deleting by each stale row's own stored
-		// casing keeps the case-sensitive deletes exact. Any orphaned
-		// commit_checks rows are left for the webhook close path / rollups.
+		// Drops open rows the complete response omits (closed/gone); grace-windowed.
 		cutoff := rfc3339(fetchStart.Add(-reconcileGrace))
 		existing, err := q.ListOpenPullRequestsByRepoNoCase(ctx, dbgen.ListOpenPullRequestsByRepoNoCaseParams{
 			Owner: owner, Repo: repo,
@@ -352,13 +248,7 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 			}); err != nil {
 				return err
 			}
-			// No closure recorded: this delete is inferred from ABSENCE from
-			// an eventually-consistent list, which is exactly why the grace
-			// window above exists. A closure from a wrong inference would
-			// refuse the PR's real deliveries for a day; a wrong delete costs
-			// one refetch. Only a statement that the PR closed -- the closed
-			// delivery, or a single-PR fetch answering non-open -- records
-			// one.
+			// No closure recorded: inferred from absence, not a statement that it closed.
 		}
 		if err := q.UpsertPullsListMarker(ctx, dbgen.UpsertPullsListMarkerParams{
 			Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
@@ -397,14 +287,6 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // -- which heals a WRONG mark (the race where the fresh post-push answer was
 // absorbed before the late push delivery, which then stamped it stale) on the
 // very next poll; and (2) the dirty-retained pattern
-// (conflictingPastReplicaLag) -- a CONFLICTED PR gets NO new test merge, so
-// GitHub legitimately re-offers the RETAINED last-good sha with
-// mergeable:false forever, and once the marker outlives
-// MergeStaleConflictingWindow that is the only remaining explanation.
-// The upsert's SQL guard nulls the columns; the Go check here exists because
-// the authoritative force-set below would otherwise resurrect the rejected
-// value, and so the route can serve the response unresolved too.
-// staleRejected reports that outcome to the caller.
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -432,8 +314,6 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 	mergeable, mergeableState := pr.Mergeable, pr.MergeableState
 	if staleRejected {
 		// Both facets together: a row left holding a resolved mergeable_state
-		// beside a nulled mergeable would serve the pre-push answer under the
-		// other field's name, which is what this rejection exists to refuse.
 		mergeable = sql.NullString{}
 		mergeableState = sql.NullString{}
 	}

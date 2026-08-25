@@ -17,13 +17,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// AppAuthenticator signs in as a GitHub App. It mints short-lived RS256 JWTs
-// from the app's private key and exchanges them for per-installation access
-// tokens. This is the service's only credential: there is no static service
-// token, and it is used solely for background refreshes (never to serve API
-// requests). The JWT authenticates app-level endpoints (/app/*); installation
-// access tokens authenticate data endpoints scoped to whatever a given
-// installation can see.
+// AppAuthenticator signs in as a GitHub App: it mints short-lived RS256 JWTs
 type AppAuthenticator struct {
 	appID  string
 	key    *rsa.PrivateKey
@@ -77,23 +71,13 @@ func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, e
 	}
 }
 
-// AlwaysDeliveredEvents are the event types GitHub sends to every App
-// regardless of configuration. They never appear in the App's `events` list
-// because there is nothing to subscribe to, so a caller diffing against
-// SubscribedEvents must treat them as always present rather than missing.
 var AlwaysDeliveredEvents = set.Of(
 	"installation",
 	"installation_repositories",
 	"github_app_authorization",
 )
 
-// SubscribedEvents reports the event types this App is subscribed to, as
-// GitHub itself states them (GET /app, authenticated by the App's own JWT).
-//
-// This is the ONLY sound answer to "is this event configured". Traffic cannot
-// answer it: a delivery log can prove an event ARRIVED, never that a silent
-// event type is unsubscribed rather than merely idle, and the low-frequency
-// events are exactly the ones a bounded log never contains.
+// SubscribedEvents is GitHub's own authoritative answer (GET /app); a delivery log can prove an event arrived, never that a silent one is unsubscribed.
 func (a *AppAuthenticator) SubscribedEvents(ctx context.Context) ([]string, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
@@ -124,18 +108,9 @@ type HookDelivery struct {
 // hookDeliveriesPerPage is GitHub's maximum page size for the delivery log.
 const hookDeliveriesPerPage = 100
 
-// FailedHookDeliveries lists the deliveries GitHub could not hand to this
-// mirror, newest first (GET /app/hook/deliveries?status=failure).
-//
-// This is the only record that a delivery EXISTED and never arrived. GitHub
-// does not re-send one on its own, so without reading this log a missed
-// delivery is indistinguishable from an event that never happened -- the
-// mirror keeps serving what it last absorbed, for the full TTL, with nothing
-// anywhere reporting a gap.
-//
-// One page is deliberately the whole of it. The log is read on a short cycle,
-// so a page of the most recent failures is what a cycle can act on; paging
-// deeper would only widen a burst into a redelivery flood.
+// FailedHookDeliveries lists deliveries GitHub could not hand to this mirror,
+// newest first. One page only: a short read cycle acts on the latest failures.
+// see docs/webhooks/delivery-gaps.md
 func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDelivery, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
@@ -150,17 +125,10 @@ func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDeli
 	return out, nil
 }
 
-// RedeliverHook asks GitHub to send one delivery again
-// (POST /app/hook/deliveries/{id}/attempts). The replay arrives as an ordinary
-// delivery, through the ordinary handler.
-//
-// It carries the ORIGINAL payload -- the state at the moment the event
-// happened, not now. Idempotence is not the property that makes that safe:
-// applying an old view over a newer one is a correct, repeatable write of the
-// wrong state. What makes it safe is the write paths refusing a view they can
-// see is stale (ghdata's PR closure record is the one that had to be built
-// after a merged PR came back open this way). An ordinary late delivery is
-// the same hazard; a replay just makes it routine.
+// RedeliverHook asks GitHub to resend one delivery, which arrives as an
+// ordinary delivery carrying its ORIGINAL payload -- the write paths refusing
+// a stale view, not idempotence, are what makes replaying it safe.
+// see docs/webhooks/delivery-gaps.md
 func (a *AppAuthenticator) RedeliverHook(ctx context.Context, deliveryID int64) error {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {

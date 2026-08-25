@@ -9,18 +9,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// State for GET /orgs/{org}/actions/runners. Keyed by the bearer's
-// fingerprint like hooks_cache -- an admin-scoped read GitHub sends no
-// webhook for (no event announces a runner going online/offline/busy), so a
-// global row would both leak admin-only data through the ordinary reveal
-// gate and go stale with nothing to notice it. TTL is short and primary.
-// Cached VERBATIM (identical-or-passthrough, see respcache_identity.go's file
-// header) -- a runner's `labels` array and other fields are exactly the kind
-// of thing a trim guesses wrong about with no consumer survey to check
-// against.
+// State for GET /orgs/{org}/actions/runners; see docs/cache/rest-routes.md.
 
-// OrgRunnersCacheTTL is short: a runner's busy/status is a live value a
-// scheduler provisions against, and no webhook shortens the wait.
+// OrgRunnersCacheTTL is short: no webhook announces a runner's status changing.
 const OrgRunnersCacheTTL = 30 * time.Second
 
 // GetCachedOrgRunners returns one page's cached document, or (empty, false)

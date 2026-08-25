@@ -49,11 +49,7 @@ const (
 	jobsMaxLimit     = 500
 )
 
-// handleJobs returns recent GitHub Actions jobs recorded from workflow_job
-// webhooks: running jobs first (newest started first), then completed jobs
-// (newest completed first). Like the webhook log, the job table is global (it
-// spans every repo/tenant), so it is restricted to admins. `limit` caps the
-// row count (default 100, max 500).
+// handleJobs: see docs/dashboard/dashboard.md.
 func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -79,11 +75,7 @@ func (d *dashboard) handleJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, jobsResponse{Jobs: jobs})
 }
 
-// handleRequests returns recent data-API requests and their cache disposition
-// (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
-// so — consistent with the admin-only "all scopes" view — it is admin-only.
-// The payload also carries the SQLite database's on-disk size (statted fresh
-// per request) so the tab's summary shows the cache's real footprint.
+// handleRequests: see docs/dashboard/dashboard.md.
 func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	login, ok := d.auth.Session(r)
 	if !ok {
@@ -99,11 +91,7 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, snap)
 }
 
-// dbFileSizes reports the on-disk sizes of the SQLite database file and its
-// -wal sidecar (bytes written ahead of a checkpoint — part of the real
-// footprint). One os.Stat each — cheap enough per request, no caching. A
-// missing file or stat error yields 0 (the field is omitted from the JSON),
-// never a failure: the request log must render regardless.
+// dbFileSizes: see docs/dashboard/dashboard.md.
 func dbFileSizes(path string) (db, wal int64) {
 	if path == "" {
 		return 0, 0
@@ -121,9 +109,7 @@ type kindFreshness struct {
 	Kind        string           `json:"kind"`
 	States      map[string]int64 `json:"states"`
 	LastFetched string           `json:"last_fetched,omitempty"`
-	// Error is the captured failure reason for a resource of this kind currently
-	// in the error state (ErrorKey identifies which one), so the dashboard can
-	// show *why* a kind is erroring, not just the count.
+	// Error is the kind's captured failure reason; ErrorKey names which resource.
 	Error    string `json:"error,omitempty"`
 	ErrorKey string `json:"error_key,omitempty"`
 }
@@ -156,13 +142,10 @@ type cacheResponse struct {
 	Scope   string `json:"scope"`
 	// Totals are the GLOBAL truth store's row counts -- one cache, one truth.
 	Totals ghdata.DataCounts `json:"totals"`
-	// Principals lists reveal-layer principals: the signed-in user's own on
-	// the "mine" view, every known one on the admin "all" view.
+	// Principals holds the signed-in user's own principal, or every known one on the admin "all" view.
 	PrincipalCount int              `json:"principal_count"`
 	Principals     []principalStats `json:"principals"`
-	// Truth is the freshness of shared global truth markers (the 'global'
-	// actor rows, e.g. repo_pulls completeness is tracked elsewhere; this
-	// carries whatever global markers exist).
+	// Truth is the freshness of shared 'global' truth markers.
 	Truth []kindFreshness `json:"truth,omitempty"`
 }
 
@@ -244,8 +227,7 @@ func (d *dashboard) collectInputs(ctx context.Context, scope, login string, iden
 		return inputs
 	}
 
-	// Admin "all": every identity, plus any principal with freshness metadata
-	// but no identity row (e.g. the background app-installation sessions).
+	// Admin "all" also includes principals with freshness metadata but no identity row.
 	seen := set.New[string](len(identities))
 	inputs := make([]principalInput, 0, len(identities))
 	for _, id := range identities {
@@ -309,10 +291,7 @@ func (d *dashboard) buildPrincipal(ctx context.Context, in principalInput, selfL
 	return p, nil
 }
 
-// groupKinds folds per-(kind,state) rows into one entry per resource kind, with
-// a map of state -> count and the most recent fetch time across that kind. When
-// a kind has an errored resource, the first captured error message (and its key)
-// is attached so the dashboard can show why it failed.
+// groupKinds: see docs/dashboard/dashboard.md.
 func groupKinds(rows []dbgen.ActorFreshnessByKindRow, errRows []dbgen.ActorErrorMessagesByKindRow) []kindFreshness {
 	order := make([]string, 0)
 	byKind := make(map[string]*kindFreshness)
@@ -362,16 +341,14 @@ func toRecent(logs []dbgen.CacheRefreshLog) []recentRefresh {
 			Trigger:   l.TriggeredBy,
 			StartedAt: l.StartedAt,
 			Status:    status,
-			// Surface the captured failure reason (cache_refresh_log.error_message)
-			// so the dashboard can show *why* a refresh errored, not just that it did.
+			// Error is the captured cache_refresh_log.error_message.
 			Error: l.ErrorMessage.String,
 		})
 	}
 	return out
 }
 
-// asTimeString coerces sqlc's interface{} MAX() result (string, []byte, or nil)
-// into a string.
+// asTimeString coerces sqlc's interface{} MAX() result to a string.
 func asTimeString(v interface{}) string {
 	switch t := v.(type) {
 	case string:
@@ -383,7 +360,5 @@ func asTimeString(v interface{}) string {
 	}
 }
 
-// shortFingerprint abbreviates an actor for display: opaque hex token
-// fingerprints shorten to 12 chars, structured actors ("user:<id>",
-// "app:<id>", "app-installation:<id>") are shown whole.
+// shortFingerprint: see actor.Short.
 func shortFingerprint(fp string) string { return actor.Short(fp) }

@@ -12,48 +12,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached git-ref lookup (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/git/ref/{ref...}
-//
-// "Where does this branch point right now?" -- the single hottest UNROUTED
-// path in the request log before this route existed, run per branch per sweep
-// by the fleet's reconcile passes. The answer is one sha, and a push STATES
-// it (`after`), so a push APPLIES the new tip to the row rather than dropping
-// it (ghdata.ApplyPushedRefTip); the delete is the fallback for what a push
-// cannot answer. This route holds nothing a delivery has to be refetched for.
-//
-// The wildcard is greedy: a ref path is at least two segments ("heads/main")
-// and branch names carry slashes ("heads/claude/some-branch"). It is stored
-// VERBATIM and never resolved -- "heads/main" and "refs/heads/main" are
-// distinct requests, so each is its own row and the push flush covers every
-// spelling GitHub accepts (refSpellings, internal/sync/webhook_invalidate.go).
-//
-// The 404 is absorbed as a VERDICT, on the compare route's precedent: sweeps
-// re-poll refs that were deleted (a merged PR's head) forever, each read a
-// fresh upstream 404. It stays honest because ref CREATION arrives as a push
-// for that exact ref, which drops the verdict row.
-//
-// And because a lost push leaves this row WRONG rather than old, serving it
-// is conditional: `GetCachedGitRefChecked` refuses a row that an absorbed PR's
-// own base.sha contradicts, and this route then answers from GitHub instead.
-// docs/cache/stale-tip-repair.md.
+// Cached git-ref lookup (tier 2 of the cache contract): GET /repos/{owner}/{repo}/git/ref/{ref...}
 
-// gitRefCacheTTL bounds how long a MISSED push delivery could leave a stale
-// tip (or a stale absent-verdict) being served. A delivered push does not
-// wait for it: the push APPLIES its own `after` tip to the row
-// (ghdata.ApplyPushedRefTip), so this is only the backstop for a delivery
-// that never landed. Shared with that writer so both clocks agree.
-//
-// A TTL is the wrong instrument to be the ONLY backstop here, and this route
-// is where that bites hardest: the answer is one mutable pointer, and every
-// consumer decision built on it (is this PR behind? does it change anything?)
-// is wrong for as long as the pointer is. Keeping it right is THIS SERVICE's
-// job -- a consumer cannot be asked to notice, and must never be asked to
-// send a fixup request. Two mechanisms do it, both internal: every delivery
-// that states the tip applies it (a push's `after`, a merged PR's
-// merge_commit_sha), and a stored row another absorbed row CONTRADICTS is
-// refetched instead of served. docs/cache/stale-tip-repair.md.
+// gitRefCacheTTL is only the backstop for a missed push delivery; a delivered push applies its own tip.
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and
@@ -69,8 +30,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(r.URL.Query()) > 0 {
-		// No query parameter changes this answer, so any is unmodeled by
-		// definition rather than by omission.
+		// No query parameter changes this answer, so any is unmodeled.
 		h.passthrough(w, r, PassQuery)
 		return
 	}
@@ -90,10 +50,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	// The stored answer is served only if nothing else this mirror holds says
-	// otherwise. A contradiction is not a verdict -- it is a reason to go ask
-	// GitHub, which is what the fetch below does; `contradiction` rides along
-	// so the refetched row records what settled it.
+	// A contradiction is a reason to ask GitHub, not a verdict; it rides along so the refetched row records what settled it.
 	contradiction := ""
 	if c, ok, why, err := h.store.GetCachedGitRefChecked(r.Context(), owner, repo, ref, now); err != nil {
 		slog.Warn("git ref cache read failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
@@ -117,24 +74,19 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	doc, absorbed := absorbGitRef(resp.StatusCode, body)
 	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {
-		// The absent-ref VERDICT. Bounded the same way the compare route's is:
-		// a push that CREATES the ref flushes this exact row, and the TTL
-		// backstops a missed delivery.
+		// The absent-ref verdict: a ref-creating push flushes this row; the TTL backstops a missed delivery.
 		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
 			doc, absorbed, status = string(doc404), true, http.StatusNotFound
 		}
 	}
 	if overflow || !absorbed {
-		// 5xx, and the 200 ARRAY form (see gitRefCacheable): relayed
-		// verbatim, never stored.
+		// 5xx and the 200 ARRAY form (see gitRefCacheable): relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
 	if err := h.store.PutCachedGitRef(r.Context(), ghdata.CachedGitRef{
 		Owner: owner, Repo: repo, Ref: ref, Status: status, Doc: doc,
-		// What this fetch settles. A contradiction already answered must not
-		// re-trigger the next read: a PR's base.sha legitimately lags, so the
-		// same lagging value would otherwise buy a refetch every time.
+		// The settled contradiction, so the same lagging base.sha does not buy a refetch every time.
 		ReconciledAgainst: contradiction,
 	}, now, gitRefCacheTTL); err != nil {
 		slog.Warn("git ref cache write failed", "owner", owner, "repo", repo, "ref", ref, "error", err)
@@ -144,12 +96,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, status, []byte(doc), false)
 }
 
-// gitRefCacheable reports whether a requested ref path is one this route
-// models. GitHub answers /git/ref/{ref} with a single ref object ONLY for a
-// fully-qualified two-part ref ("heads/<name>", "tags/<name>"); a bare or
-// partial ref ("heads") makes it behave like matching-refs and answer an
-// ARRAY, a different shape this route does not hold. Requiring the qualifier
-// keeps one row = one ref object.
+// gitRefCacheable requires a fully-qualified two-part ref; a bare ref answers an ARRAY, a shape this route does not hold.
 func gitRefCacheable(ref string) bool {
 	if ref == "" || strings.ContainsAny(ref, "?#") {
 		return false
@@ -165,10 +112,7 @@ func gitRefCacheable(ref string) bool {
 	return kind == "heads" || kind == "tags"
 }
 
-// gitRefJSON is the trimmed ref answer: the canonical ref name GitHub
-// reported, its node_id (a stable identifier, not a link), and the object it
-// points at trimmed to sha + type. url, object.url, and every other link
-// field are dropped.
+// gitRefJSON is the trimmed ref answer: ref, node_id, and the object trimmed to sha + type.
 type gitRefJSON struct {
 	Ref    string        `json:"ref"`
 	NodeID string        `json:"node_id"`

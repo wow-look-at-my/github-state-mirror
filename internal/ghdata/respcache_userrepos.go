@@ -9,13 +9,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// State for GET /user/repos: the requesting token's own personalized repo
-// listing, cached VERBATIM (identical-or-passthrough, see
-// api/respcache_identity.go's file header). No webhook interaction -- see
-// the schema comment for why; TTL alone bounds staleness.
+// Storage for GET /user/repos, cached VERBATIM. See docs/cache/rest-routes.md.
 
-// UserReposCacheTTL is short: a personalized cross-owner listing has no
-// invalidation signal at all, so staleness is bounded purely by time.
+// UserReposCacheTTL alone bounds staleness: this listing has no invalidation signal.
 const UserReposCacheTTL = 5 * time.Minute
 
 // GetCachedUserRepos returns one page's cached document, or (empty, false)

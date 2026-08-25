@@ -13,25 +13,11 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached ref-prefix-search route (tier 2 of the
-// cache contract):
-//
-//	GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix}
-//
-// pr-minder's queue-branch scan is the modeled caller (survey 2026-08-23).
-// Only the heads/ prefix form is modeled -- GitHub's endpoint takes any
-// refs/ subtree, but every observed call names heads/, and modeling tags/
-// or a bare refs/ prefix would be guessing at a shape nothing here sends.
-// Per-page whole-doc snapshots, the branches_list_cache precedent: a branch
-// create/delete/tip-move all arrive as a push naming a ref under
-// refs/heads/, and this route has no narrower per-ref target than the
-// branches listing does, so push/repository webhooks flush the whole repo's
-// rows rather than attempting a per-prefix apply.
+// The cached ref-prefix-search route (GET .../git/matching-refs/heads/{prefix}); see docs/cache/rest-routes.md.
 
 const (
 	matchingRefsDefaultPerPage = 30
-	// matchingRefsMaxCachedPage caps the modeled pages; deeper pagination
-	// passes through, the hooks-route precedent.
+	// matchingRefsMaxCachedPage caps modeled pages; deeper pagination passes through.
 	matchingRefsMaxCachedPage = 10
 )
 
@@ -119,8 +105,7 @@ func parseMatchingRefsShape(q url.Values) (perPage, page int64, ok bool) {
 	return perPage, page, true
 }
 
-// matchingRefJSON is one trimmed matching-ref entry: url/node_id dropped,
-// object trimmed to its sha (the one field pr-minder's queue scan reads).
+// matchingRefJSON is one trimmed matching-ref entry: url/node_id dropped.
 type matchingRefJSON struct {
 	Ref    string             `json:"ref"`
 	Object matchingRefSHAJSON `json:"object"`

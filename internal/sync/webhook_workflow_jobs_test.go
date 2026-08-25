@@ -12,11 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The fixture timestamps are relative to now so they can never age past the
-// 14-day completed-job retention (ghdata's workflowJobRetention): hardcoded
-// dates rotted on 2026-07-17, when RecordWorkflowJob's on-write prune started
-// deleting the just-upserted completed rows mid-test. Truncated to the second
-// so the RFC3339 strings round-trip byte-identically through payload → store.
+// Relative to now so the fixtures never age past the completed-job retention; truncated to the
+// second so the RFC3339 strings round-trip byte-identically through payload -> store.
 var (
 	wfjStartedAt   = time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
 	wfjCompletedAt = time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second).Format(time.RFC3339)

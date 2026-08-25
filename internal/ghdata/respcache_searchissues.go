@@ -13,18 +13,8 @@ import (
 )
 
 // State for GET /search/issues?q=...&per_page=...&page=... -- the
-// documented exception to webhook-driven cache maintenance (see
-// docs/cache/uncacheable-routes.md): an arbitrary search query names no
-// single resource a webhook payload could patch, so this is TTL-only, and
-// the TTL is short by design -- long enough to collapse a tight poll loop
-// asking the identical query, short enough that a real answer change (an
-// issue closed, a label added) is visible within one poll cycle either way.
-// Cached VERBATIM (identical-or-passthrough, see respcache_identity.go's
-// file header): a search result's `items` objects are exactly the kind of
-// wide, unsurveyed shape a trim guesses wrong about.
 
 // SearchIssuesCacheTTL is short: no webhook narrows the staleness window for
-// an arbitrary query, so the TTL alone bounds it.
 const SearchIssuesCacheTTL = 30 * time.Second
 
 // SearchIssuesQueryKey hashes the modeled shape (q, per_page, page) into the

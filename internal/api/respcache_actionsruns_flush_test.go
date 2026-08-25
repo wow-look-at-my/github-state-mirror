@@ -35,8 +35,6 @@ func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 		}
 	}
 
-	// A queued workflow_job for shaTip: dropped as ignored by the dispatcher,
-	// but the sha's runs pages flush regardless.
 	seed(t)
 	postWebhookJSON(t, router, "workflow_job", map[string]any{
 		"action": "queued",

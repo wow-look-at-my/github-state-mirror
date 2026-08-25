@@ -14,57 +14,28 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached commits LIST route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/commits
-//
-// pr-minder's fork-point base detection pages commit lists per branch
-// (?sha=<ref>&per_page=100&page=N, stopping on a short page -- no Link-header
-// dependency), dozens of times per sweep, and every one used to pass through.
-// Following the absorb-don't-byte-cache doctrine, each listed commit is
-// absorbed into the SAME global git_commits_cache rows the single git-commit
-// route and push payloads maintain; a commits_list_cache snapshot per exact
-// modeled query shape (raw ?sha= value, per_page, page) stores only the
-// response's sha ORDER -- the proof that makes rebuilding a LIST from
-// immutable commit rows sound. A hit requires the unexpired snapshot AND
-// every listed commit row (an LRU-pruned commit degrades to a miss). Unlike
-// the pulls list there is no full-page truncation guard: the snapshot IS that
-// exact page's answer, and pagination continues under the next page's own
-// key. Listings are ref-tip-relative, so push/repository webhooks flush a
-// repo's snapshots, with a 24h TTL backstop.
-//
-// The single-commit endpoint GET /repos/{owner}/{repo}/commits/{sha} (a
-// different response shape; pr-minder's commitAgeSeconds) is deliberately NOT
-// registered and keeps passing through.
+// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier 2).
+// See docs/cache/rest-routes.md for the key shape, hit gate, and invalidation.
 
 const (
-	// commitsListCacheTTL bounds how long a MISSED push delivery could leave a
-	// stale snapshot being served. Webhooks flush sooner; this is the backstop.
+	// commitsListCacheTTL is the backstop for a missed push delivery.
 	commitsListCacheTTL = 24 * time.Hour
 
-	// commitsDefaultPerPage is GitHub's default page size for the commits list
-	// when the request does not send per_page.
+	// commitsDefaultPerPage is GitHub's default when per_page is absent.
 	commitsDefaultPerPage = 30
 
-	// commitsMaxCachedPage caps which pages are modeled. Consumers page
-	// shallowly (pr-minder reads at most 2); deeper pagination passes through.
+	// commitsMaxCachedPage caps which pages are modeled; deeper pages pass through.
 	commitsMaxCachedPage = 10
 )
 
-// commitsListShape is a parsed, cacheable /commits query: the shape
-// pr-minder's fork-point detection sends (sha=<ref> + per_page/page) plus the
-// bare default. Anything else passes through.
+// commitsListShape is a parsed, cacheable /commits query.
 type commitsListShape struct {
 	refParam string // raw ?sha= value ('' = default branch)
 	perPage  int
 	page     int
 }
 
-// parseCommitsListShape reports the shape of a /commits query and whether the
-// cache models it. Unknown params (path, since, until, author, committer,
-// first_parent, ...), repeated params, an empty sha value, an out-of-range
-// per_page, or a page beyond the modeled cap make it non-cacheable.
+// parseCommitsListShape reports whether the cache models this /commits query.
 func parseCommitsListShape(q url.Values) (commitsListShape, bool) {
 	shape := commitsListShape{perPage: commitsDefaultPerPage, page: 1}
 	for key, vals := range q {
@@ -140,8 +111,7 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 
 	commits, absorbed := absorbCommitsList(owner, repo, resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 (unknown ref -- it can be pushed later), 409 (empty
-		// repo), and 5xx: relayed verbatim, never stored.
+		// 404 (unknown ref), 409 (empty repo), and 5xx relay unstored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -172,9 +142,7 @@ func (h *handlers) serveCommitsList(w http.ResponseWriter, r *http.Request, comm
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// commitDetailJSON is the git-data half of a list item. The REST list nests
-// the commit identities under `commit`, unlike the git-commit route's
-// top-level shape -- same stored state, two rebuild layouts.
+// commitDetailJSON nests the commit identities under `commit`, unlike the git-commit route's top-level shape.
 type commitDetailJSON struct {
 	Author    gitPersonJSON `json:"author"`
 	Committer gitPersonJSON `json:"committer"`
@@ -182,10 +150,7 @@ type commitDetailJSON struct {
 	Tree      gitSHAJSON    `json:"tree"`
 }
 
-// commitListItemJSON is the trimmed rebuild of one commits-list item: a
-// superset of what pr-minder + the pr-minder-reconcile hook read (only the
-// top-level sha). GitHub's node_id, comment_count, verification, the
-// top-level author/committer USER objects, and every URL field stay dropped.
+// commitListItemJSON is the trimmed rebuild of one commits-list item; see docs/cache/rest-routes.md for the dropped fields.
 type commitListItemJSON struct {
 	SHA     string           `json:"sha"`
 	Commit  commitDetailJSON `json:"commit"`

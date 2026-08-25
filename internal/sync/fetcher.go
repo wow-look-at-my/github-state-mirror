@@ -10,18 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// OrgReposFetcher runs one principal's owner LIST-SYNC: it fetches all repos +
-// open PRs for an owner via GraphQL WITH THE PRINCIPAL'S OWN TOKEN, merges the
-// snapshot into global truth (upsert + guarded reconcile -- see
-// Store.SyncOrgTruth), and replace-syncs the principal's access grants (every
-// repo GitHub returned to them = proof they may read it). Key: owner login;
-// the freshness marker is per principal (the actor in context).
-//
-// The GraphQL query depends on the principal: an app-installation session
-// (the periodic fleet refresher) uses the owner-agnostic repositoryOwner
-// query, because an installation account can be a User; every other principal
-// keeps the identity-locked organization query -- the lazy /graphql route's
-// contract, which must never change shape.
+// OrgReposFetcher runs one principal's owner LIST-SYNC: fetches repos + open
 type OrgReposFetcher struct {
 	gh    *ghclient.Client
 	store *ghdata.Store

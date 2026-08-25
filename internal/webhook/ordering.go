@@ -9,39 +9,9 @@ import (
 )
 
 // What a delivery says about WHEN it happened, and WHAT it is a view of.
-//
-// GitHub does not order deliveries. It sends each one as it is produced, over
-// separate connections, through a tunnel, into a server that may be restarting
-// -- so two views of the same resource can arrive in either order, and the
-// older one applied second is a correct, repeatable write of superseded state.
-// A merged PR came back OPEN 82 seconds after its merge exactly this way.
-//
-// There is no timestamp HEADER to lean on. GitHub sends `X-GitHub-Delivery`
-// (a UUID, not time-ordered), `X-GitHub-Event`, `X-GitHub-Hook-ID` and the
-// signature; everything else on the wire here is added by Cloudflare's tunnel
-// (`CF-Ray`, `CF-Connecting-IP`, `X-Forwarded-*`) and describes OUR hop, not
-// GitHub's. `Date` is likewise the proxy's clock at forward time, which moves
-// with the retry, not with the event. So the clock has to come from the
-// payload, which is also the only thing the signature covers.
-//
-// Two rules make a payload field usable as that clock:
-//
-//   - GitHub must set it, not a user. A push's `head_commit.timestamp` is the
-//     COMMIT date: it is whatever the committer's machine claimed, it survives
-//     a rebase unchanged, and it can be in the future. `repository.pushed_at`
-//     is GitHub's own record of the push and is what this uses.
-//   - It must describe the SUBJECT, not the repo around it. `updated_at` on a
-//     pull_request is the PR's; `repository.updated_at` riding along in the
-//     same payload is not.
-//
-// A payload with no such field is UNORDERABLE, and says so (ok=false) rather
-// than being handed a fabricated time -- a delivery nobody can order must
-// still apply, and pretending otherwise would silently drop it.
+// see docs/webhooks/ordering.md
 
-// EventOrder is one delivery's position: the resource it describes, the moment
-// its view is from, and which payload field that moment came from (named for
-// the dashboard, so an operator reading an out-of-order report can tell which
-// clock produced it).
+// EventOrder is one delivery's position: the subject, the moment, and which payload field it came from.
 type EventOrder struct {
 	Subject string
 	At      time.Time
@@ -58,11 +28,7 @@ type orderPayload struct {
 		Owner    struct {
 			Login string `json:"login"`
 		} `json:"owner"`
-		// PUSH payloads send this as a Unix INTEGER while every other event
-		// sends an RFC3339 string, so it is decoded by hand. A typed field
-		// would fail on one of the two shapes -- and because that failure is
-		// the whole struct's, it would take every other field in this payload
-		// with it and report a perfectly orderable delivery as unorderable.
+		// Decoded by hand: a typed field would fail on one shape and take every other field in the struct with it.
 		PushedAt  json.RawMessage `json:"pushed_at"`
 		UpdatedAt string          `json:"updated_at"`
 	} `json:"repository"`
@@ -146,9 +112,7 @@ func OrderOf(e Event) (EventOrder, bool) {
 		return EventOrder{Subject: fmt.Sprintf("pr:%s#%d", repo, p.PullRequest.Number), At: at, Field: "pull_request.updated_at"}, true
 
 	case "pull_request_review":
-		// The REVIEW is the subject, not the PR: two reviews on one PR are
-		// independent, and only a re-delivery of the same review is ordered
-		// against this one.
+		// The review is the subject, not the PR. see docs/webhooks/ordering.md
 		if repo == "" || p.Review == nil || p.Review.ID == 0 {
 			return EventOrder{}, false
 		}
@@ -169,9 +133,7 @@ func OrderOf(e Event) (EventOrder, bool) {
 		return EventOrder{Subject: fmt.Sprintf("comment:%s:%d", repo, p.Comment.ID), At: at, Field: "comment.updated_at"}, true
 
 	case "status":
-		// sha + CONTEXT, never the sha alone: one commit carries many
-		// contexts, and they supersede only themselves. Keying on the sha
-		// would let `all-builds` drop a `ci` result for arriving "late".
+		// sha + CONTEXT, never the sha alone, or one context's result would discard another's.
 		if repo == "" || p.SHA == "" || p.Context == "" {
 			return EventOrder{}, false
 		}
@@ -248,9 +210,7 @@ func OrderOf(e Event) (EventOrder, bool) {
 		return EventOrder{Subject: fmt.Sprintf("installation:%d", p.Installation.ID), At: at, Field: "installation.updated_at"}, true
 	}
 
-	// Everything else -- `label` (no timestamp anywhere in the payload),
-	// `organization`, `membership` -- is unorderable and applies as it always
-	// did. Reported, never guessed at.
+	// label, organization, and membership are unorderable and apply as they always did.
 	return EventOrder{}, false
 }
 

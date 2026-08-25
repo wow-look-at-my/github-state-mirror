@@ -12,12 +12,6 @@ import (
 // Storage for the webhook CONFIGURATION listings:
 //
 //	GET /repos/{owner}/{repo}/hooks  (HooksScopeRepo)
-//	GET /orgs/{org}/hooks            (HooksScopeOrg, Repo "")
-//
-// One row per (credential fingerprint, scope, target, page). The key is the
-// CREDENTIAL because these are ADMIN-only reads and the reveal layer only
-// proves READ access -- see the schema comment. Only the fingerprint is
-// stored; the bearer never is.
 
 // Hook listing scopes. The scope is part of the key so a repo named like an
 // org can never answer the other question.

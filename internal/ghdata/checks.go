@@ -81,22 +81,8 @@ func (s *Store) CommitCheckStates(ctx context.Context, owner, repo, sha string) 
 	return s.q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{Owner: owner, Repo: repo, Sha: sha})
 }
 
-// ForceCheckRollup replaces the webhook-aggregated check verdict for a commit
-// with GitHub's DIRECTLY FETCHED statusCheckRollup: it deletes every
-// commit_checks row for the sha (the contradicted aggregation -- typically a
-// ghost PENDING row whose completion delivery was missed) and explicitly sets
-// last_commit_status on the PRs heading that sha, INCLUDING NULL when GitHub
-// reports no rollup at all. One transaction, so a racing check event lands
-// strictly before or after the correction, never between the delete and the
-// set.
-//
-// This is the correction that STICKS: with zero rows left for the sha, the
-// next PR webhook's UpsertPRWithChecks derives an empty rollup and its
-// rollup != "" guard skips the overwrite, while the PR-payload upsert itself
-// carries no CI state (COALESCE preserves the set value). Deliberately no
-// synthetic per-check rows are written -- a fabricated completed row would be
-// tomorrow's ghost. Only a genuinely NEW check event (real state that should
-// win) changes the verdict again.
+// ForceCheckRollup replaces the aggregated verdict with GitHub's directly
+// fetched one, including NULL; see docs/dashboard/operator-tooling.md for why the correction sticks.
 func (s *Store) ForceCheckRollup(ctx context.Context, owner, repo, sha string, rollup sql.NullString) error {
 	if sha == "" {
 		return nil
@@ -122,10 +108,7 @@ func (s *Store) ForceCheckRollup(ctx context.Context, owner, repo, sha string, r
 	return tx.Commit()
 }
 
-// SetRepoDefaultBranchStatus overwrites a repo's default_branch_status with a
-// directly fetched answer, INCLUDING NULL (no rollup on the current tip) --
-// the SetPRMergeable idiom. The repo upsert COALESCEs this column, so a tip
-// that advanced to a commit with no CI can never be cleared through it.
+// SetRepoDefaultBranchStatus sets a directly fetched answer including NULL; the repo upsert's COALESCE can never clear it.
 func (s *Store) SetRepoDefaultBranchStatus(ctx context.Context, owner, name string, status sql.NullString) error {
 	return s.q.SetRepoDefaultBranchStatus(ctx, dbgen.SetRepoDefaultBranchStatusParams{
 		DefaultBranchStatus: status,
@@ -134,10 +117,7 @@ func (s *Store) SetRepoDefaultBranchStatus(ctx context.Context, owner, name stri
 	})
 }
 
-// SetPRAutoMergeMethod overwrites a PR's stored auto-merge method with a
-// directly fetched answer, INCLUDING NULL (not armed). The upsert only takes
-// this column from REST-shaped sources, so a stale armed flag (missed
-// auto_merge_disabled delivery) is only ever cleared here.
+// SetPRAutoMergeMethod sets a directly fetched answer including NULL; a missed auto_merge_disabled delivery is only cleared here.
 func (s *Store) SetPRAutoMergeMethod(ctx context.Context, owner, repo string, number int64, method sql.NullString) error {
 	return s.q.SetPRAutoMergeMethod(ctx, dbgen.SetPRAutoMergeMethodParams{
 		AutoMergeMethod: method,
@@ -147,20 +127,11 @@ func (s *Store) SetPRAutoMergeMethod(ctx context.Context, owner, repo string, nu
 	})
 }
 
-// RollupState is the exported read of rollupState for the consistency
-// check's apply mode, which compares this webhook-aggregated verdict against
-// GitHub's directly fetched rollup (and corrects via ForceCheckRollup, never
-// by changing this derivation).
+// RollupState exports rollupState for the consistency check's apply mode, which corrects drift via ForceCheckRollup.
 func RollupState(states []string) string { return rollupState(states) }
 
-// rollupState aggregates per-check states into a single GitHub-style rollup:
-// any failure dominates, then pending, then success.
-//
-// A missed check-completion delivery leaves its commit_checks row stuck at
-// PENDING, pinning the rollup at PENDING even after every real check finished.
-// That is reconciled OUTSIDE this derivation: the consistency check's apply
-// mode deletes contradicted rows and sets GitHub's own verdict
-// (ForceCheckRollup) -- do not add reconciliation here.
+// rollupState aggregates per-check states: any failure dominates, then pending, then success.
+// A stuck PENDING from a missed delivery is reconciled by ForceCheckRollup, never here.
 func rollupState(states []string) string {
 	var hasFailure, hasPending, hasSuccess bool
 	for _, st := range states {

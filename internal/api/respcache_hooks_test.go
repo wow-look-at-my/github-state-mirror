@@ -46,9 +46,7 @@ const (
 	orgHooksTarget  = "/orgs/org1/hooks"
 )
 
-// hooksAllowedURLKeys is the pinned no-URL exception for this route: the hook
-// CONFIG's own url. It is the hook's destination, not a link into GitHub's
-// API, and a listing without it cannot answer which hook is which.
+// hooksAllowedURLKeys: the hook config's own url, not a GitHub API link.
 var hooksAllowedURLKeys = []string{"url"}
 
 func TestCachedHooks_MissAbsorbHit(t *testing.T) {
@@ -74,8 +72,7 @@ func TestCachedHooks_MissAbsorbHit(t *testing.T) {
 			assert.NotContains(t, body, "test_url")
 			assert.NotContains(t, body, "ping_url")
 			assert.NotContains(t, body, "deliveries_url")
-			// GitHub's own mask rides through: its PRESENCE is the answer to
-			// "is a secret configured", so it is neither invented nor dropped.
+			// The mask's presence answers "is a secret configured".
 			assert.Contains(t, body, `"secret":"********"`)
 			assert.Contains(t, body, `"last_response":{"code":200,"status":"active","message":"OK"}`)
 
@@ -87,11 +84,8 @@ func TestCachedHooks_MissAbsorbHit(t *testing.T) {
 	}
 }
 
-// The load-bearing property, and the reason these rows are keyed by the
-// credential at all: a hook listing is an ADMIN-only read, so one caller's
-// answer must never be served to another. Without this the reveal layer's
-// public fast path would hand a read-only principal the repo's webhook
-// endpoints.
+// Rows are keyed by credential: an admin-only answer must never reach a
+// read-only principal via the reveal layer's public fast path.
 func TestCachedHooks_NeverSharedAcrossCredentials(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -121,9 +115,7 @@ func TestCachedHooks_ScopesAreDistinct(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.hooksHits))
 }
 
-// A write through the mirror flushes the target's listings across EVERY
-// credential: a hook one caller creates changes what every caller sees, and a
-// reconciler working from a stale listing would create a duplicate webhook.
+// A write flushes the target's listings across every credential.
 func TestCachedHooks_WriteFlushesEveryCredential(t *testing.T) {
 	for _, tc := range []struct {
 		name, get, write, method string
@@ -157,9 +149,7 @@ func TestCachedHooks_WriteFlushesEveryCredential(t *testing.T) {
 	}
 }
 
-// A repository event (rename/delete/visibility) flushes the repo's listings.
-// It is the ONLY delivery that reaches them -- GitHub's `meta` event is sent
-// to the hook being deleted, so it never tells us about another hook.
+// repository events are the ONLY delivery that flushes these rows.
 func TestCachedHooks_RepositoryEventFlushes(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -201,9 +191,7 @@ func TestCachedHooks_ShapeGuards(t *testing.T) {
 	assert.Equal(t, int32(7), atomic.LoadInt32(&u.hooksHits))
 }
 
-// A 403 is what GitHub answers a caller without admin. It is relayed unstored
-// and deliberately NOT a cached verdict: a permission grant is exactly the
-// kind of thing that changes with no event reaching the mirror.
+// A 403 relays unstored: a permission grant changes with no event to catch it.
 func TestCachedHooks_ForbiddenRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.hooks = func(w http.ResponseWriter, _ *http.Request) {

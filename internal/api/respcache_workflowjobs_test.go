@@ -11,8 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Actions job-route tests (a run's jobs page and a single job); the shared
-// fake upstream (respCacheUpstream) lives in respcache_test.go.
+// Actions job-route tests; the shared fake upstream lives in respcache_test.go.
 
 const testRunID, testJobID = 9001, 55501
 

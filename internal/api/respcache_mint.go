@@ -46,8 +46,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 
 	ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
 	if err != nil {
-		// Not a verifiable App JWT: not ours to cache. Forward unchanged and
-		// let GitHub decide (it will reject a bad credential itself).
+		// Not a verifiable App JWT: forward unchanged, let GitHub decide.
 		restoreBody()
 		h.passthrough(w, r, PassIdentity)
 		return
@@ -57,9 +56,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}
-	// This route sits outside requireAuth, so its verified app identity would
-	// otherwise never reach actor_identities; record it here so the dashboard
-	// resolves app:<id> to the slug.
+	// Outside requireAuth, so record the identity here for the dashboard's app:<id> label.
 	if h.recordIdentity != nil {
 		h.recordIdentity(ctx, actorKey, ident.Slug)
 	}
@@ -150,11 +147,7 @@ func absorbInstallToken(installID, bodyHash string, status int, body []byte, now
 	}, serveUntil, true
 }
 
-// canonicalBodyHash hashes a mint request body into its cache-key form. The
-// body is canonicalized first — whitespace-insensitive, and JSON objects are
-// re-marshaled with sorted keys — so equivalent bodies share a key while any
-// semantic difference (a permissions subset, a repositories list) gets its
-// own. An empty body hashes as the empty string.
+// canonicalBodyHash re-marshals JSON with sorted keys first, so equivalent bodies share a cache key.
 func canonicalBodyHash(body []byte) string {
 	canon := bytes.TrimSpace(body)
 	if len(canon) > 0 {
@@ -176,15 +169,7 @@ func contentsResourceKey(owner, repo, path, ref string) string {
 	return owner + "/" + repo + "/" + path + "?ref=" + ref
 }
 
-// invalidateMintOnAuthFailure drops the cached installation-token mint that
-// issued the request's bearer when GitHub answered the proxied call 401/403:
-// the token's grants no longer match upstream, and gsm receives no
-// installation webhook for consumer Apps to learn that any other way. The
-// next mint refetches. Installation tokens are ghs_-prefixed -- other
-// bearers can have no cached mint, so they never touch the store.
-// Rate-limit-shaped refusals are excluded: they mean "slow down", not
-// "wrong grants". Best-effort; a failed delete only logs (the serve-until
-// expiry still bounds the stale window).
+// invalidateMintOnAuthFailure drops a mint whose grants went stale, per docs/cache/rest-routes.md.
 func invalidateMintOnAuthFailure(ctx context.Context, store *ghdata.Store, tok string, resp *http.Response) {
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		return
@@ -200,9 +185,7 @@ func invalidateMintOnAuthFailure(ctx context.Context, store *ghdata.Store, tok s
 	}
 }
 
-// rateLimitShaped reports whether a refusal is GitHub's rate limiting
-// (primary: X-RateLimit-Remaining exhausted; secondary: Retry-After) rather
-// than a permission verdict.
+// rateLimitShaped reports whether a refusal is rate limiting rather than a permission verdict.
 func rateLimitShaped(resp *http.Response) bool {
 	if resp.Header.Get("Retry-After") != "" {
 		return true

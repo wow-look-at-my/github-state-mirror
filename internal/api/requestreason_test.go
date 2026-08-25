@@ -13,10 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestQueryShape: the sampled query shape is the sorted parameter NAMES only.
-// Values are deliberately never recorded -- a value can carry a credential and
-// is unbounded, while the name set is both safe and exactly what the routes'
-// shape guards test.
+// TestQueryShape: the sampled shape keeps only sorted parameter NAMES, never values -- a value can carry a credential.
 func TestQueryShape(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -45,10 +42,7 @@ func TestQueryShape(t *testing.T) {
 	assert.NotContains(t, shape, "abc123")
 }
 
-// TestRequestLog_ReasonOnlyOnPassthrough: a reason explains an uncached
-// forward and nothing else. A stray hint riding the context of a hit, miss, or
-// write must never reach the tally -- a route that forwards, absorbs, then
-// serves would otherwise book its success as a caching gap.
+// TestRequestLog_ReasonOnlyOnPassthrough: a stray reason hint on a hit, miss, or write must never reach the tally.
 func TestRequestLog_ReasonOnlyOnPassthrough(t *testing.T) {
 	l := newRequestLog()
 	hinted := func(disp string) *http.Request {
@@ -76,9 +70,7 @@ func TestRequestLog_ReasonOnlyOnPassthrough(t *testing.T) {
 	assert.Equal(t, []string{DispPassthrough}, reasons, "only the passthrough row carries a reason")
 }
 
-// TestRequestLog_PassQuerySamplePrefersNonEmpty: a route whose gap is a query
-// filter also sees bare-path passthroughs. The bare ones must not erase the
-// evidence -- the recorded sample keeps the last NON-empty shape.
+// TestRequestLog_PassQuerySamplePrefersNonEmpty: a bare-path passthrough must not clobber a recorded non-empty query shape.
 func TestRequestLog_PassQuerySamplePrefersNonEmpty(t *testing.T) {
 	l := newRequestLog()
 	pass := func(target string) {
@@ -94,12 +86,7 @@ func TestRequestLog_PassQuerySamplePrefersNonEmpty(t *testing.T) {
 	assert.Equal(t, "per_page,status", snap.Groups[0].PassQuery)
 }
 
-// TestPassthroughReasons_EndToEnd drives the REAL production traffic shapes
-// through the router and asserts each uncached forward records WHY. Before
-// this, the dashboard showed only "1140 passthrough" on a route that also
-// hits 2207 times, and telling the two apart meant reading the caller's
-// source -- which is how the runs route's dominant shape stayed unmodeled
-// for as long as it did.
+// TestPassthroughReasons_EndToEnd drives real production traffic shapes through the router and asserts each uncached forward records WHY.
 func TestPassthroughReasons_EndToEnd(t *testing.T) {
 	svc := configuredAuth(t)
 	u := newWorkflowRunsUpstream()
@@ -128,11 +115,7 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 		target:     "/repos/org1/repo1/git/commits/abc123",
 		wantReason: PassPath,
 	}, {
-		// /orgs/{org}/actions/runners was the original example here; it is
-		// now a cached route (respcache_orgrunners.go), and /rate_limit
-		// followed it (respcache_ratelimit.go) -- genuinely unrouted paths
-		// keep shrinking as routes get modeled. /meta has no cached route and
-		// none is planned (see docs/cache/uncacheable-routes.md).
+		// /meta has no cached route and none is planned; see docs/cache/uncacheable-routes.md.
 		name:       "no cached route claims the path",
 		target:     "/meta",
 		wantReason: PassUnrouted,
@@ -150,16 +133,13 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 			assert.Equal(t, tc.wantReason, e.Reason, "recorded reason for %s", tc.target)
 
 			if tc.wantQuery != "" {
-				// The group's sampled shape is the most recent non-empty one,
-				// so right after this case's request it is this case's.
+				// The group's sampled shape is the most recent non-empty one.
 				assert.Equal(t, tc.wantQuery, groupFor(t, router, svc, "GET /repos/{owner}/{repo}/actions/runs").PassQuery)
 			}
 		})
 	}
 
-	// The per-route aggregate is what the dashboard's "Top uncached requests"
-	// table reads: the coordinator's poll is booked as an unmodeled QUERY, and
-	// the offending parameter names are named outright.
+	// The per-route aggregate is what the dashboard's "Top uncached requests" table reads.
 	snap := requestsSnapshot(t, router, svc)
 	byKey := map[string]requestGroupSnapshot{}
 	for _, g := range snap.Groups {
@@ -175,10 +155,7 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 	assert.Equal(t, int64(1), metaGroup.ByReason[PassUnrouted])
 }
 
-// TestPassthroughReason_MethodNotAllowed: the required-builds status PUBLISH
-// (POST) lands on the GET-only statuses alias and falls to MethodNotAllowed.
-// It is a WRITE, not a caching gap -- so it carries the routing reason while
-// staying out of the passthrough tally entirely.
+// TestPassthroughReason_MethodNotAllowed: a status-publish WRITE stays out of the passthrough tally entirely.
 func TestPassthroughReason_MethodNotAllowed(t *testing.T) {
 	svc := configuredAuth(t)
 	u := newWorkflowRunsUpstream()

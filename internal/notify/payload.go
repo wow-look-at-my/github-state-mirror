@@ -30,7 +30,6 @@ type Notification struct {
 }
 
 // identifiers are the cheap per-event correlation fields lifted from the
-// delivery payload. Absent fields stay zero and are omitted from the JSON.
 type identifiers struct {
 	prNumber int64
 	ref      string
