@@ -474,5 +474,9 @@ export interface BriefCandidate extends RequestGroup {
         statuses?: Array<{ value: number; count: number }>;
         sample_paths?: string[];
         bodies?: Array<{ status: number; content_type?: string; bytes: number; skeleton: string; at: string }>;
+        // Statuses that WERE sampled and confirmed not JSON (a diff/patch
+        // body, a plain-text denial) — permanently no skeleton to show, and
+        // distinct from a status nothing has sampled yet.
+        non_json?: Array<{ status: number; content_type?: string; bytes: number; at: string }>;
     };
 }

@@ -1143,7 +1143,7 @@ func (q *Queries) GetCodeQualitySetupCache(ctx context.Context, arg GetCodeQuali
 
 const getCommitCICache = `-- name: GetCommitCICache :one
 
-SELECT id, owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache
+SELECT id, owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache
 WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?
 `
 
@@ -1176,6 +1176,7 @@ func (q *Queries) GetCommitCICache(ctx context.Context, arg GetCommitCICachePara
 		&i.Kind,
 		&i.PerPage,
 		&i.Page,
+		&i.Status,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
@@ -2018,7 +2019,7 @@ func (q *Queries) ListBranchesListCacheByRepo(ctx context.Context, arg ListBranc
 }
 
 const listCommitCICacheByRepoKind = `-- name: ListCommitCICacheByRepoKind :many
-SELECT id, owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?
+SELECT id, owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?
 `
 
 type ListCommitCICacheByRepoKindParams struct {
@@ -2049,6 +2050,7 @@ func (q *Queries) ListCommitCICacheByRepoKind(ctx context.Context, arg ListCommi
 			&i.Kind,
 			&i.PerPage,
 			&i.Page,
+			&i.Status,
 			&i.Doc,
 			&i.FetchedAt,
 			&i.ExpiresAt,
@@ -3344,9 +3346,10 @@ func (q *Queries) UpsertCodeQualitySetupCache(ctx context.Context, arg UpsertCod
 }
 
 const upsertCommitCICache = `-- name: UpsertCommitCICache :exec
-INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref, kind, per_page, page) DO UPDATE SET
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -3360,6 +3363,7 @@ type UpsertCommitCICacheParams struct {
 	Kind       string
 	PerPage    int64
 	Page       int64
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -3374,6 +3378,7 @@ func (q *Queries) UpsertCommitCICache(ctx context.Context, arg UpsertCommitCICac
 		arg.Kind,
 		arg.PerPage,
 		arg.Page,
+		arg.Status,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

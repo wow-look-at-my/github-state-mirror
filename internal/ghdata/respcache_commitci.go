@@ -54,13 +54,18 @@ const (
 )
 
 // CachedCommitCI is one cached commit-CI snapshot: the trimmed document
-// exactly as the API layer will serve it.
+// exactly as the API layer will serve it. Status is the upstream answer the
+// row absorbed -- 200 (a real snapshot) or 404 (an expiring unknown-ref miss
+// marker, the compare_cache precedent) -- and Doc holds the rendered body
+// either way. A 403 (the caller's credential lacks Checks API scope, not a
+// fact about the repo) is never absorbed and never reaches this type.
 type CachedCommitCI struct {
-	Owner string // lowercased
-	Repo  string // lowercased
-	Ref   string // raw ref path segment(s), verbatim, never resolved
-	Kind  string // CommitCIKindStatus or CommitCIKindCheckRuns
-	Doc   string // trimmed document as JSON
+	Owner  string // lowercased
+	Repo   string // lowercased
+	Ref    string // raw ref path segment(s), verbatim, never resolved
+	Kind   string // CommitCIKindStatus or CommitCIKindCheckRuns
+	Status int    // 200, or 404 (unknown-ref miss marker)
+	Doc    string // trimmed document as JSON
 }
 
 // GetCachedCommitCI returns the cached snapshot for one exact pagination
@@ -86,7 +91,8 @@ func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind st
 		PerPage: int64(perPage), Page: int64(page),
 	})
 	return CachedCommitCI{
-		Owner: row.Owner, Repo: row.Repo, Ref: row.Ref, Kind: row.Kind, Doc: row.Doc,
+		Owner: row.Owner, Repo: row.Repo, Ref: row.Ref, Kind: row.Kind,
+		Status: int(row.Status), Doc: row.Doc,
 	}, true, nil
 }
 
@@ -97,6 +103,7 @@ func (s *Store) PutCachedCommitCI(ctx context.Context, c CachedCommitCI, perPage
 	if err := s.q.UpsertCommitCICache(ctx, dbgen.UpsertCommitCICacheParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Ref: c.Ref, Kind: c.Kind,
 		PerPage: int64(perPage), Page: int64(page),
+		Status:    int64(c.Status),
 		Doc:       c.Doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {

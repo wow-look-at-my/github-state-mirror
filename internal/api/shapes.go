@@ -83,7 +83,13 @@ type routeShape struct {
 
 	// The captured response, per status: skeleton is the key/type outline,
 	// contentType the response's own media type, bodyBytes its real size.
-	bodies       map[int]*bodySample
+	bodies map[int]*bodySample
+	// nonJSON records, per status, that a body WAS sampled there and turned
+	// out not to be JSON (a diff/patch representation, an unauthenticated
+	// plain-text denial, ...). Distinct from "never sampled": there is no
+	// skeleton to show, and there never will be one, which is a different
+	// fact for the brief to report than "not captured yet".
+	nonJSON      map[int]*nonJSONSample
 	lastSampleAt time.Time
 }
 
@@ -92,6 +98,15 @@ type bodySample struct {
 	ContentType string `json:"content_type,omitempty"`
 	Bytes       int    `json:"bytes"`
 	Skeleton    string `json:"skeleton"`
+	At          string `json:"at"`
+}
+
+// nonJSONSample records one confirmed-non-JSON response: enough to explain
+// why no skeleton exists, never the bytes themselves.
+type nonJSONSample struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type,omitempty"`
+	Bytes       int    `json:"bytes"`
 	At          string `json:"at"`
 }
 
@@ -107,8 +122,10 @@ func newShapeStore() *shapeStore { return &shapeStore{shapes: make(map[string]*r
 
 // wantsBody reports whether the next passthrough on this route should have its
 // response body sampled: nothing captured yet for it, or the last capture has
-// aged past shapeResampleAfter. Nil-receiver-safe (routers built without a
-// shape store, as some tests do).
+// aged past shapeResampleAfter. "Captured" means a sample was TAKEN, whether
+// or not it turned out to be JSON -- a confirmed-non-JSON status resamples on
+// the same cadence as a real skeleton, not on every single request. Nil-
+// receiver-safe (routers built without a shape store, as some tests do).
 func (s *shapeStore) wantsBody(method, route string) bool {
 	if s == nil {
 		return false
@@ -142,8 +159,9 @@ func (s *shapeStore) observe(o observation) {
 		return
 	}
 	key := o.Method + " " + o.Route
+	attempted := len(o.Body) > 0
 	skeleton := ""
-	if len(o.Body) > 0 {
+	if attempted {
 		skeleton = jsonSkeleton(decodeSample(o.Body, o.ContentEncoding))
 	}
 	now := time.Now().UTC()
@@ -159,7 +177,7 @@ func (s *shapeStore) observe(o observation) {
 			method: o.Method, route: o.Route,
 			queryNames: map[string]int64{}, accepts: map[string]int64{},
 			callers: map[string]int64{}, statuses: map[int]int64{},
-			bodies: map[int]*bodySample{},
+			bodies: map[int]*bodySample{}, nonJSON: map[int]*nonJSONSample{},
 		}
 		s.shapes[key] = sh
 	}
@@ -175,12 +193,23 @@ func (s *shapeStore) observe(o observation) {
 	if len(sh.samplePaths) < shapeMaxPaths && !containsString(sh.samplePaths, o.Path) {
 		sh.samplePaths = append(sh.samplePaths, clampRoute(o.Path))
 	}
+	if !attempted {
+		return
+	}
+	// A sample was taken EITHER way here, so the resample clock advances
+	// regardless of whether it parsed as JSON. A confirmed-non-JSON status
+	// (a diff/patch body, a plain-text denial) is a permanent fact about that
+	// status, not a transient gap -- advancing lastSampleAt only on success
+	// left such a route asking for a re-sample on every single subsequent
+	// passthrough forever, which is the "no response outline yet" stall that
+	// never resolved no matter how much traffic the route saw.
+	sh.lastSampleAt = now
 	if skeleton != "" {
+		delete(sh.nonJSON, o.Status)
 		sh.bodies[o.Status] = &bodySample{
 			Status: o.Status, ContentType: o.ContentType,
 			Bytes: len(o.Body), Skeleton: skeleton, At: now.Format(time.RFC3339),
 		}
-		sh.lastSampleAt = now
 		// Keep the per-status body map bounded the same way as everything
 		// else: statuses are few, but a pathological upstream must not grow it.
 		if len(sh.bodies) > shapeMaxNames {
@@ -188,6 +217,18 @@ func (s *shapeStore) observe(o observation) {
 				delete(sh.bodies, k)
 				break
 			}
+		}
+		return
+	}
+	delete(sh.bodies, o.Status)
+	sh.nonJSON[o.Status] = &nonJSONSample{
+		Status: o.Status, ContentType: o.ContentType,
+		Bytes: len(o.Body), At: now.Format(time.RFC3339),
+	}
+	if len(sh.nonJSON) > shapeMaxNames {
+		for k := range sh.nonJSON {
+			delete(sh.nonJSON, k)
+			break
 		}
 	}
 }
@@ -217,16 +258,17 @@ func containsString(ss []string, s string) bool {
 
 // routeShapeSnapshot is one shape in the brief payload.
 type routeShapeSnapshot struct {
-	Key         string        `json:"key"`
-	Method      string        `json:"method"`
-	Route       string        `json:"route"`
-	Seen        int64         `json:"seen"`
-	QueryNames  []countedName `json:"query_names,omitempty"`
-	Accepts     []countedName `json:"accepts,omitempty"`
-	Callers     []countedName `json:"callers,omitempty"`
-	Statuses    []countedInt  `json:"statuses,omitempty"`
-	SamplePaths []string      `json:"sample_paths,omitempty"`
-	Bodies      []bodySample  `json:"bodies,omitempty"`
+	Key         string          `json:"key"`
+	Method      string          `json:"method"`
+	Route       string          `json:"route"`
+	Seen        int64           `json:"seen"`
+	QueryNames  []countedName   `json:"query_names,omitempty"`
+	Accepts     []countedName   `json:"accepts,omitempty"`
+	Callers     []countedName   `json:"callers,omitempty"`
+	Statuses    []countedInt    `json:"statuses,omitempty"`
+	SamplePaths []string        `json:"sample_paths,omitempty"`
+	Bodies      []bodySample    `json:"bodies,omitempty"`
+	NonJSON     []nonJSONSample `json:"non_json,omitempty"`
 }
 
 type countedName struct {
@@ -259,6 +301,10 @@ func (s *shapeStore) snapshot() map[string]routeShapeSnapshot {
 			snap.Bodies = append(snap.Bodies, *b)
 		}
 		sort.Slice(snap.Bodies, func(i, j int) bool { return snap.Bodies[i].Status < snap.Bodies[j].Status })
+		for _, n := range sh.nonJSON {
+			snap.NonJSON = append(snap.NonJSON, *n)
+		}
+		sort.Slice(snap.NonJSON, func(i, j int) bool { return snap.NonJSON[i].Status < snap.NonJSON[j].Status })
 		out[key] = snap
 	}
 	return out

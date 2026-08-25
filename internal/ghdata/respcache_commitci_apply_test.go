@@ -287,7 +287,7 @@ func TestApplyCheckRunToCommitCI_LeavesOtherCommitsAlone(t *testing.T) {
 		{"release", otherDoc},
 	} {
 		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindCheckRuns, Doc: seed.doc,
+			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindCheckRuns, Status: 200, Doc: seed.doc,
 		}, 30, 1, now, time.Hour))
 	}
 
@@ -322,7 +322,7 @@ func TestSettleCommitCIFromStatus_LeavesRowsAboutOtherCommits(t *testing.T) {
 		{"release", elsewhere}, // a branch pointing somewhere else entirely
 	} {
 		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindStatus, Doc: seed.doc,
+			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindStatus, Status: 200, Doc: seed.doc,
 		}, 30, 1, now, time.Hour))
 	}
 

@@ -1120,7 +1120,12 @@ async function openBrief(): Promise<void> {
 
 function renderBrief(d: BriefResponse): HTMLElement {
     const md = d.markdown || "";
-    const missing = (d.candidates ?? []).filter((c) => !c.shape || !(c.shape.bodies ?? []).length).length;
+    // A candidate is genuinely missing only when NOTHING has been sampled for
+    // it yet. A status confirmed not JSON (shape.non_json) has a permanent
+    // answer -- no skeleton ever comes -- and must not count as outstanding,
+    // or this line keeps claiming "yet" about a route that will never change.
+    const missing = (d.candidates ?? []).filter((c) =>
+        !c.shape || (!(c.shape.bodies ?? []).length && !(c.shape.non_json ?? []).length)).length;
     const wrap = el("div", { class: "detail" });
     wrap.appendChild(el("div", { class: "detail-sub", text:
         (d.candidates ?? []).length + " uncached route" + ((d.candidates ?? []).length === 1 ? "" : "s") +

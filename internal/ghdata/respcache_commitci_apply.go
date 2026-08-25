@@ -123,7 +123,9 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Doc: patched,
+			// Always a real 200 document: combinedStatusDescribes only matched
+			// rows whose doc names a sha, which a 404 tombstone never does.
+			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
 		}
@@ -147,7 +149,10 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Doc: patched,
+			// Always a real 200 array: patchStatusesList only succeeds against
+			// a stored []storedStatusListItem, which a 404 tombstone (a JSON
+			// object, not an array) fails to unmarshal into.
+			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
 		}
@@ -206,7 +211,10 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Doc: patched,
+			// Always a real 200 page: patchCheckRunsPage only succeeds against a
+			// stored StoredCheckRunsPage that already lists this run, which a
+			// 404 tombstone never does.
+			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return false, perr
 		}

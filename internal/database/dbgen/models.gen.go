@@ -121,6 +121,7 @@ type CommitCiCache struct {
 	Kind       string
 	PerPage    int64
 	Page       int64
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string

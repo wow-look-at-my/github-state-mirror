@@ -299,26 +299,35 @@ func TestCachedCommitCI_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
 }
 
-// TestCachedCommitCI_Non200NotStored: 404 (unknown ref -- it can be pushed
-// later), 5xx -- anything but a 200 -- is relayed verbatim and stores nothing,
-// on both routes.
-func TestCachedCommitCI_Non200NotStored(t *testing.T) {
+// TestCachedCommitCI_ForbiddenAndErrorNotStored: a 403 -- the caller's OWN
+// credential lacking Checks API scope entirely, a fact about the CALLER, not
+// the ref -- and a 5xx are relayed verbatim and store nothing, on both
+// routes. Unlike a 404 (see TestCachedCommitCI_404VerdictCached below), a 403
+// here must never mint a row: this table has no actor column, so a cached
+// denial would wrongly answer a differently-scoped caller too.
+func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	router, _, db, u := commitCIStack(t)
-	notFound := func(w http.ResponseWriter, r *http.Request) {
+	forbidden := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by personal access token","documentation_url":"https://docs.github.com","status":"403"}`))
 	}
-	u.status, u.checkRuns = notFound, notFound
+	serverError := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	u.status, u.checkRuns = forbidden, serverError
 
-	for _, target := range []string{
-		"/repos/org1/repo1/commits/ghostbranch/status",
-		"/repos/org1/repo1/commits/ghostbranch/check-runs",
+	for _, tc := range []struct {
+		target string
+		status int
+	}{
+		{"/repos/org1/repo1/commits/ghostbranch/status", http.StatusForbidden},
+		{"/repos/org1/repo1/commits/ghostbranch/check-runs", http.StatusInternalServerError},
 	} {
 		for i := 1; i <= 2; i++ {
-			w := do(t, router, authedReq("GET", target, nil))
-			require.Equal(t, http.StatusNotFound, w.Code, target)
-			assert.Empty(t, w.Header().Get(cacheHeader), "a non-200 must be replayed unstored: %s", target)
+			w := do(t, router, authedReq("GET", tc.target, nil))
+			require.Equal(t, tc.status, w.Code, tc.target)
+			assert.Empty(t, w.Header().Get(cacheHeader), "a 403/5xx must be replayed unstored: %s", tc.target)
 		}
 	}
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
@@ -326,7 +335,50 @@ func TestCachedCommitCI_Non200NotStored(t *testing.T) {
 
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM commit_ci_cache`).Scan(&count))
-	assert.Zero(t, count, "a non-200 answer must store no snapshot")
+	assert.Zero(t, count, "a 403/5xx answer must store no snapshot")
+}
+
+// TestCachedCommitCI_404VerdictCached: the 404 unknown-ref verdict IS
+// absorbed (the compare_cache precedent) -- a fine-grained-PAT CI watcher
+// re-polls a sha that never resolves, re-earning the same 404 on every
+// sweep, and this is where 96% of the mirror's uncached traffic came from
+// before this existed. Absorbed as a status-404 row ({"message": ...,
+// "status": "404"}, documentation_url dropped), served from state on the
+// next read (zero upstream calls), and flushed by a push naming the ref.
+func TestCachedCommitCI_404VerdictCached(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	real404 := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"No commit found for SHA: ghostsha","documentation_url":"https://docs.github.com/rest/commits/commits","status":"404"}`))
+	}
+	u.checkRuns = real404
+	target := "/repos/org1/repo1/commits/ghostsha/check-runs"
+
+	// Miss: the 404 verdict is absorbed and relayed REBUILT.
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.JSONEq(t, `{"message":"No commit found for SHA: ghostsha","status":"404"}`, w1.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits))
+
+	// Hit: served from state, no upstream call.
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits), "a cached verdict must cost no upstream call")
+
+	// A push naming the ghost ref flushes the verdict -- it can be pushed
+	// into existence later, and the tombstone must not survive that.
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/ghostsha", "before": strings.Repeat("0", 40), "after": shaTip,
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w3.Code)
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader), "a push naming the missing ref must flush the 404 verdict")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.checkRunsHits))
 }
 
 // TestCachedCommitCI_RevealDenied: an unauthorized caller gets GitHub's own

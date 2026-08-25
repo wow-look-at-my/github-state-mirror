@@ -364,7 +364,7 @@ func TestInvalidateCommitCIForRef(t *testing.T) {
 	put := func(ref, kind string, perPage, page int) {
 		t.Helper()
 		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
-			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind, Doc: `{"seeded":true}`,
+			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind, Status: 200, Doc: `{"seeded":true}`,
 		}, perPage, page, now, time.Hour))
 	}
 	serves := func(ref, kind string, perPage, page int) bool {

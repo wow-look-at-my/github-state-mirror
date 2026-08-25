@@ -100,10 +100,28 @@ default. A sample is therefore the WIRE body, not the decoded one.
 
 `decodeSample` (`shapes.go`) gunzips a sample when the response's own
 `Content-Encoding` says gzip, before `jsonSkeleton` ever sees it. Without this
-step `json.Unmarshal` fails on every gzip sample, no skeleton is ever stored,
-`lastSampleAt` never advances, and `wantsBody` keeps asking on every
-subsequent passthrough — the route sits in "no response outline yet"
-regardless of how much traffic it gets.
+step `json.Unmarshal` fails on every gzip sample, no skeleton is ever stored.
+
+## Confirmed non-JSON is not the same as "not captured yet"
+
+A second route to the same stall: some routes never answer with JSON at
+all — a `.diff`/`.patch` representation, or a plain-text `401` from
+`requireAuth` on an unauthenticated scan. `jsonSkeleton` correctly returns ""
+for these (there is no key/type shape to model), but `observe` used to advance
+`lastSampleAt` only inside the "skeleton succeeded" branch. A permanently
+non-JSON status therefore never advanced the resample clock either, and
+`wantsBody` asked for a fresh sample on every single subsequent passthrough
+forever — the same "no response outline yet" stall as the gzip case, but for a
+status that will never produce a skeleton no matter how long the operator
+waits.
+
+`observe` now advances `lastSampleAt` whenever a body was actually sampled,
+whether or not it parsed as JSON, and records a confirmed-non-JSON status
+separately (`routeShape.nonJSON`, surfaced as `shape.non_json` in the JSON
+payload). The brief renders it as a permanent fact — "HTTP `n` is confirmed
+not JSON... not a capture gap" — instead of implying a body will eventually
+show up, and the dashboard's "N routes have no response outline yet" count
+excludes any status already confirmed non-JSON.
 
 ## What the capture is not
 

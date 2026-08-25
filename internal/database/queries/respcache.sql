@@ -177,9 +177,10 @@ SELECT * FROM commit_ci_cache
 WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?;
 
 -- name: UpsertCommitCICache :exec
-INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref, kind, per_page, page) DO UPDATE SET
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,

@@ -52,6 +52,18 @@ import (
 // flushes like every response cache. Net effect: snapshots only survive
 // while a repo's CI is quiet -- exactly when the fleet sweeps re-poll them.
 // A 24h TTL backstops missed deliveries.
+//
+// The 404 unknown-ref VERDICT is absorbed too (the compare_cache precedent):
+// a fine-grained-PAT caller polling check-runs/status/statuses for a sha that
+// never resolves re-earns the same 404 on every sweep (this was, by measured
+// volume, ~96% of the mirror's entire uncached traffic before this existed --
+// see the implementation brief). It stays honest exactly like a 200 row: the
+// same per-ref/per-repo flushes above cover it, and the 24h TTL backstops
+// missed deliveries. A 403 -- the caller's OWN credential lacking Checks API
+// scope entirely, not a fact about the ref -- is deliberately NEVER absorbed:
+// this table carries no actor column, so caching a credential-scoped denial
+// would serve it to a differently-scoped caller (an App installation token,
+// say) who could get a real answer from the exact same request.
 
 // commitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
 // stale snapshot being served. Webhooks settle these rows sooner; this is the
@@ -179,7 +191,9 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
 		slog.Warn("commit CI cache read failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	} else if ok {
-		h.serveCommitCI(w, r, c.Doc, true)
+		// The stored row carries the status it absorbed: 200 (a real
+		// snapshot) or 404 (an unknown-ref verdict).
+		h.serveCommitCI(w, r, c.Status, c.Doc, true)
 		return
 	}
 
@@ -191,30 +205,49 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	defer resp.Body.Close()
 
+	status := http.StatusOK
 	doc, absorbed := absorbCommitCI(kind, resp.StatusCode, body)
+	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {
+		// The 404 unknown-ref VERDICT is absorbed too (the compare_cache
+		// precedent): CI status watchers re-poll a ref until it settles, and a
+		// ref that never resolves re-earns the same 404 on every sweep. It
+		// stays honest the same way a 200 row does: a push naming this ref
+		// flushes it (InvalidateCommitCIForRef), a check/status/check_suite
+		// delivery naming it flushes it too, and the 24h TTL backstops missed
+		// deliveries. A 403 (the caller's own credential lacks Checks API
+		// scope entirely) is deliberately NEVER absorbed here -- it is a fact
+		// about the CALLER, not the ref, and this table has no actor column.
+		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
+			doc, absorbed, status = string(doc404), true, http.StatusNotFound
+		}
+	}
 	if overflow || !absorbed {
-		// Includes 404 (unknown ref -- it can be pushed later) and 5xx:
-		// relayed verbatim, never stored.
+		// 403 and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
 	if err := h.store.PutCachedCommitCI(r.Context(), ghdata.CachedCommitCI{
-		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Doc: doc,
+		Owner: owner, Repo: repo, Ref: ref, Kind: kind, Status: status, Doc: doc,
 	}, perPage, page, now, commitCICacheTTL); err != nil {
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
-	h.serveCommitCI(w, r, doc, false)
+	h.serveCommitCI(w, r, status, doc, false)
 }
 
-// serveCommitCI writes the trimmed document. The doc is rendered once at
-// absorb time and stored verbatim, so hit and miss serve identical bytes.
-func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, doc string, hit bool) {
+// serveCommitCI writes the stored commit-CI document under the status it
+// absorbed (200 snapshot / 404 verdict). The doc is rendered once at absorb
+// time and stored verbatim, so hit and miss serve identical bytes.
+func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, status int, doc string, hit bool) {
 	if hit {
-		h.reqlog.observe(r, DispHit)
+		if status == http.StatusOK {
+			h.reqlog.observe(r, DispHit)
+		} else {
+			h.reqlog.observeStatus(r, DispHit, status)
+		}
 	}
-	writeRebuilt(w, http.StatusOK, []byte(doc), hit)
+	writeRebuilt(w, status, []byte(doc), hit)
 }
 
 // absorbCommitCI parses a commit-CI 200 into the trimmed document (rendered

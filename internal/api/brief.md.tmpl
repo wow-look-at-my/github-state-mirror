@@ -66,6 +66,12 @@ No route has forwarded a read uncached since restart.
 ```
 {{- end}}
 {{- end}}
+{{- range .NonJSON}}
+- _HTTP {{.Status}} is confirmed not JSON_ ({{orDash .ContentType}}, {{.Bytes}} bytes) — there is no key/type shape to model here; this is not a capture gap.
+{{- end}}
+{{- if and (not .Bodies) (not .NonJSON)}}
+- _No response captured yet for this route — it is sampled on the next passthrough._
+{{- end}}
 {{- else}}
 - _No response shape captured yet — it is sampled on the next passthrough for this route._
 {{- end}}

@@ -82,6 +82,50 @@ func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 	require.Contains(t, sh.Bodies[0].Skeleton, "color: string")
 }
 
+// TestShapeStoreNonJSONBodyStopsAskingForever is the regression test for the
+// stall this fix removes: a route whose answer is genuinely never JSON (a
+// diff/patch representation, a plain-text 401 from requireAuth) used to keep
+// wantsBody returning true on every single subsequent passthrough forever,
+// because lastSampleAt only ever advanced inside the "skeleton succeeded"
+// branch. A confirmed-non-JSON sample must resample on the same 30-minute
+// cadence as a real skeleton, not on every request, and the brief must say so
+// as a permanent fact rather than "not yet captured".
+func TestShapeStoreNonJSONBodyStopsAskingForever(t *testing.T) {
+	s := newShapeStore()
+	route := "/repos/{owner}/{repo}/pulls/{number}"
+
+	require.True(t, s.wantsBody("GET", route))
+	s.observe(observation{
+		Method: "GET", Route: route, Path: "/repos/o/r/pulls/1",
+		Accept: "application/vnd.github.diff", Status: 200,
+		ContentType: "text/x-patch; charset=utf-8",
+		Body:        []byte("diff --git a/x b/x\n+line\n"),
+	})
+
+	require.False(t, s.wantsBody("GET", route), "a confirmed-non-JSON sample must stop the endless re-ask")
+
+	snap := s.snapshot()
+	sh, ok := snap["GET "+route]
+	require.True(t, ok)
+	require.Empty(t, sh.Bodies, "there is no skeleton to show")
+	require.Len(t, sh.NonJSON, 1)
+	require.Equal(t, 200, sh.NonJSON[0].Status)
+	require.Equal(t, "text/x-patch; charset=utf-8", sh.NonJSON[0].ContentType)
+
+	md := renderBrief(
+		requestLogSnapshot{Total: 1, ByDisposition: map[string]int64{DispPassthrough: 1}},
+		buildBrief(
+			requestLogSnapshot{Groups: []requestGroupSnapshot{{Key: "GET " + route, Route: route, Total: 1, Passthrough: 1}}},
+			snap, 10,
+		),
+		"2026-08-01T00:00:00Z",
+	)
+	require.Contains(t, md, "confirmed not JSON")
+	require.NotContains(t, md, "no response outline yet")
+	require.NotContains(t, md, "No response shape captured yet")
+	require.NotContains(t, md, "No response captured yet")
+}
+
 // decodeSample must never choke on a body that is not actually gzip (a
 // Content-Encoding lie, or identity/absent): it falls back to the raw bytes
 // rather than losing the sample.
