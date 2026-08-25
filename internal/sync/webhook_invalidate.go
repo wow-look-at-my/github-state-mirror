@@ -237,12 +237,7 @@ func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, 
 	flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsForHeadSHA(ctx, owner, repo, sha))
 }
 
-// pullCommitsRefKey mirrors the API package's synthetic commits_list_cache
-// ref key for one PR's commit list ("pull/<number>/commits"). The two must
-// agree exactly -- a per-PR flush that misses the key leaves the snapshot
-// serving stale until the repo-wide push flush or the TTL catches it -- and a
-// sync -> api import would be a cycle, so it is restated here and pinned by a
-// test in the api package.
+// pullCommitsRefKey mirrors the API package's synthetic commits_list_cache ref key; a sync -> api import would be a cycle, so it is restated here.
 func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }
@@ -259,13 +254,7 @@ func (d *WebhookDispatcher) flushWorkflowJobsForRun(ctx context.Context, scope, 
 	flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsForRun(ctx, owner, repo, runID))
 }
 
-// refSpellings returns every ref spelling GitHub accepts for a short branch
-// or tag name on the ref-parameterized cached routes -- the CI routes' {ref}
-// segment, contents ?ref=, commits ?sha=, and compare basehead sides all
-// take the bare name, the heads/<name> (tags/<name>) form, and the fully
-// qualified refs/heads/<name> (refs/tags/<name>) form. The response caches
-// key rows by the VERBATIM requested spelling, so a per-ref flush must cover
-// all three or the alternate spellings serve stale for the full TTL.
+// refSpellings returns every ref spelling GitHub accepts for a short branch or tag name; a per-ref flush must cover all three.
 func refSpellings(shortName string, isTag bool) []string {
 	if shortName == "" {
 		return nil
