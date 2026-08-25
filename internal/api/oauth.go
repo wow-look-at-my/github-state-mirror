@@ -8,56 +8,26 @@ import (
 	"time"
 )
 
-// githubOAuthTokenURL is the GitHub endpoint that exchanges an OAuth
-// authorization code for a user access token. A var (not const) so tests can
-// point it at a fake server; never reassigned in production.
+// var so tests can point it at a fake server.
 var githubOAuthTokenURL = "https://github.com/login/oauth/access_token"
 
-// githubDeviceCodeURL is the GitHub endpoint that starts an RFC 8628 device
-// authorization flow (the "enter this code at github.com/login/device" sign-in
-// the gh CLI uses). A var (not const) so tests can point it at a fake server;
-// never reassigned in production.
+// var so tests can point it at a fake server.
 var githubDeviceCodeURL = "https://github.com/login/device/code"
 
 // oauthRelayClient performs the server-side leg of the github.com login relays.
 var oauthRelayClient = &http.Client{Timeout: 15 * time.Second}
 
-// maxOAuthBytes caps the request and response bodies of the login relays.
-// These payloads are tiny (a few form fields in, a token or device code out);
-// this only guards memory.
+// caps the login relay request/response bodies.
 const maxOAuthBytes = 64 << 10 // 64 KiB
 
-// oauthAccessToken relays a GitHub OAuth "exchange code for token" POST to
-// github.com and returns GitHub's response with the mirror's CORS headers.
-//
-// A fully client-side app (e.g. the repo-nightmare PR viewer) cannot POST to
-// github.com/login/oauth/access_token directly: that endpoint sends no CORS
-// headers, so the browser blocks the JS from reading the response and the login
-// silently fails. The mirror already attaches correct CORS (corsMiddleware), so
-// it stands in as the relay — removing the need for a separate CORS proxy.
-//
-// This is deliberately NOT the api.github.com passthrough: the OAuth endpoints
-// live on github.com, and the exchange authenticates with the client_id/secret
-// in the body (no bearer token), so it is registered outside requireAuth and
-// targets a fixed github.com URL rather than proxying an arbitrary path.
-//
-// The device flow's polling leg (grant_type
-// "urn:ietf:params:oauth:grant-type:device_code") goes through this same
-// endpoint unchanged — the body is opaque bytes to the relay.
+// oauthAccessToken relays the OAuth code-for-token exchange to github.com,
+// which sends no CORS headers of its own.
 func (h *handlers) oauthAccessToken(w http.ResponseWriter, r *http.Request) {
 	h.relayGitHubLogin(w, r, githubOAuthTokenURL)
 }
 
-// oauthDeviceCode relays a GitHub device authorization request (RFC 8628, the
-// "start a device flow" POST that mints a user_code) to github.com and returns
-// GitHub's response with the mirror's CORS headers.
-//
-// Same story as oauthAccessToken: github.com/login/device/code sends no CORS
-// headers, so a browser-only client can never start a device sign-in on its
-// own. The request carries only the app's public client_id + scope (no secret,
-// no bearer token), so it too sits outside requireAuth and targets a fixed
-// github.com URL — not the api.github.com passthrough. The subsequent polling
-// leg reuses the access-token relay above.
+// oauthDeviceCode relays the RFC 8628 device-authorization start, same story
+// as oauthAccessToken.
 func (h *handlers) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
 	h.relayGitHubLogin(w, r, githubDeviceCodeURL)
 }
@@ -85,9 +55,7 @@ func (h *handlers) relayGitHubLogin(w http.ResponseWriter, r *http.Request, upst
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// Forward only the content-negotiation headers; the client_id/secret/code
-	// travel in the body. Arbitrary client headers are intentionally not
-	// forwarded to GitHub.
+	// Forward only content-negotiation headers; the client secret is in the body.
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
@@ -106,10 +74,7 @@ func (h *handlers) relayGitHubLogin(w http.ResponseWriter, r *http.Request, upst
 	h.timeline.RecordRequest(start, time.Since(start), http.MethodPost, r.URL.Path, resp.StatusCode, dispRelay, "anonymous", "")
 	defer resp.Body.Close()
 
-	// Pass GitHub's status, content type, and body through verbatim so the
-	// client can parse the answer exactly as if it had called GitHub directly.
-	// CORS headers come from corsMiddleware; GitHub's own Access-Control-* are
-	// intentionally not copied, so there is never a duplicate ACAO.
+	// Pass GitHub's status, content type, and body through verbatim.
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}

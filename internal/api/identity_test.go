@@ -34,8 +34,7 @@ func TestModeB_AppIdentityPartition(t *testing.T) {
 			assert.Equal(t, "Bearer app-jwt", r.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "slug": "pr-minder"})
 		case "/user":
-			// An installation token 403s here; if identity mode wrongly called it
-			// the request would fail. It must not be reached.
+			// Must not be reached in identity mode.
 			t.Error("/user must not be called in identity mode")
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -44,8 +43,7 @@ func TestModeB_AppIdentityPartition(t *testing.T) {
 	})
 	router, store, _, _ := newTestStackWithGitHub(t, identityAuthSvc(), gh)
 
-	// Seed a private repo into global truth and grant it to the app principal
-	// (app:99) -- the identity the X-Mirror-Identity JWT must resolve to.
+	// Seed a private repo and grant it to the app principal.
 	ctx := context.Background()
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "my-org", Name: "repo1", NameWithOwner: "my-org/repo1", Url: "u",

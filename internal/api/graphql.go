@@ -14,9 +14,7 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// maxGraphQLBodyBytes caps how much of a GraphQL request body we buffer. Real
-// GraphQL payloads are tiny; this only guards memory when forwarding arbitrary
-// queries to GitHub.
+// Caps buffered GraphQL body size.
 const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
 
 // graphql handles the POST /graphql endpoint.
@@ -29,8 +27,7 @@ const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
 func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Buffer the body so we can both inspect the query and, if we cannot serve
-	// it from cache, replay it to GitHub.
+	// Buffer body to inspect and possibly replay to GitHub.
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -74,8 +71,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure org repos data is fresh, recording whether this was a cache hit
-	// (served fresh) or a miss (triggered a fetch) for the dashboard.
+	// Ensure org repos are fresh; record hit vs miss for the dashboard.
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
 		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
@@ -90,11 +86,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	h.reqlog.observe(r, disp)
 
-	// Read repos from GLOBAL truth, filtered to what the reveal layer permits
-	// this caller: public repos plus the caller's granted repos. The grant set
-	// was replace-synced by the caller's own fetch (this request's, or an
-	// earlier one within the marker TTL), so the filtered view tracks what
-	// GitHub itself answers this principal -- never the whole truth store.
+	// Repos visible to this caller: public plus granted repos.
 	repos, err := h.store.ListVisibleReposByOwner(ctx, orgLogin, actor.FromContext(ctx), time.Now())
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

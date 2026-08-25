@@ -31,8 +31,7 @@ func TestJSONSkeletonKeepsNoValues(t *testing.T) {
 		require.Contains(t, sk, want)
 
 	}
-	// The array's length rides along (a page-shaped answer is worth knowing)
-	// but its elements' values do not.
+	// Array length survives; element values do not.
 	require.Contains(t, sk, "] × 2")
 
 }
@@ -70,8 +69,7 @@ func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 		Body: buf.Bytes(),
 	})
 
-	// A successful decode produced a real skeleton, so the route is no longer
-	// stuck asking for a re-sample on every subsequent passthrough.
+	// Decode succeeded, so no re-sample is needed.
 	require.False(t, s.wantsBody("GET", route))
 
 	snap := s.snapshot()
@@ -304,8 +302,7 @@ func TestRenderBriefTemplateExecutes(t *testing.T) {
 	} {
 		require.Contains(t, md, want)
 	}
-	// The fenced skeleton must be separated from the checklist heading, or the
-	// two run together into one unreadable block.
+	// Skeleton must be separated from the checklist heading.
 	require.Contains(t, md, "```\n\n## How to model one of these")
 }
 

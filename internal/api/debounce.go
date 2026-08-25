@@ -292,8 +292,7 @@ func writeDebounced(w http.ResponseWriter, res *bufferedResponse, waited time.Du
 	_, _ = w.Write(res.body)
 }
 
-// bufferingWriter captures a whole response for replay to several waiters, reporting overflow past limit
-// rather than serving anyone a truncated body; writes keep reporting success so the proxy's copy loop drains cleanly.
+// bufferingWriter captures a response for replay to several waiters.
 type bufferingWriter struct {
 	header      http.Header
 	status      int

@@ -12,9 +12,7 @@ import (
 	"time"
 )
 
-// GET /api/brief joins uncached-route counters to captured response shapes
-// into one actionable Markdown document. It carries no values: query
-// parameters appear by name, response bodies as key/type skeletons.
+// GET /api/brief joins uncached-route counters to captured shapes.
 // see docs/dashboard/implementation-brief.md
 
 // briefPayload is the JSON form. Markdown is the deliverable the button
@@ -82,8 +80,7 @@ type dispositionCount struct {
 	Count int64
 }
 
-// text/template, not html/template: HTML-escaping would mangle a captured path or skeleton.
-//
+// text/template: html/template would escape captured paths.
 //go:embed brief.md.tmpl
 var briefTemplate string
 

@@ -31,11 +31,9 @@ type routeGroup struct {
 	// byReason splits PASSTHROUGH count by why (see docs/dashboard/dashboard.md).
 	byReason map[string]int64
 	sample   string // one recent raw path, for identifying the shape
-	// passQuery is one recent passthrough's sorted parameter NAMES, never
-	// values. see docs/cache/three-tier-contract.md
+	// passQuery: sorted parameter NAMES only, never values.
 	passQuery string
-	// debounced / upstreamSaved: passthrough coalescing counters, kept
-	// separate so a held-but-unsaved route is visible. see docs/cache/three-tier-contract.md
+	// debounced/upstreamSaved: passthrough coalescing counters.
 	debounced     int64
 	upstreamSaved int64
 	lastSeen      time.Time
@@ -191,8 +189,7 @@ func normalizeRoute(path string) string {
 			out = normalizeTail(segs, 2)
 		}
 	default:
-		// Unknown top-level path (/graphql, /user, /rate_limit, /search/issues,
-		// ...): group by the first two (normalized) segments + "…".
+		// Unknown path: group by the first two segments.
 		out = normalizeTail(segs, 2)
 	}
 	return clampRoute("/" + strings.Join(out, "/"))

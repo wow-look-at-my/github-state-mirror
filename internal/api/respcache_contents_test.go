@@ -271,11 +271,7 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 		return req
 	}
 
-	// Miss: the JSON probe absorbs the fixture's base64 "aGVsbG8=\n" (the
-	// trailing newline is GitHub's MIME-style wrapping of the base64 TEXT,
-	// not part of the decoded content -- "aGVsbG8=" alone decodes to the
-	// 5-byte "hello", matching the fixture's own declared size:5), and the
-	// raw-Accept caller is served those decoded bytes, not the JSON wrapper.
+	// Miss: raw-Accept is served the decoded file bytes, not the JSON wrapper.
 	w1 := do(t, router, rawReq())
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "hello", w1.Body.String(), "raw Accept serves the decoded file bytes")
@@ -290,8 +286,7 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "a raw-Accept hit must not call upstream")
 
-	// The DEFAULT-Accept representation of the SAME path is ALSO a hit off
-	// the row the raw-Accept miss just populated -- one absorb, both shapes.
+	// Default-Accept shares the same row.
 	w3 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader))

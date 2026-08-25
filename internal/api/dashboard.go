@@ -20,17 +20,12 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Embeds only the files the production page references; see the TypeScript
-// front-end entry in CLAUDE.md for the three-place asset wiring.
+// Embeds only the files the production page references.
 //
 //go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
-// contentAsset is an embedded asset served at a content-addressed URL — the
-// filename embeds a hash of the content. A new deploy with changed JS/CSS yields
-// a new URL, so browsers and the CDN/proxy fetch the new file immediately
-// instead of serving a stale copy until a cache TTL expires. Because the URL is
-// unique per content, it is served with a long-lived, immutable cache header.
+// contentAsset is an embedded asset served at a content-addressed URL.
 type contentAsset struct {
 	url         string // e.g. "/assets/app.1a2b3c4d5e.js"
 	content     []byte

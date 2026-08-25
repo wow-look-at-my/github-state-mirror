@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Gzip-compresses the dashboard's own buffered admin payloads; the GitHub
-// data plane keeps its own pinned header contract untouched.
 // see docs/timeline-wire-format.md
 
 // compressMinBytes is the floor below which gzip can grow the payload.

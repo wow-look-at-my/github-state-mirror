@@ -63,7 +63,6 @@ func main() {
 	meter := ratemeter.New()
 	gh.SetRateObserver(meter.Observe)
 
-	// In-memory ring of every timed exchange, for the dashboard Timeline chart.
 	// see docs/dashboard/timeline-ring.md
 	timeline := reqtimeline.New()
 	gh.SetExchangeObserver(api.TimelineExchangeObserver(timeline))
@@ -74,15 +73,13 @@ func main() {
 	// nil when no app is configured; requests always carry their own token.
 	app := buildAppAuthenticator(cfg, gh)
 
-	// Applies events in the order they happened, not the order they arrived.
 	// see docs/webhooks/ordering.md
 	dispatcher := syncpkg.NewWebhookDispatcherWindowed(mgr, store, cfg.WebhookReorderWindow)
 
 	// see docs/notifications.md
 	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})
 
-	// nil sessions disables periodic refreshes; per-request data is unaffected.
-	// Each cycle records an installation's account login as its display name.
+	// nil disables periodic refreshes.
 	var sessions syncpkg.SessionFunc
 	if app != nil {
 		recordIdentity := func(ctx context.Context, principal, name string) {
@@ -157,9 +154,7 @@ func main() {
 	slog.Info("starting server", "addr", cfg.ListenAddr)
 	err = srv.ListenAndServe()
 
-	// Drain detached fetches before closing the DB, or a late write lands on a
-	// closed handle. Debounced batches first: draining cuts their pending
-	// window short so the answer goes out now instead of after the full hold.
+	// Drain fetches before closing the DB.
 	debouncer.Drain(30 * time.Second)
 	if !mgr.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")

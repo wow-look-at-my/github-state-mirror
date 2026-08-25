@@ -52,9 +52,7 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 // load, which is strictly worse than no guard: it trains the operator to skim
 // past the one time a subscription really is gone.
 func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
-	// GitHub's answer: subscribed to everything required EXCEPT "label".
-	// "installation" is deliberately absent from the list too -- GitHub never
-	// lists it, because every App receives it unconditionally.
+	// excludes "label"
 	subscribed := []string{}
 	for _, req := range ghdata.RequiredWebhookEvents {
 		if req.Event == "label" || ghclient.AlwaysDeliveredEvents.Contains(req.Event) {

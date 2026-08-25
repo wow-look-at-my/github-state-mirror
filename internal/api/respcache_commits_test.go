@@ -156,7 +156,7 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits), "hit must not call upstream")
 
-	// Absorb-don't-byte-cache: listed commits become global git_commits_cache rows, so the single-commit route can hit though this fake 404s it.
+	// Listed commits also become global git_commits_cache rows.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "list-absorbed commits must serve the single git-commit route")
