@@ -10,7 +10,6 @@ import (
 )
 
 // Storage for the identity/self routes (GET /app, /user, /user/orgs): TTL is the
-// PRIMARY bound, since none of the three carry a webhook signal. See docs/cache/rest-routes.md.
 
 // IdentityCacheTTL bounds how long a stale identity answer may be served.
 const IdentityCacheTTL = 30 * time.Minute

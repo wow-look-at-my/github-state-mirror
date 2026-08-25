@@ -12,9 +12,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached issue/PR search: GET /search/issues, the documented exception to webhook-driven cache maintenance.
-// see docs/cache/rest-routes.md and docs/cache/uncacheable-routes.md
-
 const (
 	searchIssuesDefaultPerPage = 30
 	searchIssuesMaxCachedPage  = 10

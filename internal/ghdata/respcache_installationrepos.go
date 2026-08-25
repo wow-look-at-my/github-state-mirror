@@ -54,7 +54,6 @@ func (s *Store) PutCachedInstallationRepos(ctx context.Context, tokenFP string, 
 	return s.q.PruneInstallationReposCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateInstallationRepos drops every cached listing: rows key a credential, not an installation id, so there is nothing finer to match on.
 func (s *Store) InvalidateInstallationRepos(ctx context.Context) error {
 	return s.q.DeleteAllInstallationReposCache(ctx)
 }

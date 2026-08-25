@@ -36,7 +36,6 @@ func (c *ConsistencyChecker) applyOwner(
 	principal := AppInstallationActor(inst.ID)
 
 	// 1. Absorb the snapshot; tally intent against the pre-apply cache the diff used.
-	// see docs/dashboard/operator-tooling.md
 	sync := ghdata.OrgSyncData{Repos: data.Repos, PRsByRepo: data.PRsByRepo, LabelsByPR: data.LabelsByPR}
 	if err := c.store.SyncOrgTruth(ctx, owner, sync, principal, fetchStart, now); err != nil {
 		return fmt.Errorf("sync truth: %w", err)
@@ -97,8 +96,6 @@ func (c *ConsistencyChecker) applyOwner(
 
 		repoKey := owner + "/" + r.Name
 		for _, fpr := range data.PRsByRepo[r.NameWithOwner] {
-			// 4. The commit_checks stick rule: GitHub's rollup is the verdict, corrected by deletion, never by synthesizing rows.
-			// see docs/dashboard/operator-tooling.md
 			sha := ns(fpr.HeadRefOid)
 			ghRollup := ns(fpr.LastCommitStatus)
 			if sha != "" {
@@ -143,8 +140,6 @@ func (c *ConsistencyChecker) applyOwner(
 				}
 			}
 
-			// 5. auto_merge_method: the upsert never applies it from GraphQL rows, so a mismatch needs the explicit set (including NULL).
-			// see docs/dashboard/operator-tooling.md
 			cachedArm := ""
 			if cpr, ok := cachedPRs[repoKey][fpr.Number]; ok {
 				cachedArm = ns(cpr.AutoMergeMethod)

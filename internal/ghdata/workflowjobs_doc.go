@@ -63,9 +63,6 @@ func LivenessOf(jobs ...StoredWorkflowJob) JobsLiveness {
 //	GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
 //	GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 //
-// It lives here, not in the API layer, since both the fetch-on-miss path and
-// the workflow_job delivery rewrite (ApplyWorkflowJob) must render one job the same way.
-// see docs/cache/rest-routes.md
 
 // StoredWorkflowStep is one step of a job.
 type StoredWorkflowStep struct {

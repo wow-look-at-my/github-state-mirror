@@ -11,10 +11,8 @@ import (
 )
 
 // GitHub Actions run state: global truth, maintained by webhooks, and the
-// state the repo-wide runs listing is rebuilt from. see docs/cache/rest-routes.md
 
 // workflowRunRetention: a completed run untouched this long is dropped;
-// queued and in-progress runs are never pruned.
 const workflowRunRetention = 14 * 24 * time.Hour
 
 // WorkflowRunsListTTL is a backstop, not the mechanism: see docs/cache/rest-routes.md

@@ -182,8 +182,6 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	}
 
 	// Detached from the caller's cancellation: the fetch is shared work, so an
-	// aborting client must not kill it or prevent the result from being stored
-	// (see CLAUDE.md, "Lazy fetches are detached, backoff-gated, and drained").
 	m.inflight.Add(1)
 	m.inflightCount.Add(1)
 	defer func() {

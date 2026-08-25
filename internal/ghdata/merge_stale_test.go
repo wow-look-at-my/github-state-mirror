@@ -245,7 +245,6 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	assert.Equal(t, "PR_node", row.NodeID.String, "the sync must not degrade the row's REST columns")
 
 	// Control 1: a PURE GraphQL row (never REST-fetched) still takes the
-	// sync's mergeable -- the /graphql tier serves it from truth.
 	gql9 := gqlPR
 	gql9.Number = 9
 	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(
@@ -256,7 +255,6 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	assert.Equal(t, "MERGEABLE", row9.Mergeable.String, "a pure GraphQL row keeps taking the sync's mergeable")
 
 	// Control 2: once REST re-resolves with a fresh sha, the sync may update
-	// mergeable again (the old COALESCE behavior for sha-backed rows).
 	_, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaB), nil, now.Add(2*time.Minute))
 	require.NoError(t, err)
 	gqlConflicting := gqlPR

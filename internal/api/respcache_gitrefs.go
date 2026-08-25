@@ -13,10 +13,8 @@ import (
 )
 
 // Cached git-ref lookup (tier 2 of the cache contract): GET /repos/{owner}/{repo}/git/ref/{ref...}
-// see docs/cache/rest-routes.md and docs/cache/stale-tip-repair.md
 
 // gitRefCacheTTL is only the backstop for a missed push delivery; a delivered push applies its own tip.
-// see docs/cache/stale-tip-repair.md
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves one ref's tip from a stored snapshot, fetching and

@@ -90,7 +90,6 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 	return p, nil
 }
 
-// ParseWorkflowRunHeadSHA extracts workflow_run.head_sha ("" when absent); the dispatcher's only use is flushing that sha's cached runs pages.
 func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
 	sha, _ := ParseWorkflowRunIdentity(raw)
 	return sha

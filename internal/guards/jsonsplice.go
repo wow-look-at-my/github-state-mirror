@@ -11,38 +11,11 @@ import (
 )
 
 // JSON TEXT IS PRODUCED BY MARSHALLING. FULL STOP.
-//
-// Every other way of building it is a guess about what the values contain. A
-// concatenation escapes nothing at all -- `"sha":"` + sha + `"` is valid JSON
-// only while sha holds no quote, backslash or control character, and
-// `{"conclusion":` + fragment + `}` is worse, because a fragment carrying a
-// quote or a backslash reshapes the document rather than one string. A format
-// verb is no better: %s is raw, %d assumes the value is a number, and even %q
-// is GO quoting, not JSON -- it emits \a, \v, \xNN and \UNNNNNNNN, none of
-// which JSON accepts. Each of those is safe only by luck about today's inputs.
-//
-// So the rule has no exceptions to remember: if a string literal is JSON, it
-// is a CONSTANT. The moment a runtime value belongs in the document, the
-// document is built from a Go value and handed to encoding/json.
-//
-// This check reads a Go source file and reports both ways a value can reach a
-// JSON literal:
-//
-//   - CONCATENATION: a + chain whose literal parts look like JSON, with any
-//     non-literal operand.
-//   - A FORMAT VERB: a JSON-looking format string (the literal argument of a
-//     ...f-suffixed call) containing any verb.
-//
-// Restricting the format case to ...f-suffixed calls is what keeps a percent
-// escape in an ordinary literal (a %20 in a URL) from reading as a verb.
 
 // splicePlaceholder marks where a non-literal operand joins a + chain. It is a
-// character no Go source literal can contain unescaped, so it cannot collide
-// with real content.
 const splicePlaceholder = '\x00'
 
 // verbPattern matches a printf verb. The letter is required, so %20 in a URL
-// is not mistaken for one.
 var verbPattern = regexp.MustCompile(`%[-+# 0-9.*\[\]]*[a-zA-Z]`)
 
 // Finding is one place JSON text is built from something other than a
@@ -72,7 +45,6 @@ func CheckFile(fset *token.FileSet, name string, src []byte) ([]Finding, error) 
 				return true
 			}
 			// Only the outermost + of a chain: an inner one would report the
-			// same document again.
 			return !checkConcat(fset, node, &out)
 		case *ast.CallExpr:
 			checkFormatCall(fset, node, &out)
@@ -142,8 +114,6 @@ func checkFormatCall(fset *token.FileSet, call *ast.CallExpr, out *[]Finding) {
 }
 
 // formatArg finds the call's format string: the first argument that is a
-// string literal (or a fold-able concatenation of them), since the format is
-// preceded by a writer or a *testing.T in the Fprintf/Logf shapes.
 func formatArg(args []ast.Expr) (string, token.Pos, bool) {
 	for _, a := range args {
 		if s, ok := foldStringLit(a); ok {
@@ -197,10 +167,6 @@ func stringLit(e ast.Expr) (string, bool) {
 
 // looksLikeJSON reports whether a literal is a JSON document or fragment
 // rather than prose that merely contains quotes. An object or array opening
-// immediately followed by a string is decisive on its own; a bare key-value
-// separator is not, because ordinary prose has them too -- `Get "x": %w` is an
-// error message, and flagging it would teach the reader to skim this guard's
-// output. So that weaker signal needs a brace or bracket somewhere as well.
 func looksLikeJSON(s string) bool {
 	if strings.Contains(s, `{"`) || strings.Contains(s, `["`) {
 		return true

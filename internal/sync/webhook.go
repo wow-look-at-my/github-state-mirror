@@ -12,8 +12,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// WebhookDispatcher applies events unconditionally to the one global truth store; never gated on who has it cached.
-// see CLAUDE.md, "The global-truth model"
 type WebhookDispatcher struct {
 	mgr      invalidator
 	store    *ghdata.Store

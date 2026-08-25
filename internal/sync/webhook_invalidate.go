@@ -75,8 +75,6 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		scope := owner + "/" + repo
-		// The payload names the exact refs whose CI answers moved: the head branch(es), expanded to every spelling, plus the sha.
-		// see docs/webhooks/response-cache-invalidation.md
 		var refs []string
 		sha := ""
 		if payload, err := webhook.ParseCheckPayload(event.Type, event.Raw); err == nil {
@@ -104,7 +102,6 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if owner == "" || repo == "" {
 			return
 		}
-		// Runs for EVERY workflow_job delivery, including queued/waiting ones dropped as ignored: a queued job is a run the listing may not have shown yet.
 		headSHA, runID := "", int64(0)
 		if payload, err := webhook.ParseWorkflowJobPayload(event.Raw); err == nil {
 			headSHA, runID = payload.HeadSHA, payload.RunID
@@ -117,8 +114,6 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if owner == "" || repo == "" {
 			return
 		}
-		// A workflow_run delivery is the ONLY signal for a startup_failure run, which creates no jobs, check runs, or statuses.
-		// see docs/webhooks/response-cache-invalidation.md
 		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
 		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
@@ -198,8 +193,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			flush("compare cache", scope, d.store.InvalidateCompareForRef(ctx, owner, repo, ref))
 			// commit-CI rows key the VERBATIM requested ref with no empty-ref spelling either; the pushed ref's spellings are the only ones moved.
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
-			// The ref's own tip is the one answer a push STATES outright, so it is APPLIED, not invalidated (CLAUDE.md's apply-the-payload rule).
-			// see docs/webhooks/response-cache-invalidation.md
 			applied, err := d.store.ApplyPushedRefTip(ctx, owner, repo, ref, after, time.Now(), ghdata.GitRefCacheTTL)
 			if err != nil {
 				flush("git ref tip apply", scope, err)
@@ -217,7 +210,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	// No per-ref grain for the rest, parseable or not: PR-files pages and pull-diff-406 verdicts both stay repo-wide.
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
-	// A PR's commit list moves when its head moves; this is the repo-wide belt for a missed pull_request delivery (a fork head's push never reaches us).
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
@@ -237,7 +229,6 @@ func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, 
 	flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsForHeadSHA(ctx, owner, repo, sha))
 }
 
-// pullCommitsRefKey mirrors the API package's synthetic commits_list_cache ref key; a sync -> api import would be a cycle, so it is restated here.
 func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }

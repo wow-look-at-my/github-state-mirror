@@ -36,7 +36,6 @@ func IsFullHexSHA(s string) bool {
 // GitRefCacheTTL lives here since both the fetch-on-miss path and ApplyPushedRefTip need the same clock for a fresh answer.
 const GitRefCacheTTL = 24 * time.Hour
 
-// CachedGitRef is one stored ref answer. ReconciledAgainst carries the contradicting PR base.sha the fetch settled, if any; an empty write leaves the row's existing value.
 type CachedGitRef struct {
 	Owner             string
 	Repo              string

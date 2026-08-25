@@ -2,8 +2,7 @@ package webhook
 
 import "net/http"
 
-// Disposition values describe what the dispatcher did with a delivery. They are
-// returned to GitHub in the HTTP response and recorded in the webhook delivery
+// Disposition values describe what the dispatcher did with a delivery.
 // log shown on the dashboard.
 //
 // There is deliberately no "skipped" anymore: since the global-cache
@@ -16,7 +15,6 @@ const (
 	DispIgnored     = "ignored"     // an event or action the mirror does not track
 	DispError       = "error"       // an internal (store) failure — GitHub should retry
 	// DispSuperseded means a strictly newer view of the same subject already applied; a success, not a failure.
-	// see docs/webhooks/ordering.md
 	DispSuperseded = "superseded"
 )
 

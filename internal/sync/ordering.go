@@ -9,9 +9,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The out-of-order gate: what runs before every dispatch, the second of two ordering mechanisms and the one with no distance limit.
-// see docs/webhooks/ordering.md
-
 // OutOfOrderSampleLimit bounds the retained recent-sample ring; only the recent samples matter to an operator.
 const OutOfOrderSampleLimit = 50
 
@@ -58,8 +55,6 @@ type OrderingStats struct {
 	samples []OutOfOrderSample
 }
 
-// OutOfOrderGrace splits ordinary delivery jitter from something worth investigating; both are refused identically.
-// see docs/webhooks/ordering.md
 const OutOfOrderGrace = 10 * time.Second
 
 func NewOrderingStats() *OrderingStats {

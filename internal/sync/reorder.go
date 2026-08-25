@@ -10,9 +10,6 @@ import (
 )
 
 // The reorder window: a short hold that lets deliveries for one subject apply
-// in the order they happened, not the order they arrived. The window itself
-// is configuration (WEBHOOK_REORDER_WINDOW, 2s default, capped at 5s).
-// see docs/webhooks/ordering.md
 
 // reorderBuffer holds in-flight batches, one per subject.
 type reorderBuffer struct {

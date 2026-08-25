@@ -11,8 +11,6 @@ import (
 )
 
 // Implements the single-PR DIFF read's cached 406 verdicts (tier 2 of the
-// cache contract; the branch off cachedPull in respcache_pulls.go).
-// See docs/cache/rest-routes.md for the shape, absorb gate, and flush rules.
 
 // pullDiff406TTL backstops a stale 406 verdict; webhooks flush sooner.
 const pullDiff406TTL = 24 * time.Hour

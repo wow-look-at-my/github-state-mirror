@@ -9,9 +9,6 @@ import (
 )
 
 // A `status` delivery carries the whole status it announces, so the two
-// status-shaped documents in commit_ci_cache are rewritten from it rather
-// than flushed. See "The status rewrite" in docs/webhooks/invalidations.md
-// for the ordering measurement that makes the rewrite exact.
 
 // CommitStatusUpdate is one `status` delivery's account of one commit status,
 // in GitHub's own spelling of every field the stored documents carry.
@@ -27,7 +24,6 @@ type CommitStatusUpdate struct {
 
 // storedCommitStatusItem and storedCombinedStatus mirror the kind-"status"
 // document; field order is wire order and must match the api package's
-// render exactly, pinned by TestCachedCommitCI_StatusEventRewritesTheCombinedDoc.
 type storedCommitStatusItem struct {
 	Context     string  `json:"context"`
 	State       string  `json:"state"`

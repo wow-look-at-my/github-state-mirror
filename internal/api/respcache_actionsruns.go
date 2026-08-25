@@ -269,7 +269,6 @@ func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string
 }
 
 // workflowRunItemJSON is the trimmed workflow_runs entry consumers read.
-// See docs/cache/rest-routes.md for what is kept, dropped, and why html_url stays.
 type (
 	workflowRunItemJSON = ghdata.StoredWorkflowRunItem
 	workflowRunsJSON    = ghdata.StoredWorkflowRunsPage

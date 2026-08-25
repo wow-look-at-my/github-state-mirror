@@ -10,7 +10,6 @@ import (
 )
 
 // State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix}.
-// see docs/cache/rest-routes.md
 
 // MatchingRefsCacheTTL bounds a missed-delivery staleness window.
 const MatchingRefsCacheTTL = 24 * time.Hour

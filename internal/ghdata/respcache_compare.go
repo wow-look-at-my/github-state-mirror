@@ -16,8 +16,6 @@ import (
 // (the API layer splits at the "..." its route guard already requires), kept
 // as their own columns so a push to one ref can flush exactly the
 // comparisons naming it. Status is the upstream answer the row absorbed: 200
-// (a real comparison) or 404 (an expiring unknown-ref miss marker, absorbed
-// by the round-2 route work); Doc holds the rendered body either way.
 type CachedCompare struct {
 	Owner    string // lowercased
 	Repo     string // lowercased

@@ -18,8 +18,6 @@ import (
 )
 
 // AppAuthenticator signs in as a GitHub App: it mints short-lived RS256 JWTs
-// from the app's private key and exchanges them for per-installation access tokens.
-// see docs/reveal-layer.md, docs/ghclient.md
 type AppAuthenticator struct {
 	appID  string
 	key    *rsa.PrivateKey
@@ -73,7 +71,6 @@ func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, e
 	}
 }
 
-// AlwaysDeliveredEvents never appear in the App's `events` list; a caller diffing against SubscribedEvents must treat them as always present.
 var AlwaysDeliveredEvents = set.Of(
 	"installation",
 	"installation_repositories",

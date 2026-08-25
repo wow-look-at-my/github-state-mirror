@@ -13,7 +13,6 @@ import (
 )
 
 // doJSON's transient-failure retry policy. What is and is not retried is a
-// correctness decision, not a tuning knob. see docs/ghclient.md
 const doJSONAttempts = 3
 
 // retryAfterCap stops a huge Retry-After from wedging a deadline-bounded fetch.

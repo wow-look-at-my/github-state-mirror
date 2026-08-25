@@ -6,7 +6,6 @@ import (
 )
 
 // The Timeline chart's columnar encoding. This file is only the media type and negotiation.
-// see docs/timeline-wire-format.md
 
 // timelineWireType selects the columnar encoding; a layout change is v2, never evolved in place.
 const timelineWireType = "application/vnd.gsm.timeline.v1"

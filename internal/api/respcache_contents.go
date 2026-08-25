@@ -78,8 +78,6 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	c, absorbed := absorbContents(owner, repo, path, ref, resp.StatusCode, body)
 	if overflow || !absorbed {
 		if rawAccept {
-			// The JSON probe couldn't carry this (likely an over-threshold file); refetch with the caller's raw Accept and replay verbatim.
-			// see docs/cache/rest-routes.md
 			rawResp, rawBody, _, rawErr := h.fetchUpstream(r, nil)
 			if rawErr != nil {
 				h.upstreamError(w, r, rawErr)

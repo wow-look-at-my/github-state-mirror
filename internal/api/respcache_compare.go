@@ -13,7 +13,6 @@ import (
 )
 
 // GET /repos/{owner}/{repo}/compare/{basehead}, tier 2 of the cache contract.
-// see docs/cache/rest-routes.md
 
 // compareCacheTTL is the backstop for a missed push delivery.
 const compareCacheTTL = 24 * time.Hour

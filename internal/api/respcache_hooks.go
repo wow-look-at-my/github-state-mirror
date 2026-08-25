@@ -20,9 +20,6 @@ import (
 //	GET /orgs/{org}/hooks
 //
 // Keyed by the bearer's fingerprint: an admin-only read, so a global row
-// would leak it to a merely-read-access caller. The TTL is the primary bound
-// — GitHub's meta event reaches only the hook being deleted.
-// see docs/cache/rest-routes.md
 
 const (
 	// hooksCacheTTL stays short: a reconciler working from a stale listing could create a duplicate webhook.

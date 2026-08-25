@@ -104,8 +104,6 @@ func (h *handlers) cachedWorkflowJob(w http.ResponseWriter, r *http.Request) {
 
 // workflowJobsRoute is the per-route configuration the shared flow needs. The
 // two routes differ only in their key, their deny kind, and how a response is
-// absorbed — everything else (reveal, hit, fetch, store, serve) is identical,
-// so it lives once.
 type workflowJobsRoute struct {
 	owner, repo string
 	kind        string

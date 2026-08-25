@@ -17,7 +17,6 @@ const (
 	repoInstallationCacheTTL = 24 * time.Hour
 
 	// installationAbsentTTL is the PRIMARY bound for a "not installed" verdict:
-	// see docs/cache/rest-routes.md for why no webhook can flush it instead.
 	installationAbsentTTL = 5 * time.Minute
 )
 
@@ -181,8 +180,6 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 // ---- GET /orgs/{org}/installation and GET /users/{username}/installation ----
 
 // Owner-level installation lookups reuse the repo route's absorb/rebuild/row
-// space, keyed under a sentinel repo value no real repo name can collide with.
-// see docs/cache/rest-routes.md
 const (
 	ownerInstallScopeOrg  = "*org"
 	ownerInstallScopeUser = "*user"

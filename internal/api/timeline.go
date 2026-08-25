@@ -15,8 +15,6 @@ import (
 )
 
 // requestStartKey carries the instant the router received a request, stamped
-// by stampRequestStart on EVERY inbound request so any record site can report
-// a real end-to-end duration.
 type requestStartKey struct{}
 
 // stampRequestStart is the first router middleware: it stamps the receipt
@@ -212,7 +210,6 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Columnar payload for the exact wire media type; readable JSON otherwise.
-	// see docs/timeline-wire-format.md
 	addVary(w.Header(), "Accept")
 	if wantsTimelineWire(r.Header.Get("Accept")) {
 		wire, err := encodeTimelineV1(snap)

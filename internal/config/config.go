@@ -44,7 +44,6 @@ type Config struct {
 	ReplayInterval      time.Duration
 
 	// PassthroughDebounce holds an eligible uncacheable read so concurrent
-	// requests share one upstream call; 0 disables coalescing.
 	PassthroughDebounce time.Duration
 
 	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-first; 0 skips straight to the watermark gate.

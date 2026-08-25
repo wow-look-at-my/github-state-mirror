@@ -15,10 +15,7 @@ import (
 )
 
 // This file implements the cached commit-CI routes (tier 2 of the cache
-// contract): combined status, check-runs, and the raw statuses list.
-// see docs/cache/rest-routes.md
 
-// commitCICacheTTL bounds a missed CI/push delivery's staleness; it lives here because a `status` delivery re-dates a rewritten document exactly like a fetch would.
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
 const (
@@ -106,7 +103,6 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
-	// Only the default JSON representation with the modeled paging shape is cached; check-runs filters and anything else unmodeled pass through.
 	if !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, PassAccept)
 		return

@@ -11,16 +11,11 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// Store wraps sqlc-generated queries and adds transaction logic for bulk
-// operations against the ONE GLOBAL TRUTH STORE. State tables hold one row per
-// resource; nothing here is scoped to a caller. What a caller may READ is the
-// reveal layer's job (the grant/deny/visibility methods below plus the checks
-// in internal/api).
+// Store wraps sqlc-generated queries plus transaction logic for the one global truth store.
 type Store struct {
 	db *sql.DB
 	q  *dbgen.Queries
 	// lastPrune throttles the opportunistic access-control prune (Unix
-	// seconds of the last run; see maybePruneAccessControl).
 	lastPrune atomic.Int64
 }
 
@@ -29,38 +24,20 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // Ping reports whether the cache database still answers. The update-liveness
-// probe uses it: a process serving HTTP over a dead SQLite file is exactly the
-// state a post-update health gate exists to catch, and an HTTP 200 alone
-// cannot see it.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
 // GrantTTL is how long an access grant stays valid without being re-earned.
-// Long enough that steady callers never notice (every list-sync and every
-// probe 2xx renews), short enough that revoked access ages out within a day
-// even if GitHub never gives us an authoritative 403. Variable for tests.
 var GrantTTL = 24 * time.Hour
 
 // DenyTTL is how long an authoritative deny verdict (404 / non-rate-limit 403)
-// is served before the same principal's request is probed against GitHub
-// again. Deliberately short: it only exists to keep a repeatedly-poked
-// unauthorized resource from hammering GitHub. Variable for tests.
 var DenyTTL = 5 * time.Minute
 
 // reconcileGrace protects webhook-absorbed truth from a racing fetch: an org
-// or pulls fetch only deletes an open-PR row absent from its snapshot when the
-// row was not touched (webhook-applied or otherwise written) after
-// fetchStart - reconcileGrace. GraphQL/REST list reads are eventually
-// consistent, so a just-webhooked PR can be missing from a snapshot taken
-// moments later; without the grace window the reconcile would silently delete
-// it (this race was actually hit during prototyping).
 const reconcileGrace = 2 * time.Minute
 
 // Repo visibility values (repos.visibility). Empty means unknown: the
-// identity-locked GraphQL org fetch cannot carry visibility, so a repo seeded
-// only by it stays unknown and the reveal layer treats it as private
-// (fail closed) until a webhook or REST absorb reveals the real value.
 const (
 	VisibilityUnknown = ""
 	VisibilityPublic  = "public"
@@ -233,11 +210,6 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 				return err
 			}
 			// No closure recorded: this delete is inferred from ABSENCE, and
-			// a list read is eventually consistent -- the grace window above
-			// exists because a just-opened PR really can be missing from a
-			// snapshot taken moments later. A closure record from a wrong
-			// inference would refuse the PR's real deliveries for a day. The
-			// sweep runs again and re-deletes if it was right.
 		}
 	}
 
@@ -382,8 +354,6 @@ func (s *Store) PruneAccessControl(ctx context.Context, now time.Time) error {
 }
 
 // pruneInterval throttles the opportunistic prune: the grant-writing paths
-// run on every sync/probe, and sweeping expired rows more than every few
-// minutes buys nothing (reads filter on expiry anyway).
 const pruneInterval = 10 * time.Minute
 
 // maybePruneAccessControl runs PruneAccessControl at most once per

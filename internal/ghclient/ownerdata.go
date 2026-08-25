@@ -108,7 +108,6 @@ type gqlOwnerResponse struct {
 }
 
 // OwnerPageFunc reports cumulative repos fetched and the connection's total (0 if unreported).
-// Called synchronously on the fetching goroutine; keep it cheap.
 type OwnerPageFunc func(reposFetched, reposTotal int)
 
 // GetOwnerData fetches all non-archived repos and open PRs for any owner (org or user).

@@ -21,8 +21,6 @@ import (
 )
 
 // Embeds only the files the production page references.
-//
-//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
 // contentAsset is an embedded asset served at a content-addressed URL.

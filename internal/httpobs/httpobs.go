@@ -23,17 +23,10 @@ import (
 )
 
 // Observer receives every attempt the wrapped client makes, with its REAL
-// measured duration (request sent → response headers received). Each retry is
-// a separate real request and is reported separately. status is 0 when the
-// exchange failed before a response arrived, which is a failure worth
-// charting, not an event to drop. req is the outbound request, so the
-// observer can label it however its surface labels things.
 type Observer func(req *http.Request, status int, start time.Time, dur time.Duration)
 
 // Transport wraps base so every round trip is reported to obs. A nil base
 // means http.DefaultTransport. A nil obs returns base unchanged -- the
-// caller has decided this client is not observed, and that decision belongs
-// in the caller's own code where a reader can see it.
 func Transport(base http.RoundTripper, obs Observer) http.RoundTripper {
 	if obs == nil {
 		return base

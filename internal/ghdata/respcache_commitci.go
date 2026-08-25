@@ -10,7 +10,6 @@ import (
 )
 
 // Storage layer for the cached commit-CI routes (status, check-runs, statuses list).
-// See docs/cache/rest-routes.md for the key shape, ref semantics, and invalidation.
 
 // CommitCICacheTTL is shared by the fetch-on-miss path and the status delivery that rewrites a document.
 const CommitCICacheTTL = 24 * time.Hour

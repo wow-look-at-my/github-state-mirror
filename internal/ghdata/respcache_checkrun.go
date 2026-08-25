@@ -9,9 +9,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// The single-check-run route (tier 2): GET /repos/{owner}/{repo}/check-runs/{check_run_id}, keyed by the run's OWN id.
-// see docs/cache/rest-routes.md
-
 // CheckRunCacheTTL bounds a stale answer when no delivery ever reaches this run's terminal state.
 const CheckRunCacheTTL = 24 * time.Hour
 

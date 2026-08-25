@@ -39,8 +39,6 @@ func (c *ConsistencyChecker) diffOwner(
 ) {
 	now := time.Now()
 	// servedNow memoizes the repo's live pulls-list marker: a PR-existence
-	// discrepancy under a live marker is being SERVED wrong right now (the
-	// list route trusts the rows); without one it self-heals on the next read.
 	markerByRepo := map[string]bool{}
 	servedNow := func(name string) bool {
 		if v, ok := markerByRepo[name]; ok {
@@ -167,9 +165,6 @@ func (c *ConsistencyChecker) diffOwner(
 }
 
 // pushedAtTolerance absorbs the race between the check's fetch and live
-// pushes: only a cached pushed_at lagging GitHub's by MORE than this is
-// reported. The signal being hunted is missed push webhooks (which also mean
-// un-flushed contents_cache rows), not seconds of skew.
 const pushedAtTolerance = 5 * time.Minute
 
 // pushedAtDrift reports whether the cached pushed_at lags GitHub's by more
@@ -196,11 +191,6 @@ func pushedAtDrift(cached, github sql.NullString) (time.Duration, bool) {
 
 // racedDuringCheck reports whether a GitHub-side RFC3339 timestamp is at or
 // after the check's start: the resource provably moved WHILE the check ran, so
-// the cached value never had a chance to catch up and the difference is race,
-// not drift. The boundary is >= (a value exactly at check start already
-// postdates the cached rows the diff read). A zero checkStart or an
-// unparseable/absent timestamp never claims a race -- fail toward reporting
-// drift.
 func racedDuringCheck(github string, checkStart time.Time) bool {
 	if checkStart.IsZero() || github == "" {
 		return false
@@ -213,12 +203,6 @@ func racedDuringCheck(github string, checkStart time.Time) bool {
 }
 
 // noneMarker renders an absent value explicitly. The Discrepancy JSON fields
-// are omitempty (so only_* entries stay clean), which silently DROPPED the
-// github side of a default_branch mismatch whenever GraphQL reported no
-// defaultBranchRef (an empty repo has no ref even though REST reports a
-// configured default_branch name) -- the 2026-07-20 report's value-less
-// entries. An explicit marker keeps both sides always present for fields
-// where emptiness is a real answer.
 const noneMarker = "(none)"
 
 func orNone(v sql.NullString) string {
@@ -265,7 +249,6 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	vis, visKnown := visibility[name]
 
 	// is_archived: a repo in the org data fetch is non-archived by the query's
-	// own filter; prefer the visibility map's authoritative answer when known.
 	ghArchived := g.IsArchived != 0
 	if visKnown {
 		ghArchived = vis.Archived

@@ -9,9 +9,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Ordering webhook deliveries against each other: a watermark per SUBJECT, applied and advanced by newer views, refusing older ones.
-// see docs/webhooks/ordering.md
-
 // WatermarkRetention bounds how long a subject's watermark is kept; past it every cache it could corrupt has already expired or refreshed.
 const WatermarkRetention = 7 * 24 * time.Hour
 

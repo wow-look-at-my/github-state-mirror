@@ -220,7 +220,6 @@ type requestLogSnapshot struct {
 	Groups        []requestGroupSnapshot `json:"groups"`
 	Recent        []requestEvent         `json:"recent"`
 	// The DB file's (and its -wal sidecar's) on-disk sizes, filled by the
-	// dashboard handler (which knows DB_PATH) — 0/omitted if unreadable.
 	DBSizeBytes    int64 `json:"db_size_bytes,omitempty"`
 	DBWALSizeBytes int64 `json:"db_wal_size_bytes,omitempty"`
 }
@@ -295,15 +294,13 @@ func (s *shapeStore) observeRequest(r *http.Request, route string, status int, c
 	})
 }
 
-// statusRecorder wraps an http.ResponseWriter to capture the status code while
-// otherwise behaving transparently (including flushing, which the reverse proxy
+// statusRecorder wraps an http.ResponseWriter to capture the status code.
 // relies on to stream responses).
 type statusRecorder struct {
 	http.ResponseWriter
 	status  int
 	written bool
 	// capture, when non-nil, buffers a response prefix for shape sampling.
-	// Past shapeMaxSampleBytes it is abandoned, not truncated — a truncated body parses to nothing.
 	capture  []byte
 	overflow bool
 }

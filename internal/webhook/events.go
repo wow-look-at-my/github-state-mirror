@@ -254,13 +254,6 @@ type CheckPayload struct {
 	Context string
 	State   string // normalized: SUCCESS / FAILURE / ERROR / PENDING
 	// Branches is every branch name the payload associates with the commit
-	// (empty names dropped): for a `status` event each branches[].name; for
-	// check_run/check_suite the suite's head_branch when non-empty. Together
-	// with SHA these are the ref SPELLINGS whose cached CI answers the event
-	// moved (commit_ci_cache keys the verbatim requested ref). NOTE: GitHub
-	// caps the status payload's branches array (~10 entries), so a commit on
-	// many branches can be under-reported -- acceptable, because branch-form
-	// CI rows are bounded by the 24h TTL and current consumers poll by sha.
 	Branches        []string
 	OnDefaultBranch bool // the check ran on the repo's default branch
 }

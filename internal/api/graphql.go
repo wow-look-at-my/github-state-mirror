@@ -126,13 +126,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	repoNodes := make([]map[string]interface{}, 0, len(repos))
 	for _, repo := range repos {
 		// The locked query selects repositories(isArchived: false), so GitHub
-		// itself never returns an archived repo here -- and the node carries no
-		// isArchived field for a client to filter on. Truth DOES hold archived
-		// repos (the owner query the fleet refresher uses has no such filter),
-		// so without this the mirror answered with rows GitHub would have
-		// withheld, and no consumer could tell. Filtered here rather than in
-		// ListVisibleReposByOwner: the reason is this route's contract, not a
-		// property of what the reveal layer permits.
 		if repo.IsArchived != 0 {
 			continue
 		}
@@ -157,8 +150,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// statusCheckRollup is null when no CI status is recorded, mirroring
-			// real GitHub. The commits object itself is always a well-formed node
-			// list so clients can safely read commits.nodes[0].commit.statusCheckRollup.
 			var rollup interface{}
 			if pr.LastCommitStatus.Valid {
 				rollup = map[string]interface{}{
@@ -233,8 +224,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			"defaultBranchRef": defaultBranchRef,
 			"pullRequests": map[string]interface{}{
 				// The canonical query selects pullRequests.pageInfo (queries.go),
-				// so GitHub returns it; include it to stay shape-identical. The
-				// mirror returns every open PR in one page, so it never advances.
 				"pageInfo": map[string]interface{}{
 					"hasNextPage": false,
 					"endCursor":   nil,
@@ -250,8 +239,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			"organization": map[string]interface{}{
 				"repositories": map[string]interface{}{
 					// The mirror returns every repo in one response, so paging
-					// always terminates after the first page. pageInfo must be
-					// present: clients read pageInfo.hasNextPage unconditionally.
 					"pageInfo": map[string]interface{}{
 						"hasNextPage": false,
 						"endCursor":   nil,

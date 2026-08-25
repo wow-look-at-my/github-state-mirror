@@ -11,10 +11,6 @@ import (
 // Identity/self route tests: GET /app, GET /user, GET /user/orgs. These
 // three deliberately do NOT follow the trimmed-rebuild contract every other
 // file in this package tests against -- see the file header in
-// respcache_identity.go and the comment on
-// TestProxy_FormerlyCachedNowForwarded (proxy_test.go) for why. What matters
-// here is that a HIT is BYTE-IDENTICAL to the original upstream body, never a
-// reshaped subset.
 
 func defaultUserOrgsUpstream(w http.ResponseWriter, r *http.Request) {
 	writeGitHubJSON(w, []any{
@@ -70,7 +66,6 @@ func TestCachedUserOrgs_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	// url is NOT dropped: this route is byte-identical, not a trimmed
-	// rebuild, so GitHub's own self-links ride through unchanged.
 	assert.Contains(t, w1.Body.String(), "api.github.com")
 	assert.Contains(t, w1.Body.String(), `"login":"org1"`)
 	require.Equal(t, int32(1), u.userOrgsHits)
@@ -135,7 +130,6 @@ func TestCachedApp_UnauthorizedForwards(t *testing.T) {
 	bad.Header.Set("Authorization", "Bearer wrong-jwt")
 	w2 := do(t, router, bad)
 	// An unverifiable JWT falls to the plain passthrough proxy (like the
-	// installation-mint routes), which relays GitHub's own 401.
 	require.Equal(t, http.StatusUnauthorized, w2.Code)
 	assert.Empty(t, w2.Header().Get(cacheHeader))
 	assert.Greater(t, u.appHits, before)

@@ -11,9 +11,6 @@ import (
 )
 
 // OrgReposFetcher runs one principal's owner LIST-SYNC: fetches repos + open
-// PRs with the principal's own token, merges into global truth, and
-// replace-syncs the principal's access grants.
-// see docs/reveal-layer.md
 type OrgReposFetcher struct {
 	gh    *ghclient.Client
 	store *ghdata.Store

@@ -30,8 +30,6 @@ func TestCachedPull_MergeableGate(t *testing.T) {
 		pr := upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		// mergeable_state tracks mergeable, as GitHub's does: "unknown" while
 		// the test merge computes, a real state once it resolves. The hit gate
-		// reads both, so pinning it to "unknown" would hold every read on the
-		// miss path and prove nothing about caching.
 		switch mergeable {
 		case "true":
 			pr["mergeable"], pr["mergeable_state"] = true, "clean"
@@ -102,7 +100,6 @@ func TestCachedPull_WebhookNullMergeableKeepsGateHonest(t *testing.T) {
 	assert.Equal(t, true, got["mergeable"])
 
 	// The inverse: a PR first seen through a webhook (no fetched mergeable)
-	// must stay gated to a miss.
 	pr9 := upstreamPR(9, "open", "Third PR", "hotfix", shaTree1, "2026-07-03T10:00:00Z")
 	pr9["mergeable"] = nil
 	postWebhook(t, router, "pull_request", prEvent("opened", pr9))
@@ -176,7 +173,6 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 	})
 
 	// GitHub's recompute lags: it re-offers the SAME sha, still "resolved".
-	// The mirror rejects it -- miss, served unresolved, stored unresolved.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "miss", w2.Header().Get(cacheHeader))
@@ -246,7 +242,6 @@ func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 	})
 
 	// The next poll re-offers the SAME sha -- with the base tip equal to the
-	// push's after: post-push proof, accepted, served RESOLVED.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "miss", w2.Header().Get(cacheHeader))
@@ -287,8 +282,3 @@ func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 }
 
 // TestCachedPull_DiffAcceptPassthrough: pr-minder's getPullDiff sends the
-// diff media type on this endpoint. A 200 diff BODY is deliberately never
-// stored (verbatim byte caching is rejected doctrine) -- so a diff that fits
-// under GitHub's size boundary reaches GitHub and relays untouched, EVERY
-// time, byte-identically, with the diff Accept forwarded upstream. Only the
-// 406 verdict is cached (TestCachedPullDiff_406VerdictCached).

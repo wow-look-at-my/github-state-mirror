@@ -6,9 +6,6 @@ import (
 )
 
 // The stored shape of GET /repos/{owner}/{repo}/commits/{ref}/check-runs
-// (commit_ci_cache, kind "check_runs"). Both the fetch-on-miss path and the
-// `check_run` delivery rewrite share this one trim, so they agree byte for
-// byte. See docs/cache/rest-routes.md for what is kept and what is dropped.
 
 // StoredCheckRunApp is a check run's producing app, trimmed to its id -- the
 // one app field the known consumer contract branches on.

@@ -36,13 +36,11 @@ func TestParsePRPayload_MergeableState(t *testing.T) {
 	assert.Equal(t, "behind", got.PR.MergeableState.String, "the state must survive parsing verbatim")
 
 	// "unknown" is GitHub still computing, not an answer: storing it would
-	// resolve the row on a non-answer, which nothing would then re-ask.
 	got, err = ParsePRPayload(payloadWith("unknown"))
 	require.NoError(t, err)
 	assert.False(t, got.PR.MergeableState.Valid, "'unknown' must stay unresolved")
 
 	// An absent field leaves the column untouched at the upsert (COALESCE),
-	// which is only correct if the parser reports it as unset rather than "".
 	got, err = ParsePRPayload(payloadWith(nil))
 	require.NoError(t, err)
 	assert.False(t, got.PR.MergeableState.Valid, "an absent field must not be stored as empty")

@@ -12,10 +12,8 @@ import (
 )
 
 // Implements GET /repos/{owner}/{repo}/git/commits/{sha} (tier 2).
-// see docs/cache/rest-routes.md
 
 // gitCommitMissTTL bounds a cached git-commit 404 verdict; consumers fail open on 404.
-// see docs/cache/rest-routes.md
 const gitCommitMissTTL = 24 * time.Hour
 
 // cachedGitCommit serves a git commit from absorbed state. Commits are

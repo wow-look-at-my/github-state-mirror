@@ -22,8 +22,6 @@ type Session struct {
 // SessionFunc yields the authenticated sessions to refresh each cycle, called fresh so short-lived credentials can be re-minted.
 type SessionFunc func(ctx context.Context) ([]Session, error)
 
-// IdentityRecorder persists a principal->display-name mapping for the dashboard's actor_identities view. Nil disables recording.
-// see docs/dashboard/dashboard.md
 type IdentityRecorder func(ctx context.Context, principal, name string)
 
 // AppSessions returns a SessionFunc that signs in as a GitHub App, one stable "app-installation:<id>" session per installation.
@@ -62,8 +60,6 @@ func AppSessions(app *ghclient.AppAuthenticator, record IdentityRecorder) Sessio
 	}
 }
 
-// appInstallationActorPrefix marks the stable cache-partition keys of GitHub App installation sessions; the org-repos fetcher branches on it.
-// see docs/reveal-layer.md
 const appInstallationActorPrefix = "app-installation:"
 
 // AppInstallationActor returns the stable cache-partition key for a GitHub App

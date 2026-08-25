@@ -23,10 +23,6 @@ import (
 // act implementation brief.
 //
 // Values are never recorded. A body sample is reduced to its JSON SKELETON —
-// key names and value TYPES only, recursively — before anything is retained;
-// the raw bytes are discarded immediately. Query parameters keep their NAMES
-// (a value can carry a credential; a name cannot), matching the existing
-// pass_query rule.
 
 const (
 	// shapeStoreCap bounds the map; past it, new shapes are dropped and known ones keep updating.
@@ -170,7 +166,6 @@ func (s *shapeStore) observe(o observation) {
 		return
 	}
 	// Advances whether or not it parsed as JSON: a confirmed-non-JSON status is
-	// permanent, not a transient gap. see docs/dashboard/implementation-brief.md
 	sh.lastSampleAt = now
 	if skeleton != "" {
 		delete(sh.nonJSON, o.Status)

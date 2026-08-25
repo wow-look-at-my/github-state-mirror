@@ -12,7 +12,6 @@ import (
 )
 
 // GET /repos/{owner}/{repo}/code-quality/setup, tier 2 of the cache contract.
-// see docs/cache/rest-routes.md
 
 // The primary bound, not a backstop: see docs/cache/rest-routes.md
 const codeQualitySetupTTL = time.Hour

@@ -47,7 +47,6 @@ type Metadata struct {
 }
 
 // TriggerSource is what caused a refresh. Webhooks never fetch; they apply
-// payload state directly, so no TriggerWebhook exists.
 type TriggerSource string
 
 const (

@@ -60,10 +60,6 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			// installation tokens rotate hourly share one warm cache bucket,
 			// while the Authorization token is still used for upstream fetches so
 			// per-repo authorization is preserved. Callers without this header
-			// keep the fingerprint isolation below, so untrusting multi-tenant
-			// use is unaffected. (Distinct from the background refresher's
-			// app-installation:<id> partition: that is the mirror as its own app;
-			// this is an external app caller tagging its data-API requests.)
 			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
 				ident, err := gh.VerifyAppIdentity(ctx, idJWT)
 				if err != nil {
@@ -75,8 +71,6 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				ctx = actor.WithActor(ctx, actorKey)
 				if ident.Slug != "" {
 					// The app slug is GitHub-verified (GET /app answered it):
-					// carry it as the principal's display name so downstream
-					// surfaces (request log, rate meter, logs) can show it.
 					ctx = actor.WithName(ctx, ident.Slug)
 				}
 				record(ctx, actorKey, ident.Slug)
@@ -85,10 +79,6 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			}
 
 			// Resolve the credential's identity with GitHub up front (cached
-			// per token, including the definitive not-a-user verdict). A user
-			// token lands in that user's shared bucket; a non-user token keeps
-			// per-token fingerprint isolation. An unresolvable identity is a
-			// hard failure — see the function comment.
 			ident, err := gh.ResolveTokenIdentity(ctx)
 			if err != nil {
 				if errors.Is(err, ghclient.ErrBadCredential) {
@@ -107,12 +97,9 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			ctx = actor.WithActor(ctx, actorKey)
 			if ident.IsUser && ident.Login != "" {
 				// The login came from GitHub's own GET /user answer: carry it
-				// as the display name. Non-user tokens have no name.
 				ctx = actor.WithName(ctx, ident.Login)
 			}
 			// Remember the actor->login mapping so the dashboard can group a
-			// user's scope by login. A non-user token has no login and is
-			// skipped by the recorder.
 			record(ctx, actorKey, ident.Login)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

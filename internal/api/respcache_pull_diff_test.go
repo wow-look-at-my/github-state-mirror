@@ -305,7 +305,6 @@ func TestCachedPull_DiffStats(t *testing.T) {
 	assert.JSONEq(t, w1.Body.String(), w2.Body.String(), "hit and miss must rebuild identically")
 
 	// A different PR reaches this row only via the LIST (no stats) plus a webhook resolving mergeable.
-	// Rest-complete and mergeable-known, but nothing answers additions — so the single-PR read must miss.
 	list := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?state=open&per_page=100", nil))
 	require.Equal(t, http.StatusOK, list.Code)
 	var listed []map[string]any

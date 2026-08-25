@@ -16,10 +16,8 @@ import (
 )
 
 // THE PAYLOAD AUDIT: a build gate over every dispatcher event type.
-// see docs/webhooks/payload-audit-test.md
 
 // Exception docs are read at run time; touch a .go file or delete build/server
-// to force a re-run locally after a doc-only edit (go-toolchain's fingerprint skip watches only .go files).
 const payloadUnusedDir = "../../docs/webhooks/payload-unused"
 
 // What reading the delivery body looks like: the typed parsers in
@@ -122,8 +120,6 @@ func TestWebhookHandlersConsumeTheirPayload(t *testing.T) {
 	}
 
 	// The dispatcher's switch IS the list of events we use. Read it from the
-	// AST so a newly handled event is audited the moment it is added — nobody
-	// has to remember to update a list here.
 	handle, ok := funcs["handle"]
 	require.True(t, ok, "WebhookDispatcher.handle must exist")
 

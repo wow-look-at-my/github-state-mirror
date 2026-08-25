@@ -12,9 +12,7 @@ import (
 )
 
 // This file is the storage layer for the cached branches route: GET /repos/{owner}/{repo}/branches.
-// see docs/cache/rest-routes.md and docs/webhooks/dispatch.md
 
-// BranchesCacheTTL bounds a missed push's staleness; it lives here since both the fetch-on-miss path and the tip-apply path share this clock.
 const BranchesCacheTTL = 24 * time.Hour
 
 // GetCachedBranchesList returns the cached trimmed branches-page document, or
@@ -58,8 +56,6 @@ func (s *Store) PutCachedBranchesList(ctx context.Context, owner, repo string, p
 	return s.q.PruneBranchesListCacheLRU(ctx, CacheMaxRows)
 }
 
-// storedBranchListItem is one entry of a stored branches page; field order is wire order and must match the api package's render exactly.
-// see docs/webhooks/dispatch.md
 type storedBranchListItem struct {
 	Name   string `json:"name"`
 	Commit struct {

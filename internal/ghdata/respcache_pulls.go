@@ -12,18 +12,14 @@ import (
 )
 
 // Storage layer for the cached PR REST routes; absorbs into and rebuilds
-// from the global pull_requests + pr_labels tables, no own state table.
-// see docs/cache/rest-routes.md
 
 // Single-PR staleness backstop; a stale row misses rather than serves stale.
 var PRRowTTL = 24 * time.Hour
 
 // How long a push-invalidated test-merge sha keeps rejecting re-offered answers.
-// see docs/cache/merge-stale-sha.md
 const MergeStaleTTL = time.Hour
 
 // How long the stale marker may reject a CONFLICTING same-sha answer.
-// see docs/cache/merge-stale-sha.md
 const MergeStaleConflictingWindow = 30 * time.Second
 
 // mergeStaleMarkerLive reports whether the row carries a live
@@ -42,12 +38,6 @@ func mergeStaleMarkerLive(pr dbgen.PullRequest, now time.Time) bool {
 
 // staleShaOffered reports whether offered is exactly the test-merge sha a
 // recent push invalidated on the existing row -- presumed pre-push, because
-// the push moved the PR's base or head and a tip change always changes the
-// sha of a SUCCESSFUL test merge. Deliberately raw: the two exemptions that
-// can overrule the presumption -- the push-tip proof (pushProvenPostPush) and
-// the dirty-retained CONFLICTING pattern (conflictingPastReplicaLag) -- are
-// applied by the absorbing callers, never here. Mirrors UpsertPullRequest's
-// SQL stale guard; keep the two in sync.
 func staleShaOffered(existing dbgen.PullRequest, offered sql.NullString, now time.Time) bool {
 	return mergeStaleMarkerLive(existing, now) &&
 		offered.Valid && offered.String != "" && offered.String == existing.MergeStaleSha.String
@@ -237,7 +227,6 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 	}
 	if complete {
 		// Drops open rows the complete response omits (closed/gone); grace-windowed.
-		// see docs/webhooks/delivery-gaps.md
 		cutoff := rfc3339(fetchStart.Add(-reconcileGrace))
 		existing, err := q.ListOpenPullRequestsByRepoNoCase(ctx, dbgen.ListOpenPullRequestsByRepoNoCaseParams{
 			Owner: owner, Repo: repo,
@@ -298,14 +287,6 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // -- which heals a WRONG mark (the race where the fresh post-push answer was
 // absorbed before the late push delivery, which then stamped it stale) on the
 // very next poll; and (2) the dirty-retained pattern
-// (conflictingPastReplicaLag) -- a CONFLICTED PR gets NO new test merge, so
-// GitHub legitimately re-offers the RETAINED last-good sha with
-// mergeable:false forever, and once the marker outlives
-// MergeStaleConflictingWindow that is the only remaining explanation.
-// The upsert's SQL guard nulls the columns; the Go check here exists because
-// the authoritative force-set below would otherwise resurrect the rejected
-// value, and so the route can serve the response unresolved too.
-// staleRejected reports that outcome to the caller.
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -333,8 +314,6 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 	mergeable, mergeableState := pr.Mergeable, pr.MergeableState
 	if staleRejected {
 		// Both facets together: a row left holding a resolved mergeable_state
-		// beside a nulled mergeable would serve the pre-push answer under the
-		// other field's name, which is what this rejection exists to refuse.
 		mergeable = sql.NullString{}
 		mergeableState = sql.NullString{}
 	}

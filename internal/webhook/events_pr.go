@@ -10,9 +10,6 @@ import (
 )
 
 // pull_request payload parsing. The embedded pull_request object is a full
-// REST-shaped PR, so rows webhooks maintain stay rest-complete for the cached
-// /pulls routes -- which is why this parses the whole thing rather than the
-// few fields the dispatcher branches on.
 
 // PRPayload holds the full PR data and labels parsed from a webhook payload.
 type PRPayload struct {
@@ -118,8 +115,6 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		BaseRefName: nullStr(gpr.Base.Ref),
 		HeadRefOid:  nullStr(gpr.Head.SHA),
 		// REST-only fields (absent from the GraphQL org-repos selection set)
-		// that the cached /pulls routes rebuild from. Webhook payloads carry
-		// them all, so webhook-maintained rows stay rebuild-complete.
 		NodeID:     nullStr(gpr.NodeID),
 		BaseRefOid: nullStr(gpr.Base.SHA),
 	}
@@ -152,10 +147,6 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
 	}
 	// mergeable_state is the only field that says a strict up-to-date rule is
-	// what blocks the merge ("behind"), so a webhook-maintained row must carry
-	// it or the single-PR route serves a document that cannot answer the
-	// question. "unknown" is GitHub still computing, not an answer: storing it
-	// would resolve the row on a non-answer.
 	if gpr.MergeableState != "" && gpr.MergeableState != "unknown" {
 		pr.MergeableState = sql.NullString{String: gpr.MergeableState, Valid: true}
 	}

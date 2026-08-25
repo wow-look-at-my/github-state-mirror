@@ -35,13 +35,6 @@ import (
 )
 
 // schemaTemplate is a blank cache DB built ONCE per test binary and copied for
-// every test that needs one. Creating one costs the 45 CREATE TABLE + 45
-// CREATE INDEX statements of schema.sql and the fsync that lands them; this
-// package opens a fresh DB per test across several hundred of them, against
-// go-toolchain's hard 30s per-binary timeout, and a CI run has already died
-// inside exactly that exec. Copying the finished file costs a fraction of it,
-// and database.Open then takes its existing-file path — same pragmas, same
-// fingerprint check, same DB.
 var schemaTemplate struct {
 	once sync.Once
 	dir  string
@@ -72,9 +65,6 @@ func openTestDB(t *testing.T, path string) *sql.DB {
 			return
 		}
 		// The last connection to close checkpoints the WAL back into the main
-		// file, so one file is the whole DB. Say so out loud rather than
-		// assuming it: a leftover -wal would make every copy a DB missing its
-		// most recent writes.
 		if err := db.Close(); err != nil {
 			schemaTemplate.err = err
 			return
@@ -98,8 +88,6 @@ func openTestDB(t *testing.T, path string) *sql.DB {
 const testToken = "test-token"
 
 // testUserID/testUserLogin are the identity the default fake GitHub answers on
-// GET /user for any token; testUserActor is therefore the principal every
-// authenticated test request resolves to ("user:<id>").
 const (
 	testUserID    = 7001
 	testUserLogin = "testuser"
@@ -132,8 +120,6 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 
 // newTestStackWithGitHub is like newTestStack but lets the caller supply the
 // fake upstream GitHub handler, and returns its URL — used by passthrough tests
-// that need to observe forwarded requests. requireAuth resolves the bearer
-// token against this same handler, so it must answer GET /user with a login.
 func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
 	s := newFullTestStack(t, authSvc, ghHandler)
@@ -151,8 +137,6 @@ type testStack struct {
 	notifier *notify.Notifier
 	timeline *reqtimeline.Recorder
 	// debouncer is nil unless the test asked for passthrough coalescing via
-	// newFullTestStackDebounced. Nil is the right default: a real hold window
-	// would add its full delay to every passthrough in every other test.
 	debouncer *Debouncer
 }
 
@@ -181,8 +165,6 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// Subscriptions live in their own DB file, like production. Single-attempt
-	// deliveries keep tests deterministic (retry behavior is covered by the
-	// notify package's own tests); Drain before the DB closes, like main.
 	subs, err := notify.Open(filepath.Join(dir, "subscriptions.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { subs.Close() })
@@ -197,16 +179,13 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	// Passive rate-limit meter, wired like cmd/server: the ghclient hook plus
-	// the router's proxy/fetch/probe paths all feed it.
 	meter := ratemeter.New()
 	gh.SetRateObserver(meter.Observe)
 
 	// nil app -> the consistency checker reports Available()==false, the realistic
-	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
 	timeline := reqtimeline.New()
 	// Wire the client's exchange observer like cmd/server does, so tests see
-	// the ghclient calls (e.g. requireAuth's /user resolution) on the chart.
 	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
 	debouncer := NewDebouncer(window)
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
@@ -346,7 +325,6 @@ func TestRevealPublicFastPath(t *testing.T) {
 		Visibility: ghdata.VisibilityPublic,
 	}))
 	// The other user's org marker must be fresh or the stub fetcher runs (a
-	// no-op) — either way assembly filters; both users should see the repo.
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	for _, token := range []string{testToken, "other-user-token"} {
 		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))

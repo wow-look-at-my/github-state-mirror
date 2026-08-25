@@ -13,8 +13,6 @@ import (
 )
 
 // Storage layer for the cached REST routes. Stores the STATE a GitHub
-// response contained, never the raw bytes; the API layer rebuilds a trimmed
-// response from it. See docs/cache/rest-routes.md and the global-truth model in CLAUDE.md.
 
 // CacheMaxRows is the per-table row ceiling (see CACHE_MAX_ROWS in CLAUDE.md); only git_commits_cache actually grows to it.
 var CacheMaxRows int64 = 1_000_000

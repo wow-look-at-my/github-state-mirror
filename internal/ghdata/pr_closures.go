@@ -10,8 +10,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// PRClosureRetention bounds how long a recorded close can refuse a write; it matches the replay lookback, since nothing else re-sends a delivery.
-// see docs/webhooks/delivery-gaps.md
 const PRClosureRetention = 24 * time.Hour
 
 // prClosureBlocks reports whether a recorded close refuses this view of the PR; a view that cannot prove it postdates the close is refused.

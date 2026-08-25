@@ -32,8 +32,6 @@ const (
 // ---- GET /repos/{owner}/{repo}/pulls ----
 
 // pullsListShape is a parsed, cacheable /pulls query: the shapes pr-minder
-// sends (state=open + per_page/page, optionally head=owner:branch) plus the
-// bare default. Anything else passes through.
 type pullsListShape struct {
 	perPage int
 	head    string // "" = unfiltered; else "owner:branch"
@@ -345,8 +343,6 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	if staleRejected {
-		// A pre-push answer stored unresolved above; serve it unresolved too so the resolve-poll keeps reaching GitHub.
-		// see docs/cache/rest-routes.md (Merge-field invalidation semantics)
 		pr.Mergeable = sql.NullString{}
 		pr.MergeableState = sql.NullString{}
 		pr.MergeCommitSha = sql.NullString{}

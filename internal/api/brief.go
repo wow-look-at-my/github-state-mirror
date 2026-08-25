@@ -81,7 +81,6 @@ type dispositionCount struct {
 }
 
 // text/template: html/template would escape captured paths.
-//go:embed brief.md.tmpl
 var briefTemplate string
 
 // Parsed at init, so a template syntax error panics at startup, not at request time.

@@ -20,7 +20,6 @@ const (
 	pullCommitsMaxCachedPage = 10
 )
 
-// pullCommitsRefKey is the synthetic commits_list_cache ref key for one PR's commits; keep it here since the webhook flush matches its prefix.
 func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }

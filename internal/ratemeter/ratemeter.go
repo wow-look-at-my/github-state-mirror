@@ -37,8 +37,6 @@ const staleTTL = time.Hour
 type key struct{ identity, resource string }
 
 // Store holds the latest observation per (identity, resource). All methods
-// are safe for concurrent use and no-op on a nil *Store (the nil-recorder
-// pattern), so wiring may pass a nil meter without guards.
 type Store struct {
 	mu  sync.Mutex
 	obs map[key]Observation
