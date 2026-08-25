@@ -236,11 +236,8 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 		}
 	}
 	if complete {
-		// Drop open rows the complete response does not contain: they closed
-		// (or never existed) upstream -- unless a racing webhook touched them
-		// inside the grace window. Deleting by each stale row's own stored
-		// casing keeps the case-sensitive deletes exact. Any orphaned
-		// commit_checks rows are left for the webhook close path / rollups.
+		// Drops open rows the complete response omits (closed/gone); grace-windowed.
+		// see docs/webhooks/delivery-gaps.md
 		cutoff := rfc3339(fetchStart.Add(-reconcileGrace))
 		existing, err := q.ListOpenPullRequestsByRepoNoCase(ctx, dbgen.ListOpenPullRequestsByRepoNoCaseParams{
 			Owner: owner, Repo: repo,
@@ -262,13 +259,7 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 			}); err != nil {
 				return err
 			}
-			// No closure recorded: this delete is inferred from ABSENCE from
-			// an eventually-consistent list, which is exactly why the grace
-			// window above exists. A closure from a wrong inference would
-			// refuse the PR's real deliveries for a day; a wrong delete costs
-			// one refetch. Only a statement that the PR closed -- the closed
-			// delivery, or a single-PR fetch answering non-open -- records
-			// one.
+			// No closure recorded: inferred from absence, not a statement that it closed.
 		}
 		if err := q.UpsertPullsListMarker(ctx, dbgen.UpsertPullsListMarkerParams{
 			Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),

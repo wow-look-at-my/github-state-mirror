@@ -113,11 +113,8 @@ func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64)
 	return body.WorkflowRun.HeadSHA, body.WorkflowRun.ID
 }
 
-// WorkflowRunPayload is an Actions run's state parsed from a workflow_run
-// webhook -- the authoritative per-run signal, and the only one for a run
-// that creates no jobs at all (a startup_failure, or a run held by a
-// concurrency group). Empty string means the payload did not report the
-// field (Conclusion until completed, RunStartedAt until it starts).
+// WorkflowRunPayload is an Actions run's state parsed from a workflow_run webhook, the only signal for a run that creates no jobs at all.
+// see docs/webhooks/response-cache-invalidation.md
 type WorkflowRunPayload struct {
 	Owner        string
 	Repo         string

@@ -18,10 +18,8 @@ import (
 // THE PAYLOAD AUDIT: a build gate over every dispatcher event type.
 // see docs/webhooks/payload-audit-test.md
 
-// The exception docs are read at run time, and go-toolchain's "up to date,
-// nothing to do" short-circuit watches only .go files -- so a doc-only edit
-// can be skipped locally. CI checks out fresh (no build/), where it always
-// runs; locally, touch a .go file or delete build/server to force it.
+// Exception docs are read at run time; touch a .go file or delete build/server
+// to force a re-run locally after a doc-only edit (go-toolchain's fingerprint skip watches only .go files).
 const payloadUnusedDir = "../../docs/webhooks/payload-unused"
 
 // What reading the delivery body looks like: the typed parsers in

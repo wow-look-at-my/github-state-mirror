@@ -148,8 +148,7 @@ func TestHandler_DispatchSynchronous(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 
-	// Dispatch is synchronous: the event is recorded by the time ServeHTTP
-	// returns, and the X-GitHub-Delivery header is threaded through.
+	// Dispatch is synchronous: the event is recorded by the time ServeHTTP returns, with the X-GitHub-Delivery header threaded through.
 	events := dispatcher.getEvents()
 	require.Len(t, events, 1)
 	assert.Equal(t, "push", events[0].Type)
@@ -300,8 +299,7 @@ func TestHandler_WritesOutcome(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// A no-op delivery is a 202 (received, nothing applied), distinct from the
-	// 200 of an applied delivery — visible in GitHub's deliveries list.
+	// A no-op delivery is a 202 (received, nothing applied), distinct from the 200 of an applied delivery.
 	assert.Equal(t, http.StatusAccepted, w.Code)
 	assert.Equal(t, DispIgnored, w.Header().Get("X-GSM-Disposition"))
 
