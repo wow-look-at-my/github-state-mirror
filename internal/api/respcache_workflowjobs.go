@@ -13,50 +13,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached Actions JOB reads (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
-//	GET /repos/{owner}/{repo}/actions/jobs/{job_id}
-//
-// Together the second- and fourth-largest unrouted slices of the request log.
-//
-// A JOB STILL MOVING IS STORED TOO, AND KEPT FRESH BY ITS OWN DELIVERIES.
-// These rows used to hold terminal answers only, because a queued/in_progress
-// job is a live value the GHA runner coordinator provisions against and no TTL
-// short enough to be safe would be long enough to be worth having. That is
-// still true OF A TTL — and it is the wrong instrument. `workflow_job`
-// deliveries carry the whole job object, so a stored answer is REWRITTEN as
-// the job moves (ghdata.ApplyWorkflowJob) rather than aged: the fetch is what
-// proves a page's membership, and the deliveries are what keep its contents
-// current.
-//
-// The alternative was leaving three quarters of the mirror's passthrough
-// volume permanently uncacheable, with the fleet re-asking GitHub for state it
-// had already been told.
-//
-// The TTL is then the LOST-delivery bound, and it is three-way because one
-// part of the answer no delivery can keep current: GitHub sends one delivery
-// per job TRANSITION, while a RUNNING job's `steps` advance between them
-// unreported. So a settled page keeps the long clock, a page whose movement is
-// only jobs WAITING keeps a short one (their steps are empty by construction,
-// so a rewritten entry is exactly right), and a page with a running job keeps
-// the shortest — see ghdata.JobsLiveness.
-//
-// Even a finished run can change: a RE-RUN replaces its jobs under the same
-// run id. Both kinds therefore carry the owning run_id, and a `workflow_run`
-// delivery — plus any job delivery the stored page cannot absorb — flushes
-// every row under that run.
+// The cached Actions JOB reads (.../actions/runs/{run_id}/jobs, .../actions/jobs/{job_id}); see docs/cache/rest-routes.md.
 
-// workflowJobsQueuedTTL is re-exported for this package's tests: the clocks
-// themselves live in the store (ghdata.JobsLiveness), because a delivery
-// rewrites these rows and must date them exactly as a fetch would.
+// workflowJobsQueuedTTL is re-exported for this package's tests; the real clock lives in ghdata.JobsLiveness.
 const workflowJobsQueuedTTL = ghdata.WorkflowJobsQueuedTTL
 
 const (
 	workflowJobsDefaultPerPage = 30
-	// workflowJobsMaxCachedPage caps the modeled pages; deeper pagination
-	// passes through. A run with more than 30 pages of jobs at the default
-	// page size does not exist in this fleet.
+	// workflowJobsMaxCachedPage caps modeled pages; deeper pagination passes through.
 	workflowJobsMaxCachedPage = 10
 )
 
@@ -149,8 +113,7 @@ type workflowJobsRoute struct {
 	perPage     int64
 	page        int64
 	denyKind    string
-	// absorb renders the trimmed document. ok=false means "not a shape we
-	// hold": relay unstored.
+	// absorb renders the trimmed document; ok=false means relay unstored.
 	absorb func(status int, body []byte) (absorbedJobs, bool)
 }
 
@@ -192,8 +155,7 @@ func (h *handlers) serveWorkflowJobs(w http.ResponseWriter, r *http.Request, rt 
 
 	got, absorbed := rt.absorb(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404, or a shape the model cannot hold: relayed verbatim, never
-		// stored.
+		// A 404, or an unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -207,9 +169,7 @@ func (h *handlers) serveWorkflowJobs(w http.ResponseWriter, r *http.Request, rt 
 
 // ---- absorb ----
 
-// The trimmed shapes live in the store: a `workflow_job` delivery rewrites a
-// job's entry inside a stored page, so the render and the rewrite must agree
-// byte for byte and there is exactly one definition of each.
+// The trimmed shapes live in the store, so render and rewrite agree byte for byte.
 type (
 	workflowJobJSON = ghdata.StoredWorkflowJob
 	runJobsJSON     = ghdata.StoredRunJobsPage

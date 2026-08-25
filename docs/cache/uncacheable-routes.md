@@ -17,9 +17,30 @@ No longer left here unmodified: it is now a served route
 (`internal/api/respcache_ratelimit.go`), just not a traditional tier-2 cache
 row. The reasoning below is why a **TTL-bounded store row** would be wrong
 for it, and why the route is answered from `internal/ratemeter`'s passively
-observed `X-RateLimit-*` state instead — see that file's header comment for
-the current mechanism; this entry stays for the "why not a normal cached
-route" history.
+observed `X-RateLimit-*` state instead; this entry stays for the "why not a
+normal cached route" history.
+
+Registered as a real, served route (not left to the NotFound passthrough)
+purely for backward compatibility with callers that still poll `GET
+/rate_limit` directly: their answer is now free and instant instead of a real
+GitHub round trip that also paid the passthrough debouncer's hold
+(`PASSTHROUGH_DEBOUNCE`, default 5s), which is backwards for an endpoint whose
+whole point is telling a caller its standing quickly.
+
+The route sits inside `requireAuth` like every other data route, so the
+identity keying its answer ("user:<id>" for a resolved user token, "app:<id>"
+for a verified `X-Mirror-Identity` caller, a token fingerprint otherwise) is
+exactly the identity `h.fetchUpstream`'s meter `Observe` call already
+accumulates that same principal's cached-route traffic under. Keying on the
+raw token or an unauthenticated identity instead would answer from a
+near-always-empty bucket, since almost all of a principal's GitHub calls are
+cached-route misses recorded under its resolved actor, not its bare token.
+
+Staleness: a resource with no live observation — never seen, or its window
+already rolled over — is simply omitted, per `ratemeter.Store.ObservationsFor`'s
+own window-aware `dead()` rule, never a flat serve TTL. A flat TTL would blank
+out a caller's perfectly valid standing just because it did not happen to poll
+again within it; the meter's own rule is the honest bound instead.
 
 The answer changes on **every** API call the credential makes — including
 calls this mirror itself proxies on the caller's behalf, and any call the

@@ -72,9 +72,7 @@ func upstreamSinglePR(num int64, state, title, headRef, headSHA, createdAt strin
 	pr["additions"] = 12
 	pr["deletions"] = 3
 	pr["changed_files"] = 2
-	// GitHub always states mergeable_state on a single-PR answer, and the hit
-	// gate requires a resolved one, so a fixture omitting it would exercise
-	// only the miss path.
+	// Resolved, or the hit gate would only exercise the miss path.
 	pr["mergeable_state"] = "clean"
 	return pr
 }
@@ -121,9 +119,7 @@ func servePRJSON(w http.ResponseWriter, v any) {
 func newPullsCacheUpstream() *pullsCacheUpstream {
 	u := &pullsCacheUpstream{}
 	u.list = func(w http.ResponseWriter, r *http.Request) {
-		// #8 is a draft with native auto-merge armed (enabled_by is a full
-		// user object, URLs and all -- the rebuild must trim it to the
-		// merge_method the consumers read).
+		// #8: draft with native auto-merge; rebuild must trim enabled_by to merge_method.
 		pr8 := upstreamPR(8, "open", "Second PR", "other-branch", shaTip, "2026-07-02T10:00:00Z")
 		pr8["draft"] = true
 		pr8["auto_merge"] = map[string]any{
@@ -358,8 +354,7 @@ func TestCachedPullsList_GraphQLSyncInteraction(t *testing.T) {
 		}
 	}
 
-	// A sync re-writing the SAME open set (7, 8): REST columns are preserved
-	// by the COALESCE upsert, so the list keeps hitting.
+	// Same open set re-synced; REST columns are COALESCE-preserved.
 	now := time.Now()
 	require.NoError(t, store.SyncOrgTruth(context.Background(), "org1", ghdata.OrgSyncData{
 		Repos: []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}},
@@ -412,6 +407,3 @@ func TestCachedPullsList_PaginationFullGuard(t *testing.T) {
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader))
 	assert.Equal(t, int32(4), atomic.LoadInt32(&u.listHits))
 }
-
-// TestCachedPullsList_QueryShapeGuards: shapes the cache does not model pass
-// through verbatim, uncached, every time -- and never poison the cache.

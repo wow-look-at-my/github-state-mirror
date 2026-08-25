@@ -18,19 +18,9 @@ import (
 
 type webhooksResponse struct {
 	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`
-	// MissingSubscriptions names the event subscriptions the mirror depends
-	// on that the App is NOT subscribed to, per GitHub's own answer, each
-	// with what is degraded without it. A missing subscription is otherwise
-	// invisible -- the affected caches just re-fetch forever -- so it is
-	// reported rather than left to be discovered. Omitted entirely when the
-	// App cannot be asked: "I could not determine this" must never render as
-	// "these are missing".
+	// Omitted, never empty, when the App cannot be asked -- see docs/dashboard/dashboard.md.
 	MissingSubscriptions []missingSubscription `json:"missing_subscriptions,omitempty"`
-	// Ordering is what the out-of-order gate has seen since this process
-	// started: how many deliveries arrived behind a view already applied, how
-	// far behind, and the recent ones in full. GitHub orders nothing, so this
-	// is not an anomaly counter -- it is the only place the rate of it is
-	// visible at all.
+	// See docs/webhooks/ordering.md for what this reports and why.
 	Ordering *syncpkg.OrderingSnapshot `json:"ordering,omitempty"`
 }
 

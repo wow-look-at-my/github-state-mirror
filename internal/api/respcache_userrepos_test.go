@@ -28,8 +28,7 @@ func TestCachedUserRepos_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.userReposHits))
-	// Verbatim: permissions (a trim would likely have dropped) rides through.
-	// json.Marshal sorts map keys alphabetically, so admin < pull < push.
+	// Verbatim: permissions rides through (keys sorted alphabetically by json.Marshal).
 	assert.Contains(t, w1.Body.String(), `"permissions":{"admin":false,"pull":true,"push":true}`)
 
 	w2 := do(t, router, authedReq("GET", "/user/repos", nil))

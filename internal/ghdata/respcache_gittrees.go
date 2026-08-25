@@ -9,15 +9,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Git trees (GET /repos/{owner}/{repo}/git/trees/{sha}[?recursive=1]) are
-// content-addressed and immutable, like git commits: no TTL, no webhook
-// invalidation (no delivery names a tree object), LRU pruning only.
-// recursive is part of the key ('' or '1', verbatim) because GitHub answers a
-// DIFFERENT entry set for the same sha depending on it.
+// Content-addressed and immutable; no TTL, no webhook invalidation, LRU-pruned.
+// see docs/cache/rest-routes.md
 
-// CachedGitTree is one absorbed tree document, already rendered as trimmed
-// JSON (the hooks_cache/branches_list_cache snapshot convention -- a tree has
-// no other row that needs its individual fields).
+// One absorbed tree, already rendered as trimmed JSON.
 type CachedGitTree struct {
 	Owner     string
 	Repo      string

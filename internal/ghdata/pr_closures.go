@@ -10,25 +10,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// PRClosureRetention bounds how long a recorded close can refuse a write. It
-// has to cover the window in which a stale view of the PR can still turn up:
-// the delivery replayer's own lookback (internal/sync.ReplayLookback) is the
-// outer bound on that, and nothing else re-sends a delivery at all.
+// PRClosureRetention bounds how long a recorded close can refuse a write; it matches the replay lookback, since nothing else re-sends a delivery.
+// see docs/webhooks/delivery-gaps.md
 const PRClosureRetention = 24 * time.Hour
 
-// prClosureBlocks reports whether a recorded close refuses this view of the
-// PR. Only open PRs are retained, so closing DELETES the row -- and an absent
-// row cannot lose a comparison: a view carrying older state just re-inserts
-// the PR as open, and nothing afterwards restates the close. The recorded
-// close is what such a view has to beat.
-//
-// A view that provably postdates the close is a genuine reopen: it applies,
-// and clears the record on the way through.
-//
-// A view with NO updated_at is refused. It cannot prove it postdates the
-// close, and refusing what cannot prove it is the whole job of this record.
-// Every real source stamps it (absorbRestPR rejects a PR object without one
-// outright), so this is the fail-closed branch, not a live path.
+// prClosureBlocks reports whether a recorded close refuses this view of the PR; a view that cannot prove it postdates the close is refused.
+// see docs/webhooks/delivery-gaps.md
 func prClosureBlocks(ctx context.Context, q *dbgen.Queries, pr dbgen.PullRequest) (bool, error) {
 	row, err := q.GetPRClosure(ctx, dbgen.GetPRClosureParams{
 		Owner: NormalizeRepoKey(pr.Owner), Repo: NormalizeRepoKey(pr.Repo), Number: pr.Number,

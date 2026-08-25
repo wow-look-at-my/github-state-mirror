@@ -9,15 +9,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the App-JWT-authed installation lookups:
-//
-//	GET /repos/{owner}/{repo}/installation
-//	GET /orgs/{org}/installation
-//	GET /users/{username}/installation
-//
-// Deliberately outside the global-truth model: the answer is app-specific, so
-// every row is keyed by the verified "app:<id>" that earned it. The owner-level
-// questions share this row space under sentinel repo values (internal/api).
+// Storage for the App-JWT-authed installation lookups, keyed by the verified app id.
+// see docs/cache/rest-routes.md
 
 // CachedRepoInstallation is the absorbed state of one repo-installation
 // response (App-JWT authed; keyed by the verified "app:<id>"). Status is 200
@@ -84,20 +77,13 @@ func (s *Store) PutCachedRepoInstallation(ctx context.Context, appActor string, 
 	return s.q.PruneRepoInstallationCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateRepoInstallationCache drops every cached repo-installation row
-// for an installation, across all apps -- installation and
-// installation_repositories events change what the installation covers.
+// InvalidateRepoInstallationCache drops every row for an installation, across all apps.
 func (s *Store) InvalidateRepoInstallationCache(ctx context.Context, installationID int64) error {
 	return s.q.DeleteRepoInstallationCacheByInstallation(ctx, installationID)
 }
 
-// InvalidateAbsentRepoInstallations drops every cached "not installed here"
-// verdict. Those rows carry no installation id, so the by-id flush above
-// cannot reach them; an installation (or installation_repositories) delivery
-// says some account's coverage just changed, which is exactly the claim a
-// verdict makes. It runs across all apps because the delivery only names OUR
-// App's installation id -- a verdict recorded for a consumer App is bounded by
-// its own short TTL, not by this.
+// InvalidateAbsentRepoInstallations drops every cached "not installed here" verdict.
+// see docs/cache/rest-routes.md
 func (s *Store) InvalidateAbsentRepoInstallations(ctx context.Context) error {
 	return s.q.DeleteAbsentRepoInstallationCache(ctx)
 }

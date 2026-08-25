@@ -13,53 +13,20 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached PR-files route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/pulls/{number}/files
-//
-// pr-minder's getPullDiff falls back to paging this endpoint when GitHub 406s
-// a too-large unified diff, and the App re-reads one PR's files around every
-// describe hand-off -- the single largest passthrough slice before this route
-// existed. The whole trimmed files page is rendered ONCE at absorb time and
-// stored verbatim per exact request shape (owner, repo, number, per_page,
-// page), like the compare doc, so hit and miss serve identical bytes. The
-// per-file `previous_filename` and `patch` presence is load-bearing:
-// consumers test `typeof f.patch === 'string'`, and GitHub legitimately omits
-// patch on binary/oversized files -- pointer fields preserve present-vs-absent
-// exactly. The per-file blob sha and every URL field (blob_url, raw_url,
-// contents_url, _links) are dropped.
-//
-// `patch` is unbounded, so a rendered document larger than
-// pullFilesDocMaxBytes passes through unstored (mirroring the contents
-// route's 1 MiB rule); the 8 MiB fetchUpstream cap still bounds the raw body.
-// A PR's files move whenever its head or base moves: pull_request events
-// flush that one PR's pages (covering fork-head pushes whose push events we
-// never see, base retargets, reopens), push/repository events flush the whole
-// repo (the belt for missed pull_request deliveries), and the 24h TTL
-// backstops everything else.
+// Implements the cached PR-files route (tier 2 of the cache contract).
+// See docs/cache/rest-routes.md for the shape, size cap, and flush rules.
 
 const (
-	// pullFilesCacheTTL bounds how long a MISSED pull_request delivery could
-	// leave a stale files page being served. Webhooks flush sooner; this is
-	// the backstop.
+	// pullFilesCacheTTL backstops a MISSED pull_request delivery; webhooks flush sooner.
 	pullFilesCacheTTL = 24 * time.Hour
 
-	// pullFilesDefaultPerPage is GitHub's default page size for the PR files
-	// list when the request does not send per_page.
+	// pullFilesDefaultPerPage is GitHub's default page size when per_page is omitted.
 	pullFilesDefaultPerPage = 30
 
-	// pullFilesMaxCachedPage caps which pages are modeled. GitHub's files API
-	// stops at 3000 files, which is 30 pages at the consumers' per_page=100
-	// (pr-minder's assembleDiffFromFiles pages exactly that shape until a
-	// short page -- consumer survey 2026-07-11); the margin covers the
-	// trailing empty page that ends its loop and smaller per_page shapes.
-	// Pages past the cap still pass through.
+	// pullFilesMaxCachedPage caps modeled pages at GitHub's 3000-file ceiling plus margin; deeper pages pass through.
 	pullFilesMaxCachedPage = 40
 
-	// pullFilesDocMaxBytes caps the rendered trimmed document: `patch` is
-	// unbounded, and a monster page is not worth a cache row. An over-cap
-	// page is a passthrough, not an error.
+	// pullFilesDocMaxBytes caps the rendered document; an over-cap page passes through, not an error.
 	pullFilesDocMaxBytes = 1 << 20 // 1 MiB
 )
 
@@ -141,8 +108,7 @@ func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbPullFiles(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 (the PR can be created later), 5xx, and over-cap
-		// pages: relayed verbatim, never stored.
+		// Includes 404, 5xx, and over-cap pages: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -154,12 +120,7 @@ func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// pullFileJSON is one trimmed entry of a PR's files page. previous_filename
-// and patch are POINTERS because their presence is load-bearing: GitHub omits
-// patch on binary/oversized files (consumers test `typeof f.patch ===
-// 'string'`) and previous_filename appears only on renames -- the rebuild
-// preserves present-vs-absent exactly. The per-file blob sha and every URL
-// field stay dropped.
+// pullFileJSON keeps previous_filename and patch as pointers so their presence, not just value, survives the trim.
 type pullFileJSON struct {
 	Filename         string  `json:"filename"`
 	Status           string  `json:"status"`
@@ -182,12 +143,7 @@ type pullFileUpstreamJSON struct {
 	Patch            *string `json:"patch"`
 }
 
-// absorbPullFiles parses a /pulls/{number}/files 200 array into the trimmed
-// document, rendered once here (hits serve the stored bytes, so hit and miss
-// are byte-identical). Reports false -- serve verbatim, store nothing -- for
-// any other status, any item the model cannot hold, or a rendered document
-// past the size cap. An empty array (a page past the end) is a valid,
-// cacheable answer.
+// absorbPullFiles renders the trimmed document once, so a hit and a miss serve byte-identical bytes.
 func absorbPullFiles(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -215,8 +171,7 @@ func absorbPullFiles(status int, body []byte) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	// The unbounded-patch cap (mirrors the contents route's 1 MiB rule): a
-	// monster page is not worth a cache row -- passthrough, not an error.
+	// Over-cap is a passthrough, not an error: patch is unbounded.
 	if len(rendered) > pullFilesDocMaxBytes {
 		return "", false
 	}

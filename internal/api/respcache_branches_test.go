@@ -178,9 +178,7 @@ func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "an applied tip must keep serving from cache")
 	assert.Equal(t, before, atomic.LoadInt32(&u.branchesHits),
 		"applying the payload's own tip must cost no upstream calls")
-	// Byte-identical to the fetched page but for the one sha: the applied doc
-	// is re-marshalled in the storage layer, so a field-order or escaping
-	// drift between there and the route's render would surface right here.
+	// Byte-identical but for the one sha: a field-order or escaping drift between storage and the route's render surfaces here.
 	assert.Equal(t, strings.Replace(fetched, shaTip, shaCommit, 1), w2.Body.String(),
 		"an applied tip must be byte-indistinguishable from a fetched page")
 	assert.Contains(t, w2.Body.String(), shaMid, "the unpushed branch's tip must be untouched")

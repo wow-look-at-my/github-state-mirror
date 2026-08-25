@@ -114,34 +114,21 @@ func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam 
 	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateCommitsListCache drops every cached commits-list snapshot for a
-// repo -- the repository webhook flush, and the fallback when a push
-// payload's ref (or the repo's default branch, which owns the empty-ref
-// rows) is unknown. The absorbed git_commits_cache rows are immutable and
-// stay. owner/repo are normalized here so callers can pass payload casing.
+// InvalidateCommitsListCache is the repo-wide flush; the immutable git_commits_cache rows stay.
 func (s *Store) InvalidateCommitsListCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteCommitsListCacheByRepo(ctx, dbgen.DeleteCommitsListCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
-// InvalidatePullCommitsSnapshots drops a repo's PR-COMMIT snapshots -- the
-// rows keyed by the synthetic "pull/<number>/commits" ref
-// (internal/api/respcache_pullcommits.go). A push moves a PR's commit list
-// with no per-PR signal, so it flushes these repo-wide as the belt behind the
-// per-PR pull_request flush, exactly as it does the PR-files pages.
+// InvalidatePullCommitsSnapshots drops the synthetic "pull/<number>/commits" rows a push moves with no per-PR signal.
 func (s *Store) InvalidatePullCommitsSnapshots(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteCommitsListCachePullSnapshots(ctx, dbgen.DeleteCommitsListCachePullSnapshotsParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
-// InvalidateCommitsListForRef drops one requested ref spelling's snapshots
-// (refParam "" = the default-branch listing) -- the per-ref push flush. A
-// push only moves the pushed ref's listings, so other refs' snapshots (and
-// the immutable git_commits_cache rows) survive. owner/repo are normalized
-// here so callers can pass payload casing; refParam is matched verbatim,
-// exactly as snapshots are keyed.
+// InvalidateCommitsListForRef is the per-ref push flush (refParam "" = default branch); other refs' snapshots survive.
 func (s *Store) InvalidateCommitsListForRef(ctx context.Context, owner, repo, refParam string) error {
 	return s.q.DeleteCommitsListCacheForRef(ctx, dbgen.DeleteCommitsListCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), RefParam: refParam,

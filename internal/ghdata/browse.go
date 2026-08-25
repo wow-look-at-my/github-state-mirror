@@ -6,9 +6,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Admin cache browse + consistency-check reads over the GLOBAL truth store.
-// Read-only; gated to admins in the API layer (the operator's dashboard is the
-// one surface the reveal layer does not filter).
+// Admin browse over global truth; read-only, unfiltered by the reveal layer.
 
 // AllRepos returns every repo row in global truth.
 func (s *Store) AllRepos(ctx context.Context) ([]dbgen.Repo, error) {

@@ -6,42 +6,26 @@ import (
 	"time"
 )
 
-// The three clocks a stored job answer can carry. They live here because BOTH
-// writers need them: the fetch-on-miss path and the delivery that rewrites a
-// row. A rewritten answer is exactly as fresh as a fetched one, so it gets the
-// same clock (the BranchesCacheTTL precedent).
+// These three clocks live here since both writers (fetch-on-miss and the rewriting delivery) need the same clock for a fresh answer.
+// see docs/cache/rest-routes.md
 const (
-	// WorkflowJobsCacheTTL backstops a missed re-run delivery on a SETTLED
-	// answer. A completed job is otherwise immutable, so this is long.
+	// WorkflowJobsCacheTTL backstops a missed re-run delivery on a settled (otherwise immutable) answer.
 	WorkflowJobsCacheTTL = 24 * time.Hour
 
-	// WorkflowJobsQueuedTTL bounds an answer whose only movement is jobs
-	// WAITING to start. Deliveries maintain such a row, so this is not "how
-	// stale we tolerate" -- it is how long a LOST delivery can go unnoticed
-	// before the next read re-fetches. The GHA coordinator provisions runners
-	// against these answers, which is what keeps it short.
+	// WorkflowJobsQueuedTTL bounds how long a lost delivery on a waiting job goes unnoticed before a refetch.
 	WorkflowJobsQueuedTTL = 60 * time.Second
 
-	// WorkflowJobsRunningTTL bounds an answer with a job actually RUNNING,
-	// and it is shorter for a reason deliveries cannot fix: GitHub sends one
-	// delivery per job TRANSITION (queued, in_progress, completed), while a
-	// running job's `steps` advance between them with no delivery at all. So
-	// a rewritten entry is exactly right about a queued job -- whose steps
-	// are empty by construction -- and knowably behind on a running one's
-	// steps. This is the bound on that, and the only part of the answer no
-	// webhook can keep current.
+	// WorkflowJobsRunningTTL is shorter: a running job's steps advance between deliveries, with no delivery reporting it.
 	WorkflowJobsRunningTTL = 10 * time.Second
 )
 
-// JobsLiveness says what is moving in a stored answer, which is what decides
-// how long it may be served.
+// JobsLiveness says what is moving in a stored answer, which decides how long it may be served.
 type JobsLiveness int
 
 const (
 	// JobsSettled: every job has finished. Nothing can change but a re-run.
 	JobsSettled JobsLiveness = iota
-	// JobsQueued: something is still to come, but nothing is running -- so
-	// every field a delivery does not carry is empty rather than stale.
+	// JobsQueued: nothing running yet, so a field a delivery doesn't carry is empty, not stale.
 	JobsQueued
 	// JobsRunning: a job is in progress, and its steps advance unreported.
 	JobsRunning
@@ -79,17 +63,9 @@ func LivenessOf(jobs ...StoredWorkflowJob) JobsLiveness {
 //	GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
 //	GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 //
-// It lives here, not in the API layer, because TWO writers render it and both
-// must produce the same bytes for the same job: the fetch-on-miss path, and
-// the `workflow_job` delivery that rewrites a job's entry inside a stored page
-// (ApplyWorkflowJob). That is also why the TRIM is here rather than duplicated
-// -- GitHub's job object arrives on both paths, from a REST body and from a
-// delivery, and there must be exactly one answer for what it becomes.
-//
-// Field order is wire order. Every URL field is dropped (no consumer survey
-// has pinned one here); `conclusion` and the other nullables are
-// nullable-but-always-keyed, like every rebuilt nullable in the response
-// caches.
+// It lives here, not in the API layer, since both the fetch-on-miss path and
+// the workflow_job delivery rewrite (ApplyWorkflowJob) must render one job the same way.
+// see docs/cache/rest-routes.md
 
 // StoredWorkflowStep is one step of a job.
 type StoredWorkflowStep struct {
@@ -157,8 +133,7 @@ type RawWorkflowJob struct {
 const (
 	// JobStatusCompleted is the one status whose answer has stopped moving.
 	JobStatusCompleted = "completed"
-	// JobStatusInProgress is the one whose UNREPORTED parts move: steps
-	// advance between deliveries.
+	// JobStatusInProgress is the one whose unreported parts move: steps advance between deliveries.
 	JobStatusInProgress = "in_progress"
 )
 

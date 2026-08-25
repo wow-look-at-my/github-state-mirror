@@ -54,3 +54,15 @@ it. If the operator wants those too, add them; don't argue.
 - **Lanes stay bounded by construction**: `⇐ <event type>` for webhooks,
   `normalizeRoute`'s route shapes for requests and exchanges, `⇒ notify` —
   never per-URL, never from untrusted input.
+
+## `Event` fields (`reqtimeline.go`)
+
+- `ID` is a monotonically increasing sequence number -- the client's merge key and the `?since=` cursor.
+- `Lane` is the swimlane this event renders on: `⇐ <event type>` for webhooks, `<METHOD> <route shape>` (`normalizeRoute`'s bounded families) for requests -- never a per-URL lane.
+- `Start` is when handling/fetching began; `DurMs` is the real measured duration in milliseconds (0 for a sub-millisecond event -- still its true rounding, never a fabricated instant).
+- `Actor` is the caller's principal/label key; `ActorName` its verified display name when one is known (display-only, like the request log).
+- `Detail` is a short free-form tooltip line (e.g. an unverified delivery's claimed event type). Metadata only -- never bodies or secrets.
+- The Notify fields (`Target`, `Attempt`, `Final`) are the delivery target's host, the 1-based attempt number, and whether this attempt was terminal (success, or the last retry).
+- `Recorder.events[head:]` are the live entries, ordered by insertion (≈ end time, since events are recorded at completion) and therefore by ID. `head` is advanced on eviction and the slice compacted periodically so the backing array cannot grow unboundedly.
+- `Snapshot.MaxID` is the newest assigned event ID -- the client's next `?since=` cursor. It keeps advancing even when every event has been evicted.
+- `SnapshotRange`'s live entries are ordered by END time, so the first candidate is the first whose end is at/after `from`; an event overlaps the range if it starts before the end of it.

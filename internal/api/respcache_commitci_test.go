@@ -123,8 +123,7 @@ type commitCIUpstream struct {
 	checkRuns     func(w http.ResponseWriter, r *http.Request)
 	statuses      func(w http.ResponseWriter, r *http.Request)
 	probe         func(w http.ResponseWriter, r *http.Request)
-	// lastPostPath/lastPostBody record the most recent POST the fake saw --
-	// the status-publish passthrough regression test reads them.
+	// lastPostPath/lastPostBody record the fake's most recent POST, for the passthrough test.
 	lastPostPath string
 	lastPostBody string
 }
@@ -180,9 +179,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 		case r.URL.Path == "/user":
 			servePRJSON(w, map[string]any{"login": testUserLogin, "id": testUserID})
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/statuses/"):
-			// The required-builds status PUBLISH. Record what arrived so the
-			// passthrough regression test can prove the mirror forwarded it
-			// untouched, and answer a GitHub-shaped 201.
+			// The required-builds status PUBLISH: record it, then answer a GitHub-shaped 201.
 			body, _ := io.ReadAll(r.Body)
 			u.lastPostPath, u.lastPostBody = r.URL.Path, string(body)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -194,10 +191,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 			atomic.AddInt32(&u.statusesHits, 1)
 			u.statuses(w, r)
 		case strings.Contains(r.URL.Path, "/commits/"):
-			// Dispatch by the tail after /commits/ with the same suffix-cut
-			// rule the mirror uses, so a branch literally NAMED "status"
-			// (tail "status" -- a single-commit read) lands in the
-			// "forwarded" bucket, not the status one.
+			// ref != "" excludes a branch literally named "status", which falls through as forwarded.
 			tail := strings.SplitN(r.URL.Path, "/commits/", 2)[1]
 			if ref, ok := strings.CutSuffix(tail, "/status"); ok && ref != "" {
 				atomic.AddInt32(&u.statusHits, 1)
@@ -215,9 +209,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 				u.statuses(w, r)
 				return
 			}
-			// The unmodeled subtree tails (single-commit read,
-			// /check-suites): answer 200 so the passthrough tests can assert
-			// the forward happened.
+			// Unmodeled tails (single-commit read, /check-suites) just answer forwarded:true.
 			atomic.AddInt32(&u.otherHits, 1)
 			servePRJSON(w, map[string]any{"forwarded": true})
 		case len(parts) == 3 && parts[0] == "repos":
@@ -348,8 +340,7 @@ func TestCachedCommitCI_RefKeying(t *testing.T) {
 	assert.Contains(t, bodies["/repos/org1/repo1/commits/claude/my-branch/status"], "ci/claude/my-branch",
 		"the slashed ref must reach upstream intact")
 
-	// The check-runs snapshot for a ref is independent of its status snapshot:
-	// a cached status must not answer a check-runs read.
+	// A cached status must not answer a check-runs read for the same ref.
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/main/check-runs", nil))
 	require.Equal(t, "miss", w.Header().Get(cacheHeader), "status and check-runs are independent snapshots")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunsHits))
@@ -458,12 +449,3 @@ func TestCachedCommitCI_PaginationKeying(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.checkRunsHits), "hits must not call upstream")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits), "hits must not call upstream")
 }
-
-// TestCachedStatusesList_MissAbsorbHit covers the raw statuses LIST -- via
-// the LEGACY /statuses/{ref} alias, the spelling the consumers actually send.
-// The rebuild is a bare JSON array preserving response order EXACTLY (the
-// consumers' first-wins context dedup depends on newest-first), with
-// description/target_url nullable but ALWAYS keyed (target_url is a pinned
-// consumer-read exception to the no-URL ban) and the per-status id/node_id/
-// creator/url/avatar_url dropped. The modern /commits/{ref}/statuses spelling
-// shares the row: a read through it hits what the alias absorbed.

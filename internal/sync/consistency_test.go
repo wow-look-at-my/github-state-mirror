@@ -28,10 +28,7 @@ type fakeOwner struct {
 	vis   []map[string]any // ownerRepoVisibilityQuery nodes (includes archived)
 }
 
-// consistencyFakeGitHub serves the checker's fetch surface: installations
-// (org1 = Organization, someuser = User), token mints, and a /graphql
-// answering BOTH owner-agnostic queries (repositoryOwner data + visibility)
-// per owner. The checker no longer sends organization() queries at all.
+// consistencyFakeGitHub serves the checker's fetch surface: installations, token mints, and a /graphql per owner.
 func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.Server {
 	return consistencyFakeGitHubFailing(t, owners, 0)
 }
@@ -224,9 +221,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// A principal's org list-sync marker (the fetch that refreshes global
-	// truth): error state after a failed refresh, with a known last successful
-	// fetch. The report must surface it as the owner's truth freshness.
+	// The report must surface this principal's error state as the owner's truth freshness.
 	lastFetched := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
 	require.NoError(t, fresh.Upsert(ctx, &freshness.Metadata{
 		ResourceID:    freshness.ResourceID{Kind: KindOrgRepos, Key: "org1", Actor: "user:900"},
@@ -234,8 +229,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		ErrorMessage:  "github api POST /graphql: 502 Bad Gateway",
 		LastFetchedAt: &lastFetched,
 	}))
-	// A recorded identity for that principal: the report resolves the key to
-	// its display name.
+	// The report resolves this recorded identity's key to its display name.
 	require.NoError(t, store.RecordActorIdentity(ctx, "user:900", "octocat"))
 
 	// Global truth that has drifted from the live state above.
@@ -263,9 +257,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "noinstall", Name: "x", NameWithOwner: "noinstall/x", Url: "u",
 	}))
-	// repo under the USER-account installation: since the owner-agnostic query
-	// resolves users, someuser is CHECKED (no longer skipped) and y diffs as
-	// only_in_cache.
+	// A USER-account owner is CHECKED (not skipped), so y diffs as only_in_cache.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "someuser", Name: "y", NameWithOwner: "someuser/y", Url: "u",
 	}))
@@ -383,8 +375,3 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.GreaterOrEqual(t, rep.Summary.FieldMismatches, 3)
 	assert.Zero(t, rep.Summary.VisibilityLeaks)
 }
-
-// TestConsistencyChecker_NeverSyncedFreshness: an owner with cached repos but
-// ZERO freshness marker rows must appear in truth_freshness as never_synced --
-// the silent omission is what hid "the fleet refresher never completed a
-// cycle" in the 2026-07-13 report.

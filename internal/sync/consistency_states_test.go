@@ -73,8 +73,7 @@ func TestConsistencyChecker_ServedNow(t *testing.T) {
 		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
 		PushedAt: sql.NullString{String: "2024-01-01T00:00:00Z", Valid: true},
 	}))
-	// PR #1 exists on GitHub but not in cache -- and the repo has a LIVE list
-	// marker, so the (incomplete) cached list is served right now.
+	// PR #1 exists on GitHub but not in cache, and the repo has a LIVE list marker.
 	seedPullsListMarker(t, store, "org1", "repo1")
 
 	rep, err := checker.Check(ctx, "org1")

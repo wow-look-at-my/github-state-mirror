@@ -15,80 +15,25 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// This file implements the cached workflow-runs route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/actions/runs[?head_sha=|?status=&branch=]
-//
-// Two request shapes, served two different ways -- because they have two
-// different invalidation signals, and the signal decides the design:
-//
-//   - The per-COMMIT listing (`?head_sha=<hex>`), what both mirror-pointed
-//     consumers poll (survey 2026-07-11): pr-minder's hasWorkflowRuns sends
-//     `?head_sha=<hex>&per_page=1` and reads ONLY `total_count` (the
-//     zombie-PR probe, repeated per bot PR by the reconcile hook's fleet
-//     sweep), and required-builds' listWorkflowRuns pages
-//     `?head_sha=<hex>&per_page=100&page=N` reading name/status/conclusion/
-//     html_url. A sha is a precise flush key -- CI deliveries name it -- so
-//     this shape stays a whole-doc SNAPSHOT in workflow_runs_cache.
-//
-//   - The repo-wide LISTING (`?status=queued&per_page=N`, optionally
-//     `branch=`), the GHA runner coordinator's queued-backlog poll. This
-//     answer names no sha, so no delivery can flush it precisely -- and
-//     clearing the repo's listings on every job event would be
-//     invalidate-and-refetch, which the cache doctrine forbids outright. So
-//     it is not a snapshot at all: it is REBUILT from the workflow_runs
-//     TRUTH table, which the dispatcher maintains one run at a time
-//     (onWorkflowRun applies the whole object; a workflow_job delivery
-//     establishes its run's identity and raises its status floor). A run
-//     entering or leaving `queued` therefore changes this answer by
-//     UPDATING ONE ROW, with every other run still served.
-//
-// Rows alone never prove a list, so serving the listing needs a completeness
-// proof: workflow_runs_list_cache records that a page-1 response for exactly
-// this filter came back SHORT, which is what proves truth then held every
-// matching run (the pulls_list_cache pattern). A run delivery MAINTAINS the
-// rows and so must never touch that marker; only `repository` events and the
-// marker's own short expiry clear it. That expiry bounds one hole -- a run
-// entering the set with no delivery naming it, which needs the App
-// subscribed to workflow_run since a run with no jobs yet emits no
-// workflow_job -- and a queued backlog is what a coordinator provisions
-// against, so it is held to minutes.
-//
-// Every other filter (event, actor, created, exclude_pull_requests,
-// check_suite_id, ...) is unmodeled and passes through, as do repeated
-// params and out-of-range paging. Deeper /actions/runs/{id}/... paths never
-// reach this route (the registration is the exact literal) and keep falling
-// to the NotFound passthrough.
+// Implements the cached workflow-runs route (tier 2 of the cache contract).
+// See docs/cache/rest-routes.md for the two request shapes, their invalidation
+// signals, and the completeness proof that gates the repo-wide listing.
 
 const (
-	// workflowRunsCacheTTL bounds how long a stale per-COMMIT runs page can
-	// be served. CI webhooks settle these pages within seconds of any run
-	// change -- a `workflow_run` delivery REWRITES its own entry, the rest
-	// flush -- so the TTL is the backstop for the one signal GitHub never
-	// webhooks (run DELETION) and for missed deliveries. It lives in the
-	// store because both writers need it: a rewritten page is exactly as
-	// fresh as a fetched one.
+	// Backstop for run deletion (never webhooked) and missed deliveries.
 	workflowRunsCacheTTL = ghdata.WorkflowRunsCacheTTL
 
-	// workflowRunsDefaultPerPage is GitHub's default page size for the runs
-	// listing when the request does not send per_page.
+	// GitHub's default per_page for this listing.
 	workflowRunsDefaultPerPage = 30
 
-	// workflowRunsMaxCachedPage caps which pages are modeled. A sha rarely
-	// has more than a handful of runs; deeper pagination passes through.
+	// Caps modeled pages; deeper pagination passes through.
 	workflowRunsMaxCachedPage = 10
 
-	// workflowRunsMaxBranchLen bounds the branch filter admitted into a
-	// cache key. Git's own ref limit is far higher, but nothing near this
-	// occurs and an unbounded key component is a cardinality footgun.
+	// Bounds the branch filter key; an unbounded key component is a cardinality footgun.
 	workflowRunsMaxBranchLen = 255
 )
 
-// workflowRunStatuses is the set of values GitHub documents for the runs
-// listing's `status` filter (it doubles as a conclusion filter). Validating
-// against the closed set keeps the cache key's cardinality bounded and makes
-// an unknown value pass through rather than mint a row nothing will read.
+// Closed set for the status filter (it also matches conclusion); an unknown value passes through.
 var workflowRunStatuses = set.Of(
 	"completed", "action_required", "cancelled",
 	"failure", "neutral", "skipped", "stale",
@@ -96,10 +41,7 @@ var workflowRunStatuses = set.Of(
 	"requested", "waiting", "pending",
 )
 
-// workflowRunsShape is one modeled /actions/runs request. HeadSHA is ''
-// for the repo-wide listing and Filters is '' when no modeled filter was
-// sent; the pair is the row key, and HeadSHA == "" is also what selects the
-// listing TTL and the repo-wide listing flush.
+// HeadSHA == "" selects the repo-wide listing (its own TTL and flush); otherwise Filters is the modeled-query key.
 type workflowRunsShape struct {
 	HeadSHA string
 	Status  string
@@ -109,10 +51,7 @@ type workflowRunsShape struct {
 	Page    int
 }
 
-// listing reports whether this is the repo-wide shape (no head_sha). That
-// shape is rebuilt from the workflow_runs truth table; a per-commit request
-// is served from a snapshot instead, because a sha is a flush key and a
-// backlog is not.
+// listing reports the repo-wide shape, rebuilt from truth; a per-commit sha is served from a snapshot instead.
 func (s workflowRunsShape) listing() bool { return s.HeadSHA == "" }
 
 // filter is this request expressed as a truth-table selection.
@@ -168,15 +107,12 @@ func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 			return workflowRunsShape{}, false
 		}
 	}
-	// Encode sorts by key, so the canonical form does not depend on map
-	// iteration order or on how the caller ordered its query string.
+	// Encode sorts by key, so the result does not depend on map or query order.
 	shape.Filters = filters.Encode()
 	return shape, true
 }
 
-// isControlRune reports whether r is a C0/C7F control character -- rejected
-// from a cache key so a caller cannot smuggle a newline or NUL into stored
-// state (the same stance as the repo's control-character CI check).
+// isControlRune rejects C0/DEL so a caller cannot smuggle control bytes into a cache key.
 func isControlRune(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // cachedWorkflowRuns serves one page of a workflow-runs listing: the
@@ -244,9 +180,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every listed run enters global truth whichever shape asked for it: a
-	// run is a run, and the per-commit fetches keep the listing's rows warm
-	// for free.
+	// Every listed run enters truth regardless of shape, keeping listing rows warm for free.
 	h.absorbWorkflowRunsIntoTruth(r, owner, repo, shape, parsed, now)
 	if !shape.listing() {
 		if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.PerPage, shape.Page, string(doc), now, workflowRunsCacheTTL); err != nil {
@@ -258,11 +192,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, doc, false)
 }
 
-// workflowRunsFromTruth rebuilds one page of the repo-wide listing from the
-// workflow_runs rows, but ONLY behind the completeness proof: rows say what
-// the mirror has seen, and a list needs to know it has seen everything. With
-// the marker live, the filtered count IS GitHub's total_count and offset
-// pagination over the set is exact, so no page needs a separate guard.
+// workflowRunsFromTruth rebuilds one page only behind the completeness proof -- see docs/cache/rest-routes.md.
 func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, shape workflowRunsShape, now time.Time) ([]byte, bool) {
 	complete, err := h.store.WorkflowRunsListComplete(r.Context(), owner, repo, shape.Filters, now)
 	if err != nil {
@@ -294,12 +224,7 @@ func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, sh
 	return doc, true
 }
 
-// absorbWorkflowRunsIntoTruth records every run a response listed, and -- for
-// a page-1 answer SHORTER than the page size -- records the completeness
-// proof that lets the listing be served from those rows afterwards. A short
-// page is what proves the set was whole: it also means any row still matching
-// the filter that the response omitted has moved on, so those are reconciled
-// away first.
+// absorbWorkflowRunsIntoTruth records every listed run, and on a short page-1 answer marks the set complete -- see docs/cache/rest-routes.md.
 func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) {
 	ctx := r.Context()
 	for _, run := range parsed.Runs {
@@ -324,9 +249,7 @@ func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo stri
 	}
 }
 
-// nullIfEmpty renders a "not reported" truth column as the JSON null the
-// upstream answer carried -- name, conclusion, and run_started_at are all
-// nullable-but-always-keyed, and a fabricated "" would read as a real value.
+// nullIfEmpty renders "not reported" as upstream's JSON null, not a fabricated empty string.
 func nullIfEmpty(s string) *string {
 	if s == "" {
 		return nil
@@ -345,26 +268,14 @@ func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string
 	return key
 }
 
-// workflowRunItemJSON is one trimmed entry of the workflow_runs array: the
-// state fields the consumers read (required-builds: name/status/conclusion/
-// html_url). name/conclusion/run_started_at are nullable and the keys are
-// always emitted, exactly as upstream; html_url is a PINNED consumer-read
-// exception to the no-URL doctrine (required-builds links the run's page
-// from its breakdown). Dropped: node_id, the head_branch/event/actor/
-// repository/head_commit objects, every other *_url, and the unbounded
-// pull_requests/referenced_workflows arrays.
-// The trimmed shapes live in the store: a `workflow_run` delivery rewrites an
-// entry inside a stored page, so the render and the rewrite must agree byte
-// for byte and there is exactly one definition of each.
+// workflowRunItemJSON is the trimmed workflow_runs entry consumers read.
+// See docs/cache/rest-routes.md for what is kept, dropped, and why html_url stays.
 type (
 	workflowRunItemJSON = ghdata.StoredWorkflowRunItem
 	workflowRunsJSON    = ghdata.StoredWorkflowRunsPage
 )
 
-// parsedWorkflowRuns is one absorbed /actions/runs answer: the trimmed items
-// the rebuild emits, plus the run fields that go into TRUTH but never onto
-// the wire (head_branch -- which the `branch` filter selects on -- and
-// run_attempt).
+// parsedWorkflowRuns is one absorbed answer: rebuild items plus truth-only fields (head_branch, run_attempt).
 type parsedWorkflowRuns struct {
 	TotalCount int64
 	Runs       []parsedWorkflowRun

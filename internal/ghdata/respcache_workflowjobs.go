@@ -9,17 +9,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the cached Actions JOB reads:
-//
-//	GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
-//	GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
-//
-// Both kinds share one table and one row space; ref_id is the run id or the
-// job id, and run_id is carried on both so a single flush covers everything a
-// re-run invalidates. Only terminal answers ever reach here -- the route
-// decides that (internal/api/respcache_workflowjobs.go) -- so a stored row
-// describes work that has finished. WHO may read one is the reveal layer's
-// job.
+// Storage for the cached Actions JOB reads (both run_jobs and job kinds share this row space).
+// see docs/cache/rest-routes.md
 
 // Kinds stored in workflow_jobs_cache.kind.
 const (

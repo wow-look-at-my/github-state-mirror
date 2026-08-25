@@ -8,21 +8,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// A `workflow_job` delivery carries the WHOLE job object -- id, status,
-// conclusion, labels, runner name, every step, both timestamps -- which is
-// exactly what the cached job answers hold. So a job moving is not a reason to
-// drop those rows; it is the new value for one entry inside them.
-//
-// This is what lets the mirror serve a run that is still running. A fetch
-// proves a page's MEMBERSHIP (which jobs belong to the run, in which order);
-// the deliveries that follow keep each entry's contents current. Neither half
-// works alone: webhooks cannot prove a set is complete, and a TTL short enough
-// to track a live run would mean fetching as often as not caching at all.
-//
-// Anything the stored page cannot absorb falls back to the flush the caller
-// would have done anyway -- a job the page does not list (the run's membership
-// changed, which only a fetch can settle), or a payload whose job the model
-// cannot hold.
+// A `workflow_job` delivery carries the whole job object, so a moving job
+// rewrites one entry rather than dropping the page. See docs/cache/rest-routes.md.
 
 // ApplyWorkflowJob writes a `workflow_job` delivery's own job object into every
 // cached answer that already lists it: the run's jobs pages, and the
@@ -44,18 +31,13 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 	}
 	applied := false
 	for _, row := range rows {
-		// A single-job row is keyed by ITS job id, and a run has many. Another
-		// job's row is not about this delivery at all -- skipping it is not a
-		// failure to absorb, so it must not drag the run into the flush.
+		// Another job's single-job row is not about this delivery; skipping it must not drag the run into a flush.
 		if row.Kind == WorkflowJobsKindJob && row.RefID != job.ID {
 			continue
 		}
 		patched, liveness, ok := patchWorkflowJobsDoc(row.Kind, row.Doc, job)
 		if !ok {
-			// This row cannot represent the delivery -- most often a page that
-			// does not list the job, meaning the run gained one and only a
-			// fetch can say where it belongs. Drop this row; the others may
-			// still be rewritable.
+			// A page that does not list the job means the run gained one; only a fetch can settle membership.
 			if derr := s.q.DeleteWorkflowJobsCacheForRun(ctx, dbgen.DeleteWorkflowJobsCacheForRunParams{
 				Owner: ownerKey, Repo: repoKey, RunID: runID,
 			}); derr != nil {
@@ -102,15 +84,10 @@ func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, Jobs
 				continue
 			}
 			if page.Jobs[i].RunAttempt != job.RunAttempt {
-				// A RE-RUN reports a new attempt. Whether it reuses job ids or
-				// mints them, the page's membership is settled by a fetch, not
-				// by editing one entry into a set from another attempt.
+				// A re-run's membership is settled by a fetch, never by editing an entry from another attempt.
 				return "", JobsSettled, false
 			}
-			// The delivery states this job whole, so the entry is REPLACED
-			// rather than merged: a merge would have to decide which of two
-			// views of a field is newer, and the payload is one view of one
-			// moment.
+			// Replaced, not merged: the delivery states this job whole, as one view of one moment.
 			page.Jobs[i] = job
 			found = true
 		}

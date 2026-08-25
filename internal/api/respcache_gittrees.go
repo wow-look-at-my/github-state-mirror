@@ -66,10 +66,7 @@ func (h *handlers) cachedGitTree(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbGitTree(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404 (bad/expired sha) and anything else the model cannot hold
-		// relay unstored -- GitHub garbage-collecting a tree is rare enough
-		// that a miss-marker cache (the git-commit route's gitCommitMissTTL)
-		// is not worth the extra table for this route's traffic.
+		// A 404 (bad/expired sha) or anything unmodeled relays unstored -- GitHub GC'ing a tree is too rare to need a miss-marker cache.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -102,9 +99,7 @@ func parseGitTreeShape(q map[string][]string) (recursive string, ok bool) {
 	return recursive, true
 }
 
-// gitTreeEntryJSON is one trimmed tree entry: url dropped, size kept only
-// when GitHub sends it (blob entries carry it, tree/commit entries do not --
-// presence is preserved, not invented).
+// gitTreeEntryJSON drops url; Size is omitted unless GitHub sent it (blobs carry it, trees/commits do not).
 type gitTreeEntryJSON struct {
 	Path string `json:"path"`
 	Mode string `json:"mode"`

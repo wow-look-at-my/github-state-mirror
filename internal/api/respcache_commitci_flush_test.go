@@ -50,15 +50,13 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w3.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 
-	// A status event flushes the statuses-list snapshot like the other kinds
-	// (one commit_ci_cache table, one flush matrix).
+	// A status event flushes the statuses-list snapshot too -- one table, one flush matrix.
 	postWebhookJSON(t, router, "status", statusDelivery(shaTip))
 	w4 := do(t, router, authedReq("GET", alias, nil))
 	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a status event must flush the statuses-list snapshot")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusesHits))
 
-	// An empty array (a ref with no statuses / a page past the end) is a
-	// valid cacheable answer, and the paginated form keys its own row.
+	// An empty array (no statuses / a page past the end) is a valid cacheable answer.
 	u.statuses = func(w http.ResponseWriter, r *http.Request) { servePRJSON(w, []any{}) }
 	paged := alias + "?per_page=100&page=2"
 	w5 := do(t, router, authedReq("GET", paged, nil))
@@ -247,8 +245,7 @@ func TestCachedCommitCI_StatusEventRewritesTheCombinedDoc(t *testing.T) {
 	do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits))
 
-	// lint finishes. The delivery states the whole status, so the stored
-	// document is rewritten rather than dropped.
+	// lint finishes; the delivery states the whole status, so it rewrites rather than drops.
 	delivery := statusDelivery(shaTip)
 	delivery["context"] = "lint"
 	delivery["state"] = "success"
@@ -410,24 +407,18 @@ func TestCachedCommitCI_RevealDenied(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.checkRunsHits))
 }
 
-// rbmTargetURL is the required-builds-manager link the fake statuses upstream
-// attaches to a status. It is built here so the URL is placed into the JSON by
-// %q rather than pasted between the literal's own quotes.
+// rbmTargetURL is the required-builds-manager link the fake statuses upstream attaches to a status.
 func rbmTargetURL(sha string) string {
 	return "https://rbm.example.com/b/org1/repo1/" + sha
 }
 
-// statusDelivery is GitHub's `status` payload for a build on main: the
-// branches array is what makes the flush per-ref rather than repo-wide.
+// statusDelivery is GitHub's `status` payload; branches makes the flush per-ref, not repo-wide.
 func statusDelivery(sha string) map[string]any {
 	return map[string]any{
 		"sha": sha, "state": "success", "context": "ci/build",
 		"description": "2/2 builds passed",
 		"target_url":  rbmTargetURL(sha),
-		// A status delivery always carries both timestamps, and they are not
-		// decoration: created_at is what places the entry in a stored
-		// document's ordering, so a fixture without them exercises only the
-		// fallback flush.
+		// created_at places the entry in a stored document's ordering; both timestamps are always present.
 		"created_at": "2026-07-01T11:00:00Z",
 		"updated_at": "2026-07-01T11:00:00Z",
 		"branches":   []any{map[string]any{"name": "main"}},

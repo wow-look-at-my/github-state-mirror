@@ -74,8 +74,7 @@ func TestCallerLabel(t *testing.T) {
 	r3 := httptest.NewRequest("GET", "/x", nil)
 	assert.Equal(t, "anonymous", callerLabel(r3).Key)
 
-	// The requireAuth path: ctx carries the resolved actor AND its verified
-	// display name; callerLabel surfaces both.
+	// requireAuth resolves both the actor and its verified display name; callerLabel surfaces both.
 	r4 := httptest.NewRequest("GET", "/x", nil)
 	ctx := actor.WithName(actor.WithActor(r4.Context(), "app:99"), "pr-minder")
 	assert.Equal(t, callerIdent{Key: "app:99", Name: "pr-minder"}, callerLabel(r4.WithContext(ctx)))
@@ -183,9 +182,7 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/repos/o/r/releases should be a passthrough")
 	assert.GreaterOrEqual(t, len(snap.Recent), 3)
 
-	// The same traffic is aggregated into route-shape groups, sorted by total
-	// desc and capped: both /graphql calls share one group (1 miss + 1 hit),
-	// and the releases path groups on its own.
+	// The same traffic aggregates into route-shape groups, sorted by total desc and capped.
 	require.NotEmpty(t, snap.Groups)
 	assert.LessOrEqual(t, len(snap.Groups), requestGroupsSnapshotCap)
 	byKey := map[string]requestGroupSnapshot{}
@@ -204,8 +201,7 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	require.True(t, ok, "the releases group exists")
 	assert.GreaterOrEqual(t, rl.Passthrough, int64(1))
 
-	// The stack's real SQLite file is statted end to end: NewRouter threads the
-	// DB path through to the dashboard, which reports its on-disk size.
+	// NewRouter threads the DB path through to the dashboard, which stats the real SQLite file end to end.
 	assert.Positive(t, snap.DBSizeBytes, "the payload reports the SQLite DB's on-disk size")
 }
 

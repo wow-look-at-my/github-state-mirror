@@ -11,11 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// mergeable_state is stored beside mergeable, and the two must resolve and
-// un-resolve as ONE fact. A row holding a resolved mergeable_state next to a
-// nulled mergeable serves the pre-push answer under the other field's name --
-// the same staleness the merge_stale_sha guard exists to refuse, wearing a
-// different column.
+// The mergeable/mergeable_state pairing invariant: see docs/webhooks/invalidations.md.
 
 // restPRState is restPR plus the mergeable_state facet.
 func restPRState(number int64, mergeable, state, sha string) dbgen.PullRequest {
@@ -60,8 +56,7 @@ func TestUpsertKeepsMergeAndStateTogether(t *testing.T) {
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
 	assert.Equal(t, "behind", row.MergeableState.String, "the recomputed state must land -- 'behind' is the field's whole purpose")
 
-	// A payload carrying neither facet keeps what is stored (COALESCE), so a
-	// sha-less list-shaped upsert can never blank the pair.
+	// A payload carrying neither facet keeps what is stored (COALESCE).
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPRState(7, "", "", ""), nil, now.Add(3*time.Minute)))
 	row = getPR(t, s, 7)
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
@@ -111,8 +106,7 @@ func TestNullPRMergeableStateByHeadSHA(t *testing.T) {
 	head := "1111111111111111111111111111111111111111" // restPR's head tip
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPRState(7, "MERGEABLE", "unstable", staleShaA), nil, now))
 
-	// A PR on a DIFFERENT head sha, and a CLOSED one on the same sha: neither
-	// is affected by this sha's CI.
+	// A PR on a different head sha, and a closed one, are unaffected.
 	other := restPRState(8, "MERGEABLE", "clean", staleShaB)
 	other.HeadRefOid = sql.NullString{String: pushedHeadTip, Valid: true}
 	require.NoError(t, s.UpsertPRWithChecks(ctx, other, nil, now))

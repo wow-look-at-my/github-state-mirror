@@ -269,8 +269,7 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	prNodes := nodes[0].(map[string]interface{})["pullRequests"].(map[string]interface{})["nodes"].([]interface{})
 	require.Equal(t, 1, len(prNodes))
 
-	// commits must be a well-formed object (not null) with one node whose
-	// statusCheckRollup is null.
+	// commits must be a well-formed object, not null.
 	commits := prNodes[0].(map[string]interface{})["commits"].(map[string]interface{})
 	commitNodes := commits["nodes"].([]interface{})
 	require.Equal(t, 1, len(commitNodes))

@@ -8,34 +8,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// A `status` delivery carries the whole status it announces -- context, state,
-// description, target_url, both timestamps -- which is everything the two
-// status-shaped documents in commit_ci_cache hold. Dropping those rows and
-// buying the same answer back over HTTP is what CLAUDE.md's apply-the-payload
-// rule forbids, and it is the highest-volume instance of it here: the org's CI
-// watchers poll /statuses/{sha} per commit, and required-builds posts a status
-// per build.
-//
-// What makes the rewrite exact rather than plausible is that both documents'
-// ordering is derivable, which is measured, not assumed (kubernetes/kubernetes
-// @a231bf3f, 53 raw statuses over 22 contexts):
-//
-//   - Statuses are APPEND-ONLY. Re-posting a context creates a new status
-//     object with a new id and a new created_at; nothing is ever mutated in
-//     place. So the raw list keeps all 53 and the combined status keeps 22.
-//   - The raw list (kind statuses_list) is newest-first: a new status is
-//     PREPENDED.
-//   - The combined status (kind status) holds the latest status per context,
-//     oldest-first -- the exact reverse of the raw list's per-context latest.
-//     So a new status leaves its context's old entry and lands at the END.
-//   - Its `state` is the documented rollup: failure if any context is error or
-//     failure, pending if there are none or any is pending, success otherwise.
-//     total_count is the number of contexts, i.e. the array's own length.
-//
-// Every rewrite below refuses unless the stored document PROVES it can hold
-// the result: page 1, the whole set present, and room for the new entry. That
-// is the common shape (a page holds every status of a commit) and anything
-// else falls back to the flush, which is what happened before this existed.
+// A `status` delivery carries the whole status it announces, so the two
+// status-shaped documents in commit_ci_cache are rewritten from it rather
+// than flushed. See "The status rewrite" in docs/webhooks/invalidations.md
+// for the ordering measurement that makes the rewrite exact.
 
 // CommitStatusUpdate is one `status` delivery's account of one commit status,
 // in GitHub's own spelling of every field the stored documents carry.
@@ -49,13 +25,9 @@ type CommitStatusUpdate struct {
 	UpdatedAt   string
 }
 
-// storedCommitStatusItem and storedCombinedStatus are the kind-"status"
-// document, declared here so a delivery can rewrite one. Field order is wire
-// order and must match the api package's render exactly -- a hit replays these
-// bytes and a miss renders them fresh, so a rewritten document has to be
-// indistinguishable from the fetch it saved.
-// TestCachedCommitCI_StatusEventRewritesTheCombinedDoc (internal/api) pins
-// that by byte-comparing a rewritten document against the fetched one.
+// storedCommitStatusItem and storedCombinedStatus mirror the kind-"status"
+// document; field order is wire order and must match the api package's
+// render exactly, pinned by TestCachedCommitCI_StatusEventRewritesTheCombinedDoc.
 type storedCommitStatusItem struct {
 	Context     string  `json:"context"`
 	State       string  `json:"state"`
@@ -123,8 +95,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Always a real 200 document: combinedStatusDescribes only matched
-			// rows whose doc names a sha, which a 404 tombstone never does.
+			// Status 200: combinedStatusDescribes only matched a sha-named doc, never a 404 tombstone.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
@@ -149,9 +120,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Always a real 200 array: patchStatusesList only succeeds against
-			// a stored []storedStatusListItem, which a 404 tombstone (a JSON
-			// object, not an array) fails to unmarshal into.
+			// Status 200: a 404 tombstone (an object, not an array) fails to unmarshal into patchStatusesList's input.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
@@ -171,22 +140,10 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 	return nil
 }
 
-// ApplyCheckRunToCommitCI writes a `check_run` delivery's own run object into
-// every cached check-runs page that already lists it. Reports false when
-// nothing could be rewritten and the caller should flush instead.
-//
-// Which rows it reaches, like the combined status, is decided by what the
-// payload can identify: every entry of a check-runs page carries its
-// `head_sha`, so a page describing this commit is recognizable from its own
-// contents whatever ref spelling it is keyed by.
-//
-// Unlike a commit status, a check run is UPDATED IN PLACE upstream -- the same
-// id goes queued -> in_progress -> completed -- so a rewrite does not have to
-// decide where the entry belongs. That the listing's order is stable under an
-// update is measured, not assumed (github-state-mirror#88's head commit,
-// sampled twice across a status transition): it is id-descending, and the one
-// sample that discriminates is a run with a LOWER id and a LATER completed_at
-// sorting after a higher-id one, which rules out completion ordering.
+// ApplyCheckRunToCommitCI rewrites a run's entry in every cached check-runs
+// page that already lists it, reporting false when the caller should flush
+// instead. See "The check-run rewrite" in docs/webhooks/invalidations.md for
+// the ordering measurement that makes an in-place rewrite safe.
 func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) (bool, error) {
 	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
 		return false, nil
@@ -211,9 +168,7 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Always a real 200 page: patchCheckRunsPage only succeeds against a
-			// stored StoredCheckRunsPage that already lists this run, which a
-			// 404 tombstone never does.
+			// Status 200: patchCheckRunsPage only succeeds against a page that already lists this run.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return false, perr
@@ -223,11 +178,7 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 	return applied, nil
 }
 
-// checkRunsPageDescribes reports whether a stored check-runs page is an answer
-// ABOUT this commit. The page carries no sha of its own, but every ENTRY does,
-// so a non-empty page identifies itself. An empty page names no commit at all
-// and is left alone -- a run appearing on it is a membership change the flush
-// for the payload's own ref spellings already covers.
+// checkRunsPageDescribes reports whether a page is about this commit, from its entries' own head_sha (the page carries none).
 func checkRunsPageDescribes(doc, sha string) bool {
 	var page StoredCheckRunsPage
 	if err := json.Unmarshal([]byte(doc), &page); err != nil || len(page.CheckRuns) == 0 {
@@ -300,10 +251,7 @@ func (s *Store) deleteCommitCIRow(ctx context.Context, owner, repo string, row d
 	})
 }
 
-// combinedStatusDescribes reports whether a stored combined status is an
-// answer ABOUT this commit. The document names the sha it resolved to, which
-// is what makes a branch-form row usable: the branch either points here (the
-// status moved it) or it does not (nothing to do).
+// combinedStatusDescribes reports whether a stored document's own resolved sha matches, so a branch-form row is usable.
 func combinedStatusDescribes(doc, sha string) bool {
 	var d struct {
 		SHA string `json:"sha"`
@@ -334,10 +282,7 @@ func patchCombinedStatus(doc string, perPage, page int64, up CommitStatusUpdate)
 	}
 	kept := make([]storedCommitStatusItem, 0, len(d.Statuses)+1)
 	for _, item := range d.Statuses {
-		// Older than something already here: not the newest on the commit, so
-		// where it belongs is unknown. Checked for the context's own entry too
-		// -- the delivery gate refuses a superseded status before this runs,
-		// and this is the write-side guard that does not depend on it.
+		// Not the newest on the commit: where it belongs is unknown, so refuse.
 		if !notOlder(up.CreatedAt, item.CreatedAt) {
 			return "", false
 		}
@@ -427,10 +372,7 @@ func combinedStatusRollup(items []storedCommitStatusItem) string {
 	return "success"
 }
 
-// notOlder reports whether timestamp a is at or after b. An unparseable
-// timestamp on either side answers false: an ordering that cannot be
-// established is not an ordering, and the caller then drops the row rather
-// than guessing where an entry goes.
+// notOlder reports a at or after b; an unparseable timestamp on either side answers false rather than guess.
 func notOlder(a, b string) bool {
 	at, err := time.Parse(time.RFC3339, a)
 	if err != nil {

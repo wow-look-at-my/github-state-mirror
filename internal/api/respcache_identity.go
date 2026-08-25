@@ -12,27 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the identity/self routes: GET /app, GET /user, GET
-// /user/orgs. These are NOT the trimmed-rebuild tier-2 contract every other
-// cached route in this package follows -- TestProxy_FormerlyCachedNowForwarded
-// (proxy_test.go) documents why: /user was once cached as a trimmed subset,
-// that trim broke a consumer reading a field the model dropped, and the fix
-// was reverting to raw passthrough rather than trying to guess the right
-// subset again. This package's stated rule since then is
-// "identical-or-passthrough": a cached answer must be BYTE-IDENTICAL to what
-// GitHub itself would return, never a subset. So these three routes cache the
-// upstream body VERBATIM -- no struct decode, no field drop, no
-// re-marshal -- and a hit is indistinguishable from a live fetch to anything
-// reading the response. See ghdata/respcache_identity.go for why TTL is the
-// primary bound (no webhook names any of these three resources).
-//
-// A caller hitting GET /user with the same token that requireAuth just used
-// to resolve its own principal (ghclient.ResolveTokenIdentity, cached
-// per-token) pays one upstream call here on THIS route's own miss, in
-// addition to whatever requireAuth already paid to resolve the principal --
-// the two caches answer different questions (a principal id/login vs. the
-// caller's full profile document) and are not unified. The cost is bounded to
-// once per IdentityCacheTTL per token, same as any other miss.
+// Implements the identity/self routes on "identical-or-passthrough": the
+// upstream body is cached VERBATIM, never trimmed. See docs/cache/rest-routes.md.
 
 // ---- GET /app (JWT-verified, outside requireAuth like the installation-mint
 // routes: an installation token cannot resolve this endpoint at all) ----
@@ -88,17 +69,10 @@ func (h *handlers) cachedUserOrgs(w http.ResponseWriter, r *http.Request) {
 	h.serveIdentity(w, r, fp, ghdata.IdentityKindUserOrgs, absorbVerbatimArray)
 }
 
-// identityAbsorber validates an upstream identity response is cacheable
-// verbatim, returning the exact body unchanged (never re-marshalled -- see
-// the file header) or reporting it could not.
+// identityAbsorber reports whether an upstream identity response is cacheable verbatim.
 type identityAbsorber func(status int, body []byte) (string, bool)
 
-// absorbVerbatimObject accepts a 200 JSON OBJECT body unmodified, requiring
-// only that it parses (guards against a truncated or malformed body) and
-// carries a positive numeric id -- every one of these three GitHub objects
-// has one, and it is a cheap sanity check that costs nothing the
-// identical-or-passthrough rule cares about (the STORED bytes are the
-// original body, not anything reconstructed from the parse).
+// absorbVerbatimObject accepts a 200 JSON object with a positive numeric id; the stored bytes are the original body.
 func absorbVerbatimObject(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -112,9 +86,7 @@ func absorbVerbatimObject(status int, body []byte) (string, bool) {
 	return string(body), true
 }
 
-// absorbVerbatimArray accepts a 200 JSON ARRAY body unmodified, requiring
-// only that it parses as an array (an empty array -- no memberships -- is a
-// valid, cacheable answer).
+// absorbVerbatimArray accepts a 200 JSON array; an empty array is a valid cacheable answer.
 func absorbVerbatimArray(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

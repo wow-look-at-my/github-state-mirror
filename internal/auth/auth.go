@@ -55,12 +55,7 @@ type Config struct {
 
 	HTTPClient *http.Client
 
-	// Observer charts the two GitHub calls a sign-in makes: the OAuth
-	// code-for-token exchange against github.com, and GET /user against the
-	// API. They are real requests against real rate-limit budget and they
-	// were the mirror's only unobserved outbound path -- the dashboard could
-	// not show traffic it was itself generating. Applied to the default
-	// client; an explicit HTTPClient is the caller's to instrument.
+	// Observer charts the two GitHub calls a sign-in makes; applied to the default client only.
 	Observer httpobs.Observer
 }
 
@@ -94,8 +89,7 @@ func (s *Service) Configured() bool {
 	return s.cfg.ClientID != "" && s.cfg.ClientSecret != ""
 }
 
-// IsAdmin reports whether the login may view all cache scopes. Matching is
-// case-insensitive; AdminLogins is expected to hold lowercased logins.
+// IsAdmin matches case-insensitively; AdminLogins is expected to hold lowercased logins.
 func (s *Service) IsAdmin(login string) bool {
 	return s.cfg.AdminLogins.Contains(strings.ToLower(login))
 }

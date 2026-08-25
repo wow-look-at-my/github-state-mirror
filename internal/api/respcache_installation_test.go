@@ -144,8 +144,7 @@ func TestCachedOwnerInstallation_AbsentVerdictCachedAndFlushed(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits), "a cached verdict must not call GitHub")
 
-	// The app gets installed. The delivery names an id no verdict row carries,
-	// so only the absent-verdict sweep can clear it.
+	// The delivery names an id no verdict row carries; only the sweep clears it.
 	u.install = newPullsCacheUpstream().install
 	postWebhook(t, router, "installation", `{"action":"created","installation":{"id":42}}`)
 

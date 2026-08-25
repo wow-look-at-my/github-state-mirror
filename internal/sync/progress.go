@@ -22,23 +22,18 @@ type ProgressEvent struct {
 	Total int `json:"total,omitempty"`
 	// Owners is how many owners the run will visit (phase=start).
 	Owners int `json:"owners,omitempty"`
-	// ReposFetched is the cumulative repo count after a GetOwnerData page;
-	// ReposTotal is the connection's totalCount, 0/absent when the server did
-	// not report one (phase=fetch).
+	// ReposFetched/ReposTotal: cumulative count and connection totalCount (phase=fetch).
 	ReposFetched int `json:"repos_fetched,omitempty"`
 	ReposTotal   int `json:"repos_total,omitempty"`
-	// Discrepancies is the running total across all owners diffed so far
-	// (phase=diffed).
+	// Discrepancies is the running total across all owners diffed so far (phase=diffed).
 	Discrepancies int `json:"discrepancies,omitempty"`
-	// Applied is a snapshot of the corrections tally so far (phase=applied,
-	// apply mode only).
+	// Applied is a snapshot of the corrections tally so far (phase=applied).
 	Applied *AppliedSummary `json:"applied,omitempty"`
 	// Reason says why the owner was skipped (phase=skip).
 	Reason string `json:"reason,omitempty"`
 }
 
-// ProgressFunc receives progress events. A nil ProgressFunc is always safe --
-// emit is the nil-checked send every emission site goes through.
+// ProgressFunc receives progress events. A nil ProgressFunc is always safe.
 type ProgressFunc func(ProgressEvent)
 
 func (p ProgressFunc) emit(ev ProgressEvent) {

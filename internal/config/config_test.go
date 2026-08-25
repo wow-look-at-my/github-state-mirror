@@ -118,11 +118,7 @@ func TestLoad_RefreshIntervalInvalid(t *testing.T) {
 	}
 }
 
-// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to
-// ghdata.CacheMaxRows' own initializer, so a consumer that never runs
-// config.Load (tests, library use) sees the same ceiling the server defaults
-// to and the two literals cannot drift. (No test in THIS binary mutates the
-// ghdata var, so it is read at its initializer value.)
+// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to ghdata.CacheMaxRows so the two cannot drift.
 func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
 	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
 }
@@ -158,9 +154,7 @@ func TestParsePassthroughDebounce(t *testing.T) {
 	}
 }
 
-// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to the API
-// package's own bound, so the two literals cannot drift into a state where a
-// value config accepts is one internal/api considers implausible.
+// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to api.DebounceMaxWindow so the two cannot drift.
 func TestDebounceWindowBoundMatchesAPI(t *testing.T) {
 	assert.Equal(t, api.DebounceMaxWindow, maxPassthroughDebounce)
 }

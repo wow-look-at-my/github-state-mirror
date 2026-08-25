@@ -43,8 +43,7 @@ func TestGroupKinds(t *testing.T) {
 func TestShortAndTime(t *testing.T) {
 	assert.Equal(t, "0123456789ab", shortFingerprint("0123456789abcdef"))
 	assert.Equal(t, "short", shortFingerprint("short"))
-	// Structured actors are never truncated — cutting "user:12345678901" at 12
-	// chars would drop significant id digits.
+	// Structured actors are never truncated — truncating would drop id digits.
 	assert.Equal(t, "user:12345678901", shortFingerprint("user:12345678901"))
 	assert.Equal(t, "app-installation:123", shortFingerprint("app-installation:123"))
 	assert.Equal(t, "app:99", shortFingerprint("app:99"))
@@ -95,10 +94,7 @@ func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusi
 	}))
 }
 
-// jobTime renders a fixture timestamp N hours in the past — RELATIVE to now,
-// because workflow jobs completed more than workflowJobRetention (14d) ago are
-// pruned on write: hardcoded dates rotted out of the window and started
-// failing these tests on 2026-07-15.
+// jobTime is relative to now: a job completed past workflowJobRetention is pruned on write.
 func jobTime(hoursAgo int) string {
 	return time.Now().Add(-time.Duration(hoursAgo) * time.Hour).UTC().Format(time.RFC3339)
 }

@@ -33,8 +33,7 @@ func TestDispatch_PullRequest_PayloadApplied(t *testing.T) {
 	// OrgRepos should NOT be invalidated — payload was applied directly.
 	assert.Equal(t, freshness.StateFresh, metaState(t, fStore, KindOrgRepos, "my-org"))
 
-	// The PR is global truth now, REST-complete (webhook payloads carry the
-	// REST-only fields).
+	// REST-complete: webhook payloads carry the REST-only fields.
 	pr, err := store.GetPullRequest(ctx, "my-org", "my-repo", 42)
 	require.Nil(t, err)
 	assert.Equal(t, "Add feature", pr.Title)
@@ -474,10 +473,7 @@ func TestDispatch_RepositoryLifecycle(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
-// mustJSON marshals a delivery body. Every payload in this package's tests is
-// built this way rather than spliced into a JSON literal: a value between the
-// literal's own quotes is escaped by nothing, and internal/guards' json-splice
-// check fails the build over it.
+// mustJSON marshals a delivery body; see the JSON-splice rule in CLAUDE.md.
 func mustJSON(t *testing.T, payload map[string]any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(payload)

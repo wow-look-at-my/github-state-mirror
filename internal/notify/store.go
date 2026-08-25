@@ -13,25 +13,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// The subscriptions store is a SEPARATE SQLite file from the main cache DB,
-// and lives by different rules — subscriptions are operator/consumer CONFIG,
-// not disposable cached GitHub state:
-//
-//   - It is NEVER nuked. The main DB's schema-change-nukes doctrine applies
-//     only to the cache; this file survives every deploy.
-//   - Its schema is created with CREATE TABLE IF NOT EXISTS and may only ever
-//     evolve ADDITIVELY (new columns with defaults) so an old file keeps
-//     working under a new binary.
-//   - Queries are hand-rolled SQL in this package — a deliberate exception to
-//     the sqlc doctrine: sqlc.yaml targets the main cache DB's schema, and a
-//     second codegen target for one small config table is not worth the
-//     entanglement.
-//
-// Secrets at rest: subscription secrets are stored plaintext because the
-// notifier must produce an HMAC signature over every delivery body. This is
-// the same trust domain as install_token_cache tokens in the main DB — the
-// file sits on the same host with the same access as the traffic itself.
-// Secret values are never logged and never returned by any API response.
+// A separate, never-nuked SQLite file; schema evolves additively only.
+// see docs/notifications.md
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS subscriptions (
 	id TEXT PRIMARY KEY,
@@ -63,11 +46,7 @@ var pragmas = []string{
 
 // Sentinel errors the API layer maps onto HTTP statuses.
 var (
-	// ErrNotFound: no such subscription for this principal (a foreign
-	// principal's id answers the same, so existence never leaks).
-	ErrNotFound = errors.New("subscription not found")
-	// ErrLimitExceeded: the principal already holds MaxPerPrincipal
-	// subscriptions.
+	ErrNotFound      = errors.New("subscription not found") // a foreign id answers the same; no existence leak
 	ErrLimitExceeded = fmt.Errorf("at most %d subscriptions per principal", MaxPerPrincipal)
 )
 
@@ -109,9 +88,7 @@ func (s *Store) Close() error {
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand never fails on supported platforms; if it somehow does,
-		// an ID collision on insert would surface as a PK error.
-		panic("notify: read random: " + err.Error())
+		panic("notify: read random: " + err.Error()) // never fails on supported platforms
 	}
 	return "sub_" + hex.EncodeToString(b[:])
 }

@@ -38,9 +38,7 @@ func defaultInstallationReposUpstream(w http.ResponseWriter, _ *http.Request) {
 
 const installationReposTarget = "/installation/repositories"
 
-// installationReposReq is a request carrying a DISTINCT bearer, so the
-// per-credential key can be exercised. requireAuth resolves any non-testToken
-// bearer to its own principal, which is exactly the production shape here.
+// installationReposReq carries a distinct bearer, exercising the per-credential key.
 func installationReposReq(target, bearer string) *http.Request {
 	req := httptest.NewRequest("GET", target, nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)

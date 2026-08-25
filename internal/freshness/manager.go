@@ -18,13 +18,9 @@ type Manager struct {
 	fetchers map[string]Fetcher
 	locks    sync.Map // map[string]*sync.Mutex — per-resource lock
 
-	// inflight tracks detached fetches so shutdown can drain them before the
-	// DB closes (a detached fetch outliving main's `defer db.Close()` would
-	// write to a closed DB).
+	// inflight tracks detached fetches so shutdown can drain them before the DB closes.
 	inflight sync.WaitGroup
-	// inflightCount mirrors the WaitGroup for readers that must not block. A
-	// WaitGroup can only be waited on, and Busy() is asked by a probe that has
-	// to answer now.
+	// inflightCount mirrors the WaitGroup for a non-blocking read: Busy() must answer now.
 	inflightCount atomic.Int64
 }
 
@@ -36,10 +32,7 @@ func NewManager(store *Store) *Manager {
 	}
 }
 
-// Busy reports whether any detached fetch is running right now, without waiting
-// for one. Drain is the shutdown path and blocks by design; this is for callers
-// that must answer immediately, such as the pre-update probe deciding whether
-// replacing the container would abandon a fetch mid-flight.
+// Busy reports whether a detached fetch is running right now, without waiting (Drain blocks).
 func (m *Manager) Busy() bool {
 	if m == nil {
 		return false
@@ -70,9 +63,7 @@ func (m *Manager) RegisterFetcher(policy Policy, f Fetcher) {
 	m.fetchers[policy.Kind] = f
 }
 
-// Outcome reports whether a freshness check served the resource from cache
-// (Hit), triggered an upstream fetch (Miss), or failed (Error). It lets the API
-// layer record per-request cache dispositions for the dashboard.
+// Outcome is a freshness check's result: served from cache (Hit), fetched (Miss), or failed (Error).
 type Outcome int
 
 const (
@@ -81,9 +72,7 @@ const (
 	OutcomeError
 )
 
-// EnsureFresh checks if the resource is fresh. If stale or unknown, triggers a
-// synchronous fetch. It is a thin wrapper over EnsureFreshOutcome for callers
-// that don't need the hit/miss outcome.
+// EnsureFresh fetches synchronously if stale or unknown; a thin wrapper over EnsureFreshOutcome.
 func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
 	_, err := m.EnsureFreshOutcome(ctx, id)
 	return err
@@ -106,10 +95,7 @@ func (m *Manager) EnsureFreshOutcome(ctx context.Context, id ResourceID) (Outcom
 		}
 	}
 
-	// An error-state row still inside its retry-after window: do NOT re-attempt
-	// the fetch — a failing upstream would otherwise be hammered with a full
-	// (expensive, all-or-nothing) fetch on every request. Report the stored
-	// error; callers with cached data serve it stale.
+	// An error row still inside its retry-after window is reported, not re-fetched.
 	if err := backoffError(meta); err != nil {
 		return OutcomeError, err
 	}
@@ -118,9 +104,7 @@ func (m *Manager) EnsureFreshOutcome(ctx context.Context, id ResourceID) (Outcom
 	return m.doFetch(ctx, id, TriggerLazy)
 }
 
-// Metadata returns the stored freshness metadata for a resource (nil when the
-// resource has never been seen). Read-only — lets API handlers surface
-// staleness (last-fetched time, error state) without reaching into the store.
+// Metadata returns stored freshness metadata for a resource (nil if never seen), read-only.
 func (m *Manager) Metadata(ctx context.Context, id ResourceID) (*Metadata, error) {
 	return m.store.Get(ctx, m.fillActor(ctx, id))
 }
@@ -187,12 +171,7 @@ func (m *Manager) RefreshAllOfKind(ctx context.Context, kind string, trigger Tri
 	return nil
 }
 
-// fetchSafetyTimeout bounds a single detached fetch. No live caller carries a
-// deadline into doFetch anymore (webhooks never fetch, HTTP requests and the
-// periodic refresher are deadline-free), so this is purely a leak guard: a
-// wedged upstream cannot pin the per-resource mutex — and block shutdown's
-// Drain — forever. Generous, because an org fetch is a multi-page
-// all-or-nothing walk.
+// fetchSafetyTimeout is a leak guard: a wedged upstream must not block shutdown's Drain forever.
 const fetchSafetyTimeout = 5 * time.Minute
 
 func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSource) (Outcome, error) {
@@ -202,19 +181,9 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		return OutcomeHit, nil
 	}
 
-	// Detach the fetch from the caller's cancellation. The fetch is shared work
-	// — its result is cached for every future caller — so an impatient client
-	// aborting its request mid-flight must not kill a multi-page all-or-nothing
-	// fetch (previously a browser abort could prevent a resource from EVER
-	// refreshing), and the result must be stored even when the requester is
-	// gone. Context values (actor, auth token, tracing) are preserved. The
-	// caller's deadline is deliberately NOT re-applied (a short caller deadline
-	// once killed every webhook-path fetch); the safety timeout above bounds
-	// the fetch instead.
-	//
-	// persistCtx: never canceled — metadata writes always land. Shutdown waits
-	// for in-flight fetches via Drain (the inflight WaitGroup) instead of
-	// canceling them.
+	// Detached from the caller's cancellation: the fetch is shared work, so an
+	// aborting client must not kill it or prevent the result from being stored
+	// (see CLAUDE.md, "Lazy fetches are detached, backoff-gated, and drained").
 	m.inflight.Add(1)
 	m.inflightCount.Add(1)
 	defer func() {

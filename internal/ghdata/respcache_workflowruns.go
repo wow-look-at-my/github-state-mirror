@@ -69,22 +69,9 @@ func (s *Store) PutCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 	return s.q.PruneWorkflowRunsCacheLRU(ctx, CacheMaxRows)
 }
 
-// ApplyWorkflowRunToPages writes a `workflow_run` delivery's own run object
-// into every cached page of that sha which already lists it. Reports false
-// when nothing could be rewritten and the caller should flush the sha
-// instead.
-//
-// A run is UPDATED IN PLACE upstream -- one id carries it from queued to
-// completed -- so the rewrite replaces the entry where it stands and never has
-// to decide where an entry goes. That its position does not move is measured,
-// not assumed: across 100 consecutive runs of one repo, `created_at` is
-// strictly descending with ZERO violations while `updated_at` has 31, so the
-// listing is ordered by creation, and a run's creation time never changes.
-//
-// A run the pages do not list is a membership change -- a NEW run for the sha
-// -- which only a fetch can settle, so that reports false. total_count is
-// GitHub's total and does not move when a run merely changes state, so it is
-// left exactly as it was.
+// ApplyWorkflowRunToPages rewrites a run's entry in place; reports false when
+// the pages do not list it (a membership change only a fetch can settle).
+// see docs/webhooks/invalidations.md
 func (s *Store) ApplyWorkflowRunToPages(ctx context.Context, owner, repo string, run StoredWorkflowRunItem, now time.Time, ttl time.Duration) (bool, error) {
 	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
 		return false, nil

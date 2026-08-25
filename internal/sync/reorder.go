@@ -9,29 +9,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The reorder window: a short hold that lets deliveries for one subject be
-// applied in the order they HAPPENED rather than the order they arrived.
-//
-// A uniform delay would do nothing. Holding every delivery the same 2s
-// preserves arrival order exactly, so the case worth fixing -- the older view
-// arriving second -- comes out in the same wrong order it went in. What
-// reorders is a WINDOW: the first delivery for a subject opens one, later
-// deliveries for that same subject join it, and when it closes the batch is
-// sorted by the payload's own clock and dispatched oldest-first.
-//
-// Inside the window both views apply, in order. Outside it, the watermark gate
-// (ordering.go) still refuses the stale one -- the two mechanisms cover
-// different distances, and the buffer is deliberately the smaller of them:
-// every delivery pays the window in latency, and GitHub's own delivery timeout
-// is measured in single-digit seconds, so this cannot be lengthened much
-// before a hold becomes a failed delivery.
-//
-// Batching is PER SUBJECT, which is what keeps the cost off unrelated events:
-// a busy repo's pull_request deliveries never wait behind another repo's push.
-
-// The window itself is configuration, not a constant here: WEBHOOK_REORDER_WINDOW
-// (internal/config), 2s by default and capped where a hold would start risking
-// GitHub's own delivery timeout.
+// The reorder window: a short hold that lets deliveries for one subject apply
+// in the order they happened, not the order they arrived. The window itself
+// is configuration (WEBHOOK_REORDER_WINDOW, 2s default, capped at 5s).
+// see docs/webhooks/ordering.md
 
 // reorderBuffer holds in-flight batches, one per subject.
 type reorderBuffer struct {
@@ -113,9 +94,7 @@ func (b *reorderBuffer) flushAfter(subject string, dispatch func(context.Context
 		return
 	}
 
-	// Oldest view first. sort.SliceStable keeps arrival order among views
-	// sharing a timestamp -- GitHub's clocks are second-granular, and shuffling
-	// same-second deliveries would invent an order nothing states.
+	// Oldest view first; SliceStable keeps arrival order among same-second (second-granular) timestamps.
 	items := batch.items
 	sort.SliceStable(items, func(i, j int) bool { return items[i].at.Before(items[j].at) })
 

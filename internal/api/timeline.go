@@ -36,48 +36,9 @@ func requestStartFrom(ctx context.Context) (time.Time, bool) {
 	return t, ok
 }
 
-// The dashboard's "Timeline" tab: a swimlane chart of EVERY exchange the
-// mirror participates in, each with its REAL measured duration. A gap on
-// this chart is a bug — nothing the mirror does is deliberately hidden (the
-// operator's ruling, 2026-07-15). The data lives in internal/reqtimeline —
-// an in-memory, 24h/100k-bounded ring fed by:
-//
-//   - the webhook handler (via deliveryTimeline below): receipt→completion of
-//     EVERY delivery attempt, verified or not — rejected/unverified deliveries
-//     record on a fixed "⇐ (unverified)" lane (headers on that path are
-//     attacker-controlled and must never mint lanes);
-//   - requestLog.observe/observeStatus (requestlog.go): every inbound
-//     data-API request the mirror serves — hits, misses, passthroughs,
-//     writes, errors — timed end-to-end from the router's receipt stamp;
-//   - the API layer's own client, at its TRANSPORT (TimelineUpstreamObserver
-//     below): cached-route miss fetches ("upstream") and reveal probes
-//     ("probe"), told apart by the disposition the call site puts in the
-//     request context;
-//   - the passthrough proxy, at its TRANSPORT (TimelineProxyObserver below):
-//     the mirror→GitHub leg of every forwarded request, batched or not
-//     (disposition "upstream");
-//   - ghclient's transport observer (TimelineExchangeObserver below): every
-//     call the mirror's own GitHub client makes — identity resolution, app
-//     verification, token mints, fleet-refresh and consistency-check
-//     GraphQL, rate-limit polls, webhook-delivery replays — one event per
-//     real attempt (disposition "internal");
-//   - internal/auth's client, at its TRANSPORT (TimelineLoginObserver
-//     below): the two GitHub calls a dashboard sign-in makes (disposition
-//     "login");
-//   - relayGitHubLogin (oauth.go): the github.com login relays (disposition
-//     "relay");
-//   - the subscriber notifier (internal/notify): every outbound delivery
-//     attempt on the "⇒ notify" lane, per attempt, with its terminal flag.
-//
-// Four of those hang off a TRANSPORT rather than a call site, and that is the
-// difference between charting the calls someone remembered and charting the
-// calls. internal/guards.TestEveryOutboundClientIsObserved fails the build on
-// an outbound client that has not been declared with what makes it visible.
-//
-// The dashboard's own UI endpoints (/api/*, the login pages, assets) are the
-// one surface not charted: the chart polling itself would recursively fill
-// the chart with the act of viewing it. That exclusion is stated here and in
-// the docs — never silently.
+// The dashboard's "Timeline" tab: every exchange the mirror participates in,
+// each with its real measured duration. A gap here is a bug.
+// see docs/dashboard/request-visibility.md, docs/dashboard/timeline-ring.md
 
 // Timeline-only dispositions for exchanges that are not inbound cache
 // answers. Inbound events keep the request-log vocabulary (hit / miss /
@@ -90,11 +51,7 @@ const (
 	dispLogin    = "login"    // a dashboard sign-in's own GitHub calls
 )
 
-// upstreamDispKey carries which KIND of upstream call a request is, from the
-// call site that knows to the transport observer that charts it. The
-// disposition is the only thing a transport cannot work out for itself, and
-// carrying it beats leaving each call site to do its own recording -- that is
-// what made a third caller of the upstream client invisible by default.
+// Carries the upstream call's kind from call site to transport observer.
 type upstreamDispKey struct{}
 
 // withUpstreamDisposition labels an outbound request for the chart.
@@ -135,16 +92,7 @@ func TimelineProxyObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	}
 }
 
-// TimelineLoginObserver charts the two GitHub calls a dashboard sign-in makes
-// (internal/auth): the OAuth code-for-token exchange and GET /user.
-//
-// The dashboard's own INBOUND endpoints stay off the chart on purpose --
-// polling the chart would fill it with the act of looking at it. That
-// exclusion never covered these: they are outbound requests to GitHub,
-// spending the same budget as everything else here, and a sign-in happens
-// once rather than on every poll. There is no principal yet at sign-in time
-// (resolving the login is what these calls are FOR), so they are labeled
-// anonymous.
+// Charts a sign-in's two GitHub calls; labeled "anonymous" (no principal yet).
 func TimelineLoginObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
 		disp := dispLogin
@@ -155,9 +103,7 @@ func TimelineLoginObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	}
 }
 
-// deliveryTimeline adapts the reqtimeline recorder to the webhook package's
-// DeliveryRecorder seam (internal/webhook must not import internal/reqtimeline
-// — it stays a leaf package).
+// Adapts to webhook.DeliveryRecorder (a leaf package).
 type deliveryTimeline struct {
 	tl *reqtimeline.Recorder
 }
@@ -165,8 +111,7 @@ type deliveryTimeline struct {
 func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.DispatchResult, receivedAt time.Time, duration time.Duration) {
 	switch result.Disposition {
 	case webhook.DispUnverified, webhook.DispRejected:
-		// Rejected before verification: nothing in the request is
-		// trustworthy. Fixed lane; claimed metadata rides as clamped detail.
+		// Untrusted; fixed lane, claimed metadata rides as clamped detail.
 		d.tl.RecordWebhookRejected(receivedAt, duration, result.Disposition, event.Type, event.DeliveryID)
 	default:
 		d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
@@ -197,10 +142,7 @@ func timelineDeliveryRecorder(tl *reqtimeline.Recorder) webhook.DeliveryRecorder
 	return deliveryTimeline{tl: tl}
 }
 
-// parseUnixMs reads an optional unix-millisecond query parameter. An empty
-// value is "unset" (zero time, ok); anything unparseable is rejected rather
-// than silently treated as unset — a typo'd bound must not answer with the
-// whole window.
+// Empty is unset; unparseable is rejected, not silently treated as unset.
 func parseUnixMs(v string) (time.Time, bool) {
 	if v == "" {
 		return time.Time{}, true
@@ -218,11 +160,9 @@ func parseUnixMs(v string) (time.Time, bool) {
 // inspectable with curl and jq.
 type timelineResponse struct {
 	Events []reqtimeline.Event `json:"events"`
-	// MaxID is the newest event ID — pass it back as ?since= to receive only
-	// newer events on the next poll.
+	// Newest id; pass back as ?since=.
 	MaxID uint64 `json:"max_id"`
-	// RetentionStart is the ring's window floor (now − 24h): nothing older is
-	// retained, so the chart can pin its history boundary there.
+	// Ring's window floor (now-24h).
 	RetentionStart string `json:"retention_start"`
 	Now            string `json:"now"`
 }
@@ -271,26 +211,13 @@ func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		snap = d.timeline.SnapshotRange(from, to)
 	}
 
-	// The chart asks for the columnar payload (timelinewire.go) by exact media
-	// type; anything else — curl's */*, a browser, an operator with jq — gets
-	// readable JSON.
-	//
-	// What makes a second encoding safe here is that the CLIENT refuses to
-	// fall back: fetchDecoded sends only the wire type and THROWS on any other
-	// content type. That is what removed the silent failure. Before, the chart
-	// accepted whatever came back, so an Accept that drifted quietly took a
-	// decode costing ~10x the frames with nothing failing; the defect was the
-	// fallback, not the JSON. Serving JSON to a human debugging the endpoint
-	// cannot reach the chart, and cannot degrade it if it somehow did.
-	//
-	// The columnar layout is versioned in the magic AND the media type, so a
-	// CHANGE to it is v2 — never a third branch here.
+	// Columnar payload for the exact wire media type; readable JSON otherwise.
+	// see docs/timeline-wire-format.md
 	addVary(w.Header(), "Accept")
 	if wantsTimelineWire(r.Header.Get("Accept")) {
 		wire, err := encodeTimelineV1(snap)
 		if err != nil {
-			// Only a row type whose `wire:` tags do not describe it gets here,
-			// which no request can cause.
+			// Only a mistagged row type reaches here; no request causes it.
 			slog.Error("timeline wire encode failed", "error", err)
 			http.Error(w, "encode failed", http.StatusInternalServerError)
 			return

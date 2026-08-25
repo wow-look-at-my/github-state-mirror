@@ -13,17 +13,11 @@ import (
 )
 
 const (
-	// repoInstallationCacheTTL is the TTL backstop on a cached installation
-	// ANSWER; installation events flush sooner.
+	// repoInstallationCacheTTL backstops a cached installation ANSWER; events flush it sooner.
 	repoInstallationCacheTTL = 24 * time.Hour
 
-	// installationAbsentTTL bounds a cached "not installed here" VERDICT, and
-	// unlike the TTL above it is the PRIMARY bound rather than a backstop: the
-	// mirror receives only its OWN App's installation webhooks, so a consumer
-	// App gaining an installation is a change it never hears about. Held to
-	// minutes for that reason -- long enough to collapse a fleet sweep asking
-	// the same account over and over, short enough that a fresh install is
-	// visible on the next cycle.
+	// installationAbsentTTL is the PRIMARY bound for a "not installed" verdict:
+	// see docs/cache/rest-routes.md for why no webhook can flush it instead.
 	installationAbsentTTL = 5 * time.Minute
 )
 
@@ -54,9 +48,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}
-	// This route sits outside requireAuth, so its verified app identity would
-	// otherwise never reach actor_identities; record it here so the dashboard
-	// resolves app:<id> to the slug.
+	// Outside requireAuth, so record identity here for the dashboard's app:<id> -> slug lookup.
 	if h.recordIdentity != nil {
 		h.recordIdentity(ctx, actorKey, ident.Slug)
 	}
@@ -92,10 +84,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	h.serveRepoInstallation(w, c, false)
 }
 
-// installationTTL picks how long an absorbed answer may be served: an
-// installation object gets the long backstop (installation events flush it by
-// id much sooner), a "not installed" verdict gets the short primary bound (no
-// event names it for a consumer App).
+// installationTTL: a real installation gets the long backstop; a 404 verdict gets the short primary bound.
 func installationTTL(c ghdata.CachedRepoInstallation) time.Duration {
 	if c.Status == http.StatusNotFound {
 		return installationAbsentTTL
@@ -191,18 +180,9 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 
 // ---- GET /orgs/{org}/installation and GET /users/{username}/installation ----
 
-// The OWNER-level installation lookups answer the same installation object as
-// the repo-level one above, for an account rather than a repository, and are
-// polled by the same App callers on the same cadence. They reuse that route's
-// absorb, rebuild, and row space: a row is keyed (app actor, owner, repo), so
-// an owner-level answer is stored under a SENTINEL repo value that no real
-// repository can collide with -- GitHub repo names cannot contain "*". The
-// two scopes are separate sentinels because they are separate questions: an
-// account can answer one and 404 the other.
-//
-// Invalidation rides the same signal: installation / installation_repositories
-// events flush by the stored installation id, which owner rows carry too, and
-// additionally drop every 404 verdict (those carry no id to match on).
+// Owner-level installation lookups reuse the repo route's absorb/rebuild/row
+// space, keyed under a sentinel repo value no real repo name can collide with.
+// see docs/cache/rest-routes.md
 const (
 	ownerInstallScopeOrg  = "*org"
 	ownerInstallScopeUser = "*user"

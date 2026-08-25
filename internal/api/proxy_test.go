@@ -74,12 +74,7 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
 	assert.Equal(t, "*", acao[0])
-	// Expose-Headers is the one CORS header the proxy deliberately does NOT
-	// strip, so a passthrough exposes the UNION of GitHub's list and the
-	// mirror's own (repeated list-valued header fields combine, per RFC 9110 --
-	// so `Link` stays readable and the mirror's X-GSM-* join it). Only the
-	// Allow-* headers must be singular, since a browser rejects a duplicated
-	// Allow-Origin outright.
+	// Expose-Headers is not stripped and exposes the union; see docs/testing/test-harness.md.
 	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ", ")
 	assert.Contains(t, exposed, "Link", "GitHub's own Expose-Headers must survive")
 	assert.Contains(t, exposed, cacheHeader, "the mirror's own headers must be exposed too")
@@ -162,15 +157,4 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
 }
 
-// The "identical-or-passthrough" rule this package follows: an endpoint is
-// either served byte-identical to GitHub (from a verbatim cache, or a live
-// forward) or it is not cached at all -- never a trimmed subset a consumer
-// might read a dropped field from. /user, /compare, and /pulls/{n}/files were
-// all, at different points, cached with a trim that broke or would break a
-// consumer; each was fixed by keeping the rule rather than relitigating it.
-// /compare and /pulls/{n}/files are tier-2 routes whose rebuilds preserve the
-// consumer-read fields exactly (respcache_compare_test.go,
-// respcache_pullfiles_test.go). /user (and /app, /user/orgs alongside it)
-// cache the upstream body VERBATIM, byte for byte, instead of guessing a
-// field subset again -- see respcache_identity_test.go for the hit/miss
-// byte-identity proof.
+// The identical-or-passthrough rule this package follows: see docs/cache/rest-routes.md.

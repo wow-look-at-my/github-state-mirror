@@ -6,27 +6,12 @@ import (
 	"time"
 )
 
-// WorkflowRunsCacheTTL bounds how long a stale per-commit runs page can be
-// served. It lives here because BOTH writers need it: the fetch-on-miss path
-// and the `workflow_run` delivery that rewrites a page. What it backstops is
-// the one signal GitHub never webhooks -- run DELETION -- and a missed
-// delivery.
+// WorkflowRunsCacheTTL backstops run DELETION, the one signal GitHub never webhooks, and a missed delivery.
 const WorkflowRunsCacheTTL = 24 * time.Hour
 
-// The stored shape of GET /repos/{owner}/{repo}/actions/runs?head_sha=...
-// (workflow_runs_cache).
-//
-// Here rather than in the API layer for the same reason as the other rewritten
-// documents: two writers render it -- the fetch-on-miss path and the
-// `workflow_run` delivery that rewrites one entry inside a stored page
-// (ApplyWorkflowRunToPages) -- and a rewritten answer has to be
-// indistinguishable from the fetch it saved.
-//
-// Field order is wire order. Kept and dropped per the 2026-07-11 consumer
-// survey: required-builds reads name/status/conclusion/html_url, so html_url
-// is a pinned exception to the no-URL doctrine; node_id, the
-// head_branch/event/actor/repository/head_commit objects, every other *_url,
-// and the unbounded pull_requests/referenced_workflows arrays stay dropped.
+// The stored, trimmed shape of GET /repos/{owner}/{repo}/actions/runs?head_sha=... (workflow_runs_cache).
+// Shared by the fetch-on-miss path and the workflow_run delivery rewrite, so a rewritten answer stays
+// indistinguishable from a fresh fetch. Field order is wire order. see docs/cache/rest-routes.md
 
 // StoredWorkflowRunItem is one trimmed run of a runs listing.
 type StoredWorkflowRunItem struct {
@@ -41,9 +26,7 @@ type StoredWorkflowRunItem struct {
 	RunStartedAt *string `json:"run_started_at"` // nullable while queued
 }
 
-// StoredWorkflowRunsPage is one page of a runs listing. TotalCount is
-// GitHub's TOTAL matching-run count, NOT the page length -- pr-minder's
-// zombie probe sends per_page=1 and reads exactly this field.
+// StoredWorkflowRunsPage is one page; TotalCount is GitHub's total matching-run count, not the page length.
 type StoredWorkflowRunsPage struct {
 	TotalCount   int64                   `json:"total_count"`
 	WorkflowRuns []StoredWorkflowRunItem `json:"workflow_runs"`

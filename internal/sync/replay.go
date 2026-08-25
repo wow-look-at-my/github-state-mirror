@@ -8,55 +8,19 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// A delivery this mirror never received is the quietest failure it has.
-//
-// Every cache here is kept honest by webhooks: a push moves a branch tip, the
-// delivery applies it, and the answers that depended on the old tip stop being
-// served. Miss ONE delivery and none of that happens -- and nothing anywhere
-// says so. The mirror keeps serving what it last absorbed, for the full TTL,
-// and the consumer reading it cannot tell. The worst shape of it is an answer
-// that stops its own repair: pr-minder asks whether a PR is behind its base,
-// reads a comparison computed before the base moved, and concludes there is
-// nothing to update -- so the PR sits, armed to merge, until someone notices
-// by hand. That is not self-correcting, because the stale answer is exactly
-// what ends the work that would produce a fresh one.
-//
-// GitHub does not retry a failed delivery. It does keep a log of them, and it
-// will send one again on request. So the gap is recoverable, and the mirror
-// has the credential to do it: the replayer reads the App's own failure log
-// and asks for every delivery it has not already asked for. The replay
-// arrives as an ordinary delivery through the ordinary handler.
-//
-// A replay is an OLD view, not a fresh one: GitHub re-sends the payload it
-// built when the event happened. Applying it after the resource has moved on
-// writes state that is wrong now -- a merged PR came back open exactly this
-// way. Refusing that is the WRITE's job, not this file's (see ghdata's PR
-// closure record): an ordinary late delivery does the same damage, and no
-// amount of care here would catch one.
-//
-// What this does NOT cover, stated plainly: a delivery GitHub records as
-// SUCCESSFUL but that this mirror failed to act on (a handler error, a write
-// that lost a race). Those are the dispatcher's own dispositions and are
-// visible in the delivery log; this recovers the ones that never arrived.
+// A delivery this mirror never received is the quietest failure it has: the
+// mirror keeps serving what it last absorbed, with nothing anywhere saying so.
+// see docs/webhooks/delivery-gaps.md
 
 const (
-	// ReplayLookback bounds how far back a failure is worth replaying. Past
-	// it the caches a delivery would have moved have expired on their own
-	// TTLs, so a replay would apply state that nothing is serving stale
-	// anymore -- and the periodic fleet refresh has been through since.
+	// ReplayLookback bounds how far back a failure is worth replaying; past it the caches it would move have already expired.
 	ReplayLookback = 24 * time.Hour
 
-	// ReplayPerCycle caps the requests one cycle may make. A GitHub-side
-	// outage, or a restart during a busy minute, can fail deliveries in
-	// bulk; the cap keeps the recovery from arriving as a flood of its own.
-	// What is skipped is LOGGED, and the next cycle takes the next batch --
-	// nothing is silently dropped.
+	// ReplayPerCycle caps requests per cycle so a bulk failure does not arrive as a flood of its own; what is skipped is logged.
 	ReplayPerCycle = 25
 )
 
-// DeliveryReplayer asks GitHub to re-send the deliveries it could not hand
-// over. Nil-safe: with no App configured there is no credential to read the
-// failure log with, and Start returns immediately.
+// DeliveryReplayer asks GitHub to resend deliveries it could not hand over; nil-safe when no App is configured.
 type DeliveryReplayer struct {
 	app      *ghclient.AppAuthenticator
 	store    ReplayStore

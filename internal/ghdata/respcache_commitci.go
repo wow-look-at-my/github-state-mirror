@@ -9,56 +9,23 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// This file is the storage layer for the cached commit-CI routes:
-//
-//	GET /repos/{owner}/{repo}/commits/{ref}/status      (kind "status")
-//	GET /repos/{owner}/{repo}/commits/{ref}/check-runs  (kind "check_runs")
-//	GET /repos/{owner}/{repo}/commits/{ref}/statuses    (kind "statuses_list")
-//
-// One commit_ci_cache row stores the ALREADY-TRIMMED document as one JSON
-// blob, keyed by the exact request (owner, repo, raw ref path segment(s),
-// kind, per_page, page) -- pagination joined the key in round 2 so the
-// paginated forms can be modeled; a param-less request uses the defaults
-// per_page=30, page=1. The ref is stored VERBATIM -- a branch name (slashes
-// and all), a sha, or a tag -- and NEVER resolved, so each spelling is its
-// own snapshot: a branch-form row means "that branch's tip at fetch time"
-// and is flushed whenever the tip can move. All kinds share the key shape,
-// TTL, and flush triggers exactly, which is why they live in one table with
-// a kind column rather than three.
-//
-// These rows deliberately do NOT read or write the commit_checks truth table:
-// its normalized per-context rows are lossy against these responses (no
-// timestamps, no descriptions, no run ids), so the snapshot is kept whole.
-// Unifying the two representations is possible future work. WHO may read a
-// cached row is the reveal layer's job (internal/api).
+// Storage layer for the cached commit-CI routes (status, check-runs, statuses list).
+// See docs/cache/rest-routes.md for the key shape, ref semantics, and invalidation.
 
-// CommitCICacheTTL bounds how long a MISSED CI/push delivery could leave a
-// stale snapshot being served. It lives here rather than in the route because
-// BOTH writers need it: the fetch-on-miss path and the `status` delivery that
-// rewrites a document from its own payload -- a rewritten answer is exactly as
-// fresh as a fetched one, so it gets the same clock (the BranchesCacheTTL
-// precedent).
+// CommitCICacheTTL is shared by the fetch-on-miss path and the status delivery that rewrites a document.
 const CommitCICacheTTL = 24 * time.Hour
 
 // Commit-CI snapshot kinds (commit_ci_cache.kind).
 const (
-	// CommitCIKindStatus is the combined commit status
-	// (GET /repos/{owner}/{repo}/commits/{ref}/status).
+	// CommitCIKindStatus: GET /repos/{owner}/{repo}/commits/{ref}/status.
 	CommitCIKindStatus = "status"
-	// CommitCIKindCheckRuns is the check-runs listing
-	// (GET /repos/{owner}/{repo}/commits/{ref}/check-runs).
+	// CommitCIKindCheckRuns: GET /repos/{owner}/{repo}/commits/{ref}/check-runs.
 	CommitCIKindCheckRuns = "check_runs"
-	// CommitCIKindStatusesList is the raw statuses LIST
-	// (GET /repos/{owner}/{repo}/commits/{ref}/statuses; added round 2).
+	// CommitCIKindStatusesList: GET /repos/{owner}/{repo}/commits/{ref}/statuses.
 	CommitCIKindStatusesList = "statuses_list"
 )
 
-// CachedCommitCI is one cached commit-CI snapshot: the trimmed document
-// exactly as the API layer will serve it. Status is the upstream answer the
-// row absorbed -- 200 (a real snapshot) or 404 (an expiring unknown-ref miss
-// marker, the compare_cache precedent) -- and Doc holds the rendered body
-// either way. A 403 (the caller's credential lacks Checks API scope, not a
-// fact about the repo) is never absorbed and never reaches this type.
+// CachedCommitCI is one cached commit-CI snapshot. A 403 is never absorbed and never reaches this type.
 type CachedCommitCI struct {
 	Owner  string // lowercased
 	Repo   string // lowercased
@@ -68,9 +35,7 @@ type CachedCommitCI struct {
 	Doc    string // trimmed document as JSON
 }
 
-// GetCachedCommitCI returns the cached snapshot for one exact pagination
-// shape, or (zero, false) on a miss (no row, or an expired one). A hit
-// refreshes the row's LRU timestamp.
+// GetCachedCommitCI returns the cached snapshot, or (zero, false) on a miss; a hit refreshes its LRU timestamp.
 func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind string, perPage, page int, now time.Time) (CachedCommitCI, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetCommitCICache(ctx, dbgen.GetCommitCICacheParams{
@@ -115,22 +80,14 @@ func (s *Store) PutCachedCommitCI(ctx context.Context, c CachedCommitCI, perPage
 	return s.q.PruneCommitCICacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateCommitCICache drops every cached commit-CI snapshot (every kind,
-// every ref, every page) for a repo -- the repository webhook flush, and the
-// fallback when a push/check payload names no refs at all. owner/repo are
-// normalized here so callers can pass payload casing.
+// InvalidateCommitCICache drops every kind, ref, and page for a repo: the repository flush and the no-refs fallback.
 func (s *Store) InvalidateCommitCICache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteCommitCICacheByRepo(ctx, dbgen.DeleteCommitCICacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
-// InvalidateCommitCIForRef drops one verbatim ref spelling's snapshots (all
-// kinds, all pages) -- the per-ref status/check_run/check_suite/push flush.
-// The payload names exactly which spellings moved (the head branch(es) and
-// the sha itself), so other refs' snapshots survive. The ref is matched
-// VERBATIM, exactly as rows are keyed; owner/repo are normalized here so
-// callers can pass payload casing.
+// InvalidateCommitCIForRef drops one verbatim ref spelling's snapshots (all kinds, all pages).
 func (s *Store) InvalidateCommitCIForRef(ctx context.Context, owner, repo, ref string) error {
 	return s.q.DeleteCommitCICacheForRef(ctx, dbgen.DeleteCommitCICacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,

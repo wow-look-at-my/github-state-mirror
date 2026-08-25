@@ -28,8 +28,7 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 		})
 	}
 
-	// A cached-route MISS feeds the meter under this token's resolved
-	// identity before /rate_limit is ever asked.
+	// A cached-route MISS feeds the meter before /rate_limit is asked.
 	miss := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/f", nil))
 	require.Equal(t, http.StatusOK, miss.Code)
 
@@ -44,9 +43,7 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 	assert.Equal(t, 4321, resp.Resources["core"].Remaining)
 	assert.Equal(t, int64(9999999999), resp.Resources["core"].Reset)
 
-	// GitHub answers with core twice -- once under resources, once as the
-	// deprecated top-level `rate`. A caller reading `rate` must see the same
-	// numbers here as it would straight from GitHub.
+	// GitHub answers with core twice: once under resources, once as top-level `rate`.
 	require.NotNil(t, resp.Rate, "the deprecated top-level rate alias is still sent")
 	assert.Equal(t, resp.Resources["core"], *resp.Rate)
 }

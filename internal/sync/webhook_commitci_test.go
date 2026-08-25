@@ -227,8 +227,7 @@ func TestDispatch_CheckSuite_PendingIgnored(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "PENDING", pr.LastCommitStatus.String)
 
-	// A COMPLETED suite with a real conclusion applies exactly as before --
-	// and its terminal state wins the rollup over the queued run.
+	// A COMPLETED suite with a real conclusion applies, and its terminal state wins the rollup over the queued run.
 	res = dispatcher.Dispatch(ctx, webhook.ParseEvent("check_suite", suite("completed", "completed", "failure")))
 	assert.Equal(t, webhook.DispApplied, res.Disposition)
 	states, err := store.CommitCheckStates(ctx, "my-org", "my-repo", sha)

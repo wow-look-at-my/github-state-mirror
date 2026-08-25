@@ -8,15 +8,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 )
 
-// PeriodicRefresher runs a background loop that refreshes each installation
-// session's OWNER — the fleet sync. It names the resource to fetch from the
-// session itself (owner = the installation account), so a fresh installation
-// with no pre-existing freshness row is synced on the very first cycle.
-//
-// The old shape — RefreshAllOfKind over the actor's KNOWN resources — was a
-// production no-op: a cache_metadata row is only ever created inside doFetch,
-// which RefreshAllOfKind only reaches for rows that already exist, and nothing
-// else ever wrote a row under an app-installation actor (chicken-and-egg).
+// PeriodicRefresher runs the fleet sync: each installation session's owner.
+// see docs/reveal-layer.md
 type PeriodicRefresher struct {
 	mgr      *freshness.Manager
 	interval time.Duration
@@ -27,13 +20,8 @@ func NewPeriodicRefresher(mgr *freshness.Manager, interval time.Duration, sessio
 	return &PeriodicRefresher{mgr: mgr, interval: interval, sessions: sessions}
 }
 
-// Start launches the periodic refresh loop: one fleet refresh immediately at
-// startup, then one per interval. It blocks until ctx is canceled.
-//
-// The startup run is load-bearing: a bare ticker's first fire is a full
-// interval after process start, and under a deploy cadence shorter than the
-// interval (schema-change deploys also nuke the freshness markers) the fleet
-// sync never completed at all.
+// Start runs one fleet refresh immediately, then one per interval, until ctx
+// is canceled. The immediate run is load-bearing: see docs/reveal-layer.md
 func (p *PeriodicRefresher) Start(ctx context.Context) {
 	if ctx.Err() == nil {
 		p.refreshAll(ctx)
@@ -76,10 +64,7 @@ func (p *PeriodicRefresher) refreshAll(ctx context.Context) {
 		if s.Owner == "" {
 			continue
 		}
-		// InvalidateAndRefresh reaches doFetch directly: it creates the missing
-		// cache_metadata row itself (killing the seed-first requirement) and
-		// TriggerPeriodic bypasses the lazy error-backoff, so a deliberate
-		// refresh always actually fetches.
+		// Seeds the freshness row itself and bypasses the lazy error-backoff.
 		id := freshness.ResourceID{Kind: KindOrgRepos, Key: s.Owner}
 		if err := p.mgr.InvalidateAndRefresh(s.Ctx, id, freshness.TriggerPeriodic); err != nil {
 			slog.Warn("periodic refresh failed", "owner", s.Owner, "installation", s.InstallationID, "error", err)

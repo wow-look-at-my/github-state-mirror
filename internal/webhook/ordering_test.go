@@ -16,10 +16,7 @@ func orderEvent(t *testing.T, eventType string, payload map[string]any) (EventOr
 	return OrderOf(Event{Type: eventType, Raw: raw})
 }
 
-// repoObj mirrors the real shape, pushed_at included: every event carries one,
-// as an RFC3339 STRING outside push payloads. Leaving it out of these fixtures
-// would have hidden a decode failure that reported every orderable delivery as
-// unorderable.
+// repoObj mirrors the real shape, pushed_at included, so a decode failure cannot hide behind an absent field.
 func repoObj(extra map[string]any) map[string]any {
 	m := map[string]any{
 		"name": "repo1", "full_name": "Org1/Repo1", "owner": map[string]any{"login": "Org1"},

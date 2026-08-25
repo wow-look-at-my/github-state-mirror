@@ -147,8 +147,7 @@ func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 
 	assertSameShape(t, "$", want, got)
 
-	// Enum vocabulary is structural in GraphQL: assert the cache emits values from
-	// GitHub's enums, not e.g. a lowercased REST value.
+	// Enum vocabulary is structural in GraphQL: assert real enum values, not a lowercased REST value.
 	pr := firstPR(t, got)
 	assert.Contains(t, []string{"MERGEABLE", "CONFLICTING", "UNKNOWN"}, pr["mergeable"], "mergeable must be a GraphQL enum value")
 	rollup := pr["commits"].(map[string]interface{})["nodes"].([]interface{})[0].(map[string]interface{})["commit"].(map[string]interface{})["statusCheckRollup"].(map[string]interface{})

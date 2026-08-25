@@ -49,8 +49,7 @@ func TestSinceCursor(t *testing.T) {
 
 	require.False(t, snap.Events[0].ID != 4 || snap.Events[1].ID != 5)
 
-	// A cursor at (or past) the newest ID yields an empty page but MaxID
-	// still reports the frontier.
+	// A cursor at (or past) the newest ID yields an empty page but MaxID still reports the frontier.
 	snap = r.Snapshot(5)
 	require.False(t, len(snap.Events) != 0 || snap.MaxID != 5)
 
@@ -70,8 +69,7 @@ func TestRetentionEviction(t *testing.T) {
 	snap := r.Snapshot(0)
 	require.False(t, len(snap.Events) != 1 || snap.Events[0].ID != 2)
 
-	// Advance the clock past the survivor's window: read-side eviction drops
-	// it too, with no write in between (lazy on read, not only on write).
+	// Advance past the survivor's window: read-side eviction drops it too, with no write in between.
 	now = now.Add(25 * time.Hour)
 	snap = r.Snapshot(0)
 	require.Equal(t, 0, len(snap.Events))
@@ -109,8 +107,7 @@ func TestCountCap(t *testing.T) {
 func TestCompactionKeepsLiveEvents(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	r := newTestRecorder(24*time.Hour, 2000, &now)
-	// Fill beyond the compaction threshold (head > 1024) with events already
-	// outside retention, so every write advances head and compaction fires.
+	// Fill beyond the compaction threshold with events already outside retention, so compaction fires.
 	for i := 0; i < 3000; i++ {
 		r.RecordWebhook(now.Add(-25*time.Hour), time.Millisecond, "old", "", "", "o/r", "applied")
 	}
@@ -188,8 +185,7 @@ func TestSnapshotRange(t *testing.T) {
 	// The live cursor is independent of the range read.
 	assert.Equal(t, uint64(6), got.MaxID)
 
-	// An event STRADDLING the window boundary is included: it is visible in
-	// the range even though it began before it.
+	// An event straddling the window boundary is included, even though it began before it.
 	r.RecordWebhook(base.Add(-90*time.Minute), 60*time.Minute, "push", "", "d", "o/r", "applied")
 	straddle := r.SnapshotRange(base.Add(-45*time.Minute), base)
 	require.Equal(t, 1, len(straddle.Events))

@@ -11,11 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// The resurrection these tests pin, measured live: agentic-loop#24 merged at
-// 15:08:16Z and was written back into the cache as OPEN at 15:09:38Z by a
-// payload whose updated_at was 15:06:10Z -- a pre-merge view of the PR,
-// applied 82 seconds after the merge. It stayed open for the next 44 minutes,
-// because a deleted row leaves nothing for a later write to lose against.
+// A stale write must never resurrect a closed PR (see CLAUDE.md).
 
 func openPR(number int64, updatedAt string) dbgen.PullRequest {
 	return dbgen.PullRequest{
@@ -32,8 +28,7 @@ func TestClosedPRIsNotResurrectedByAnOlderWrite(t *testing.T) {
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:06:10Z"), now))
 	require.NoError(t, s.DeletePR(ctx, "org1", "repo1", 24, "2026-08-10T15:08:18Z", now))
 
-	// The delivery that failed at 15:06:10 arrives (redelivered, or merely
-	// late) after the close. It carries the state of that moment.
+	// The failed 15:06:10 delivery arrives late (or redelivered) after the close.
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:06:10Z"), now.Add(90*time.Second)))
 
 	_, err := s.GetPullRequest(ctx, "org1", "repo1", 24)
@@ -55,8 +50,7 @@ func TestClosedPRIsReopenedByANewerWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2026-08-10T15:30:00Z", got.UpdatedAt)
 
-	// The record is spent: it cleared on the reopen, so the PR now behaves
-	// like any other open row.
+	// The closure record cleared on reopen; the PR behaves like any open row.
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:31:00Z"), now.Add(time.Hour)))
 	got, err = s.GetPullRequest(ctx, "org1", "repo1", 24)
 	require.NoError(t, err)

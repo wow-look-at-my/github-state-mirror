@@ -10,8 +10,7 @@ type nameContextKey struct{}
 
 var nameCtxKey = nameContextKey{}
 
-// WithActor returns a child context carrying the given actor (cache partition
-// key: "user:<id>", a token fingerprint, "app:<id>", or "app-installation:<id>").
+// WithActor stores the actor's cache partition key.
 func WithActor(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, actorCtxKey, key)
 }
@@ -24,12 +23,7 @@ func FromContext(ctx context.Context) string {
 	return ""
 }
 
-// WithName returns a child context carrying the actor's VERIFIED display name
-// (a user's login, an app's slug, or an installation's account login) --
-// display-only metadata alongside the partition key, never a key itself. Only
-// set names proven by GitHub's own answers (ResolveTokenIdentity,
-// VerifyAppIdentity, an installations listing); never a name derived from an
-// unverified header.
+// WithName stores a display-only name; see docs/ghclient.md.
 func WithName(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, nameCtxKey, name)
 }
@@ -43,11 +37,7 @@ func NameFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Short abbreviates an actor for display and logs. Only opaque hex token
-// fingerprints (longer than 12 chars) are shortened, to their first 12 hex
-// chars; structured actors — "user:<id>", "app:<id>", "app-installation:<id>"
-// — are short and meaningful already, and truncating them would drop
-// significant digits, so they are returned whole.
+// see docs/ghclient.md.
 func Short(a string) string {
 	if len(a) > 12 && isHex(a) {
 		return a[:12]

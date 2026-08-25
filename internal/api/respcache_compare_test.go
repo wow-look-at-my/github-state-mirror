@@ -73,8 +73,7 @@ type compareCacheUpstream struct {
 func newCompareCacheUpstream() *compareCacheUpstream {
 	u := &compareCacheUpstream{}
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
-		// The commit message carries the requested basehead, so distinct
-		// baseheads produce distinguishable trimmed docs.
+		// The commit message carries the requested basehead, so distinct baseheads produce distinguishable trimmed docs.
 		basehead := strings.SplitN(r.URL.Path, "/compare/", 2)[1]
 		servePRJSON(w, upstreamCompare("ahead", 1, 0,
 			[]any{upstreamCommit(shaCommit, "tip of "+basehead, shaTree2, shaBase)},
@@ -168,9 +167,7 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits), "hit must not call upstream")
 
-	// Absorb synergy: the compare's commits are global git_commits_cache rows,
-	// so the single git-commit route hits without its own fetch ever having
-	// happened (this fake 404s that endpoint -- a miss could not serve).
+	// Absorb synergy: the compare's commits are global git_commits_cache rows, so the single git-commit route hits though this fake 404s it.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaCommit, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "compare-absorbed commits must serve the single git-commit route")
@@ -434,8 +431,7 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 	w3 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "a push to an unrelated ref must not flush the verdict")
 
-	// ...while a push CREATING the missing head ref flushes it, and the next
-	// read fetches the now-real comparison.
+	// ...while a push CREATING the missing head ref flushes it and refetches.
 	u.compare = newCompareCacheUpstream().compare
 	postWebhookJSON(t, router, "push", map[string]any{
 		"ref": "refs/heads/ghostbranch", "before": shaBase, "after": shaTip,

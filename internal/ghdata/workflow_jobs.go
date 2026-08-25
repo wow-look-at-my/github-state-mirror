@@ -7,14 +7,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Workflow jobs.
-//
-// GitHub Actions job state fed by workflow_job webhooks. Like the webhook
-// delivery log, this data is GLOBAL (not actor-scoped): it is webhook-fed
-// operational telemetry with no per-credential fetch path — a job's state only
-// ever arrives via the HMAC-verified delivery, never through a caller's token,
-// so there is no credential to partition by. The read path (GET /api/jobs) is
-// admin-only, consistent with the other global logs.
+// Workflow jobs: GLOBAL, webhook-fed state; see docs/dashboard/dashboard.md.
 
 // WorkflowJob is one GitHub Actions job's recorded state. Empty string means
 // the webhook didn't report the field.
@@ -37,18 +30,7 @@ type WorkflowJob struct {
 	UpdatedAt    string `json:"updated_at"` // RFC3339: when the last webhook was applied
 }
 
-// workflowJobRetention bounds the table's growth: completed jobs older than
-// this on BOTH clocks — the job's own completed_at AND the row's updated_at
-// (when the last webhook was applied) — are pruned after each upsert (one
-// cheap indexed DELETE — see PruneWorkflowJobs). The updated_at key is what
-// keeps the upsert's out-of-order guard sound: the row is the guard's only
-// memory, so it must survive a full retention window after the last delivery
-// touched it, not merely after the event's own timestamp (a replayed old
-// completed event would otherwise be recorded and pruned by the same call,
-// and a late in_progress would then resurrect the job as a phantom running
-// row). Jobs still in progress are never pruned. Two weeks keeps enough
-// history to be useful while a CI-heavy org's job volume stays bounded; no
-// config knob on purpose (this is observability, not source-of-truth).
+// workflowJobRetention bounds the table's growth; see docs/dashboard/dashboard.md.
 const workflowJobRetention = 14 * 24 * time.Hour
 
 // RecordWorkflowJob upserts a job's state (out-of-order tolerant: a completed
@@ -63,9 +45,7 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 	}
 	completedAt := j.CompletedAt
 	if j.Status == "completed" && completedAt == "" {
-		// Defensive: a completed event always carries completed_at, but the prune
-		// compares completed_at lexicographically, and '' would read as infinitely
-		// old and be swept immediately.
+		// Defensive: an empty completed_at would sort as infinitely old and be swept immediately.
 		completedAt = updatedAt
 	}
 	if err := s.q.UpsertWorkflowJob(ctx, dbgen.UpsertWorkflowJobParams{

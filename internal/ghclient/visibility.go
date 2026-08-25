@@ -8,20 +8,8 @@ import (
 	"strings"
 )
 
-// ownerRepoVisibilityQuery is a consistency-checker-private query: each repo's
-// visibility ENUM (so "internal" is not conflated with private) and archive
-// state, resolved via repositoryOwner so User accounts work like
-// Organizations. It is deliberately SEPARATE from the shared data queries --
-// orgDataQuery's selection set is the cached route's contract, locked
-// byte-identical to GitHub by the identity test, so the checker must never
-// extend it. Deliberately NO isArchived filter: archived repos must be
-// classifiable (a cached repo missing from the org data can then be
-// positively identified as archived rather than deleted/renamed). The
-// response is tiny, so it pages big (100 per page).
-// ownerAffiliations: OWNER pins the listing to repos the login actually owns
-// (the default [OWNER, COLLABORATOR] also returned a User's collaborator
-// repos -- the collaborator-repo bleed), and nameWithOwner is selected so the
-// response-side guard can verify each node's real owner.
+// ownerRepoVisibilityQuery is a consistency-checker-private query, deliberately
+// separate from the cached route's locked orgDataQuery. See docs/ghclient.md.
 const ownerRepoVisibilityQuery = `
 query($owner: String!, $repoCursor: String) {
   repositoryOwner(login: $owner) {
@@ -95,12 +83,7 @@ func (c *Client) OwnerRepoVisibilities(ctx context.Context, ownerLogin string) (
 
 		repos := resp.Data.RepositoryOwner.Repositories
 		for _, n := range repos.Nodes {
-			// The map is keyed by BARE repo name, so a foreign (collaborator)
-			// node could otherwise collide with -- and clobber -- a same-named
-			// OWNED repo's entry (last write wins), stamping the wrong repo's
-			// visibility onto an owned row, including flipping a private repo
-			// public. The guard kills that hazard: only nodes really owned by
-			// the queried login ever reach the map.
+			// Keyed by bare name: drops a foreign node before it can clobber a same-named owned entry.
 			if dropForeignRepoNode(ownerLogin, n.NameWithOwner, "") {
 				continue
 			}

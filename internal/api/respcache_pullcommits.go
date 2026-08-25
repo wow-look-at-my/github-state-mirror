@@ -11,37 +11,16 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached PR commits list (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/pulls/{number}/commits
-//
-// GitHub answers it with the SAME item shape as the repository commits list,
-// so this route reuses that route's storage whole: the listed commits are
-// upserted into the one global git_commits_cache, and the page's ordered shas
-// are stored as a commits_list_cache snapshot under the synthetic ref key
-// "pull/<number>/commits". That is not a spare field being abused -- the
-// resource genuinely IS "an ordered list of commits under a key", which is
-// what that table holds -- and it buys the immutable-commit synergy, the hit
-// gate (every listed sha must still resolve), the pruning, and the rebuild
-// for free. A caller cannot collide with the key: it would have to send
-// ?sha=pull/<n>/commits on the repo commits list, which resolves to no ref
-// and is therefore never stored.
-//
-// Invalidation follows the PR-files route, which faces the identical problem
-// (a fork head's pushes never reach us): every pull_request /
-// pull_request_review delivery flushes that ONE PR's snapshots, and a push
-// flushes the repo's PR-commit snapshots as the belt for a missed delivery,
-// with the shared 24h TTL as the backstop.
+// The cached PR commits list (tier 2): GET /repos/{owner}/{repo}/pulls/{number}/commits, reusing the repo commits-list storage whole.
+// see docs/cache/rest-routes.md
 
 const (
 	pullCommitsDefaultPerPage = 30
-	// pullCommitsMaxCachedPage caps the modeled pages; deeper pagination
-	// passes through. GitHub's own PR-commits list stops at 250 commits.
+	// pullCommitsMaxCachedPage caps modeled pages (GitHub's PR-commits list stops at 250); deeper pagination passes through.
 	pullCommitsMaxCachedPage = 10
 )
 
-// pullCommitsRefKey is the synthetic commits_list_cache ref key for one PR's
-// commit list. Keep it in one place: the webhook flush matches its prefix.
+// pullCommitsRefKey is the synthetic commits_list_cache ref key for one PR's commits; keep it here since the webhook flush matches its prefix.
 func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }
@@ -66,8 +45,7 @@ func (h *handlers) cachedPullCommits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The PR is the resource being read, so this shares the single-PR route's
-	// deny kind and resource key: same authorization question, same verdict.
+	// The PR is the resource being read, so this shares the single-PR route's deny kind and resource key.
 	resourceKey := ghdata.NormalizeRepoKey(owner) + "/" + ghdata.NormalizeRepoKey(repo) +
 		"/pull/" + strconv.FormatInt(number, 10)
 	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindPull, resourceKey); outcome {
@@ -97,8 +75,7 @@ func (h *handlers) cachedPullCommits(w http.ResponseWriter, r *http.Request) {
 
 	commits, absorbed := absorbCommitsList(owner, repo, resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 (an unknown PR -- it can be opened later) and 5xx:
-		// relayed verbatim, never stored.
+		// Includes 404 (unknown PR, can be opened later) and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}

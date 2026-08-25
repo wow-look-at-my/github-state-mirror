@@ -161,9 +161,7 @@ func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
 	return out, true
 }
 
-// repoVisibility folds the payload's visibility/private pair into the stored
-// value: the explicit visibility field wins ("internal" is kept as-is and is
-// NOT public for the reveal fast path); absent both, unknown.
+// repoVisibility: explicit visibility wins; "internal" is NOT public.
 func repoVisibility(visibility string, private *bool) string {
 	if visibility != "" {
 		return visibility

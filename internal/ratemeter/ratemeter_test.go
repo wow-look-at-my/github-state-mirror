@@ -243,8 +243,7 @@ func TestPrune_PastResetDies(t *testing.T) {
 	}))
 	require.Len(t, s.Snapshot(), 2)
 
-	// At the exact reset second the entry still stands (prune is strictly
-	// after); one second past, it's gone.
+	// At the exact reset second the entry still stands; prune is strictly after.
 	advance(now.Add(60 * time.Second))
 	require.Len(t, s.Snapshot(), 2)
 	advance(now.Add(61 * time.Second))

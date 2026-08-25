@@ -12,17 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached issue/PR search:
-//
-//	GET /search/issues
-//
-// The documented exception to webhook-driven cache maintenance -- see
-// ghdata/respcache_searchissues.go's file header and
-// docs/cache/uncacheable-routes.md. Keyed by the bearer's fingerprint (search
-// results are permission-scoped: GitHub filters hits to what the caller's
-// token can see, so a row shared across credentials would leak one caller's
-// results to another) plus the modeled query shape (q, per_page, page).
-// Cached VERBATIM.
+// This file implements the cached issue/PR search: GET /search/issues, the documented exception to webhook-driven cache maintenance.
+// see docs/cache/rest-routes.md and docs/cache/uncacheable-routes.md
 
 const (
 	searchIssuesDefaultPerPage = 30

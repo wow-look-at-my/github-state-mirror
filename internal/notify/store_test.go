@@ -93,8 +93,7 @@ func TestStorePrincipalScoping(t *testing.T) {
 	mine := mustCreate(t, st, "user:1", NewSubscription{})
 	theirs := mustCreate(t, st, "user:2", NewSubscription{})
 
-	// A foreign principal's id is invisible on get/update/delete — same
-	// ErrNotFound as a nonexistent id, no existence leak.
+	// A foreign principal's id is invisible on get/update/delete — same ErrNotFound as a nonexistent id, no existence leak.
 	_, err := st.Get(ctx, "user:2", mine.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
 	u := "https://example.com/other"

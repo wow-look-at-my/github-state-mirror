@@ -7,12 +7,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Dashboard / principal identities.
-//
-// The dashboard reports on the ONE global truth store (row counts, freshness)
-// plus the reveal layer's principals: who has been seen, what they hold grants
-// for, and how fresh their grant syncs are. It never bypasses admin gating in
-// the API layer for the all-principals views.
+// Dashboard reads: global truth counts/freshness + reveal-layer principals.
 
 // DataCounts is the global truth store's per-table row tally.
 type DataCounts struct {
@@ -42,9 +37,7 @@ func (s *Store) ListActorIdentities(ctx context.Context) ([]dbgen.ActorIdentity,
 	return s.q.ListActorIdentities(ctx)
 }
 
-// KnownPrincipals returns every principal that holds freshness metadata, so
-// the admin view can attribute even principals with no identity row (e.g. the
-// background app-installation sessions).
+// Attributes even principals with no identity row (e.g. app-installation sessions).
 func (s *Store) KnownPrincipals(ctx context.Context) ([]string, error) {
 	return s.q.ListKnownPrincipals(ctx)
 }
@@ -96,9 +89,7 @@ func (s *Store) FreshnessByKind(ctx context.Context, actorKey string) ([]dbgen.A
 	return s.q.ActorFreshnessByKind(ctx, actorKey)
 }
 
-// ErrorMessagesByKind returns the captured failure reason for every resource
-// currently in the error state for one actor, so the dashboard can show why a
-// kind is erroring (not just that it is).
+// Failure reasons for one actor's erroring resources; explains WHY, not just that.
 func (s *Store) ErrorMessagesByKind(ctx context.Context, actorKey string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
 	return s.q.ActorErrorMessagesByKind(ctx, actorKey)
 }
@@ -120,8 +111,7 @@ type WebhookDelivery struct {
 	Detail      string `json:"detail"`
 }
 
-// webhookDeliveryKeep caps how many delivery-log rows are retained. The log is
-// observability, not source-of-truth, so old rows are pruned on each insert.
+// Not source-of-truth; pruned on insert.
 const webhookDeliveryKeep = 500
 
 // RecordWebhookDelivery appends a delivery to the global webhook log and prunes
@@ -169,13 +159,8 @@ var RequiredWebhookEvents = []struct {
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
 }
 
-// Which of these the App is actually subscribed to is answered by the App
-// itself (ghclient.AppAuthenticator.SubscribedEvents), diffed in
-// internal/api/dashboard_webhooks.go. It is deliberately NOT inferred from
-// the delivery log: that reads "this event has not arrived lately" as "this
-// event is not configured", and on a CI-heavy fleet the retained log spans
-// minutes, so every low-frequency required event here (repository, label)
-// would be reported missing forever while correctly subscribed.
+// Subscribed status comes from the App itself, never inferred from the delivery log.
+// see docs/dashboard/dashboard.md
 
 // RecentWebhookDeliveries returns the most recent webhook deliveries, newest first.
 func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {

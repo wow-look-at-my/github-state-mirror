@@ -9,22 +9,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// The single-check-run route (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/check-runs/{check_run_id}
-//
-// Distinct from commit_ci_cache's LIST route (GET .../commits/{ref}/check-runs):
-// this table is keyed by the check run's OWN id, which never changes owner,
-// repo, or sha once created. That makes a `check_run` delivery always
-// directly appliable -- the payload carries the run's whole current state and
-// this row's key IS that run's id, so there is no membership question the
-// LIST route has to solve. TrimCheckRun (checkruns_doc.go) is the one trim
-// both the fetch-on-miss path and the delivery rewrite use, so a stored
-// answer never drifts from what a fresh fetch would produce.
+// The single-check-run route (tier 2): GET /repos/{owner}/{repo}/check-runs/{check_run_id}, keyed by the run's OWN id.
+// see docs/cache/rest-routes.md
 
-// CheckRunCacheTTL bounds a stale answer for a check run whose terminal state
-// no delivery ever reaches (a deleted App, an ordering loss); `check_run`
-// deliveries rewrite the row far sooner in the common case.
+// CheckRunCacheTTL bounds a stale answer when no delivery ever reaches this run's terminal state.
 const CheckRunCacheTTL = 24 * time.Hour
 
 // GetCachedCheckRun returns the cached single-check-run document, or (empty,

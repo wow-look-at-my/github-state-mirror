@@ -82,8 +82,7 @@ func TestCachedLabel_EveryLabelEventFlushes(t *testing.T) {
 			require.Equal(t, "miss", do(t, router, authedReq("GET", labelTarget, nil)).Header().Get(cacheHeader))
 			require.Equal(t, "hit", do(t, router, authedReq("GET", labelTarget, nil)).Header().Get(cacheHeader))
 
-			// The delivery names a DIFFERENT label on purpose: the flush grain
-			// is the repo, so the cached row must go regardless.
+			// A different label name on purpose: the flush grain is the repo.
 			postWebhookJSON(t, router, "label", labelEvent(action, "some-other-label"))
 
 			w := do(t, router, authedReq("GET", labelTarget, nil))

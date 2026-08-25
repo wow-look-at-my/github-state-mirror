@@ -16,17 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Per-user principal resolution (1 GitHub user == 1 reveal-layer principal).
-//
-// These tests cover requireAuth's principal selection end to end against a
-// fake GitHub upstream:
-//   - two different tokens of the same user share one "user:<id>" principal
-//     (grants earned by either token reveal truth to both)
-//   - a machine token (403 on /user) falls back to a per-token fingerprint
-//     principal, with the verdict cached
-//   - a transient /user failure fails the request (503) and never picks a
-//     principal; recovery needs no restart
-//   - identity rows are recorded under the "user:<id>" principal
+// Covers requireAuth's principal selection end to end. See docs/reveal-layer.md.
 
 func partitionAuthSvc() *auth.Service {
 	return auth.New(auth.Config{SessionKey: []byte("test-session-key")})

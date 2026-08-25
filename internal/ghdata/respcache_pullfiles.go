@@ -64,10 +64,8 @@ func (s *Store) PutCachedPullFiles(ctx context.Context, owner, repo string, numb
 	return s.q.PrunePullFilesCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidatePullFilesCache drops every cached files page for a repo -- the
-// push/repository webhook flush (a push may have moved any same-repo PR's
-// head; the belt for missed pull_request deliveries). owner/repo are
-// normalized here so callers can pass payload casing.
+// InvalidatePullFilesCache drops every cached files page for a repo (the push/repository flush).
+// see docs/webhooks/response-cache-invalidation.md
 func (s *Store) InvalidatePullFilesCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeletePullFilesCacheByRepo(ctx, dbgen.DeletePullFilesCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),

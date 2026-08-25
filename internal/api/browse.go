@@ -13,19 +13,9 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Admin cache browse + consistency check.
-//
-// These endpoints are the operator's window into the ONE global truth store
-// and the reveal layer. They are gated to admins: the reveal layer filters
-// what data-API callers see, but the operator's dashboard deliberately sees
-// everything (it is the surface for diagnosing the cache itself). The GETs
-// never write to the cache; the one write surface is the explicit
-// POST ?apply=true reconcile.
-//
-//	GET  /api/cache/data                          -- dump global truth rows
-//	GET  /api/cache/data?principal=<id>           -- one principal's grants
-//	GET  /api/cache/check[?org=<owner>]           -- diff global truth vs GitHub (read-only)
-//	POST /api/cache/check?apply=true[&org=<o>]    -- diff, then CORRECT the drift (reconcile)
+// Admin cache browse + consistency check: the operator's window into the ONE
+// global truth store, unfiltered by the reveal layer that gates data-API
+// callers. see docs/dashboard/operator-tooling.md
 
 // ---- clean JSON views of the cached rows ----
 //
@@ -199,19 +189,8 @@ func (d *dashboard) collectBrowse(ctx context.Context) (browseResponse, error) {
 	return resp, nil
 }
 
-// handleCacheCheck runs the consistency check (admin only): it re-fetches the
-// source of truth from GitHub via the App and returns a JSON diff of GLOBAL
-// truth vs GitHub. Optional ?org= limits the check to one owner.
-//
-// With ?apply=true (alias ?apply=1) on a POST, it additionally RECONCILES:
-// the drift found is corrected from the same fetched snapshot (absorb missing
-// repos/PRs, delete stale open PRs, set visibility / default_branch_status /
-// auto_merge_method / the commit-check rollup from GitHub's answers) and the
-// response carries an "applied" tally. A GET is always strictly read-only --
-// apply on a GET is rejected so a prefetched/bookmarked URL can never write.
-//
-// With ?stream=1 (on either mode) the response is live NDJSON progress
-// instead of one buffered report -- see checkstream.go.
+// handleCacheCheck runs the consistency check (admin only); apply mode
+// reconciles the drift it finds. see docs/dashboard/operator-tooling.md
 func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
@@ -247,10 +226,8 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 // observedRateLimit is one passively observed X-RateLimit-* reading (the
 // ratemeter store), flattened for JSON.
 type observedRateLimit struct {
-	Identity string `json:"identity"`
-	// Name is the identity's verified display name (user login / app slug /
-	// installation account login) when one was observed; display-only.
-	Name       string `json:"name,omitempty"`
+	Identity   string `json:"identity"`
+	Name       string `json:"name,omitempty"` // verified display name, when observed
 	Resource   string `json:"resource"`
 	Limit      int    `json:"limit"`
 	Remaining  int    `json:"remaining"`
@@ -260,26 +237,15 @@ type observedRateLimit struct {
 }
 
 type rateLimitResponse struct {
-	// Live is the actively polled per-installation status of the mirror's own
-	// GitHub App (GET /rate_limit per installation). Empty when no App is
-	// configured or the poll failed — see Note.
-	Live []syncpkg.InstallationRateLimit `json:"live"`
-	// Observed is the latest X-RateLimit-* reading passively recorded off
-	// upstream responses, per (identity, resource). In-memory; resets on
-	// restart.
+	Live []syncpkg.InstallationRateLimit `json:"live"` // empty without a GitHub App; see Note
+	// In-memory; resets on restart.
 	Observed []observedRateLimit `json:"observed"`
-	// Note explains an empty/failed live poll; observed data is returned
-	// regardless.
-	Note string `json:"note,omitempty"`
+	Note     string              `json:"note,omitempty"` // explains an empty/failed Live poll
 }
 
-// handleRateLimit reports GitHub rate-limit standing (admin only), two ways:
-// a live GET /rate_limit poll per App installation (the credential the
-// background fetches and the consistency check use), and the passively
-// observed X-RateLimit-* headers recorded off every upstream response (which
-// cover the callers' own credentials too). Without a GitHub App the live half
-// is empty with an explanatory note — no longer a bare 503 — so the observed
-// half still renders.
+// handleRateLimit reports a live per-installation poll plus passively
+// observed rate limits (admin only); without a GitHub App, Live is empty
+// with a Note and Observed still renders.
 func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return

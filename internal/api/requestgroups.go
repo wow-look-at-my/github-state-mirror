@@ -9,24 +9,16 @@ import (
 	"unicode/utf8"
 )
 
-// Request GROUPING for the dashboard's "Requests" tab: every recorded request
-// also bumps a cumulative per-(method, route-shape) counter, so the operator
-// can see the hottest routes — and the hottest UNCACHED routes (caching
-// candidates) — instead of eyeballing the flat recent-requests ring. Groups
-// live on the requestLog (same mutex, same in-memory/live-view stance, same
-// since-restart semantics as the per-disposition totals — deliberately NOT
-// windowed by the bounded recent ring, and NOT persisted).
+// Request grouping for the dashboard's Requests tab: a cumulative
+// per-(method, route-shape) counter, live on the requestLog.
+// see docs/dashboard/dashboard.md
 
 const (
-	// requestGroupsCap bounds the group map. The normalizer collapses real
-	// traffic into a small fixed family of route shapes, so approaching the cap
-	// means garbage paths; when full, NEW shapes are dropped (simple + a hard
-	// memory bound) while every existing group keeps counting.
+	// A route count near this cap means garbage paths, not real traffic.
 	requestGroupsCap = 1000
 	// requestGroupsSnapshotCap caps the groups in one /api/requests payload.
 	requestGroupsSnapshotCap = 100
-	// routeMaxLen defensively clamps a pathological route string (a huge
-	// segment in an unknown 1-2 segment path) so group keys stay small.
+	// routeMaxLen clamps a pathological route string so group keys stay small.
 	routeMaxLen = 200
 )
 
@@ -36,26 +28,14 @@ type routeGroup struct {
 	route  string
 	total  int64
 	byDisp map[string]int64
-	// byReason splits this group's PASSTHROUGH count by why each request was
-	// forwarded uncached (the closed Pass* vocabulary in requestlog.go). It is
-	// what turns "this route is 82% uncached" into an actionable verdict:
-	// unmodeled-query on a filter nobody should cache is the model working,
-	// while unrouted or a paging shape is a gap. Bounded by the vocabulary.
+	// byReason splits PASSTHROUGH count by why (see docs/dashboard/dashboard.md).
 	byReason map[string]int64
 	sample   string // one recent raw path, for identifying the shape
-	// passQuery is the QUERY SHAPE of one recent passthrough: the sorted
-	// parameter NAMES, never their values (a value can carry a credential; a
-	// name cannot, and the name set is what the shape guards actually reject).
-	// Kept separately from sample so a route that mostly hits still shows what
-	// its passthroughs looked like — "status,per_page" names the offending
-	// filter outright.
+	// passQuery is one recent passthrough's sorted parameter NAMES, never
+	// values. see docs/cache/three-tier-contract.md
 	passQuery string
-	// debounced / upstreamSaved measure passthrough coalescing (debounce.go).
-	// TWO counters on purpose: debounced counts inbound requests that were
-	// HELD for the window, upstreamSaved the GitHub calls that never happened
-	// because a batch had more than one member. A route with debounced high
-	// and upstreamSaved at zero is paying the latency and buying nothing —
-	// polls too far apart to coalesce — which one merged counter would hide.
+	// debounced / upstreamSaved: passthrough coalescing counters, kept
+	// separate so a held-but-unsaved route is visible. see docs/cache/three-tier-contract.md
 	debounced     int64
 	upstreamSaved int64
 	lastSeen      time.Time
@@ -63,35 +43,25 @@ type routeGroup struct {
 
 // requestGroupSnapshot is one group in the /api/requests payload.
 type requestGroupSnapshot struct {
-	Key         string `json:"key"` // method + " " + route
-	Method      string `json:"method"`
-	Route       string `json:"route"`
-	Total       int64  `json:"total"`
-	Hit         int64  `json:"hit"`
-	Miss        int64  `json:"miss"`
-	Passthrough int64  `json:"passthrough"`
-	Write       int64  `json:"write"`
-	Error       int64  `json:"error"`
-	// ByReason splits Passthrough by why (the Pass* vocabulary); omitted when
-	// the group never passed through.
-	ByReason map[string]int64 `json:"by_reason,omitempty"`
-	// PassQuery is one recent passthrough's query-parameter NAMES (values are
-	// never recorded). Omitted when absent.
-	PassQuery string `json:"pass_query,omitempty"`
-	// Debounced / UpstreamSaved: requests held by the passthrough debouncer,
-	// and the GitHub calls that coalescing avoided. Omitted when unused.
-	Debounced     int64  `json:"debounced,omitempty"`
-	UpstreamSaved int64  `json:"upstream_saved,omitempty"`
-	Sample        string `json:"sample"`
-	LastSeen      string `json:"last_seen"` // RFC3339
+	Key           string           `json:"key"` // method + " " + route
+	Method        string           `json:"method"`
+	Route         string           `json:"route"`
+	Total         int64            `json:"total"`
+	Hit           int64            `json:"hit"`
+	Miss          int64            `json:"miss"`
+	Passthrough   int64            `json:"passthrough"`
+	Write         int64            `json:"write"`
+	Error         int64            `json:"error"`
+	ByReason      map[string]int64 `json:"by_reason,omitempty"`  // omitted if never passed through
+	PassQuery     string           `json:"pass_query,omitempty"` // sorted parameter NAMES, never values
+	Debounced     int64            `json:"debounced,omitempty"`
+	UpstreamSaved int64            `json:"upstream_saved,omitempty"`
+	Sample        string           `json:"sample"`
+	LastSeen      string           `json:"last_seen"` // RFC3339
 }
 
-// addDebounced records passthrough coalescing against a route group. Called
-// from the debouncer, which sees requests BEFORE the recording wrapper does,
-// so it may open a group the request log has not counted yet; the group's
-// disposition counters stay untouched here and are filled in as usual when the
-// request is recorded. Nil-receiver-safe (a router built without a request
-// log, as some tests do).
+// addDebounced may open a group before the recording wrapper counts a
+// disposition into it; nil-receiver-safe.
 func (l *requestLog) addDebounced(method, route string, served, saved int64) {
 	if l == nil || (served == 0 && saved == 0) {
 		return
@@ -112,8 +82,7 @@ func (l *requestLog) addDebounced(method, route string, served, saved int64) {
 }
 
 // bumpGroupLocked records one request into its group. reason/queryShape are
-// set only for passthroughs (recordFull clears them otherwise). Caller holds
-// l.mu.
+// set only for passthroughs. Caller holds l.mu.
 func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition, reason, queryShape string, now time.Time) {
 	key := method + " " + route
 	g := l.groups[key]
@@ -133,9 +102,7 @@ func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition, reason
 		g.byReason[reason]++
 	}
 	if disposition == DispPassthrough {
-		// Only overwrite on a passthrough, and keep a NON-empty shape in
-		// preference to an empty one: the bare-path passthroughs of a route
-		// whose gap is a query filter would otherwise erase the evidence.
+		// Prefer a non-empty shape so a bare-path hit can't erase evidence.
 		if queryShape != "" || g.passQuery == "" {
 			g.passQuery = queryShape
 		}
@@ -144,10 +111,8 @@ func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition, reason
 	g.lastSeen = now
 }
 
-// queryShape renders a request's query as its sorted parameter NAMES joined by
-// commas — "page,per_page,status". Values are deliberately never included: a
-// value can carry a credential and is unbounded, while the name set is both
-// safe and exactly what the routes' shape guards test. Clamped like a route.
+// queryShape renders sorted query parameter NAMES, never values (a value can
+// carry a credential); "page,per_page,status".
 func queryShape(q url.Values) string {
 	if len(q) == 0 {
 		return ""
@@ -202,14 +167,9 @@ func (l *requestLog) groupSnapshotsLocked(max int) []requestGroupSnapshot {
 	return gs
 }
 
-// normalizeRoute maps a concrete request path onto its route SHAPE, so
-// requests differing only in owner/repo/ref/sha/number group together
-// (e.g. /repos/a/b/compare/x...y -> /repos/{owner}/{repo}/compare/{basehead}).
-// It is a dumb, total function: any input — empty, unrooted, doubled slashes,
-// unicode, absurd depth — yields some bounded route string, never an error.
-// Known GitHub grammars get contextual placeholders; inside any tail, numeric
-// segments become {number} and 40-hex segments {sha}; unknown deep tails
-// collapse to a trailing "…" so junk paths can't explode the group map.
+// normalizeRoute maps a path onto its route shape (owner/repo/ref/sha/number
+// segments become placeholders) so it groups with siblings. Total: any input
+// yields a bounded route string, never an error.
 func normalizeRoute(path string) string {
 	segs := splitPathSegs(path)
 	if len(segs) == 0 {
@@ -282,16 +242,11 @@ func normalizeRepoTail(tail []string) []string {
 			return []string{"git", "commits", "{sha}"}
 		}
 	}
-	// pulls[/{number}[/files|merge|...]], issues/{number}, actions/runs,
-	// installation, merges, ... — the generic rules ({number}/{sha} + depth
-	// cap) produce the right shapes without per-route grammar.
+	// Everything else falls through to the generic {number}/{sha} + depth cap.
 	return normalizeTail(tail, 3)
 }
 
-// commitRefSubresources are the trailing-literal forms served under
-// /repos/{owner}/{repo}/commits/{ref}/<sub>. The suffix anchor is what lets a
-// ref carry slashes (mirroring the server's own subtree dispatcher), so the
-// match keys on the LAST segment.
+// commitRefSubresources match on the LAST segment, so a ref can carry slashes.
 var commitRefSubresources = set.Of(
 	"status", "check-runs", "statuses", "pulls", "check-suites", "comments",
 )
@@ -319,10 +274,8 @@ func normalizeOwnerRoute(segs []string, placeholder string) []string {
 	return append([]string{segs[0], placeholder}, normalizeTail(segs[2:], 2)...)
 }
 
-// normalizeTail generically normalizes a path tail: numeric segments become
-// {number}, 40-hex segments {sha}, and anything deeper than max segments
-// collapses to a trailing "…" — so unknown shapes group coarsely instead of
-// minting one group per concrete path.
+// normalizeTail turns numbers into {number}, 40-hex into {sha}, and anything
+// past max segments into a trailing "…".
 func normalizeTail(segs []string, max int) []string {
 	n := len(segs)
 	if n > max {

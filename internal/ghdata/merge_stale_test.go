@@ -11,21 +11,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// These tests lock the merge-field stale guard: a base/head push un-resolves
-// mergeable AND remembers the invalidated test-merge sha (merge_stale_sha),
-// because a tip change always changes the sha of a SUCCESSFUL test merge --
-// so an absorb path re-offering that exact sha within the window is presumed
-// to be serving a pre-push answer (GitHub's recompute lag) and must not
-// re-resolve the row, unless one of the two exemptions (the push-tip proof;
-// the dirty-retained CONFLICTING pattern -- see the sections below) proves
-// otherwise. The webhooks#66 incident: a lagged refetch re-resolved the
-// invalidated sha, and every later read was a hit serving it frozen.
-
-// The tests above the proof section pass after="" to NullPRMergeableByBranch:
-// a marker WITHOUT the push-tip proof columns, which is exactly the old
-// (reject-until-TTL) behavior -- and still a real production shape (a push
-// payload with no usable after). The push-tip proof tests below cover the
-// proof-recorded paths.
+// Locks the merge-field stale guard. see docs/cache/rest-routes.md
+// (Merge-field invalidation semantics)
+//
+// Tests above the proof section pass after="" to NullPRMergeableByBranch: a
+// marker without the push-tip proof columns, a real production shape (a push
+// payload with no usable after). Tests below cover the proof-recorded paths.
 const (
 	staleShaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the pre-push test-merge sha
 	staleShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // GitHub's recomputed sha
@@ -195,8 +186,7 @@ func TestAbsorbPullsList_CannotStoreInvalidatedSha(t *testing.T) {
 	assert.False(t, row.Mergeable.Valid)
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the marker must survive the list absorb")
 
-	// A list item with the recomputed sha stores it and clears the marker
-	// (mergeable stays unresolved -- the list never carries it).
+	// The recomputed sha stores and clears the marker; the list carries no mergeable.
 	item = restPR(7, "", staleShaB)
 	require.NoError(t, s.AbsorbPullsList(ctx, "org1", "repo1", []dbgen.PullRequest{item}, nil, false, now, now.Add(2*time.Minute), time.Hour))
 	row = getPR(t, s, 7)
@@ -205,10 +195,7 @@ func TestAbsorbPullsList_CannotStoreInvalidatedSha(t *testing.T) {
 	assert.False(t, row.MergeStaleSha.Valid, "a fresh sha clears the marker")
 }
 
-// TestUpsertPRWithChecks_WebhookCannotResolveFromInvalidatedSha: an
-// out-of-order pull_request delivery built before the push (resolved
-// mergeable + the invalidated sha) must not re-resolve the row either -- the
-// webhook upsert shares the SQL stale guard.
+// The webhook upsert shares the same SQL stale guard.
 func TestUpsertPRWithChecks_WebhookCannotResolveFromInvalidatedSha(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -230,13 +217,8 @@ func TestUpsertPRWithChecks_WebhookCannotResolveFromInvalidatedSha(t *testing.T)
 	assert.False(t, row.MergeStaleSha.Valid)
 }
 
-// TestSyncOrgTruth_CannotRearmMergeableOnShalessRow is the H3 lock: the
-// GraphQL owner sync carries mergeable but never a test-merge sha, so it must
-// not mark a REST-complete row resolved while the row's sha is null (a push
-// just un-resolved it) -- that produced resolved-looking rows with a
-// null/stale sha the single-PR route then served. Pure GraphQL rows (no
-// node_id -- the /graphql tier's rows, never REST-servable) keep getting
-// their mergeable from syncs.
+// The sync must not resolve a REST-complete row whose sha is null (a push
+// un-resolved it); pure GraphQL rows (no node_id) keep taking sync mergeable.
 func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -287,10 +269,7 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	assert.Equal(t, "CONFLICTING", row.Mergeable.String, "a sha-backed row still takes sync updates")
 }
 
-// TestNullPRMergeableByRepo: the unparseable-push fallback nulls merge fields
-// on every open PR -- and deliberately records NO stale marker (the moved
-// branch is unknown; an unmoved PR's re-offered sha is valid and must be
-// re-absorbable immediately).
+// The repo-wide fallback records NO stale marker: the moved branch is unknown.
 func TestNullPRMergeableByRepo(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -303,8 +282,7 @@ func TestNullPRMergeableByRepo(t *testing.T) {
 	assert.False(t, row.MergeCommitSha.Valid)
 	assert.False(t, row.MergeStaleSha.Valid, "the repo-wide fallback must not mark a sha stale")
 
-	// The same sha re-offered absorbs straight back in (the PR's branch may
-	// never have moved).
+	// Re-offering the same sha absorbs straight back in.
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.False(t, stale)
@@ -315,8 +293,4 @@ func TestNullPRMergeableByRepo(t *testing.T) {
 
 // ---- The push-tip proof (merge_stale_ref/merge_stale_after) ----
 
-// TestNullPRMergeableByBranch_RecordsPushProof: the push-time un-resolve
-// records WHICH branch moved and its after tip alongside the remembered sha,
-// and a second push OVERWRITES the proof with its own after (an answer must
-// reflect the NEWEST push to be provably post-push) while keeping the
-// remembered sha (merge_commit_sha is already NULL).
+// A second push overwrites the proof with its own after tip, keeping the sha.

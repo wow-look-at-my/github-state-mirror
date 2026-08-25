@@ -9,20 +9,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// This file is the storage layer for the single-PR route's CLOSED answers:
-//
-//	GET /repos/{owner}/{repo}/pulls/{number}  (state closed/merged)
-//
-// A closed_pull_cache row stores the ALREADY-TRIMMED single-PR document as
-// one JSON blob, rendered once at absorb time from GitHub's own response and
-// never re-derived. The open-only invariant of the pull_requests truth table
-// is untouched: a fetched closed PR still deletes any cached open row, and
-// closed PRs live ONLY here, as rendered docs. A closed PR only changes via
-// pull_request events (reopened/edited/relabeled), which flush that one PR's
-// doc; repository events flush the whole repo; a push is deliberately NOT a
-// flush -- it cannot mutate a closed PR. expires_at is the 24h TTL backstop
-// for missed deliveries, the same accepted staleness class as PRRowFresh.
-// WHO may read a cached doc is the reveal layer's job (internal/api).
+// Storage layer for the single-PR route's CLOSED answers (rendered docs, never re-derived).
+// see docs/cache/rest-routes.md
 
 // GetCachedClosedPull returns the cached trimmed closed-PR document, or
 // ("", false) on a miss (no row, or an expired one). A hit refreshes the
@@ -74,10 +62,7 @@ func (s *Store) InvalidateClosedPullCache(ctx context.Context, owner, repo strin
 	})
 }
 
-// InvalidateClosedPullForPR drops one PR's cached closed doc -- the
-// pull_request event flush (reopened/edited/relabeled; a close absorbs fresh
-// on the next read), and the reopened-race safety after an open absorb.
-// owner/repo are normalized here so callers can pass payload casing.
+// InvalidateClosedPullForPR drops one PR's cached closed doc on a pull_request event.
 func (s *Store) InvalidateClosedPullForPR(ctx context.Context, owner, repo string, number int64) error {
 	return s.q.DeleteClosedPullCacheByPR(ctx, dbgen.DeleteClosedPullCacheByPRParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Number: number,

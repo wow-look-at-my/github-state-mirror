@@ -12,37 +12,15 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// The cached installation-repositories listing (tier 2 of the cache contract):
-//
-//	GET /installation/repositories
-//
-// "Which repositories does the token I am holding cover" -- 2275 forwards in
-// one process, each caller asking the same single-page question ~17 times.
-//
-// KEYED BY THE CREDENTIAL, not by the reveal-layer principal. The answer is
-// one installation token's own view, and the app:<id> principal deliberately
-// shares one bucket across every token of an app -- including tokens of
-// DIFFERENT installations of that app, which cover different repositories.
-// Keying by the bearer's fingerprint is also what gates the row: a stored
-// answer can only ever be replayed to the exact credential GitHub already
-// answered it for, so there is nothing here for the reveal layer to decide.
-// (This is the token-mint route's stance: a per-credential answer is not
-// shared truth.)
-//
-// STALENESS, stated plainly: installation / installation_repositories
-// deliveries flush the table, but the mirror only receives its OWN App's, and
-// these callers are other apps. The real bound is therefore the TTL, held to
-// minutes rather than hours.
+// Cached installation-repositories listing (tier 2 of the cache contract): GET /installation/repositories
+// see docs/cache/rest-routes.md
 
 const (
-	// installationReposTTL is the PRIMARY bound on a row, not a backstop: see
-	// the staleness note above.
+	// installationReposTTL is the PRIMARY bound on a row, not a backstop: the mirror sees only its own App's flush events.
 	installationReposTTL = 15 * time.Minute
 
 	installationReposDefaultPerPage = 30
-	// installationReposMaxCachedPage caps the modeled pages; deeper
-	// pagination passes through. No installation in this fleet covers more
-	// than a few hundred repositories.
+	// installationReposMaxCachedPage caps the modeled pages; deeper pagination passes through.
 	installationReposMaxCachedPage = 20
 )
 
@@ -51,8 +29,7 @@ const (
 func (h *handlers) cachedInstallationRepos(w http.ResponseWriter, r *http.Request) {
 	token := bearerToken(r)
 	if token == "" {
-		// requireAuth already rejects these, so this is belt and braces: a
-		// row must never be stored (or served) under an empty key.
+		// Belt and braces: a row must never be stored or served under an empty key.
 		h.passthrough(w, r, PassIdentity)
 		return
 	}
@@ -85,8 +62,7 @@ func (h *handlers) cachedInstallationRepos(w http.ResponseWriter, r *http.Reques
 
 	doc, absorbed := absorbInstallationRepos(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 401 (the token expired), 403, and any shape the model cannot hold:
-		// relayed verbatim, never stored.
+		// 401/403 and any unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}

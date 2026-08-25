@@ -11,19 +11,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// These tests lock NullPRMergeableOnTipMove: the per-PR un-resolve for tip
-// moves reported by the PR's OWN webhook payload. A fork head emits no push
-// webhook, so without this the upsert's COALESCE preserved the retained
-// pre-move mergeable next to the new head sha and the single-PR route served
-// it frozen for the whole row TTL.
+// Locks NullPRMergeableOnTipMove: a fork head emits no push webhook, so the
+// PR's own payload is the only tip-move signal for it.
 
 const (
 	tipMoveNewHead = "9999999999999999999999999999999999999999" // the moved head tip
 )
 
-// synchronizePayload is the webhook-doc shape a synchronize delivery absorbs:
-// node_id present, the NEW head sha, the RETAINED pre-move test-merge sha,
-// and mergeable null (GitHub recomputing).
+// synchronizePayload: new head sha, retained pre-move test-merge sha, mergeable null.
 func synchronizePayload(number int64) dbgen.PullRequest {
 	pr := restPR(number, "", staleShaA)
 	pr.HeadRefOid = sql.NullString{String: tipMoveNewHead, Valid: true}

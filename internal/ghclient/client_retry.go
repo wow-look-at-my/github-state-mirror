@@ -12,28 +12,17 @@ import (
 	"time"
 )
 
-// doJSON -- the shared HTTP exchange behind every REST/GraphQL helper -- and
-// its transient-failure retry policy. What is and is not retried is a
-// correctness decision, not a tuning knob: see the doJSON comment.
-
-// fail a whole multi-page owner fetch. Authoritative statuses (401/403/404/...)
-// are never retried: the reveal layer and deny-cache semantics depend on them.
-// GraphQL-level errors[] bodies arrive as HTTP 200 and stay fail-fast too (the
-// callers inspect them after doJSON returns).
+// doJSON's transient-failure retry policy. What is and is not retried is a
+// correctness decision, not a tuning knob. see docs/ghclient.md
 const doJSONAttempts = 3
 
-// retryAfterCap bounds how long a parseable Retry-After header can stretch one
-// backoff, so a huge value can't wedge a deadline-bounded fetch.
+// retryAfterCap stops a huge Retry-After from wedging a deadline-bounded fetch.
 const retryAfterCap = 10 * time.Second
 
-// defaultRetryBackoff is the sleep before attempts 2, 3, ... (the last entry
-// repeats).
+// defaultRetryBackoff: the sleep before attempts 2, 3, ...; the last repeats.
 var defaultRetryBackoff = []time.Duration{500 * time.Millisecond, 2 * time.Second}
 
-// SetRetryBackoff overrides doJSON's transient-retry backoff schedule (tests
-// use zero delays so retries don't really sleep). The i-th entry is the sleep
-// before attempt i+2; the last entry repeats. Call it during wiring, like
-// SetRateObserver: the field is read without synchronization.
+// SetRetryBackoff must be called during wiring: the field is read unsynchronized.
 func (c *Client) SetRetryBackoff(delays []time.Duration) { c.retryBackoff = delays }
 
 // retryableStatus reports whether an HTTP status is a transient upstream
@@ -99,8 +88,7 @@ func (c *Client) sleepBeforeRetry(ctx context.Context, attempt int, resp *http.R
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
-	// Buffer the body once so every retry attempt can resend it from the
-	// start (an io.Reader is consumed by the first attempt).
+	// Buffer once: an io.Reader is consumed by the first attempt.
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -110,9 +98,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 		}
 	}
 	url := c.baseURL + path
-	// Authenticate with the token carried in the context (caller's bearer token
-	// or a GitHub App installation token). Requests without one are sent
-	// unauthenticated and will be rejected by GitHub.
+	// A request without one is sent unauthenticated and rejected by GitHub.
 	token := tokenFromContext(ctx)
 
 	var resp *http.Response
@@ -149,8 +135,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 		c.observeRate(ctx, token, resp)
 
 		if attempt < doJSONAttempts && retryableStatus(resp.StatusCode) {
-			// Drain a little and close so the connection is reusable, then
-			// back off (honoring a capped Retry-After) and resend.
+			// Drain a little so the connection is reusable.
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 			resp.Body.Close()
 			if !c.sleepBeforeRetry(ctx, attempt+1, resp) {

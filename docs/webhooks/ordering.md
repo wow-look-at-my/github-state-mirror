@@ -63,6 +63,14 @@ posted a second earlier — silently losing a check this mirror is the source of
 truth for. `TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther` pins
 it.
 
+The `pull_request_review` row keys on the REVIEW, not the PR: two reviews on
+one PR are independent, and only a re-delivery of the same review is ordered
+against this one.
+
+`label` (no timestamp anywhere in the payload), `organization`, and
+`membership` are unorderable and apply as they always did — reported, never
+guessed at.
+
 ## Two mechanisms, different distances
 
 **1. The reorder window** (`internal/sync/reorder.go`, `WEBHOOK_REORDER_WINDOW`,

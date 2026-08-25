@@ -9,14 +9,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix} (the
-// ref-prefix search pr-minder's queue-branch scan uses). Per-page snapshots
-// like branches_list_cache: doc holds the trimmed JSON array of matching
-// {ref, object:{sha}} entries for one exact prefix. A branch create, delete,
-// or tip-move all arrive as a push naming a ref under refs/heads/, and this
-// route has no narrower per-ref target than the branches listing does, so
-// push/repository webhooks flush the WHOLE repo's rows -- the
-// branches_list_cache precedent, not a per-prefix apply.
+// State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix}.
+// see docs/cache/rest-routes.md
 
 // MatchingRefsCacheTTL bounds a missed-delivery staleness window.
 const MatchingRefsCacheTTL = 24 * time.Hour

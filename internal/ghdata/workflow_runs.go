@@ -10,39 +10,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// GitHub Actions RUN state -- global truth, maintained by webhooks, and the
-// state the repo-wide runs listing is rebuilt from.
-//
-// The point of this table is that a delivery moving ONE run updates ONE row
-// and leaves every other run served. The listing is a filtered view over
-// these rows, so a run entering or leaving `queued` changes the answer with
-// nothing cleared and nothing re-fetched -- the difference between
-// maintaining a cache and invalidating one.
-//
-// Two writers with deliberately different authority:
-//
-//   - ApplyWorkflowRun -- a workflow_run delivery or a REST absorb. Both
-//     carry the run's own status and conclusion, so both may settle a run.
-//   - ApplyWorkflowRunFromJob -- a workflow_job delivery. It names the run
-//     but carries no run-level status, so it may only establish identity and
-//     RAISE the status floor (an in_progress job proves its run is running).
-//     It can never conclude a run: the job set may be incomplete.
-//
-// WHO may read a rebuilt listing is the reveal layer's job (internal/api).
+// GitHub Actions run state: global truth, maintained by webhooks, and the
+// state the repo-wide runs listing is rebuilt from. see docs/cache/rest-routes.md
 
-// workflowRunRetention bounds the table. A completed run the mirror has not
-// touched in this long is dropped on the next write; queued and in-progress
-// runs are never pruned. Two weeks matches the workflow_jobs window -- long
-// enough that a settled run is still answerable, short enough that an
-// org's run history cannot grow without limit.
+// workflowRunRetention: a completed run untouched this long is dropped;
+// queued and in-progress runs are never pruned.
 const workflowRunRetention = 14 * 24 * time.Hour
 
-// WorkflowRunsListTTL bounds a listing completeness proof. It is SHORT on
-// purpose: the marker's one hole is a run that enters a filter's set with no
-// delivery naming it (a run with no jobs yet emits no workflow_job, so only
-// a workflow_run delivery names it), and a queued-backlog answer is what a
-// runner coordinator provisions against. Every other transition is applied
-// to the rows as it happens, so this is a backstop, not the mechanism.
+// WorkflowRunsListTTL is a backstop, not the mechanism: see docs/cache/rest-routes.md
 const WorkflowRunsListTTL = 2 * time.Minute
 
 // WorkflowRun is one Actions run's recorded state. Empty string means the
@@ -64,8 +39,7 @@ type WorkflowRun struct {
 	RunStartedAt string
 }
 
-// WorkflowRunFilter selects a subset of a repo's runs. An empty field means
-// "no filter on this field"; the zero value is the unfiltered listing.
+// WorkflowRunFilter: an empty field means no filter; the zero value is unfiltered.
 type WorkflowRunFilter struct {
 	Status     string
 	HeadBranch string
@@ -91,18 +65,13 @@ func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Ti
 	return s.q.PruneSettledWorkflowRuns(ctx, rfc3339(now.Add(-workflowRunRetention)))
 }
 
-// ApplyWorkflowRunFromJob records what a workflow_job delivery proves about
-// its RUN: the run exists, its identity, and -- when the job is running --
-// that the run is running too. It never settles a run and never regresses
-// one an authoritative writer already settled.
+// ApplyWorkflowRunFromJob never settles or regresses a run; it only raises
+// the status floor a workflow_job delivery can prove.
 func (s *Store) ApplyWorkflowRunFromJob(ctx context.Context, j WorkflowJob, now time.Time) error {
 	if j.RunID <= 0 {
 		return nil
 	}
-	// A job's own status maps onto the strongest run-level claim it can
-	// support: a running job means a running run; anything else (queued,
-	// completed) leaves the run at the floor, because one job's state says
-	// nothing about the others'.
+	// One job's state says nothing about the others'.
 	status := "queued"
 	if j.Status == "in_progress" {
 		status = "in_progress"

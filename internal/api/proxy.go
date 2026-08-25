@@ -39,26 +39,18 @@ import (
 func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*http.Response), observe httpobs.Observer) http.Handler {
 	target, err := url.Parse(baseURL)
 	if err != nil {
-		// baseURL is operator-controlled configuration, not caller input, so an
-		// unparseable value is a deployment error worth failing loudly on at
-		// startup rather than per-request.
+		// baseURL is operator config, not caller input: panic here, not per-request.
 		panic("api: invalid GitHub base URL " + baseURL + ": " + err.Error())
 	}
 
 	rp := &httputil.ReverseProxy{
 		Transport: httpobs.Transport(nil, observe),
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			// SetURL routes the outbound request to target's scheme/host and
-			// rewrites the Host header to match; the inbound path and query are
-			// preserved. We deliberately do not call SetXForwarded — GitHub does
-			// not need the client's address and we avoid leaking it.
+			// Deliberately skips SetXForwarded: GitHub does not need the client's address.
 			pr.SetURL(target)
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			// Passively record the X-RateLimit-* headers GitHub attached; the
-			// passthrough proxy is the highest-volume upstream path, so it is
-			// the rate meter's main feed. resp.Request is the outbound clone,
-			// which carries the inbound request's context and headers, so
+			// resp.Request is the outbound clone carrying the inbound context, so
 			// callerLabel resolves the same identity the request log records.
 			if resp.Request != nil {
 				who := callerLabel(resp.Request)
@@ -84,13 +76,10 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*htt
 	})
 }
 
-// stripUpstreamCORS removes the Access-Control-Allow-* / Max-Age headers from a
-// forwarded GitHub response. The mirror's own corsMiddleware is the single
-// authority for those, so leaving GitHub's copies in place would duplicate them
-// — most importantly Access-Control-Allow-Origin, which browsers reject when it
-// appears more than once ("multiple values"). Access-Control-Expose-Headers is
-// intentionally preserved: the mirror does not set it, and it lets cross-origin
-// clients read GitHub's X-RateLimit-*, Link, and similar headers.
+// stripUpstreamCORS removes GitHub's CORS headers so they never duplicate the
+// mirror's own corsMiddleware output (browsers reject a doubled
+// Access-Control-Allow-Origin). Access-Control-Expose-Headers stays, so
+// cross-origin clients can still read GitHub's X-RateLimit-*, Link, and similar headers.
 func stripUpstreamCORS(resp *http.Response) error {
 	h := resp.Header
 	h.Del("Access-Control-Allow-Origin")

@@ -7,15 +7,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Bookkeeping for delivery-gap recovery: which deliveries this mirror has
-// already asked GitHub to send again. See the webhook_replays table comment
-// in schema.sql for why the gap exists at all, and internal/sync/replay.go
-// for what reads GitHub's failure log.
+// Bookkeeping for delivery-gap recovery. see docs/webhooks/delivery-gaps.md
 
-// WebhookReplayRequested reports whether a replay has already been requested
-// for this delivery id. GitHub's failure log lists a failed delivery
-// indefinitely, so this is what keeps one lost delivery from being requested
-// on every cycle forever.
+// WebhookReplayRequested reports whether a replay has already been requested for this delivery id.
 func (s *Store) WebhookReplayRequested(ctx context.Context, deliveryID int64) (bool, error) {
 	found, err := s.q.WebhookReplayRequested(ctx, deliveryID)
 	return found != 0, err

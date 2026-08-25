@@ -241,8 +241,7 @@ func TestNotifierRecordsTimelineAttempts(t *testing.T) {
 	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)
 	tl := reqtimeline.New()
 
-	// First subscription answers 500 on every attempt (2 attempts, both
-	// failed, second final); then a second delivery succeeds first try.
+	// This subscription answers 500 on every attempt (2 attempts, both failed, second final).
 	rec := &capture{respond: http.StatusInternalServerError}
 	srv := httptest.NewServer(rec.handler())
 	defer srv.Close()
