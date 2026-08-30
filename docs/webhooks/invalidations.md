@@ -54,7 +54,7 @@ bookkeeping and which no test can classify for you.
 | `commit_checks` truth | **applied** | the payload's state is written directly. |
 | PR `mergeable_state` | **applied-as-unresolved** | a CI result is the only thing that moves unstable/blocked ↔ clean, and no payload carries the recomputed value. `mergeable_state` is stored beside `mergeable`, and the two must resolve and un-resolve as ONE fact — a row holding a resolved `mergeable_state` next to a nulled `mergeable` serves the pre-push answer under the other field's name, the same staleness the `merge_stale_sha` guard exists to refuse, wearing a different column (`internal/ghdata/mergeable_state_test.go`). |
 | `commit_ci_cache`, the `/status` and `/statuses` docs, on a `status` event | **applied** | the payload IS the status, whole. `SettleCommitCIFromStatus` rewrites both documents from it — see "The status rewrite" below for the ordering rules that make the result exact rather than plausible — and drops only what a stored page cannot provably hold. |
-| `commit_ci_cache`, the `/check-runs` docs, on a `check_run` event | **applied** | the delivery carries the whole run object, which is one entry of that listing. Unlike a status, a check run is UPDATED IN PLACE upstream — the same id moves queued → in_progress → completed — so the rewrite replaces the entry where it stands. See "The check-run rewrite" below for the ordering measurement that makes "where it stands" a fact rather than a hope. A `check_suite` delivery carries no runs and keeps the flush. |
+| `commit_ci_cache`, the `/check-runs` docs, on a `check_run` event | **applied** | the delivery carries the whole run object, which is one entry of that listing. Unlike a status, a check run is UPDATED IN PLACE upstream — the same id moves queued → in_progress → completed — so the rewrite replaces the entry where it stands. A run the page does not list yet is ADDED at its place in the id order: a creation names the commit its run belongs to, so membership GROWS from the payload. See "The check-run rewrite" below for the ordering measurement that makes both placements a fact rather than a hope. A `check_suite` delivery carries no runs and keeps the flush. |
 | the OTHER kinds, on either event | **applied** (nothing to do) | a commit status never appears in a check-runs listing and a check run never appears in a commit's statuses. Flushing all three kinds on every CI delivery re-fetched answers the delivery could not have changed; each now flushes only its own surface. |
 | `workflow_runs_cache` (sha pages) | **applied** on `workflow_run`, **flushed** on the rest | a `workflow_run` delivery IS the run object these pages list, so its entry is rewritten in place. A run is updated in place upstream and the listing is ordered by CREATION — measured across 100 consecutive runs of one repo: `created_at` strictly descending with zero violations, `updated_at` with 31 — so the entry cannot move, and `total_count` (GitHub's total, not the page length) does not change when a run merely changes state. A run the pages do not list is a NEW run for the sha, a membership change only a fetch settles. `status`/`check_run`/`check_suite`/`workflow_job` deliveries name the sha but not the run object, so they keep the flush. |
 
@@ -137,16 +137,31 @@ sorting AFTER a higher-id one — which rules out completion ordering. The order
 was byte-identical across both samples while one run went in_progress →
 completed.
 
+Id ordering also fixes where a run the page does not list yet BELONGS, so a
+creation is an insert rather than a flush. This is the case that mattered: the
+last deliveries of a CI run are a new job's creation and a queued job's start,
+and they land in the seconds where GitHub's own listing is furthest behind
+them. Flushing there sent the next reader upstream at exactly that moment, and
+the answer it absorbed was OLDER than the payloads already in hand — a finished
+run then sends nothing more, so the stale page stood for its whole TTL. One
+measured instance held an `all-builds` gate pending for a day with every job
+green, the cached page still reporting a job that finished as `in_progress` and
+omitting a job created a second later.
+
+Membership can therefore GROW from a payload, because a creation names the
+commit its run belongs to. What no delivery ever states is that a run went
+AWAY, and that is what the TTL still bounds — the `workflow_jobs_cache` split
+between a fetch proving membership and deliveries maintaining entries, with the
+one asymmetry that a creation is itself a membership statement.
+
 Refused, so the caller flushes: a page other than the first, a page that does
-not hold every run (`total_count` above its own length), a run the page does
-not list (a new check run is a membership change only a fetch settles), and one
-transition the measurement does not cover — a QUEUED run gaining a
-`started_at`. Under id ordering that entry cannot move, but a queued run has no
-start time at all, and one flush is cheaper than resting the rewrite on the
-measurement holding for a field that was null.
+not hold every run (`total_count` above its own length), an insert that would
+spill past `per_page` onto a page this document does not hold, and an insert
+into a page whose commit the run does not share.
 
 A page carries no sha of its own; every ENTRY does, which is what makes a page
-about another commit recognizable and left alone.
+about another commit recognizable and left alone — and what makes an EMPTY page
+unplaceable, since it names no commit for a new run to match.
 
 ## Live job state
 
