@@ -9,7 +9,7 @@ require (
 	modernc.org/sqlite v1.48.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260820210621-2e1261867045 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
