@@ -134,6 +134,53 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	}
 }
 
+// A finishing CI run must not cost the commit its cached page. The last
+// deliveries of a run create a job and start a queued job, and dropping the row
+// for either sends the next reader to GitHub inside the window where GitHub's
+// own listing is furthest behind those very deliveries -- so the refetch stores
+// a view older than the payloads already in hand, and a finished CI sends
+// nothing further to correct it. That is how an `all-builds` gate read a
+// finished job as in_progress for a day.
+func TestDispatch_CheckRunCreated_JoinsThePageInsteadOfFlushingIt(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	started := "2026-07-01T10:00:00Z"
+	seed, err := ghdata.MarshalCacheDoc(ghdata.StoredCheckRunsPage{
+		TotalCount: 1,
+		CheckRuns: []ghdata.StoredCheckRun{
+			{ID: 100, HeadSHA: sha, Name: "build", Status: "completed", StartedAt: &started},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.PutCachedCommitCI(ctx, ghdata.CachedCommitCI{
+		Owner: "org1", Repo: "repo1", Ref: sha, Kind: ghdata.CommitCIKindCheckRuns, Status: 200, Doc: string(seed),
+	}, 30, 1, now, time.Hour))
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
+		"action": "created",
+		"check_run": map[string]any{
+			"id": 300, "head_sha": sha, "status": "queued", "name": "publish",
+			"check_suite": map[string]any{"head_branch": "main"},
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
+
+	got, ok, err := store.GetCachedCommitCI(ctx, "org1", "repo1", sha, ghdata.CommitCIKindCheckRuns, 30, 1, now)
+	require.NoError(t, err)
+	require.True(t, ok, "the page must survive a new job's creation -- the flush is what a stale refetch then fills")
+
+	var page ghdata.StoredCheckRunsPage
+	require.NoError(t, json.Unmarshal([]byte(got.Doc), &page))
+	require.Len(t, page.CheckRuns, 2)
+	assert.Equal(t, int64(300), page.CheckRuns[0].ID, "the newest id heads the id-descending listing")
+	assert.Equal(t, "publish", page.CheckRuns[0].Name)
+	assert.Equal(t, int64(100), page.CheckRuns[1].ID, "the job already there keeps its place and its state")
+	assert.Equal(t, "completed", page.CheckRuns[1].Status)
+}
+
 // TestDispatch_CheckSuite_PendingIgnored: a non-completed check_suite delivery
 // must record NO commit_checks row. GitHub auto-creates a suite per sha for
 // every app with checks:write, and an app that runs no checks leaves its empty

@@ -211,6 +211,11 @@ func checkRun(id int64, status string, startedAt *string) StoredCheckRun {
 	return StoredCheckRun{ID: id, HeadSHA: ciSHA, Name: "build", Status: status, StartedAt: startedAt}
 }
 
+func named(run StoredCheckRun, name string) StoredCheckRun {
+	run.Name = name
+	return run
+}
+
 func checkRunsDoc(t *testing.T, runs ...StoredCheckRun) string {
 	t.Helper()
 	b, err := MarshalCacheDoc(StoredCheckRunsPage{TotalCount: int64(len(runs)), CheckRuns: runs})
@@ -239,6 +244,54 @@ func TestPatchCheckRunsPage_ReplacesInPlace(t *testing.T) {
 	assert.Equal(t, "failure", *page.CheckRuns[1].Conclusion)
 }
 
+// A run the page does not list yet is a member the delivery NAMES, so it is
+// added at its place in the id-descending order rather than costing the row.
+func TestPatchCheckRunsPage_InsertsANewRunInIDOrder(t *testing.T) {
+	started := "2026-07-01T10:00:00Z"
+	doc := checkRunsDoc(t, checkRun(30, "completed", &started), checkRun(10, "completed", &started))
+
+	for _, tc := range []struct {
+		name  string
+		id    int64
+		order []int64
+	}{
+		{"newest id sorts first", 40, []int64{40, 30, 10}},
+		{"a middling id sorts between", 20, []int64{30, 20, 10}},
+		{"the lowest id sorts last", 5, []int64{30, 10, 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := patchCheckRunsPage(doc, 30, 1, checkRun(tc.id, "queued", nil))
+			require.True(t, ok)
+
+			var page StoredCheckRunsPage
+			require.NoError(t, json.Unmarshal([]byte(got), &page))
+			ids := make([]int64, 0, len(page.CheckRuns))
+			for _, cr := range page.CheckRuns {
+				ids = append(ids, cr.ID)
+			}
+			assert.Equal(t, tc.order, ids)
+			assert.Equal(t, int64(len(tc.order)), page.TotalCount, "total_count counts the new member too")
+		})
+	}
+}
+
+// A queued run gaining a start time is an ordinary replacement: the listing
+// sorts on the id, which the transition does not change.
+func TestPatchCheckRunsPage_FillsAStartTimeInPlace(t *testing.T) {
+	started := "2026-07-01T10:00:00Z"
+	doc := checkRunsDoc(t, checkRun(2, "queued", nil), checkRun(1, "completed", &started))
+
+	got, ok := patchCheckRunsPage(doc, 30, 1, checkRun(2, "in_progress", &started))
+	require.True(t, ok)
+
+	var page StoredCheckRunsPage
+	require.NoError(t, json.Unmarshal([]byte(got), &page))
+	assert.Equal(t, []int64{2, 1}, []int64{page.CheckRuns[0].ID, page.CheckRuns[1].ID}, "order is by id, unmoved")
+	assert.Equal(t, "in_progress", page.CheckRuns[0].Status)
+	require.NotNil(t, page.CheckRuns[0].StartedAt)
+	assert.Equal(t, started, *page.CheckRuns[0].StartedAt)
+}
+
 func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
 	started := "2026-07-01T10:00:00Z"
 	full := checkRunsDoc(t, checkRun(1, "in_progress", &started))
@@ -246,11 +299,6 @@ func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
 	t.Run("a page other than the first", func(t *testing.T) {
 		_, ok := patchCheckRunsPage(full, 30, 2, checkRun(1, "completed", &started))
 		assert.False(t, ok)
-	})
-
-	t.Run("a run the page does not list", func(t *testing.T) {
-		_, ok := patchCheckRunsPage(full, 30, 1, checkRun(99, "queued", nil))
-		assert.False(t, ok, "a new check run is a membership change only a fetch settles")
 	})
 
 	t.Run("a page that does not hold every run", func(t *testing.T) {
@@ -263,11 +311,73 @@ func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("a queued run gaining a start time", func(t *testing.T) {
-		queued := checkRunsDoc(t, checkRun(1, "queued", nil))
-		_, ok := patchCheckRunsPage(queued, 30, 1, checkRun(1, "in_progress", &started))
-		assert.False(t, ok, "the one transition whose position the ordering measurement does not cover")
+	t.Run("an insert that would spill onto page 2", func(t *testing.T) {
+		_, ok := patchCheckRunsPage(full, 1, 1, checkRun(99, "queued", nil))
+		assert.False(t, ok, "the page already holds its per_page limit")
 	})
+
+	t.Run("an insert into a page about another commit", func(t *testing.T) {
+		foreign := checkRun(99, "queued", nil)
+		foreign.HeadSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		_, ok := patchCheckRunsPage(full, 30, 1, foreign)
+		assert.False(t, ok, "a run may only join a page its own commit owns")
+	})
+
+	t.Run("an insert into a page that names no commit", func(t *testing.T) {
+		empty := checkRunsDoc(t)
+		_, ok := patchCheckRunsPage(empty, 30, 1, checkRun(99, "queued", nil))
+		assert.False(t, ok, "an empty page carries no sha to match against")
+	})
+}
+
+// The end of a CI run must leave the page STANDING. This is the shape that
+// wedged an `all-builds` gate for a day: a page of finished jobs, the last of
+// them completing, and then another job created moments later. Dropping the row
+// on that creation sends the next reader to GitHub inside the window where
+// GitHub's own listing still reports the finished job as in_progress and does
+// not report the new job at all -- so the refetch stores a view older than the
+// deliveries already in hand, and a finished CI sends nothing further to
+// correct it.
+func TestApplyCheckRunToCommitCI_SurvivesTheEndOfACIRun(t *testing.T) {
+	s := testStore(t)
+	ctx, now := context.Background(), time.Now()
+	started := "2026-07-01T10:00:00Z"
+
+	// ids ascend with creation, and the listing is id-descending.
+	const buildID, testID, publishID = 100, 200, 300
+	seed := checkRunsDoc(t, named(checkRun(testID, "in_progress", &started), "test"), named(checkRun(buildID, "completed", &started), "build"))
+	require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
+		Owner: "org1", Repo: "repo1", Ref: ciSHA, Kind: CommitCIKindCheckRuns, Status: 200, Doc: seed,
+	}, 30, 1, now, time.Hour))
+
+	done := named(checkRun(testID, "completed", &started), "test")
+	success := "success"
+	done.Conclusion = &success
+	applied, err := s.ApplyCheckRunToCommitCI(ctx, "org1", "repo1", done, now, CommitCICacheTTL)
+	require.NoError(t, err)
+	require.True(t, applied, "a listed run is replaced in place")
+
+	// Moments later: the job that only exists because `test` finished.
+	applied, err = s.ApplyCheckRunToCommitCI(ctx, "org1", "repo1", named(checkRun(publishID, "queued", nil), "publish"), now, CommitCICacheTTL)
+	require.NoError(t, err)
+	require.True(t, applied, "a creation names its commit, so it joins the page instead of costing it")
+
+	got, ok, err := s.GetCachedCommitCI(ctx, "org1", "repo1", ciSHA, CommitCIKindCheckRuns, 30, 1, now)
+	require.NoError(t, err)
+	require.True(t, ok, "the row must survive the last deliveries of the run -- dropping it here is the wedge")
+
+	var page StoredCheckRunsPage
+	require.NoError(t, json.Unmarshal([]byte(got.Doc), &page))
+	require.Len(t, page.CheckRuns, 3)
+	assert.Equal(t, int64(3), page.TotalCount)
+	assert.Equal(t, []int64{publishID, testID, buildID},
+		[]int64{page.CheckRuns[0].ID, page.CheckRuns[1].ID, page.CheckRuns[2].ID})
+
+	// The whole point: what a reader now computes from this page.
+	assert.Equal(t, "completed", page.CheckRuns[1].Status, "`test` stays finished; this is what read in_progress for a day")
+	require.NotNil(t, page.CheckRuns[1].Conclusion)
+	assert.Equal(t, "success", *page.CheckRuns[1].Conclusion)
+	assert.Equal(t, "queued", page.CheckRuns[0].Status)
 }
 
 // A page about a DIFFERENT commit is not this delivery's business. The page

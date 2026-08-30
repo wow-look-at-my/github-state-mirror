@@ -3,6 +3,8 @@ package ghdata
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -136,10 +138,11 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 	return nil
 }
 
-// ApplyCheckRunToCommitCI rewrites a run's entry in every cached check-runs
-// page that already lists it, reporting false when the caller should flush
-// instead. See "The check-run rewrite" in docs/webhooks/invalidations.md for
-// the ordering measurement that makes an in-place rewrite safe.
+// ApplyCheckRunToCommitCI lands a run on every cached check-runs page about
+// its commit -- replacing its entry, or adding a run the page does not list
+// yet -- and reports false when the caller should flush instead. See "The
+// check-run rewrite" in docs/webhooks/invalidations.md for the ordering
+// measurement that makes each placement a fact rather than a hope.
 func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) (bool, error) {
 	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
 		return false, nil
@@ -164,7 +167,7 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Status 200: patchCheckRunsPage only succeeds against a page that already lists this run.
+			// Status 200: patchCheckRunsPage only succeeds against a page of this run's own commit.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return false, perr
@@ -174,10 +177,18 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 	return applied, nil
 }
 
-// checkRunsPageDescribes reports whether a page is about this commit, from its entries' own head_sha (the page carries none).
+// checkRunsPageDescribes reports whether a stored page is about this commit.
 func checkRunsPageDescribes(doc, sha string) bool {
 	var page StoredCheckRunsPage
-	if err := json.Unmarshal([]byte(doc), &page); err != nil || len(page.CheckRuns) == 0 {
+	if err := json.Unmarshal([]byte(doc), &page); err != nil {
+		return false
+	}
+	return pageDescribesSHA(&page, sha)
+}
+
+// pageDescribesSHA reports whether a page is about this commit, from its entries' own head_sha (the page carries none).
+func pageDescribesSHA(page *StoredCheckRunsPage, sha string) bool {
+	if len(page.CheckRuns) == 0 {
 		return false
 	}
 	for _, cr := range page.CheckRuns {
@@ -188,17 +199,22 @@ func checkRunsPageDescribes(doc, sha string) bool {
 	return true
 }
 
-// patchCheckRunsPage rewrites a stored check-runs page from the delivery,
-// replacing the run's entry where it stands.
+// patchCheckRunsPage rewrites a stored check-runs page from the delivery. It
+// replaces the run's entry where it stands, or INSERTS a run the page does not
+// list yet at its place in the id order.
 //
-// Reports false -- the caller drops the row instead -- for a page other than
-// the first, a page that does not hold every run (total_count above its own
-// length), a run the page does not list (a new check run is a membership
-// change only a fetch settles), and the one transition whose POSITION could
-// move: a queued run gaining a `started_at`. The listing is ordered by id, so
-// an update cannot move an entry -- but a queued run has no start time at all,
-// and refusing that single case costs one flush instead of resting the whole
-// rewrite on the ordering measurement holding for a field that was null.
+// The insert is what keeps a finishing CI run out of the flush path. The last
+// deliveries of a run are a new job's creation and a queued job's start, and
+// dropping the row for either sends the next reader to GitHub at the exact
+// moment GitHub's own listing is furthest behind these deliveries -- the
+// refetch then stores a view OLDER than what the payloads already carried,
+// and no further delivery for that commit ever arrives to correct it.
+//
+// Reports false -- the caller drops the row instead -- only for what a
+// delivery genuinely cannot answer: a later page, a page that
+// does not hold every run (total_count above its own length), an insert that
+// would not fit on the page, and an insert into a page whose commit this run
+// does not share.
 func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (string, bool) {
 	if page != 1 {
 		return "", false
@@ -215,13 +231,13 @@ func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (st
 		if stored.CheckRuns[i].ID != run.ID {
 			continue
 		}
-		if stored.CheckRuns[i].StartedAt == nil && run.StartedAt != nil {
-			return "", false
-		}
+		// A queued run gaining a `started_at` is replaced like any other
+		// transition: the listing sorts on the id, which this delivery does
+		// not change, so filling a null field cannot move the entry.
 		stored.CheckRuns[i] = run
 		found = true
 	}
-	if !found {
+	if !found && !insertCheckRun(&stored, perPage, run) {
 		return "", false
 	}
 	rendered, err := MarshalCacheDoc(stored)
@@ -229,6 +245,27 @@ func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (st
 		return "", false
 	}
 	return string(rendered), true
+}
+
+// insertCheckRun adds a run the page does not list yet, at its place in the
+// id-descending order the listing uses, and reports false when the page cannot
+// take it. A creation names the commit the run belongs to, so membership GROWS
+// from the payload; what no delivery states is that a run went away, which is
+// what the TTL still bounds.
+func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun) bool {
+	// A page carries no sha of its own -- only its entries do -- so a page
+	// with nothing in it names no commit and cannot be shown to be this run's.
+	if !pageDescribesSHA(page, run.HeadSHA) {
+		return false
+	}
+	// An added entry would spill onto the next page, which this document does not hold.
+	if int64(len(page.CheckRuns))+1 > perPage {
+		return false
+	}
+	at := sort.Search(len(page.CheckRuns), func(i int) bool { return page.CheckRuns[i].ID < run.ID })
+	page.CheckRuns = slices.Insert(page.CheckRuns, at, run)
+	page.TotalCount = int64(len(page.CheckRuns))
+	return true
 }
 
 // InvalidateCommitCIForRefKind drops one ref spelling's snapshots of ONE kind.
