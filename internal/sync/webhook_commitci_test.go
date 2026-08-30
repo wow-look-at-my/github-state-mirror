@@ -135,7 +135,7 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 }
 
 // A finishing CI run must not cost the commit its cached page. The last
-// deliveries of a run create a job and start a queued one, and dropping the row
+// deliveries of a run create a job and start a queued job, and dropping the row
 // for either sends the next reader to GitHub inside the window where GitHub's
 // own listing is furthest behind those very deliveries -- so the refetch stores
 // a view older than the payloads already in hand, and a finished CI sends

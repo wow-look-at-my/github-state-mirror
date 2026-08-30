@@ -139,10 +139,10 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 }
 
 // ApplyCheckRunToCommitCI lands a run on every cached check-runs page about
-// its commit -- replacing its entry, or adding one the page does not list yet
-// -- and reports false when the caller should flush instead. See "The
+// its commit -- replacing its entry, or adding a run the page does not list
+// yet -- and reports false when the caller should flush instead. See "The
 // check-run rewrite" in docs/webhooks/invalidations.md for the ordering
-// measurement that makes both placements a fact rather than a hope.
+// measurement that makes each placement a fact rather than a hope.
 func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) (bool, error) {
 	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
 		return false, nil
@@ -205,13 +205,13 @@ func pageDescribesSHA(page *StoredCheckRunsPage, sha string) bool {
 //
 // The insert is what keeps a finishing CI run out of the flush path. The last
 // deliveries of a run are a new job's creation and a queued job's start, and
-// dropping the row for either one sends the next reader to GitHub at the exact
+// dropping the row for either sends the next reader to GitHub at the exact
 // moment GitHub's own listing is furthest behind these deliveries -- the
-// refetch then stores a view OLDER than the one the payloads already carried,
+// refetch then stores a view OLDER than what the payloads already carried,
 // and no further delivery for that commit ever arrives to correct it.
 //
 // Reports false -- the caller drops the row instead -- only for what a
-// delivery genuinely cannot answer: a page other than the first, a page that
+// delivery genuinely cannot answer: a later page, a page that
 // does not hold every run (total_count above its own length), an insert that
 // would not fit on the page, and an insert into a page whose commit this run
 // does not share.
@@ -258,7 +258,7 @@ func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun
 	if !pageDescribesSHA(page, run.HeadSHA) {
 		return false
 	}
-	// One more entry would spill onto page 2, which this document does not hold.
+	// An added entry would spill onto the next page, which this document does not hold.
 	if int64(len(page.CheckRuns))+1 > perPage {
 		return false
 	}

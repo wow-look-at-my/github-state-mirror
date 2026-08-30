@@ -331,8 +331,8 @@ func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
 }
 
 // The end of a CI run must leave the page STANDING. This is the shape that
-// wedged an `all-builds` gate for a day: a two-job page, the second job
-// completing, and then a third job created one second later. Dropping the row
+// wedged an `all-builds` gate for a day: a page of finished jobs, the last of
+// them completing, and then another job created moments later. Dropping the row
 // on that creation sends the next reader to GitHub inside the window where
 // GitHub's own listing still reports the finished job as in_progress and does
 // not report the new job at all -- so the refetch stores a view older than the
@@ -357,7 +357,7 @@ func TestApplyCheckRunToCommitCI_SurvivesTheEndOfACIRun(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, applied, "a listed run is replaced in place")
 
-	// One second later: the job that only exists because `test` finished.
+	// Moments later: the job that only exists because `test` finished.
 	applied, err = s.ApplyCheckRunToCommitCI(ctx, "org1", "repo1", named(checkRun(publishID, "queued", nil), "publish"), now, CommitCICacheTTL)
 	require.NoError(t, err)
 	require.True(t, applied, "a creation names its commit, so it joins the page instead of costing it")
