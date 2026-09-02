@@ -75,7 +75,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       # See docs/ci.md: do not add an explicit cache-upload step here.
-      - uses: wow-look-at-my/go-toolchain@v1
+      - uses: wow-look-at-my/go-toolchain@master
         with:
           # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
           cosmo-platforms: linux/amd64,windows/amd64
