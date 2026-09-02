@@ -34,15 +34,21 @@ declare module "playwright" {
         waitForFunction(fn: () => unknown, arg?: unknown, options?: { timeout?: number }): Promise<unknown>;
         waitForTimeout(ms: number): Promise<void>;
         evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
+        $eval<T>(selector: string, fn: (el: Element) => T): Promise<T>;
+        click(selector: string, options?: { position?: { x: number; y: number } }): Promise<void>;
+        getAttribute(selector: string, name: string): Promise<string | null>;
+        keyboard: { press(key: string): Promise<void> };
+        screenshot(options: { path: string; fullPage?: boolean }): Promise<Buffer>;
+        waitForSelector(selector: string): Promise<unknown>;
     }
 
     interface Browser {
-        newPage(): Promise<Page>;
+        newPage(options?: { viewport?: { width: number; height: number } }): Promise<Page>;
         close(): Promise<void>;
     }
 
     interface BrowserType {
-        launch(options?: { executablePath?: string }): Promise<Browser>;
+        launch(options?: { executablePath?: string; args?: string[] }): Promise<Browser>;
     }
 
     const chromium: BrowserType;
