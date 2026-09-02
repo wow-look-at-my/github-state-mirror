@@ -46,12 +46,12 @@ func mintCached(t *testing.T, store *ghdata.Store) bool {
 func TestInvalidateMintOnAuthFailure(t *testing.T) {
 	_, store, _, _ := respCacheStack(t)
 
-	// 403 permission verdict: the mint drops.
+	//  permission verdict: the mint drops.
 	seedMint(t, store, "ghs_tok1")
 	invalidateMintOnAuthFailure(context.Background(), store, "ghs_tok1", authFailResp(403, nil))
 	assert.False(t, mintCached(t, store), "a 403 on the minted token must drop the cached mint")
 
-	// 401 drops too (revoked/expired-out-of-band token).
+	//  drops too (revoked/expired-out-of-band token).
 	seedMint(t, store, "ghs_tok1")
 	invalidateMintOnAuthFailure(context.Background(), store, "ghs_tok1", authFailResp(401, nil))
 	assert.False(t, mintCached(t, store))

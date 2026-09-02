@@ -73,7 +73,7 @@ func TestCachedCodeQualitySetup_NotConfiguredIsCacheable(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.codeQualityHits))
 }
 
-// The PATCH is the ONLY change signal the mirror can see, so proxying one must
+// The PATCH is the ONLY change signal the mirror can see, so proxying must
 // drop the row — otherwise a caller reads its own stale config for the TTL.
 func TestCachedCodeQualitySetup_ProxiedWriteFlushes(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -103,7 +103,7 @@ func TestCachedCodeQualitySetup_RepositoryEventFlushes(t *testing.T) {
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", codeQualityTarget, nil)).Header().Get(cacheHeader))
 }
 
-// A 403 ("not available for this caller") is relayed and never stored: nothing
+// A ("not available for this caller") is relayed and never stored: nothing
 // observable would tell us when the feature becomes available.
 func TestCachedCodeQualitySetup_NonOKRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

@@ -133,7 +133,7 @@ func TestPassthroughReasons_EndToEnd(t *testing.T) {
 			assert.Equal(t, tc.wantReason, e.Reason, "recorded reason for %s", tc.target)
 
 			if tc.wantQuery != "" {
-				// The group's sampled shape is the most recent non-empty one.
+				// The group's sampled shape is the most recent non-empty.
 				assert.Equal(t, tc.wantQuery, groupFor(t, router, svc, "GET /repos/{owner}/{repo}/actions/runs").PassQuery)
 			}
 		})
@@ -176,7 +176,7 @@ func TestPassthroughReason_MethodNotAllowed(t *testing.T) {
 	require.True(t, found, "the status publish must be in the log")
 }
 
-// groupFor reads one route-shape group out of the admin payload.
+// groupFor reads route-shape group out of the admin payload.
 func groupFor(t *testing.T, router http.Handler, svc *auth.Service, key string) requestGroupSnapshot {
 	t.Helper()
 	for _, g := range requestsSnapshot(t, router, svc).Groups {
@@ -211,7 +211,7 @@ func lastPassthrough(t *testing.T, router http.Handler, svc *auth.Service, targe
 		}
 	}
 	snap := requestsSnapshot(t, router, svc)
-	for _, e := range snap.Recent { // newest first
+	for _, e := range snap.Recent { // newest
 		if e.Path == path && e.Disposition == DispPassthrough {
 			return e
 		}

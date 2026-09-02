@@ -13,7 +13,7 @@ import (
 )
 
 // prFields is the GraphQL selection set for a pull request node, shared between
-// the org-level query and the per-repo PR pagination query so the two stay in
+// the org-level query and the per-repo PR pagination query so the stay in
 // sync and both unmarshal into gqlPR.
 const prFields = `
   number
@@ -73,7 +73,7 @@ query($org: String!, $repoCursor: String) {
 `
 
 // repoPRsQuery paginates the open PRs of a single repository, used to fetch any
-// PRs beyond the first 100 returned by orgDataQuery.
+// PRs beyond the returned by orgDataQuery.
 const repoPRsQuery = `
 query($owner: String!, $name: String!, $prCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -245,7 +245,7 @@ func (c *Client) GetOrgData(ctx context.Context, orgLogin string) (*OrgData, err
 				addPR(result, orgLogin, gr.Name, repoKey, gpr)
 			}
 
-			// Repos with more than 100 open PRs need follow-up pages.
+			// Repos with more than open PRs need follow-up pages.
 			if gr.PullRequests.PageInfo.HasNextPage {
 				if err := c.fetchRemainingPRs(ctx, result, orgLogin, gr.Name, repoKey, gr.PullRequests.PageInfo.EndCursor); err != nil {
 					return nil, err

@@ -79,7 +79,7 @@ func TestOrderOf_SubjectGrain(t *testing.T) {
 			"pr:org1/repo1#12", "pull_request.updated_at",
 		},
 		{
-			// One commit carries many contexts; they supersede only themselves.
+			//  commit carries many contexts; they supersede only themselves.
 			"status keys sha AND context", "status",
 			map[string]any{"repository": repoObj(nil), "sha": "abc123", "context": "ci/build", "updated_at": "2026-08-14T15:00:00Z"},
 			"status:org1/repo1:abc123:ci/build", "updated_at",
@@ -96,7 +96,7 @@ func TestOrderOf_SubjectGrain(t *testing.T) {
 			"check_run:org1/repo1:99", "check_run.completed_at",
 		},
 		{
-			// A review is its own subject: two reviews on one PR are independent.
+			// A review is its own subject: reviews on PR are independent.
 			"pull_request_review keys the review", "pull_request_review",
 			map[string]any{"repository": repoObj(nil), "review": map[string]any{"id": 7, "submitted_at": "2026-08-14T15:00:00Z"}},
 			"review:org1/repo1:7", "review.submitted_at",
@@ -138,7 +138,7 @@ func TestOrderOf_UnorderableEvents(t *testing.T) {
 	}
 }
 
-// Subjects are case-normalized on the repo, so two spellings of one repo share
+// Subjects are case-normalized on the repo, so spellings of repo share
 // a watermark rather than ordering against each other.
 func TestOrderOf_RepoKeyIsNormalized(t *testing.T) {
 	a, ok := orderEvent(t, "pull_request", map[string]any{

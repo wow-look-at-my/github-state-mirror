@@ -112,7 +112,7 @@ func TestCompactionKeepsLiveEvents(t *testing.T) {
 		r.RecordWebhook(now.Add(-25*time.Hour), time.Millisecond, "old", "", "", "o/r", "applied")
 	}
 	// Everything so far is instantly outside retention; head grows and
-	// compaction has triggered at least once. Now record live events.
+	// compaction has triggered at least. Now record live events.
 	for i := 0; i < 5; i++ {
 		r.RecordWebhook(now, time.Millisecond, "push", "", "", "o/r", "applied")
 	}
@@ -168,11 +168,11 @@ func TestConcurrentAccess(t *testing.T) {
 
 // TestSnapshotRange: the async-history read returns exactly the events
 // overlapping the window — the client's whole defence against decoding 100k
-// events to paint one hour.
+// events to paint hour.
 func TestSnapshotRange(t *testing.T) {
 	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	r := &Recorder{retention: DefaultRetention, maxEvents: DefaultMaxEvents, now: func() time.Time { return base }}
-	// One event per hour for the last 6 hours, each 1 minute long.
+	//  event per hour for the last hours, each minute long.
 	for i := 6; i >= 1; i-- {
 		r.RecordWebhook(base.Add(-time.Duration(i)*time.Hour), time.Minute, "push", "", "d", "o/r", "applied")
 	}
@@ -190,7 +190,7 @@ func TestSnapshotRange(t *testing.T) {
 	straddle := r.SnapshotRange(base.Add(-45*time.Minute), base)
 	require.Equal(t, 1, len(straddle.Events))
 
-	// Zero bounds mean the whole retained window.
+	//  bounds mean the whole retained window.
 	all := r.SnapshotRange(time.Time{}, time.Time{})
 	assert.Equal(t, 7, len(all.Events))
 

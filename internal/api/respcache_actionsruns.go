@@ -15,8 +15,8 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// Implements the cached workflow-runs route (tier 2 of the cache contract).
-// See docs/cache/rest-routes.md for the two request shapes, their invalidation
+// Implements the cached workflow-runs route (tier of the cache contract).
+// See docs/cache/rest-routes.md for the request shapes, their invalidation
 // signals, and the completeness proof that gates the repo-wide listing.
 
 const (
@@ -61,9 +61,9 @@ func (s workflowRunsShape) filter() ghdata.WorkflowRunFilter {
 
 // parseWorkflowRunsShape reports the shape of an /actions/runs query and
 // whether the cache models it. head_sha (a full hex object id, lowercased),
-// status (one of GitHub's documented values), and branch (a bounded ref
+// status (of GitHub's documented values), and branch (a bounded ref
 // name) are modeled, as are the standard per_page/page bounds; the modeled
-// filters are canonicalized into one sorted, escaped key component. Unknown
+// filters are canonicalized into sorted, escaped key component. Unknown
 // params, repeated params, or a malformed value make it non-cacheable.
 func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 	shape := workflowRunsShape{PerPage: workflowRunsDefaultPerPage, Page: 1}
@@ -115,7 +115,7 @@ func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 // isControlRune rejects C0/DEL so a caller cannot smuggle control bytes into a cache key.
 func isControlRune(r rune) bool { return r < 0x20 || r == 0x7f }
 
-// cachedWorkflowRuns serves one page of a workflow-runs listing: the
+// cachedWorkflowRuns serves page of a workflow-runs listing: the
 // repo-wide shape rebuilt from webhook-maintained truth rows, the per-commit
 // shape from a stored whole-doc snapshot. Both fetch and absorb on a miss;
 // shapes the cache does not model pass through.
@@ -170,7 +170,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 
 	parsed, absorbed := absorbWorkflowRuns(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 and 5xx: relayed verbatim, never stored.
+		// Includes and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -192,7 +192,7 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, doc, false)
 }
 
-// workflowRunsFromTruth rebuilds one page only behind the completeness proof -- see docs/cache/rest-routes.md.
+// workflowRunsFromTruth rebuilds page only behind the completeness proof -- see docs/cache/rest-routes.md.
 func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, shape workflowRunsShape, now time.Time) ([]byte, bool) {
 	complete, err := h.store.WorkflowRunsListComplete(r.Context(), owner, repo, shape.Filters, now)
 	if err != nil {
@@ -224,7 +224,7 @@ func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, sh
 	return doc, true
 }
 
-// absorbWorkflowRunsIntoTruth records every listed run, and on a short page-1 answer marks the set complete -- see docs/cache/rest-routes.md.
+// absorbWorkflowRunsIntoTruth records every listed run, and on a short page- answer marks the set complete -- see docs/cache/rest-routes.md.
 func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) {
 	ctx := r.Context()
 	for _, run := range parsed.Runs {
@@ -259,7 +259,7 @@ func nullIfEmpty(s string) *string {
 
 // workflowRunsResourceKey names the resource behind a runs request for the
 // reveal layer's deny cache. The shape is part of the key so a denial
-// recorded for one query cannot be replayed for another.
+// recorded for query cannot be replayed for another.
 func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string {
 	key := owner + "/" + repo + "/actions/runs@" + shape.HeadSHA
 	if shape.Filters != "" {
@@ -274,7 +274,7 @@ type (
 	workflowRunsJSON    = ghdata.StoredWorkflowRunsPage
 )
 
-// parsedWorkflowRuns is one absorbed answer: rebuild items plus truth-only fields (head_branch, run_attempt).
+// parsedWorkflowRuns is absorbed answer: rebuild items plus truth-only fields (head_branch, run_attempt).
 type parsedWorkflowRuns struct {
 	TotalCount int64
 	Runs       []parsedWorkflowRun
@@ -326,11 +326,11 @@ func renderWorkflowRuns(total int64, items []workflowRunItemJSON) ([]byte, error
 	return marshalTrimmed(workflowRunsJSON{TotalCount: total, WorkflowRuns: items})
 }
 
-// absorbWorkflowRuns parses an /actions/runs 200. Reports false -- serve
+// absorbWorkflowRuns parses an /actions/runs. Reports false -- serve
 // verbatim, store nothing -- for any other status or any shape the model
 // cannot hold: total_count and the workflow_runs array must both be PRESENT,
 // and every run must carry a positive id, a status, and a full-hex head sha.
-// An empty workflow_runs with total_count 0 is a valid, cacheable answer
+// An empty workflow_runs with total_count is a valid, cacheable answer
 // (exactly the "no runs yet" verdict the zombie probe is after).
 func absorbWorkflowRuns(status int, body []byte) (parsedWorkflowRuns, bool) {
 	if status != http.StatusOK {

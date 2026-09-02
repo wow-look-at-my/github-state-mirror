@@ -11,7 +11,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// Store wraps sqlc-generated queries plus transaction logic for the one global truth store.
+// Store wraps sqlc-generated queries plus transaction logic for the global truth store.
 type Store struct {
 	db *sql.DB
 	q  *dbgen.Queries
@@ -31,7 +31,7 @@ func (s *Store) Ping(ctx context.Context) error {
 // GrantTTL is how long an access grant stays valid without being re-earned.
 var GrantTTL = 24 * time.Hour
 
-// DenyTTL is how long an authoritative deny verdict (404 / non-rate-limit 403)
+// DenyTTL is how long an authoritative deny verdict (/ non-rate-limit)
 var DenyTTL = 5 * time.Minute
 
 // reconcileGrace protects webhook-absorbed truth from a racing fetch: an org
@@ -67,7 +67,7 @@ func (s *Store) ListReposByOwner(ctx context.Context, owner string) ([]dbgen.Rep
 }
 
 // ListVisibleReposByOwner returns the owner's repos the reveal layer permits
-// for one principal: public repos plus repos with an unexpired grant.
+// for principal: public repos plus repos with an unexpired grant.
 func (s *Store) ListVisibleReposByOwner(ctx context.Context, owner, principal string, now time.Time) ([]dbgen.Repo, error) {
 	return s.q.ListVisibleReposByOwner(ctx, dbgen.ListVisibleReposByOwnerParams{
 		Owner:     owner,
@@ -141,7 +141,7 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 // the fetching principal's grants for the owner. It is UPSERT-plus-guarded-
 // reconcile, never delete-then-insert:
 //
-//   - Repo rows are only ever upserted. A fetch is one principal's PARTIAL
+//   - Repo rows are only ever upserted. A fetch is principal's PARTIAL
 //     view (it omits repos that principal cannot see, and archived repos), so
 //     absence from a fetch can never prove a repo is gone; deletion authority
 //     belongs to repository webhooks (DeleteRepoCascade).
@@ -247,7 +247,7 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 	return nil
 }
 
-// OrgSyncData is one org-repos fetch's snapshot, ready to merge into truth.
+// OrgSyncData is org-repos fetch's snapshot, ready to merge into truth.
 type OrgSyncData struct {
 	Repos      []dbgen.Repo
 	PRsByRepo  map[string][]dbgen.PullRequest       // key: "owner/repo"
@@ -299,7 +299,7 @@ func (s *Store) HasGrant(ctx context.Context, principal, owner, repo string, now
 	return g.ExpiresAt > rfc3339(now), nil
 }
 
-// RevokeGrant deletes a principal's grant for a repo (an authoritative 403
+// RevokeGrant deletes a principal's grant for a repo (an authoritative
 // said their access is gone).
 func (s *Store) RevokeGrant(ctx context.Context, principal, owner, repo string) error {
 	return s.q.DeleteAccessGrant(ctx, dbgen.DeleteAccessGrantParams{
@@ -307,15 +307,15 @@ func (s *Store) RevokeGrant(ctx context.Context, principal, owner, repo string) 
 	})
 }
 
-// DenyVerdict is a cached authoritative "no" from GitHub for one principal's
-// probe of one resource.
+// DenyVerdict is a cached authoritative "no" from GitHub for principal's
+// probe of resource.
 type DenyVerdict struct {
 	Status  int
 	Message string
 }
 
-// RecordDenyVerdict caches GitHub's authoritative 404/403 answer to one
-// principal's probe of one resource, for DenyTTL.
+// RecordDenyVerdict caches GitHub's authoritative / answer to
+// principal's probe of resource, for DenyTTL.
 func (s *Store) RecordDenyVerdict(ctx context.Context, principal, kind, key, owner, repo string, status int, message string, now time.Time) error {
 	return s.q.UpsertDenyVerdict(ctx, dbgen.UpsertDenyVerdictParams{
 		Principal: principal, ResourceKind: kind, ResourceKey: key,
@@ -325,8 +325,8 @@ func (s *Store) RecordDenyVerdict(ctx context.Context, principal, kind, key, own
 	})
 }
 
-// GetDenyVerdict returns the unexpired deny verdict for one principal's
-// resource, or (zero, false) when none applies.
+// GetDenyVerdict returns the unexpired deny verdict for principal's
+// resource, or (, false) when none applies.
 func (s *Store) GetDenyVerdict(ctx context.Context, principal, kind, key string, now time.Time) (DenyVerdict, bool, error) {
 	row, err := s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{
 		Principal: principal, ResourceKind: kind, ResourceKey: key,
@@ -356,7 +356,7 @@ func (s *Store) PruneAccessControl(ctx context.Context, now time.Time) error {
 // pruneInterval throttles the opportunistic prune: the grant-writing paths
 const pruneInterval = 10 * time.Minute
 
-// maybePruneAccessControl runs PruneAccessControl at most once per
+// maybePruneAccessControl runs PruneAccessControl at most per
 // pruneInterval, best-effort: a failure is logged and never propagated (the
 // write that triggered it has already succeeded).
 func (s *Store) maybePruneAccessControl(ctx context.Context, now time.Time) {
@@ -374,10 +374,10 @@ func (s *Store) maybePruneAccessControl(ctx context.Context, now time.Time) {
 
 // ---- shared helpers ----
 
-// upsertPRTx merges one source's view of a PR into truth, stamping
-// touched_at, and reports whether the write was applied. It is the ONE place
+// upsertPRTx merges source's view of a PR into truth, stamping
+// touched_at, and reports whether the write was applied. It is the place
 // every open-PR write passes through, which is why the closure guard lives
-// here rather than at the four call sites.
+// here rather than at the call sites.
 func upsertPRTx(ctx context.Context, q *dbgen.Queries, pr dbgen.PullRequest, touchedAt string) (bool, error) {
 	blocked, err := prClosureBlocks(ctx, q, pr)
 	if err != nil || blocked {

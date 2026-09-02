@@ -57,7 +57,7 @@ func debounceReq(target, token string) *http.Request {
 }
 
 // fireConcurrent sends n copies of the request built by mk through h, all in
-// flight at once, and returns their recorders once every one has completed.
+// flight at, and returns their recorders every has completed.
 func fireConcurrent(h http.Handler, n int, mk func(i int) *http.Request) []*httptest.ResponseRecorder {
 	recs := make([]*httptest.ResponseRecorder, n)
 	var wg sync.WaitGroup
@@ -74,7 +74,7 @@ func fireConcurrent(h http.Handler, n int, mk func(i int) *http.Request) []*http
 }
 
 // TestDebounce_CoalescesIdenticalReads is the core promise: identical polls
-// arriving inside the window cost ONE upstream call, and every one of them is
+// arriving inside the window cost upstream call, and every of them is
 // served that same response.
 func TestDebounce_CoalescesIdenticalReads(t *testing.T) {
 	u := &countingUpstream{}
@@ -98,7 +98,7 @@ func TestDebounce_CoalescesIdenticalReads(t *testing.T) {
 }
 
 // TestDebounce_NeverSharesAcrossCredentials is THE security test. The
-// passthrough has no reveal gate — GitHub decides per token — so two callers
+// passthrough has no reveal gate — GitHub decides per token — so callers
 // must never be served each other's answer, however identical their requests
 // look. Different tokens = different batches = different upstream calls.
 func TestDebounce_NeverSharesAcrossCredentials(t *testing.T) {
@@ -111,7 +111,7 @@ func TestDebounce_NeverSharesAcrossCredentials(t *testing.T) {
 	t.Cleanup(func() { d.Drain(2 * time.Second) })
 	h := d.Wrap(u.handler())
 
-	// Same URL, same instant, two different credentials.
+	// Same URL, same instant, different credentials.
 	tokens := []string{"tok-alice", "tok-bob", "tok-alice", "tok-bob"}
 	recs := fireConcurrent(h, len(tokens), func(i int) *http.Request {
 		return debounceReq("/repos/private-org/secret/actions/runs?status=queued", tokens[i])
@@ -170,9 +170,9 @@ func TestDebounce_KeyedByRequestShape(t *testing.T) {
 
 // TestDebounce_IneligibleRequestsForwardImmediately: the exclusions are not
 // just uncoalesced, they are UNDELAYED — an ineligible request must not pay
-// the window. Writes are excluded because two identical POSTs are two intents;
+// the window. Writes are excluded because identical POSTs are intents;
 // conditional and Range reads because their answer depends on caller state the
-// key cannot capture (a 304 against someone else's etag is a wrong answer).
+// key cannot capture (a against someone else's etag is a wrong answer).
 func TestDebounce_IneligibleRequestsForwardImmediately(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -248,7 +248,7 @@ func TestDebounce_HoldsForTheFullWindow(t *testing.T) {
 	assert.Equal(t, "1", w.Header().Get(debounceBatchHeader), "a batch of one saved nothing, honestly reported")
 }
 
-// TestDebounce_ArrivalAfterTheFetchStartsGetsAFreshBatch: once a batch's call
+// TestDebounce_ArrivalAfterTheFetchStartsGetsAFreshBatch: a batch's call
 // is issued, it is closed. A request arriving later must never be handed an
 // answer that was already in flight before it asked.
 func TestDebounce_ArrivalAfterTheFetchStartsGetsAFreshBatch(t *testing.T) {
@@ -264,7 +264,7 @@ func TestDebounce_ArrivalAfterTheFetchStartsGetsAFreshBatch(t *testing.T) {
 		first <- w
 	}()
 
-	// Arrive while the first batch is mid-fetch (window closed, call issued).
+	// Arrive while the batch is mid-fetch (window closed, call issued).
 	time.Sleep(120 * time.Millisecond)
 	late := httptest.NewRecorder()
 	h.ServeHTTP(late, debounceReq("/repos/o/r/x", "tok"))
@@ -275,7 +275,7 @@ func TestDebounce_ArrivalAfterTheFetchStartsGetsAFreshBatch(t *testing.T) {
 }
 
 // TestDebounce_WaiterCancellationDoesNotKillTheBatch: the batch fetch runs on a
-// context detached from every waiter (the freshness-fetch doctrine), so one
+// context detached from every waiter (the freshness-fetch doctrine), so
 // caller hanging up must not cost the others their answer.
 func TestDebounce_WaiterCancellationDoesNotKillTheBatch(t *testing.T) {
 	u := &countingUpstream{delay: 100 * time.Millisecond}
@@ -283,7 +283,7 @@ func TestDebounce_WaiterCancellationDoesNotKillTheBatch(t *testing.T) {
 	t.Cleanup(func() { d.Drain(3 * time.Second) })
 	h := d.Wrap(u.handler())
 
-	// The first arrival, whose request is cloned for the batch, disconnects almost immediately.
+	// The arrival, whose request is cloned for the batch, disconnects almost immediately.
 	gone := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -320,7 +320,7 @@ func TestDebounce_OversizedResponseFallsBackPerWaiter(t *testing.T) {
 
 	recs := fireConcurrent(h, 3, func(int) *http.Request { return debounceReq("/repos/o/r/big", "tok") })
 
-	// One batch attempt (discarded) plus one direct call per waiter.
+	//  batch attempt (discarded) plus direct call per waiter.
 	assert.Equal(t, 4, u.count(), "waiters refetch individually rather than share a truncated body")
 	for i, w := range recs {
 		assert.Equal(t, http.StatusOK, w.Code, "waiter %d", i)
@@ -329,7 +329,7 @@ func TestDebounce_OversizedResponseFallsBackPerWaiter(t *testing.T) {
 }
 
 // TestDebounce_SharesNon200Answers: an error is a real answer to an identical
-// question. Coalescing must not quietly convert a shared 404 into N calls.
+// question. Coalescing must not quietly convert a shared into N calls.
 func TestDebounce_SharesNon200Answers(t *testing.T) {
 	u := &countingUpstream{status: http.StatusNotFound, body: func(*http.Request) string {
 		return `{"message":"Not Found"}`
@@ -386,7 +386,7 @@ func TestDebounce_DrainCutsTheWindowShort(t *testing.T) {
 	}
 }
 
-// TestDebounce_NilIsInert: a window of 0 disables the feature outright, and the
+// TestDebounce_NilIsInert: a window of disables the feature outright, and the
 // nil Debouncer that represents it must be safe on every method.
 func TestDebounce_NilIsInert(t *testing.T) {
 	var d *Debouncer

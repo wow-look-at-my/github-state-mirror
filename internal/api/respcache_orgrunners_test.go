@@ -43,7 +43,7 @@ func TestCachedOrgRunners_MissAbsorbHit(t *testing.T) {
 }
 
 // Never shared across credentials: an admin-scoped read must not leak
-// between two callers.
+// between callers.
 func TestCachedOrgRunners_NeverSharedAcrossCredentials(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -68,7 +68,7 @@ func TestCachedOrgRunners_ShapeGuards(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.orgRunnersHits))
 }
 
-// A 403 (not an admin) relays unstored, never a cached verdict.
+// A (not an admin) relays unstored, never a cached verdict.
 func TestCachedOrgRunners_ForbiddenRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.orgRunners = func(w http.ResponseWriter, _ *http.Request) {

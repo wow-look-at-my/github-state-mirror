@@ -10,9 +10,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Implements the single-PR DIFF read's cached 406 verdicts (tier 2 of the
+// Implements the single-PR DIFF read's cached verdicts (tier of the
 
-// pullDiff406TTL backstops a stale 406 verdict; webhooks flush sooner.
+// pullDiff406TTL backstops a stale verdict; webhooks flush sooner.
 const pullDiff406TTL = 24 * time.Hour
 
 // acceptsPullDiff reports the exact unified-diff Accept pr-minder sends; multiple ranges keep the plain passthrough.
@@ -57,7 +57,7 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	defer resp.Body.Close()
 
 	if overflow || resp.StatusCode != http.StatusNotAcceptable {
-		// A 200 diff, or any other status, is deliberately never stored; a 2xx is still fresh proof of access.
+		// A diff, or any other status, is deliberately never stored; a 2xx is still fresh proof of access.
 		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 		h.replayUnstored(w, r, resp, body)
 		return
@@ -74,7 +74,7 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	writeRebuilt(w, http.StatusNotAcceptable, doc, false)
 }
 
-// pullDiff406JSON trims a 406 verdict to GitHub's message; the consumer branches on the status, never the body.
+// pullDiff406JSON trims a verdict to GitHub's message; the consumer branches on the status, never the body.
 type pullDiff406JSON struct {
 	Message string `json:"message"`
 }

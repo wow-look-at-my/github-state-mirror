@@ -43,7 +43,7 @@ const (
 	denyKindMatchingRefs   = "matching_refs" // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
 )
 
-// revealOutcome is the reveal decision for one request.
+// revealOutcome is the reveal decision for request.
 type revealOutcome int
 
 const (
@@ -51,7 +51,7 @@ const (
 	revealAllowed revealOutcome = iota
 	// revealDenied: GitHub said no (now or recently); serve the verdict.
 	revealDenied
-	// revealError: could not decide (transient failure); the request fails 502 without caching anything.
+	// revealError: could not decide (transient failure); the request fails without caching anything.
 	revealError
 )
 
@@ -64,7 +64,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 	principal := actor.FromContext(ctx)
 	now := time.Now()
 
-	// 1. Public fast path (case-insensitive: truth rows carry canonical
+	// . Public fast path (case-insensitive: truth rows carry canonical
 	// casing, the URL may not). Unknown visibility falls through -- private
 	// until proven otherwise.
 	if repoRow, err := h.store.GetRepoInsensitive(ctx, owner, repo); err == nil {
@@ -73,7 +73,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		}
 	}
 
-	// 2. Grant.
+	// . Grant.
 	if principal != "" {
 		ok, err := h.store.HasGrant(ctx, principal, owner, repo, now)
 		if err != nil {
@@ -84,7 +84,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 			return revealAllowed, ghdata.DenyVerdict{}, false
 		}
 
-		// 3. Cached deny verdict for this exact resource.
+		// . Cached deny verdict for this exact resource.
 		v, ok, err := h.store.GetDenyVerdict(ctx, principal, kind, resourceKey, now)
 		if err != nil {
 			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
@@ -95,7 +95,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		}
 	}
 
-	// 4. Probe GitHub with the caller's own token.
+	// . Probe GitHub with the caller's own token.
 	return h.probeRepoAccess(r, principal, owner, repo, kind, resourceKey)
 }
 
@@ -149,14 +149,14 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 
 	case resp.StatusCode == http.StatusNotFound,
 		resp.StatusCode == http.StatusForbidden && !upstreamRateLimited(resp):
-		// 404 is keyed to the exact resource, not the repo: GitHub's 404 can't be told apart from a readable repo's missing resource.
+		//  is keyed to the exact resource, not the repo: GitHub's can't be told apart from a readable repo's missing resource.
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
 			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
 				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			}
 			if resp.StatusCode == http.StatusForbidden {
-				// A 403 is unambiguous about repo access; a stale grant (if
+				// A is unambiguous about repo access; a stale grant (if
 				// any survived) must go.
 				if err := h.store.RevokeGrant(ctx, principal, owner, repo); err != nil {
 					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
@@ -166,7 +166,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		return revealDenied, v, false
 
 	default:
-		// Transient (5xx, 429, rate-limited 403): never cached as a deny.
+		// Transient (5xx,, rate-limited): never cached as a deny.
 		slog.Warn("reveal probe: transient upstream answer", "repo", owner+"/"+repo, "status", resp.StatusCode)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
@@ -191,7 +191,7 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 
 // revealFailed reports a reveal-layer transient failure (probe/store error):
 // the mirror cannot decide access right now, so the request fails without
-// caching anything. 502 mirrors the cached routes' upstream-error handling.
+// caching anything. mirrors the cached routes' upstream-error handling.
 func (h *handlers) revealFailed(w http.ResponseWriter, r *http.Request) {
 	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway: could not verify repository access with GitHub", http.StatusBadGateway)

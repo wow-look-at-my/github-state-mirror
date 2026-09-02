@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// WorkflowRunsCacheTTL backstops run DELETION, the one signal GitHub never webhooks, and a missed delivery.
+// WorkflowRunsCacheTTL backstops run DELETION, the signal GitHub never webhooks, and a missed delivery.
 const WorkflowRunsCacheTTL = 24 * time.Hour
 
 // The stored, trimmed shape of GET /repos/{owner}/{repo}/actions/runs?head_sha=... (workflow_runs_cache).
 // Shared by the fetch-on-miss path and the workflow_run delivery rewrite, so a rewritten answer stays
 // indistinguishable from a fresh fetch. Field order is wire order. see docs/cache/rest-routes.md
 
-// StoredWorkflowRunItem is one trimmed run of a runs listing.
+// StoredWorkflowRunItem is trimmed run of a runs listing.
 type StoredWorkflowRunItem struct {
 	ID           int64   `json:"id"`
 	Name         *string `json:"name"` // nullable (a run may have no name)
@@ -26,14 +26,14 @@ type StoredWorkflowRunItem struct {
 	RunStartedAt *string `json:"run_started_at"` // nullable while queued
 }
 
-// StoredWorkflowRunsPage is one page; TotalCount is GitHub's total matching-run count, not the page length.
+// StoredWorkflowRunsPage is page; TotalCount is GitHub's total matching-run count, not the page length.
 type StoredWorkflowRunsPage struct {
 	TotalCount   int64                   `json:"total_count"`
 	WorkflowRuns []StoredWorkflowRunItem `json:"workflow_runs"`
 }
 
 // RawWorkflowRun mirrors the fields of GitHub's run object this route models,
-// including the two that go to TRUTH but never onto the wire (head_branch,
+// including the that go to TRUTH but never onto the wire (head_branch,
 // run_attempt). The same shape arrives in a REST body and inside a
 // `workflow_run` delivery's `workflow_run` key.
 type RawWorkflowRun struct {
@@ -50,7 +50,7 @@ type RawWorkflowRun struct {
 	RunStartedAt *string `json:"run_started_at"`
 }
 
-// TrimWorkflowRunItem converts one raw run, reporting false when the model
+// TrimWorkflowRunItem converts raw run, reporting false when the model
 // cannot hold it (no id, no status, or a head sha that is not full hex).
 func TrimWorkflowRunItem(run RawWorkflowRun) (StoredWorkflowRunItem, bool) {
 	sha := strings.ToLower(run.HeadSHA)

@@ -10,8 +10,8 @@ import (
 )
 
 // docker-updater probes these with no credential. Registering them inside the
-// authenticated group -- or not at all -- makes them answer 401 through the
-// GitHub passthrough, and the contract reads any non-404 as "implemented", so
+// authenticated group -- or not at all -- makes them answer through the
+// GitHub passthrough, and the contract reads any non- as "implemented", so
 // the container would report as permanently unhealthy instead of unconfigured.
 func TestUpdateCheckEndpointsAnswerWithoutAToken(t *testing.T) {
 	router, _ := setupTestRouter(t)
@@ -27,7 +27,7 @@ func TestUpdateCheckEndpointsAnswerWithoutAToken(t *testing.T) {
 }
 
 // The distinction the test above rests on: an unregistered path really does
-// answer 401 here rather than 404, so "it would have 404'd anyway" is not a
+// answer here rather than, so "it would have 'd anyway" is not a
 // reason to skip registering them.
 func TestUnregisteredPathAnswers401NotFound(t *testing.T) {
 	router, _ := setupTestRouter(t)

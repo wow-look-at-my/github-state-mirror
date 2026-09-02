@@ -53,8 +53,8 @@ func TestParsePushPayload_Commits(t *testing.T) {
 	assert.Equal(t, "b@x", p.Commits[0].CommitterEmail)
 }
 
-// TestChainedCommits_LinearChain: the happy path derives commits[0].parent =
-// before, commits[i].parent = commits[i-1].
+// TestChainedCommits_LinearChain: the happy path derives commits[].parent =
+// before, commits[i].parent = commits[i-].
 func TestChainedCommits_LinearChain(t *testing.T) {
 	p, err := ParsePushPayload(pushRaw(t, testBefore, testAfter, false, testMid, testAfter))
 	require.NoError(t, err)

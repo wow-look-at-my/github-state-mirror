@@ -17,7 +17,7 @@ import (
 // respcache_fixture_test.go.
 
 // TestCachedContents_FileHitAndPushInvalidation covers the core contents flow:
-// a 200 file is absorbed on the first request (miss), the second request is
+// a file is absorbed on the request (miss), the request is
 // served from state — same trimmed body, no upstream call, X-GSM-Cache: hit —
 // and a push webhook for the repo flushes it so the next request refetches.
 func TestCachedContents_FileHitAndPushInvalidation(t *testing.T) {
@@ -39,7 +39,7 @@ func TestCachedContents_FileHitAndPushInvalidation(t *testing.T) {
 	assert.Equal(t, ".github/cfg.jsonc", file["path"])
 	assert.Equal(t, float64(5), file["size"])
 
-	// Hit: identical trimmed body, zero new upstream calls.
+	// Hit: identical trimmed body, new upstream calls.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -55,9 +55,9 @@ func TestCachedContents_FileHitAndPushInvalidation(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "push must invalidate the cached contents")
 }
 
-// TestCachedContents_404CachedAndInvalidated: the 404 "config file absent"
+// TestCachedContents_404CachedAndInvalidated: the "config file absent"
 // answer is absorbed too (half the win for per-repo config probes), rebuilt as
-// {"message":...,"status":"404"} without documentation_url, and flushed by the
+// {"message":...,"status":""} without documentation_url, and flushed by the
 // same push invalidation.
 func TestCachedContents_404CachedAndInvalidated(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -118,7 +118,8 @@ func TestCachedContents_DirListing(t *testing.T) {
 
 // TestCachedContents_QueryStringDistinct: the raw ref query is part of the
 // cache key — ?ref=a and ?ref=b are separate entries, each hitting upstream
-// once and each served from its own state afterwards.
+//
+//	and each served from its own state afterwards.
 func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
@@ -145,10 +146,14 @@ func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "both refs served from their own entries")
 }
 
-// TestCachedContents_GlobalTruthSharedViaReveal: ONE global truth store — a
-// second user's read of the same private resource is answered from the state
-// the first user's fetch absorbed. The second user still pays GitHub exactly
-// one PROBE (their own token proving repo access, earning a grant); the
+// TestCachedContents_GlobalTruthSharedViaReveal: global truth store — a
+//
+//	user's read of the same private resource is answered from the state
+//
+// the user's fetch absorbed. The user still pays GitHub exactly
+//
+//	PROBE (their own token proving repo access, earning a grant); the
+//
 // contents themselves are never refetched.
 func TestCachedContents_GlobalTruthSharedViaReveal(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -175,10 +180,10 @@ func TestCachedContents_GlobalTruthSharedViaReveal(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits))
 }
 
-// TestReveal_DenyVerdictCachedAuthoritativeOnly: a probe GitHub answers 404 is
+// TestReveal_DenyVerdictCachedAuthoritativeOnly: a probe GitHub answers is
 // relayed as the caller's truth and remembered briefly (repeat requests are
 // answered from the deny cache without touching GitHub); a TRANSIENT probe
-// failure (500) is never cached — the next request probes again.
+// failure () is never cached — the next request probes again.
 func TestReveal_DenyVerdictCachedAuthoritativeOnly(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +216,7 @@ func TestReveal_DenyVerdictCachedAuthoritativeOnly(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.probeHits), "transient failures are retried, never cached as denials")
 }
 
-// TestReveal_PublicFastPath: once truth knows a repo is public (here via a
+// TestReveal_PublicFastPath: truth knows a repo is public (here via a
 // repository webhook's payload), any principal reads its cached state with no
 // probe at all.
 func TestReveal_PublicFastPath(t *testing.T) {
@@ -260,8 +265,8 @@ func TestCachedContents_TTLBackstopExpiry(t *testing.T) {
 // (Accept: application/vnd.github.raw — what simple-llm-ui's file-read tool
 // sends) is modeled from the SAME row the default JSON representation is,
 // decoded server-side from the absorbed base64 `content`. A miss on EITHER
-// Accept variant satisfies both: this proves the shapes share one cache
-// entry rather than needing two independent fetches.
+// Accept variant satisfies both: this proves the shapes share cache
+// entry rather than needing independent fetches.
 func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/contents/.github/cfg.jsonc"
@@ -279,7 +284,7 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the miss probed upstream exactly once")
 
-	// Hit: a second identical raw-Accept request costs no upstream call.
+	// Hit: a identical raw-Accept request costs no upstream call.
 	w2 := do(t, router, rawReq())
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "hello", w2.Body.String())
@@ -298,7 +303,9 @@ func TestRespCache_RawAcceptServedFromCache(t *testing.T) {
 
 // TestRespCache_RawAcceptMissProbesDefaultJSON verifies the upstream call a
 // raw-Accept MISS makes carries the DEFAULT JSON Accept, not the caller's raw
-// one -- go-github, PyGithub and octokit.js all resolve file-vs-directory the
+//
+//	-- go-github, PyGithub and octokit.js all resolve file-vs-directory the
+//
 // same way, since GitHub's behavior for raw Accept against a directory is
 // undocumented (see cachedContents's file header).
 func TestRespCache_RawAcceptMissProbesDefaultJSON(t *testing.T) {
@@ -321,9 +328,9 @@ func TestRespCache_RawAcceptMissProbesDefaultJSON(t *testing.T) {
 
 // TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough: a file too large
 // for the base64 JSON form (GitHub answers such a probe with encoding:"none"
-// and no content past ~1 MiB — docs.github.com/en/rest/repos/contents) cannot
+// and no content past ~ MiB — docs.github.com/en/rest/repos/contents) cannot
 // be served from this cache at all. A raw-Accept caller still gets a correct
-// answer: a second, genuine passthrough carrying its OWN raw Accept header,
+// answer: a, genuine passthrough carrying its OWN raw Accept header,
 // never the unusable JSON probe body.
 func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -357,7 +364,7 @@ func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
 // TestRespCache_NonDefaultAcceptPassthrough: media types that change the
 // response shape in ways this package does not model at all (html/object,
 // or an ambiguous mixed Accept) are not modeled — the route must forward
-// them verbatim, uncached. Raw (application/vnd.github.raw) is NOT one of
+// them verbatim, uncached. Raw (application/vnd.github.raw) is NOT of
 // these anymore -- see TestRespCache_RawAcceptServedFromCache.
 func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

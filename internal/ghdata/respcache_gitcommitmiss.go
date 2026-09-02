@@ -10,11 +10,11 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage layer for the git-commit 404 miss markers (git_commit_miss_cache).
+// Storage layer for the git-commit miss markers (git_commit_miss_cache).
 // See docs/cache/rest-routes.md for why they exist and the clear-on-upsert invariant.
 
-// GetCachedGitCommitMiss returns the cached 404 body for a sha, or
-// ("", false) on a miss (no marker, or an expired one). A hit refreshes the
+// GetCachedGitCommitMiss returns the cached body for a sha, or
+// ("", false) on a miss (no marker, or an expired). A hit refreshes the
 // row's LRU timestamp.
 func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey, shaKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo), strings.ToLower(sha)
@@ -36,7 +36,7 @@ func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha str
 	return row.Doc, true, nil
 }
 
-// PutCachedGitCommitMiss records one fetched 404 verdict, then prunes the
+// PutCachedGitCommitMiss records fetched verdict, then prunes the
 // table (expired rows + LRU beyond the cap). owner/repo/sha are normalized
 // here so callers can pass URL casing.
 func (s *Store) PutCachedGitCommitMiss(ctx context.Context, owner, repo, sha, doc string, now time.Time, ttl time.Duration) error {
@@ -53,7 +53,7 @@ func (s *Store) PutCachedGitCommitMiss(ctx context.Context, owner, repo, sha, do
 	return s.q.PruneGitCommitMissCacheLRU(ctx, CacheMaxRows)
 }
 
-// ClearGitCommitMiss drops one sha's 404 marker; upsertGitCommit calls this on every real commit absorb.
+// ClearGitCommitMiss drops sha's marker; upsertGitCommit calls this on every real commit absorb.
 func (s *Store) ClearGitCommitMiss(ctx context.Context, owner, repo, sha string) error {
 	return s.q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Sha: strings.ToLower(sha),

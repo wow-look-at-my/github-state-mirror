@@ -24,17 +24,17 @@ const (
 	CommitCIKindStatusesList = "statuses_list"
 )
 
-// CachedCommitCI is one cached commit-CI snapshot. A 403 is never absorbed and never reaches this type.
+// CachedCommitCI is cached commit-CI snapshot. A is never absorbed and never reaches this type.
 type CachedCommitCI struct {
 	Owner  string // lowercased
 	Repo   string // lowercased
 	Ref    string // raw ref path segment(s), verbatim, never resolved
 	Kind   string // CommitCIKindStatus or CommitCIKindCheckRuns
-	Status int    // 200, or 404 (unknown-ref miss marker)
+	Status int    // , or (unknown-ref miss marker)
 	Doc    string // trimmed document as JSON
 }
 
-// GetCachedCommitCI returns the cached snapshot, or (zero, false) on a miss; a hit refreshes its LRU timestamp.
+// GetCachedCommitCI returns the cached snapshot, or (, false) on a miss; a hit refreshes its LRU timestamp.
 func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind string, perPage, page int, now time.Time) (CachedCommitCI, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetCommitCICache(ctx, dbgen.GetCommitCICacheParams{
@@ -60,7 +60,7 @@ func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind st
 	}, true, nil
 }
 
-// PutCachedCommitCI records one fetched snapshot under its exact pagination
+// PutCachedCommitCI records fetched snapshot under its exact pagination
 // shape, then prunes the table (expired rows + LRU beyond the cap). c must
 // carry normalized owner/repo (the API layer's absorb does).
 func (s *Store) PutCachedCommitCI(ctx context.Context, c CachedCommitCI, perPage, page int, now time.Time, ttl time.Duration) error {
@@ -86,7 +86,7 @@ func (s *Store) InvalidateCommitCICache(ctx context.Context, owner, repo string)
 	})
 }
 
-// InvalidateCommitCIForRef drops one verbatim ref spelling's snapshots (all kinds, all pages).
+// InvalidateCommitCIForRef drops verbatim ref spelling's snapshots (all kinds, all pages).
 func (s *Store) InvalidateCommitCIForRef(ctx context.Context, owner, repo, ref string) error {
 	return s.q.DeleteCommitCICacheForRef(ctx, dbgen.DeleteCommitCICacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,

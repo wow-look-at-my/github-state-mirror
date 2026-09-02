@@ -19,14 +19,14 @@ const (
 	KindClient OutboundKind = "http.Client literal"
 	// KindReverseProxy is an httputil.ReverseProxy literal, which sends
 	KindReverseProxy OutboundKind = "httputil.ReverseProxy literal"
-	// KindPackageLevel is one of net/http's package-level senders, which use
+	// KindPackageLevel is of net/http's package-level senders, which use
 	KindPackageLevel OutboundKind = "net/http package-level request"
 )
 
 // packageLevelSenders are the net/http helpers that send on
 var packageLevelSenders = set.Of("Get", "Post", "PostForm", "Head")
 
-// Outbound is one construct that can send a request.
+// Outbound is construct that can send a request.
 type Outbound struct {
 	File string
 	Line int
@@ -37,7 +37,7 @@ func (o Outbound) String() string {
 	return fmt.Sprintf("%s:%d: %s", o.File, o.Line, o.Kind)
 }
 
-// FindOutbound reports every outbound-capable construct in one Go source file.
+// FindOutbound reports every outbound-capable construct in Go source file.
 func FindOutbound(fset *token.FileSet, name string, src []byte) ([]Outbound, error) {
 	file, err := parser.ParseFile(fset, name, src, 0)
 	if err != nil {
@@ -71,7 +71,7 @@ func FindOutbound(fset *token.FileSet, name string, src []byte) ([]Outbound, err
 	return out, nil
 }
 
-// qualifiedName renders a pkg.Type expression, following one level of pointer.
+// qualifiedName renders a pkg.Type expression, following level of pointer.
 func qualifiedName(e ast.Expr) string {
 	if star, ok := e.(*ast.StarExpr); ok {
 		e = star.X

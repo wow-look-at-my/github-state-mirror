@@ -22,7 +22,7 @@ func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, re
 	if event.Type == "check_run" {
 		// A check run is UPDATED in place upstream -- the same id moves
 		// queued -> in_progress -> completed -- so the delivery states the new
-		// value of one entry and the page keeps its shape.
+		// value of entry and the page keeps its shape.
 		if raw, ok := webhook.CheckRunObject(event.Raw); ok {
 			if run, ok := ghdata.TrimCheckRunJSON(raw); ok {
 				// The single-check-run row (respcache_checkrun.go) is keyed by
@@ -64,7 +64,7 @@ func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, re
 }
 
 // applyMergedPRBaseTip writes a merged PR's merge_commit_sha onto its base branch's cached ref rows,
-// deliberately the SECOND way to hear a merge tip (the base push is the first). see docs/cache/stale-tip-repair.md
+// deliberately the way to hear a merge tip (the base push is the). see docs/cache/stale-tip-repair.md
 func (d *WebhookDispatcher) applyMergedPRBaseTip(ctx context.Context, scope, owner, repo string, event webhook.Event) {
 	tip, ok := webhook.ParseMergedPRBaseTip(event.Raw)
 	if !ok {

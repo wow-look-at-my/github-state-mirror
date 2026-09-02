@@ -37,24 +37,24 @@ func eventsWhere(snap reqtimeline.Snapshot, disposition string) []reqtimeline.Ev
 }
 
 // TestTimeline_AdminGated: /api/timeline follows the /api/requests admin
-// model — 401 anonymous, 403 signed-in non-admin, 200 admin.
+// model — anonymous, signed-in non-admin, admin.
 func TestTimeline_AdminGated(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	}))
 
-	// Anonymous: 401.
+	// Anonymous:.
 	w := do(t, s.router, httptest.NewRequest(http.MethodGet, "/api/timeline", nil))
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 
-	// Signed-in non-admin: 403.
+	// Signed-in non-admin:.
 	req := httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
 	req.AddCookie(mintSession(t, svc, "octocat"))
 	w = do(t, s.router, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 
-	// Admin: 200 with the payload shape.
+	// Admin: with the payload shape.
 	s.timeline.RecordWebhook(time.Now(), 3*time.Millisecond, "push", "", "d-1", "o/r", "applied")
 	req = httptest.NewRequest(http.MethodGet, "/api/timeline", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -71,7 +71,7 @@ func TestTimeline_AdminGated(t *testing.T) {
 }
 
 // TestTimeline_SinceCursor: ?since=<id> pages incrementally, and a garbage
-// cursor is a 400.
+// cursor is a.
 func TestTimeline_SinceCursor(t *testing.T) {
 	svc := configuredAuth(t)
 	s := newFullTestStack(t, svc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -95,7 +95,7 @@ func TestTimeline_SinceCursor(t *testing.T) {
 	require.Len(t, full.Events, 2)
 	require.Equal(t, uint64(2), full.MaxID)
 
-	// Cursor past the first event: only the second comes back.
+	// Cursor past the event: only the comes back.
 	page := fetch("/api/timeline?since=1")
 	require.Len(t, page.Events, 1)
 	assert.Equal(t, uint64(2), page.Events[0].ID)
@@ -105,7 +105,7 @@ func TestTimeline_SinceCursor(t *testing.T) {
 	assert.Empty(t, page.Events)
 	assert.Equal(t, uint64(2), page.MaxID)
 
-	// Garbage cursor: 400.
+	// Garbage cursor:.
 	req := httptest.NewRequest(http.MethodGet, "/api/timeline?since=banana", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w := do(t, s.router, req)
@@ -182,7 +182,7 @@ func TestTimeline_PassthroughRecorded(t *testing.T) {
 	assert.GreaterOrEqual(t, e.DurMs, int64(0))
 }
 
-// TestTimeline_EveryExchangeRecorded: one cached-route miss puts every real exchange on the chart, end to end.
+// TestTimeline_EveryExchangeRecorded: cached-route miss puts every real exchange on the chart, end to end.
 func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 	u := newRespCacheUpstream()
 	s := newFullTestStack(t, testAuth(), u.handler())
@@ -225,7 +225,7 @@ func TestTimeline_EveryExchangeRecorded(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Equal(t, "/repos/{owner}/{repo}/contents/{path}", hits[0].Route)
 	assert.GreaterOrEqual(t, hits[0].DurMs, int64(0))
-	// No second probe/upstream fetch happened (grant + cache served it).
+	// No probe/upstream fetch happened (grant + cache served it).
 	assert.Len(t, eventsWhere(s.timeline.Snapshot(0), "upstream"), 1)
 }
 
@@ -390,7 +390,7 @@ func TestTimeline_WindowedRead(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	}))
 	now := time.Now().UTC()
-	for i := 6; i >= 1; i-- { // one delivery per hour, back six hours
+	for i := 6; i >= 1; i-- { //  delivery per hour, back hours
 		s.timeline.RecordWebhook(now.Add(-time.Duration(i)*time.Hour), time.Millisecond,
 			"push", "", "d-"+strconv.Itoa(i), "o/r-"+strconv.Itoa(i), "applied")
 	}
@@ -407,7 +407,7 @@ func TestTimeline_WindowedRead(t *testing.T) {
 		return w, got
 	}
 
-	// The last 3 hours: three of the six deliveries.
+	// The last hours: of the deliveries.
 	w, got := get("/api/timeline?from=" + strconv.FormatInt(now.Add(-3*time.Hour).UnixMilli(), 10))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Len(t, got.Events, 3)
@@ -430,7 +430,7 @@ func TestTimeline_WindowedRead(t *testing.T) {
 	windowEvents, _ := decodeTimeline(t, wire.Body.Bytes())
 	assert.Len(t, windowEvents, 2)
 
-	// Rejected shapes: a garbage bound, and mixing the two read models.
+	// Rejected shapes: a garbage bound, and mixing the read models.
 	w, _ = get("/api/timeline?from=banana")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	w, _ = get("/api/timeline?since=1&from=" + strconv.FormatInt(now.UnixMilli(), 10))

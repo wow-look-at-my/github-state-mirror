@@ -13,7 +13,7 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Admin cache browse + consistency check: the operator's window into the ONE
+// Admin cache browse + consistency check: the operator's window into the
 // global truth store, unfiltered by the reveal layer that gates data-API
 // callers. see docs/dashboard/operator-tooling.md
 
@@ -110,7 +110,7 @@ func (d *dashboard) handleCacheData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// serveGrants dumps one principal's grants (the reveal layer's answer to "what
+// serveGrants dumps principal's grants (the reveal layer's answer to "what
 // can this principal see?").
 func (d *dashboard) serveGrants(w http.ResponseWriter, r *http.Request, principal string) {
 	rows, err := d.store.GrantsByPrincipal(r.Context(), principal, time.Now())
@@ -196,7 +196,7 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	org := q.Get("org") // optional: limit the check to one owner
+	org := q.Get("org") // optional: limit the check to owner
 	apply := q.Get("apply") == "true" || q.Get("apply") == "1"
 	if apply && r.Method != http.MethodPost {
 		http.Error(w, "apply mode mutates the cache and requires POST /api/cache/check?apply=true", http.StatusMethodNotAllowed)
@@ -223,7 +223,7 @@ func (d *dashboard) handleCacheCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, report)
 }
 
-// observedRateLimit is one passively observed X-RateLimit-* reading (the
+// observedRateLimit is passively observed X-RateLimit-* reading (the
 // ratemeter store), flattened for JSON.
 type observedRateLimit struct {
 	Identity   string `json:"identity"`

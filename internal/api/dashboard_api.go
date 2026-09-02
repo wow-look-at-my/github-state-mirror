@@ -123,7 +123,7 @@ type recentRefresh struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// principalStats is one principal's reveal-layer standing: who they are, how
+// principalStats is principal's reveal-layer standing: who they are, how
 // many repos they hold live grants for, and how fresh their org syncs are.
 type principalStats struct {
 	Principal   string          `json:"principal"`    // short (display)
@@ -140,9 +140,9 @@ type cacheResponse struct {
 	Login   string `json:"login"`
 	IsAdmin bool   `json:"is_admin"`
 	Scope   string `json:"scope"`
-	// Totals are the GLOBAL truth store's row counts -- one cache, one truth.
+	// Totals are the GLOBAL truth store's row counts -- cache, truth.
 	Totals ghdata.DataCounts `json:"totals"`
-	// Principals holds the signed-in user's own principal, or every known one on the admin "all" view.
+	// Principals holds the signed-in user's own principal, or every known on the admin "all" view.
 	PrincipalCount int              `json:"principal_count"`
 	Principals     []principalStats `json:"principals"`
 	// Truth is the freshness of shared 'global' truth markers.
@@ -151,7 +151,7 @@ type cacheResponse struct {
 
 const unknownLogin = "(unknown)"
 
-// principalInput is one principal to summarize, with its (possibly unknown)
+// principalInput is principal to summarize, with its (possibly unknown)
 // identity.
 type principalInput struct {
 	principal string
@@ -243,11 +243,11 @@ func (d *dashboard) collectInputs(ctx context.Context, scope, login string, iden
 			}
 		}
 	}
-	// Known logins first (case-insensitive), unknowns last, then by principal.
+	// Known logins (case-insensitive), unknowns last, then by principal.
 	sort.SliceStable(inputs, func(i, j int) bool {
 		ui, uj := inputs[i].login == unknownLogin, inputs[j].login == unknownLogin
 		if ui != uj {
-			return uj // a known login sorts before an unknown one
+			return uj // a known login sorts before an unknown
 		}
 		li, lj := strings.ToLower(inputs[i].login), strings.ToLower(inputs[j].login)
 		if li != lj {
@@ -308,7 +308,7 @@ func groupKinds(rows []dbgen.ActorFreshnessByKindRow, errRows []dbgen.ActorError
 			kf.LastFetched = lf
 		}
 	}
-	// Attach the first error message per kind (rows are ordered by kind, key).
+	// Attach the error message per kind (rows are ordered by kind, key).
 	for _, e := range errRows {
 		kf, ok := byKind[e.ResourceKind]
 		if !ok || kf.Error != "" {

@@ -19,12 +19,12 @@ import (
 )
 
 // Shared fixtures for the cached-route tests: the fake GitHub every route
-// test drives, the router stack over it, and the assertions the tier-2
-// contract is checked with. The route tests themselves live one file per
-// route (respcache_labels_test.go, respcache_branches_test.go, ...); this
-// file holds only what more than one of them needs.
+// test drives, the router stack over it, and the assertions the tier-
+// contract is checked with. The route tests themselves live file per
+// route (respcache_labels_test.go, respcache_branches_test.go,...); this
+// file holds only what more than of them needs.
 
-// Test object ids (full 40-hex, as GitHub uses).
+// Test object ids (full -hex, as GitHub uses).
 const (
 	shaBase   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	shaMid    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -34,7 +34,7 @@ const (
 	shaCommit = "dddddddddddddddddddddddddddddddddddddddd"
 )
 
-// goodAppJWT is the bearer the fake GitHub verifies as app id 777; any other
+// goodAppJWT is the bearer the fake GitHub verifies as app id; any other
 const goodAppJWT = "good-app-jwt"
 
 // respCacheUpstream is a fake GitHub for the cached-route tests: it stubs
@@ -318,7 +318,7 @@ func mustJSONString(v any) string {
 }
 
 // postWebhookJSON delivers a webhook whose payload is MARSHALLED from a Go
-// value. Prefer it whenever a delivery carries a runtime value: splicing one
+// value. Prefer it whenever a delivery carries a runtime value: splicing
 func postWebhookJSON(t *testing.T, router http.Handler, event string, payload map[string]any) {
 	t.Helper()
 	body, err := json.Marshal(payload)
@@ -347,10 +347,10 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key
 // the trimmed contract bans: url, *_url, or _links. `allowed` names EXACT key
-// names exempted for that one route -- pinned exceptions for consumer-read
+// names exempted for that route -- pinned exceptions for consumer-read
 // link fields (the required-builds hook renders per-status `target_url` and
 // per-run `details_url`/`html_url`, and reads the workflow-run `html_url`;
-// consumer survey 2026-07-11). Adding an exception requires a fresh consumer
+// consumer survey --). Adding an exception requires a fresh consumer
 // survey, per CLAUDE.md; with no allowlist the ban is total, exactly as
 // before.
 func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {

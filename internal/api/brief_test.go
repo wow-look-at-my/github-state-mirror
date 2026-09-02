@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The one property the whole capture rests on: a sampled response body is
+// The property the whole capture rests on: a sampled response body is
 // reduced to keys and TYPES, and no value survives into anything retained.
 func TestJSONSkeletonKeepsNoValues(t *testing.T) {
 	body := []byte(`{
@@ -37,7 +37,7 @@ func TestJSONSkeletonKeepsNoValues(t *testing.T) {
 }
 
 // A non-JSON body has no shape to model — and saying so is the answer (such a
-// route cannot become a tier-2 route), not a reason to retain the bytes.
+// route cannot become a tier- route), not a reason to retain the bytes.
 func TestJSONSkeletonRefusesNonJSON(t *testing.T) {
 	sk := jsonSkeleton([]byte("diff --git a/x b/x\n+secret line\n"))
 	require.Equal(t, "", sk)
@@ -47,7 +47,7 @@ func TestJSONSkeletonRefusesNonJSON(t *testing.T) {
 // The passthrough proxy relays a caller's own Accept-Encoding to GitHub
 // unchanged, so a captured sample is the WIRE body: a caller that requests
 // gzip (most HTTP libraries do, by default) gets a gzip-encoded sample here.
-// Without decoding it first, json.Unmarshal always fails on gzip bytes, the
+// Without decoding it, json.Unmarshal always fails on gzip bytes, the
 // route's shape never records a skeleton, and — because a failed sample never
 // advances lastSampleAt — wantsBody keeps asking forever: the exact "no
 // response outline yet" stall the operator sees no matter how long they wait.
@@ -82,10 +82,10 @@ func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 
 // TestShapeStoreNonJSONBodyStopsAskingForever is the regression test for the
 // stall this fix removes: a route whose answer is genuinely never JSON (a
-// diff/patch representation, a plain-text 401 from requireAuth) used to keep
+// diff/patch representation, a plain-text from requireAuth) used to keep
 // wantsBody returning true on every single subsequent passthrough forever,
 // because lastSampleAt only ever advanced inside the "skeleton succeeded"
-// branch. A confirmed-non-JSON sample must resample on the same 30-minute
+// branch. A confirmed-non-JSON sample must resample on the same -minute
 // cadence as a real skeleton, not on every request, and the brief must say so
 // as a permanent fact rather than "not yet captured".
 func TestShapeStoreNonJSONBodyStopsAskingForever(t *testing.T) {
@@ -165,7 +165,7 @@ func TestShapeStoreSamplingAndSnapshot(t *testing.T) {
 }
 
 // Sampling must never be the reason a body is retained whole: a body past the
-// cap yields no skeleton rather than a truncated (and unparseable) one.
+// cap yields no skeleton rather than a truncated (and unparseable).
 func TestShapeStoreIgnoresUnparseableBody(t *testing.T) {
 	s := newShapeStore()
 	s.observe(observation{Method: "GET", Route: "/x", Path: "/x", Status: 200, Body: []byte(`{"a":`)})
@@ -249,7 +249,7 @@ func TestDashboardBrief_AdminOnlyAndRendersRecordedTraffic(t *testing.T) {
 	require.Contains(t, payload.Markdown, "per_page", "the query shape must be captured, by name")
 	require.Contains(t, payload.Markdown, "tier-2 contract", "the checklist travels with the data")
 
-	// A bad limit is a 400, like every other paged admin view.
+	// A bad limit is a, like every other paged admin view.
 	req = httptest.NewRequest("GET", "/api/brief?limit=zero", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	require.Equal(t, http.StatusBadRequest, do(t, router, req).Code)
@@ -265,7 +265,7 @@ func TestRenderBriefTemplateExecutes(t *testing.T) {
 	require.Contains(t, empty, "## How to model one of these")
 	require.NotContains(t, empty, "template failed to render")
 
-	// Every optional section present at once: reasons, other dispositions,
+	// Every optional section present at: reasons, other dispositions,
 	// debounce, query shape, sample, and a captured body.
 	snap := requestLogSnapshot{
 		Total:         100,
@@ -292,7 +292,7 @@ func TestRenderBriefTemplateExecutes(t *testing.T) {
 		"### 1. `GET /repos/{owner}/{repo}/hooks`",
 		"100.0% of this route",
 		"**Why uncached**: `unrouted` ×60",
-		"all cost, no benefit", // held 60, saved 0
+		"all cost, no benefit", // held, saved
 		"Sampled passthrough query (names only): `?per_page`",
 		"Callers: `pr-minder` ×60",
 		"Upstream statuses: 200 ×60",

@@ -11,7 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// GET /repos/{owner}/{repo}/code-quality/setup, tier 2 of the cache contract.
+// GET /repos/{owner}/{repo}/code-quality/setup, tier of the cache contract.
 
 // The primary bound, not a backstop: see docs/cache/rest-routes.md
 const codeQualitySetupTTL = time.Hour
@@ -94,8 +94,8 @@ type codeQualitySetupJSON struct {
 	AIFindingsOption *string  `json:"ai_findings_option"`
 }
 
-// absorbCodeQualitySetup parses a 200 into the trimmed document, rendered once
-// so hit and miss serve identical bytes. `state` is the one field the model
+// absorbCodeQualitySetup parses a into the trimmed document, rendered
+// so hit and miss serve identical bytes. `state` is the field the model
 // requires: an answer without it is not the record this route holds.
 func absorbCodeQualitySetup(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {

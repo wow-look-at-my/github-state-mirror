@@ -15,14 +15,14 @@ import (
 )
 
 // observedClients is the complete list of places this service can originate
-// an outbound HTTP request, and what makes each one visible on the
+// an outbound HTTP request, and what makes each visible on the
 // dashboard's Timeline.
 //
 // The count is part of the declaration on purpose. Keying by file alone would
-// let a second client appear in an already-listed file and inherit a sentence
-// written about a different one -- which is how "it's covered" stops being
+// let a client appear in an already-listed file and inherit a sentence
+// written about a different -- which is how "it's covered" stops being
 // true without anybody noticing. A mismatch here is not a nuisance to bump:
-// it is the guard asking where the new one shows up.
+// it is the guard asking where the new shows up.
 var observedClients = map[string]struct {
 	count int
 	why   string
@@ -44,7 +44,7 @@ var observedClients = map[string]struct {
 }
 
 // TestEveryOutboundClientIsObserved walks the repository for anything that
-// can send a request and fails on one that has not been declared above.
+// can send a request and fails on that has not been declared above.
 func TestEveryOutboundClientIsObserved(t *testing.T) {
 	fset := token.NewFileSet()
 	found := map[string][]Outbound{}

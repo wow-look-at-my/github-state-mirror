@@ -50,8 +50,8 @@ func TestConsistencyChecker_CheckIsReadOnly(t *testing.T) {
 
 // applyFake is the live state the apply-mode tests run against:
 //   - org1/repo1: default tip has NO rollup (cached says FAILURE -- the stuck
-//     gcc/.github class); PR #7 (cached, ghost-PENDING poisoned, live SUCCESS,
-//     auto-merge disarmed while the cache says squash) and PR #1 (not cached,
+//     gcc/.github class); PR # (cached, ghost-PENDING poisoned, live SUCCESS,
+//     auto-merge disarmed while the cache says squash) and PR # (not cached,
 //     live SUCCESS, auto-merge MERGE armed).
 //   - org1/repo2: on GitHub (private), not cached -> absorbed.
 //   - org1/repoPub: cached private, live PUBLIC (drift toward open).
@@ -106,7 +106,7 @@ func seedApplyDrift(t *testing.T, store *ghdata.Store) {
 		DefaultBranchStatus: sql.NullString{String: "SUCCESS", Valid: true},
 	}))
 
-	// PR #7: REST-complete row (node_id set) with a stale armed auto-merge;
+	// PR #: REST-complete row (node_id set) with a stale armed auto-merge;
 	// its head sha carries a ghost PENDING check row that pins the rollup.
 	require.NoError(t, store.UpsertPR(ctx, dbgen.PullRequest{
 		Owner: "org1", Repo: "repo1", Number: 7, Title: "Live title", Url: "https://github.com/org1/repo1/pull/1",
@@ -118,7 +118,7 @@ func seedApplyDrift(t *testing.T, store *ghdata.Store) {
 	_, err := store.ApplyCommitStatus(ctx, "org1", "repo1", "abc123", "check_run:test", "PENDING", false)
 	require.NoError(t, err) // the ghost: its completion delivery was "missed"
 
-	// PR #99: cached open, gone from GitHub, last touched long ago (outside
+	// PR #: cached open, gone from GitHub, last touched long ago (outside
 	// the reconcile grace) -> apply deletes it.
 	require.NoError(t, store.UpsertPR(ctx, dbgen.PullRequest{
 		Owner: "org1", Repo: "repo1", Number: 99, Title: "Stale open", Url: "u",
@@ -149,7 +149,7 @@ func TestConsistencyChecker_Apply(t *testing.T) {
 	require.NoError(t, err, "missing repo must be absorbed")
 	assert.Equal(t, "private", repo2.Visibility)
 
-	// Absorbed: PR #1's armed auto-merge, which only the explicit set can carry from a GraphQL-shaped row.
+	// Absorbed: PR #'s armed auto-merge, which only the explicit set can carry from a GraphQL-shaped row.
 	pr1, err := store.GetPullRequest(ctx, "org1", "repo1", 1)
 	require.NoError(t, err, "missing PR must be absorbed")
 	assert.Equal(t, "merge", pr1.AutoMergeMethod.String)
@@ -218,7 +218,7 @@ func TestConsistencyChecker_Apply(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "SUCCESS", pr7Again.LastCommitStatus.String, "a later PR webhook must NOT re-poison the corrected status")
 
-	// A second apply over now-consistent truth corrects nothing.
+	// A apply over now-consistent truth corrects nothing.
 	rep2, err := checker.CheckAndApply(ctx, "org1")
 	require.NoError(t, err)
 	assert.Zero(t, rep2.Applied.StatusesCorrected)

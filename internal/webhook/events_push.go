@@ -22,7 +22,7 @@ type PushPayload struct {
 	Before  string // sha of the ref before the push (all-zeros for a new ref)
 	After   string // sha of the ref after the push
 	Forced  bool
-	Commits []PushCommit // pushed commits, payload order (oldest first)
+	Commits []PushCommit // pushed commits, payload order (oldest)
 }
 
 // Branch returns the pushed branch name, or "" for a non-branch ref (tags).
@@ -46,7 +46,7 @@ func shortRefName(ref string) string {
 	return ""
 }
 
-// PushCommit is one commit object from a push payload. The payload states the
+// PushCommit is commit object from a push payload. The payload states the
 type PushCommit struct {
 	ID             string
 	TreeID         string
@@ -134,7 +134,7 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 const maxChainedPushCommits = 20
 
 // ChainedCommits returns the pushed commits with a trustworthy linear parent
-// chain -- commits[0]'s parent is `before`, each subsequent commit's parent is
+// chain -- commits[]'s parent is `before`, each subsequent commit's parent is
 func (p PushPayload) ChainedCommits() []PushCommit {
 	n := len(p.Commits)
 	if n == 0 || n >= maxChainedPushCommits || p.Forced {
@@ -156,7 +156,7 @@ func (p PushPayload) ParentForChained(chain []PushCommit, i int) string {
 	return chain[i-1].ID
 }
 
-// isRealSHA reports whether s is a non-zero full-length hex object id (the
+// isRealSHA reports whether s is a non- full-length hex object id (the
 // all-zeros sha marks a created ref, which has no before-parent).
 func isRealSHA(s string) bool {
 	if len(s) != 40 && len(s) != 64 {

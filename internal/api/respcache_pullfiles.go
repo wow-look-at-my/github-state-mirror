@@ -13,7 +13,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Implements the cached PR-files route (tier 2 of the cache contract).
+// Implements the cached PR-files route (tier of the cache contract).
 // See docs/cache/rest-routes.md for the shape, size cap, and flush rules.
 
 const (
@@ -23,11 +23,11 @@ const (
 	// pullFilesDefaultPerPage is GitHub's default page size when per_page is omitted.
 	pullFilesDefaultPerPage = 30
 
-	// pullFilesMaxCachedPage caps modeled pages at GitHub's 3000-file ceiling plus margin; deeper pages pass through.
+	// pullFilesMaxCachedPage caps modeled pages at GitHub's -file ceiling plus margin; deeper pages pass through.
 	pullFilesMaxCachedPage = 40
 
 	// pullFilesDocMaxBytes caps the rendered document; an over-cap page passes through, not an error.
-	pullFilesDocMaxBytes = 1 << 20 // 1 MiB
+	pullFilesDocMaxBytes = 1 << 20 //  MiB
 )
 
 // parsePullFilesShape reports the paging shape of a /pulls/{number}/files
@@ -61,7 +61,7 @@ func parsePullFilesShape(q url.Values) (perPage, page int, ok bool) {
 	return perPage, page, true
 }
 
-// cachedPullFiles serves one page of a PR's files list from a stored
+// cachedPullFiles serves page of a PR's files list from a stored
 // whole-doc snapshot, fetching and absorbing on a miss. Non-numeric path
 // segments, unknown query shapes, and non-default Accepts pass through.
 func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +108,7 @@ func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbPullFiles(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404, 5xx, and over-cap pages: relayed verbatim, never stored.
+		// Includes, 5xx, and over-cap pages: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -143,7 +143,7 @@ type pullFileUpstreamJSON struct {
 	Patch            *string `json:"patch"`
 }
 
-// absorbPullFiles renders the trimmed document once, so a hit and a miss serve byte-identical bytes.
+// absorbPullFiles renders the trimmed document, so a hit and a miss serve byte-identical bytes.
 func absorbPullFiles(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

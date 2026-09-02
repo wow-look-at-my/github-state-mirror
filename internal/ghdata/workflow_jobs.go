@@ -9,7 +9,7 @@ import (
 
 // Workflow jobs: GLOBAL, webhook-fed state; see docs/dashboard/dashboard.md.
 
-// WorkflowJob is one GitHub Actions job's recorded state. Empty string means
+// WorkflowJob is GitHub Actions job's recorded state. Empty string means
 // the webhook didn't report the field.
 type WorkflowJob struct {
 	Owner        string `json:"owner"`
@@ -75,8 +75,8 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 	})
 }
 
-// RecentWorkflowJobs returns recent jobs: running first (newest started first),
-// then completed (newest completed first).
+// RecentWorkflowJobs returns recent jobs: running (newest started),
+// then completed (newest completed).
 func (s *Store) RecentWorkflowJobs(ctx context.Context, limit int64) ([]WorkflowJob, error) {
 	rows, err := s.q.ListRecentWorkflowJobs(ctx, limit)
 	if err != nil {

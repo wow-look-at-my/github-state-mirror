@@ -13,7 +13,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// repoRoot is this package's directory, two levels down from the module root.
+// repoRoot is this package's directory, levels down from the module root.
 const repoRoot = "../.."
 
 // skippedDirs are trees whose contents this repo does not author.
@@ -77,7 +77,7 @@ func TestNoJSONSplices(t *testing.T) {
 func TestCheckFileFindsEachSpliceShape(t *testing.T) {
 	for _, tc := range []struct {
 		fixture string
-		want    []string // substrings, one per expected finding
+		want    []string // substrings, per expected finding
 	}{
 		{"concat.go.txt", []string{"concatenation", "concatenation"}},
 		{"formatverb.go.txt", []string{"format verb", "format verb", "format verb"}},

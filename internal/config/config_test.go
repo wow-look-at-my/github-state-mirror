@@ -77,7 +77,7 @@ func TestLoad_CacheMaxRowsValid(t *testing.T) {
 	assert.Equal(t, int64(50000), cfg.CacheMaxRows)
 }
 
-// TestLoad_CacheMaxRowsInvalid: an unparseable or < 1 value must fail Load (a
+// TestLoad_CacheMaxRowsInvalid: an unparseable or < value must fail Load (a
 // loud misconfiguration -- the server refuses to start), never fall back
 // silently to a cap the operator didn't set.
 func TestLoad_CacheMaxRowsInvalid(t *testing.T) {
@@ -118,13 +118,13 @@ func TestLoad_RefreshIntervalInvalid(t *testing.T) {
 	}
 }
 
-// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to ghdata.CacheMaxRows so the two cannot drift.
+// TestCacheMaxRowsDefaultMatchesGhdata pins the config default to ghdata.CacheMaxRows so the cannot drift.
 func TestCacheMaxRowsDefaultMatchesGhdata(t *testing.T) {
 	assert.Equal(t, ghdata.CacheMaxRows, defaultCacheMaxRows)
 }
 
 // TestParsePassthroughDebounce covers the uncacheable-read coalescing window: the
-// default when unset, an explicit 0 disabling the feature, and loud startup
+// default when unset, an explicit disabling the feature, and loud startup
 // failures for values that would silently wedge every uncacheable read.
 func TestParsePassthroughDebounce(t *testing.T) {
 	for _, tc := range []struct {
@@ -154,7 +154,7 @@ func TestParsePassthroughDebounce(t *testing.T) {
 	}
 }
 
-// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to api.DebounceMaxWindow so the two cannot drift.
+// TestDebounceWindowBoundMatchesAPI pins the configured ceiling to api.DebounceMaxWindow so the cannot drift.
 func TestDebounceWindowBoundMatchesAPI(t *testing.T) {
 	assert.Equal(t, api.DebounceMaxWindow, maxPassthroughDebounce)
 }

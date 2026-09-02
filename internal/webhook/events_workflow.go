@@ -96,7 +96,7 @@ func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
 }
 
 // ParseWorkflowRunIdentity extracts a workflow_run payload's head_sha and run
-// id (zero values when absent or unparseable). The run id is what flushes the
+// id (values when absent or unparseable). The run id is what flushes the
 // run's cached JOB answers: a re-run replaces a run's jobs under the SAME id,
 // and the workflow_run delivery is the signal that happened.
 func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64) {

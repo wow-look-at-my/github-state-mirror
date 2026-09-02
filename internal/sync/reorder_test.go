@@ -27,16 +27,16 @@ func windowedDispatcher(t *testing.T, window time.Duration) (*WebhookDispatcher,
 	return NewWebhookDispatcherWindowed(freshness.NewManager(freshness.NewStore(db)), store, window), store
 }
 
-// The case the window exists for: the OLDER view arrives second, inside the
-// window. Both apply, oldest first -- so the newer one's state is what
-// survives, and the older one is not refused at all.
+// The case the window exists for: the OLDER view arrives, inside the
+// window. Both apply, oldest -- so the newer 's state is what
+// survives, and the older is not refused at all.
 func TestReorder_OlderArrivingSecondIsSortedBackIntoPlace(t *testing.T) {
 	dispatcher, store := windowedDispatcher(t, 150*time.Millisecond)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	results := make([]webhook.DispatchResult, 2)
-	// The newer view arrives first; the older one lands while the window is
+	// The newer view arrives; the older lands while the window is
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -68,7 +68,7 @@ func TestReorder_OlderArrivingSecondIsSortedBackIntoPlace(t *testing.T) {
 }
 
 // Past the window the buffer cannot help, and the watermark takes over: the
-// late view is refused rather than written. The two mechanisms cover different
+// late view is refused rather than written. The mechanisms cover different
 // distances, and this is the seam between them.
 func TestReorder_PastTheWindowTheWatermarkRefuses(t *testing.T) {
 	dispatcher, store := windowedDispatcher(t, 30*time.Millisecond)
@@ -86,7 +86,7 @@ func TestReorder_PastTheWindowTheWatermarkRefuses(t *testing.T) {
 	assert.Equal(t, int64(1), dispatcher.Ordering().Superseded)
 }
 
-// Batching is per SUBJECT: one busy subject's window must not make another's
+// Batching is per SUBJECT: busy subject's window must not make another's
 // deliveries wait behind it.
 func TestReorder_WindowsAreIndependentPerSubject(t *testing.T) {
 	dispatcher, _ := windowedDispatcher(t, 120*time.Millisecond)
@@ -128,7 +128,7 @@ func TestReorder_UnorderableDeliveryIsNotHeld(t *testing.T) {
 	assert.Equal(t, int64(0), dispatcher.Ordering().Held)
 }
 
-// A zero window is the no-buffer configuration: deliveries dispatch on
+// A window is the no-buffer configuration: deliveries dispatch on
 // arrival and only the watermark orders them.
 func TestReorder_ZeroWindowDispatchesImmediately(t *testing.T) {
 	dispatcher, _ := windowedDispatcher(t, 0)

@@ -146,7 +146,7 @@ func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, 
 	return perr == nil && exp.After(now), nil
 }
 
-// RestPullsList returns the repo's open-PR rows (newest-created first,
+// RestPullsList returns the repo's open-PR rows (newest-created,
 // GitHub's default list order) plus all their labels grouped by PR number.
 // owner/repo are matched case-insensitively: rows carry GitHub's canonical
 // casing, the request URL may not.
@@ -170,7 +170,7 @@ func (s *Store) RestPullsList(ctx context.Context, owner, repo string) ([]dbgen.
 	return prs, byPR, nil
 }
 
-// RestSinglePull returns the row for one OPEN PR plus its labels, or ok=false
+// RestSinglePull returns the row for OPEN PR plus its labels, or ok=false
 // when no open row exists.
 func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number int64) (dbgen.PullRequest, []dbgen.PrLabel, bool, error) {
 	pr, err := s.q.GetOpenPullRequestNoCase(ctx, dbgen.GetOpenPullRequestNoCaseParams{
@@ -193,7 +193,7 @@ func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number i
 
 // AbsorbPullsList upserts the PRs of a fetched /pulls list response (and
 // their labels) into global truth. When complete is true -- an unfiltered
-// page-1 response that provably holds the WHOLE open set -- it also deletes
+// page- response that provably holds the WHOLE open set -- it also deletes
 // open rows the response no longer contains (PRs closed while unwatched) and
 // records the "list complete" marker with the given TTL. The delete honors
 // the reconcile grace window: a row touched after fetchStart minus the grace
@@ -266,27 +266,30 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 	return s.q.PrunePullsListMarkersLRU(ctx, CacheMaxRows)
 }
 
-// AbsorbSinglePull upserts one fetched OPEN PR into global truth. Unlike the
+// AbsorbSinglePull upserts fetched OPEN PR into global truth. Unlike the
 // COALESCE-ing webhook upsert, the fetched mergeable is authoritative --
 // including null ("GitHub is recomputing") -- so it is force-set after the
 // upsert: a null answer must keep the single-PR route missing (and
 // re-fetching) until GitHub resolves it, never resurrect a stale value.
 //
-// One answer is NOT authoritative: a response whose merge_commit_sha is the
+//	answer is NOT authoritative: a response whose merge_commit_sha is the
+//
 // exact sha a branch push just invalidated (a live merge_stale_sha marker).
 // The push moved the PR's base or head, and a tip change always changes the
 // sha of a SUCCESSFUL test merge -- so GitHub re-offering the invalidated sha
 // means its recompute hasn't landed and the WHOLE answer (resolved mergeable
 // included) predates the push. Such an answer is stored UNRESOLVED (mergeable
 // NULL, merge_commit_sha NULL, marker kept), so reads keep missing -- each
-// one re-triggering the recompute -- until GitHub serves a NEW sha, which
-// clears the marker. TWO exemptions overrule that presumption and accept the
-// answer, sha and all, marker cleared: (1) the push-tip proof
+//
+//	re-triggering the recompute -- until GitHub serves a NEW sha, which
+//
+// clears the marker. exemptions overrule that presumption and accept the
+// answer, sha and all, marker cleared: () the push-tip proof
 // (pushProvenPostPush) -- the answer's reported tip for the marked branch
 // equals the marking push's after sha, so it demonstrably post-dates the push
 // -- which heals a WRONG mark (the race where the fresh post-push answer was
 // absorbed before the late push delivery, which then stamped it stale) on the
-// very next poll; and (2) the dirty-retained pattern
+// very next poll; and () the dirty-retained pattern
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

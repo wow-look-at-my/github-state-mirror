@@ -16,7 +16,7 @@ import (
 // the PR webhook fixtures (upstreamPR, prEvent) in respcache_pulls_test.go.
 
 // defaultPullFilesUpstream is respCacheUpstream's default /pulls/{n}/files
-// answer: two files -- one modified with a patch, one renamed WITHOUT a patch
+// answer: files -- modified with a patch, renamed WITHOUT a patch
 // (the binary/oversized case) but with previous_filename -- so the rebuild
 // must preserve exactly that presence split while dropping sha and every URL.
 func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +41,9 @@ func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
 	]`))
 }
 
-// TestCachedPullFiles_MissAbsorbHit covers the core flow: the first read
-// fetches + absorbs the whole trimmed page (miss), the second serves the
-// byte-identical stored doc (hit, zero upstream calls), and the rebuild
+// TestCachedPullFiles_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs the whole trimmed page (miss), the serves the
+// byte-identical stored doc (hit, upstream calls), and the rebuild
 // drops sha + every URL field while preserving patch/previous_filename
 // present-vs-absent exactly.
 func TestCachedPullFiles_MissAbsorbHit(t *testing.T) {
@@ -178,7 +178,7 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 		assert.Equal(t, int32(i+1), atomic.LoadInt32(&u.pullFilesHits), target)
 	}
 
-	// The last modeled page (GitHub's 3000-file cap = 30 pages at per_page=100,
+	// The last modeled page (GitHub's -file cap = pages at per_page=,
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls/7/files?page=40", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "page 40 is within the modeled cap")
@@ -189,7 +189,7 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 }
 
 // TestCachedPullFiles_DocCapPassthrough: `patch` is unbounded, so a page
-// whose rendered document exceeds the 1 MiB cap is passed through verbatim
+// whose rendered document exceeds the MiB cap is passed through verbatim
 // -- a passthrough, not an error -- and nothing is stored (every read
 // fetches again).
 func TestCachedPullFiles_DocCapPassthrough(t *testing.T) {

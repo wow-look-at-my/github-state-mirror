@@ -18,7 +18,7 @@ type StatusEvent struct {
 }
 
 // ParseStatusEvent reads a `status` delivery's own account of the status it
-// announces, or reports false when the payload states no usable one. A status
+// announces, or reports false when the payload states no usable. A status
 // is append-only upstream: re-posting a context creates a NEW status object
 // with a new id and a new created_at, which is why created_at is required here
 // -- it is what places the entry in a stored document's ordering.

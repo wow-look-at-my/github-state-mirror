@@ -13,7 +13,8 @@ import (
 )
 
 // Relative to now so the fixtures never age past the completed-job retention; truncated to the
-// second so the RFC3339 strings round-trip byte-identically through payload -> store.
+//
+//	so the RFC3339 strings round-trip byte-identically through payload -> store.
 var (
 	wfjStartedAt   = time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
 	wfjCompletedAt = time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
@@ -67,7 +68,7 @@ func makeWorkflowJobPayloadAt(t *testing.T, action, owner, repo string, jobID in
 
 // TestDispatch_WorkflowJob_InProgressThenCompleted covers the normal event
 // order: in_progress inserts the running row, completed upserts the verdict.
-// The table is global, so no repo needs to be cached in any scope first.
+// The table is global, so no repo needs to be cached in any scope.
 func TestDispatch_WorkflowJob_InProgressThenCompleted(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -146,14 +147,14 @@ func TestDispatch_WorkflowJob_LateInProgressDoesNotRegress(t *testing.T) {
 }
 
 // TestDispatch_WorkflowJob_LateInProgressPastRetention is the deterministic
-// reproduction of the 2026-07-17 master incident (run 29575744119, commit
-// 998ee25): the then-hardcoded fixture completed_at aged past the 14-day
+// reproduction of the -- master incident (run, commit
+// 998ee25): the then-hardcoded fixture completed_at aged past the -day
 // retention horizon, RecordWorkflowJob's on-write prune deleted the completed
 // row the same call had just written, and the late in_progress then INSERTED
 // a fresh running row -- status regressed to "in_progress", conclusion
 // blanked -- because the upsert's regression guard only fires when the row
 // still exists. The same interleaving is reachable in production via delivery
-// replays of old events (GitHub keeps deliveries 30 days; the org's
+// replays of old events (GitHub keeps deliveries days; the org's
 // webhook-runner SDK replays missed windows). Retention now also keys on
 // updated_at (when the mirror last applied a webhook), so a just-recorded row
 // can never be pruned out from under the guard, however old the event's own

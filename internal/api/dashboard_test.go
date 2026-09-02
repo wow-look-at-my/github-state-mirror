@@ -257,7 +257,7 @@ func TestDashboard_CallbackFlow(t *testing.T) {
 	svc := configuredAuth(t)
 	router, _, _ := newTestStack(t, svc)
 
-	// Step 1: /login to obtain a state + its cookie.
+	// Step: /login to obtain a state + its cookie.
 	loginReq := httptest.NewRequest("GET", "/login", nil)
 	loginW := httptest.NewRecorder()
 	router.ServeHTTP(loginW, loginReq)
@@ -272,7 +272,7 @@ func TestDashboard_CallbackFlow(t *testing.T) {
 	}
 	require.NotNil(t, stateCookie)
 
-	// Step 2: /auth/callback with the matching state + code.
+	// Step: /auth/callback with the matching state + code.
 	cbReq := httptest.NewRequest("GET", "/auth/callback?code=good&state="+state, nil)
 	cbReq.AddCookie(stateCookie)
 	cbW := httptest.NewRecorder()
@@ -287,7 +287,7 @@ func TestDashboard_CallbackFlow(t *testing.T) {
 	}
 	require.NotNil(t, sessionCookie, "callback must set a session cookie")
 
-	// Step 3: the session identifies the stubbed login (PazerOP, an admin).
+	// Step: the session identifies the stubbed login (PazerOP, an admin).
 	meReq := httptest.NewRequest("GET", "/api/me", nil)
 	meReq.AddCookie(sessionCookie)
 	meW := httptest.NewRecorder()
@@ -371,10 +371,10 @@ func callbackWithFreshState(t *testing.T, router http.Handler) *httptest.Respons
 	return cbW
 }
 
-// TestDashboard_Callback_ExchangeFailure pins the 2026-07-19 incident fix: a
+// TestDashboard_Callback_ExchangeFailure pins the -- incident fix: a
 // failed code-for-token exchange must answer a 4xx retry page, never a 5xx —
 // Cloudflare replaces origin 5xx bodies with its own bare error page, stranding
-// the user with zero context and no way to retry.
+// the user with context and no way to retry.
 func TestDashboard_Callback_ExchangeFailure(t *testing.T) {
 	router, _, _ := newTestStack(t, brokenAuth(t, "token"))
 	w := callbackWithFreshState(t, router)

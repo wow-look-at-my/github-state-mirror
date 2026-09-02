@@ -16,7 +16,7 @@ import (
 // labelCacheTTL: see docs/cache/rest-routes.md.
 const labelCacheTTL = 24 * time.Hour
 
-// cachedLabel serves one label definition from a stored snapshot, fetching and
+// cachedLabel serves label definition from a stored snapshot, fetching and
 // absorbing on a miss.
 func (h *handlers) cachedLabel(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
@@ -64,7 +64,7 @@ func (h *handlers) cachedLabel(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbLabel(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 404, 5xx, and any unmodeled shape: relayed verbatim, never stored.
+		// , 5xx, and any unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -85,7 +85,7 @@ func (h *handlers) writeLabel(w http.ResponseWriter, r *http.Request) {
 	h.ghProxy.ServeHTTP(w, r)
 }
 
-// labelJSON is the trimmed rebuild: GitHub's `label` schema minus its one url
+// labelJSON is the trimmed rebuild: GitHub's `label` schema minus its url
 // field. `description` is nullable-but-always-keyed and `default` is the flag
 // that separates a repo's stock labels from its own.
 type labelJSON struct {
@@ -97,7 +97,7 @@ type labelJSON struct {
 	Description *string `json:"description"`
 }
 
-// absorbLabel parses a 200 into the trimmed document, rendered once here so
+// absorbLabel parses a into the trimmed document, rendered here so
 // hit and miss serve identical bytes. `name` is the field the model requires:
 // an answer without it is not the label object this route holds.
 func absorbLabel(status int, body []byte) (string, bool) {

@@ -70,8 +70,8 @@ func assertSameShape(t *testing.T, path string, want, got interface{}) {
 		if !assert.Truef(t, ok, "%s: want array, got %s", path, jsonType(got)) {
 			return
 		}
-		// Compare element [0] shape when both have one (GraphQL arrays are
-		// homogeneous, so one element pins the shape).
+		// Compare element [] shape when both have (GraphQL arrays are
+		// homogeneous, so element pins the shape).
 		if len(w) > 0 && len(g) > 0 {
 			assertSameShape(t, path+"[0]", w[0], g[0])
 		}

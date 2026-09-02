@@ -28,7 +28,7 @@ func TestClosedPRIsNotResurrectedByAnOlderWrite(t *testing.T) {
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:06:10Z"), now))
 	require.NoError(t, s.DeletePR(ctx, "org1", "repo1", 24, "2026-08-10T15:08:18Z", now))
 
-	// The failed 15:06:10 delivery arrives late (or redelivered) after the close.
+	// The failed:: delivery arrives late (or redelivered) after the close.
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:06:10Z"), now.Add(90*time.Second)))
 
 	_, err := s.GetPullRequest(ctx, "org1", "repo1", 24)
@@ -138,7 +138,7 @@ func TestUpsertPRWithChecksRefusesAPreCloseView(t *testing.T) {
 // A reconcile sweep infers the close from ABSENCE from an eventually
 // consistent snapshot, and a wrong inference recorded as a closure would
 // refuse the PR's real deliveries for a day. Only a statement that the PR
-// closed records one.
+// closed records.
 func TestSyncOrgTruthSweepRecordsNoClosure(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -147,7 +147,7 @@ func TestSyncOrgTruthSweepRecordsNoClosure(t *testing.T) {
 	require.NoError(t, s.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
 	require.NoError(t, s.UpsertPR(ctx, openPR(24, "2026-08-10T15:06:10Z"), now.Add(-time.Hour)))
 
-	// The snapshot no longer lists #24, so the reconcile drops it.
+	// The snapshot no longer lists #, so the reconcile drops it.
 	require.NoError(t, s.SyncOrgTruth(ctx, "org1", OrgSyncData{
 		Repos:      []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}},
 		PRsByRepo:  map[string][]dbgen.PullRequest{},

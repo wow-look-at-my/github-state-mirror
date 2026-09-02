@@ -34,7 +34,7 @@ func TestScrubSQL(t *testing.T) {
 	}
 }
 
-// The two halves of the promise, on toy input: prose is free, structure is not.
+// The halves of the promise, on toy input: prose is free, structure is not.
 func TestSchemaFingerprint_TracksStructureNotProse(t *testing.T) {
 	base := "CREATE TABLE t (a TEXT); -- holds a thing\n"
 

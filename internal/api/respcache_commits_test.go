@@ -70,7 +70,7 @@ func newCommitsCacheUpstream() *commitsCacheUpstream {
 			servePRJSON(w, []any{upstreamCommit(shaBase, "initial", shaTree1)})
 		case q.Get("sha") == "dev":
 			servePRJSON(w, []any{upstreamCommit(shaCommit, "dev tip", shaTree2, shaBase)})
-		default: // newest first, like GitHub
+		default: // newest, like GitHub
 			servePRJSON(w, []any{
 				upstreamCommit(shaTip, "fix: a thing <with> & symbols", shaTree2, shaMid),
 				upstreamCommit(shaMid, "feat: mid", shaTree1, shaBase),
@@ -113,9 +113,9 @@ func commitsCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 	return router, store, db, u
 }
 
-// TestCachedCommitsList_MissAbsorbHit covers the core flow: the first read
-// fetches + absorbs (miss), the second serves the identical trimmed body from
-// state (hit, zero upstream calls), the rebuild drops every URL field and the
+// TestCachedCommitsList_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs (miss), the serves the identical trimmed body from
+// state (hit, upstream calls), the rebuild drops every URL field and the
 // user-object clutter -- and the absorbed commits land in the SAME global
 // git_commits_cache rows the single git-commit route serves.
 func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
@@ -163,7 +163,7 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedCommitsList_PageAndRefKeying: every modeled query dimension is its
-// own snapshot -- page=1 vs page=2, one ref vs another vs the bare default --
+// own snapshot -- page= vs page=, ref vs another vs the bare default --
 // and, unlike the pulls list, a page as long as per_page is still served from
 // state (the snapshot IS that exact page's answer; the next page has its own
 // key, so there is nothing to truncate).
@@ -317,8 +317,8 @@ func TestCachedCommitsList_MissingCommitRowMisses(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
-// TestCachedCommitsList_Non200NotStored: 404 (unknown ref), 409 (empty repo),
-// 5xx -- anything but a 200 -- is relayed verbatim and stores no snapshot.
+// TestCachedCommitsList_Non200NotStored: (unknown ref), (empty repo),
+// 5xx -- anything but a -- is relayed verbatim and stores no snapshot.
 func TestCachedCommitsList_Non200NotStored(t *testing.T) {
 	router, _, db, u := commitsCacheStack(t)
 	u.list = func(w http.ResponseWriter, r *http.Request) {

@@ -74,7 +74,7 @@ func TestStoreCRUDRoundTrip(t *testing.T) {
 	assert.Equal(t, sub.RepoFilters, updated.RepoFilters, "unpatched fields survive")
 	assert.Equal(t, sub.Secret, updated.Secret, "unpatched secret survives")
 
-	// A patched value must fail validation like a created one.
+	// A patched value must fail validation like a created.
 	bad := "http://not-loopback.example.com/x"
 	_, err = st.Update(ctx, "user:1", sub.ID, Patch{URL: &bad}, time.Now())
 	var ve *ValidationError
@@ -127,7 +127,7 @@ func TestStorePerPrincipalCap(t *testing.T) {
 	}, time.Now())
 	assert.ErrorIs(t, err, ErrLimitExceeded)
 
-	// Another principal is unaffected by user:1's cap.
+	// Another principal is unaffected by user:'s cap.
 	mustCreate(t, st, "user:2", NewSubscription{})
 }
 

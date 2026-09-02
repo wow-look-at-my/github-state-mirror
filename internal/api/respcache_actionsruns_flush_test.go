@@ -11,13 +11,13 @@ import (
 
 // What makes a stored runs answer stop being served, and what makes it stop
 // NEEDING to be re-fetched: the per-sha webhook flushes, the rewrite a
-// `workflow_run` delivery performs instead of one, the TTL backstop, and the
+// `workflow_run` delivery performs instead of, the TTL backstop, and the
 // non-200s. The fixtures and the core miss/absorb/hit flow live in
 // respcache_actionsruns_test.go.
 
 // TestCachedWorkflowRuns_WebhookFlush: a CI/job event flushes exactly the
 // payload-named sha's pages -- including a QUEUED workflow_job, whose
-// delivery the dispatcher drops as ignored but whose invalidation runs first
+// delivery the dispatcher drops as ignored but whose invalidation runs
 // (a queued job is a run the cached listing may not have shown yet, the
 // exact staleness pr-minder's zombie probe must not read) -- while another
 // sha's pages survive; repository events flush repo-wide.
@@ -79,8 +79,8 @@ func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 // byte for byte.
 //
 // A run is UPDATED IN PLACE upstream and the listing is ordered by creation
-// (measured: across 100 consecutive runs of one repo, created_at is strictly
-// descending with zero violations while updated_at has 31), so the entry
+// (measured: across consecutive runs of repo, created_at is strictly
+// descending with violations while updated_at has), so the entry
 // cannot move.
 func TestCachedWorkflowRuns_WorkflowRunEventRewritesThePage(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
@@ -154,8 +154,8 @@ func TestCachedWorkflowRuns_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runsHits))
 }
 
-// TestCachedWorkflowRuns_Non200NotStored: anything but a well-formed 200 --
-// and a 200 whose body lacks total_count or the workflow_runs array -- is
+// TestCachedWorkflowRuns_Non200NotStored: anything but a well-formed --
+// and a whose body lacks total_count or the workflow_runs array -- is
 // relayed verbatim and stores nothing.
 func TestCachedWorkflowRuns_Non200NotStored(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
@@ -173,7 +173,7 @@ func TestCachedWorkflowRuns_Non200NotStored(t *testing.T) {
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.runsHits))
 	}
 
-	// A 200 missing the absorb-gated fields is replayed unstored too.
+	// A missing the absorb-gated fields is replayed unstored too.
 	u.runs = func(w http.ResponseWriter, r *http.Request) {
 		servePRJSON(w, map[string]any{"workflow_runs": []any{}}) // no total_count
 	}

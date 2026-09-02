@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Observation is the most recent rate-limit reading for one (identity,
+// Observation is the most recent rate-limit reading for (identity,
 // resource) pair, parsed off a response's X-RateLimit-* headers.
 type Observation struct {
 	// Identity labels WHO was consuming the limit; never a raw token value. see docs/ratemeter.md
@@ -40,7 +40,7 @@ type key struct{ identity, resource string }
 type Store struct {
 	mu  sync.Mutex
 	obs map[key]Observation
-	// now is the clock, a test seam set once at construction; tests override it before use.
+	// now is the clock, a test seam set at construction; tests override it before use.
 	now func() time.Time
 }
 
@@ -140,7 +140,7 @@ func (s *Store) evictOldestLocked() {
 }
 
 // Snapshot returns every live observation, sorted by identity then resource.
-// Dead entries (see dead) are pruned first, so a snapshot never carries an
+// Dead entries (see dead) are pruned, so a snapshot never carries an
 // observation whose window already rolled over.
 func (s *Store) Snapshot() []Observation {
 	if s == nil {
@@ -164,7 +164,7 @@ func (s *Store) Snapshot() []Observation {
 	return out
 }
 
-// ObservationsFor returns the live observations for one identity, across every resource, sorted by resource.
+// ObservationsFor returns the live observations for identity, across every resource, sorted by resource.
 // see docs/ratemeter.md
 func (s *Store) ObservationsFor(identity string) []Observation {
 	if s == nil {

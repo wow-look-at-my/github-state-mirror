@@ -35,7 +35,7 @@ func upstreamCombinedStatus(ref, state string, statuses []any) map[string]any {
 	}
 }
 
-// upstreamStatusItem builds one GitHub-shaped statuses entry, including the
+// upstreamStatusItem builds GitHub-shaped statuses entry, including the
 // avatar_url/target_url/url fields the rebuild must drop. description may be
 // nil (GitHub sends "description": null when unset).
 func upstreamStatusItem(context, state string, description any, targetURL string) map[string]any {
@@ -53,7 +53,7 @@ func upstreamStatusItem(context, state string, description any, targetURL string
 	}
 }
 
-// upstreamCheckRun builds one GitHub-shaped check_runs entry, including the
+// upstreamCheckRun builds GitHub-shaped check_runs entry, including the
 // url/html_url/details_url, the output object (with annotations_url), the
 // check_suite, and the full app object the rebuild trims to {id}. conclusion,
 // startedAt, and completedAt may be nil (a queued/in-progress run).
@@ -87,7 +87,7 @@ func upstreamCheckRun(id int, name, status string, conclusion, startedAt, comple
 	}
 }
 
-// upstreamStatusListItem builds one GitHub-shaped raw statuses-LIST entry:
+// upstreamStatusListItem builds GitHub-shaped raw statuses-LIST entry:
 // the creator user object and url/avatar_url clutter around the fields the
 // rebuild keeps (context/state/description/target_url/timestamps).
 // description and targetURL may be nil (GitHub sends null for both).
@@ -154,7 +154,7 @@ func newCommitCIUpstream() *commitCIUpstream {
 		})
 	}
 	u.statuses = func(w http.ResponseWriter, r *http.Request) {
-		// Newest first, like GitHub -- the consumers' first-wins context
+		// Newest, like GitHub -- the consumers' -wins context
 		// dedup depends on this order surviving the rebuild.
 		servePRJSON(w, []any{
 			upstreamStatusListItem(2, "ci/build", "success", "2/2 builds passed", "https://rbm.example.com/b/org1/repo1/"+shaTip),
@@ -179,7 +179,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 		case r.URL.Path == "/user":
 			servePRJSON(w, map[string]any{"login": testUserLogin, "id": testUserID})
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/statuses/"):
-			// The required-builds status PUBLISH: record it, then answer a GitHub-shaped 201.
+			// The required-builds status PUBLISH: record it, then answer a GitHub-shaped.
 			body, _ := io.ReadAll(r.Body)
 			u.lastPostPath, u.lastPostBody = r.URL.Path, string(body)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -230,8 +230,8 @@ func commitCIStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *commitC
 }
 
 // TestCachedCommitStatus_MissAbsorbHit covers the combined-status core flow:
-// the first read fetches + absorbs (miss), the second serves the identical
-// trimmed body from state (hit, zero upstream calls), and the rebuild drops
+// the read fetches + absorbs (miss), the serves the identical
+// trimmed body from state (hit, upstream calls), and the rebuild drops
 // every URL field (per-status target_url/avatar_url/url included), the full
 // repository object, and the per-status ids -- while a null description
 // survives as null.
@@ -272,9 +272,9 @@ func TestCachedCommitStatus_MissAbsorbHit(t *testing.T) {
 // TestCachedCheckRuns_MissAbsorbHit covers the check-runs core flow: miss
 // then identical hit. The rebuild drops url, node_id/external_id,
 // check_suite, pull_requests, and output's unbounded summary/text -- while
-// keeping the three consumer-read fields the 2026-07-11 survey re-added
+// keeping the consumer-read fields the -- survey re-added
 // (output trimmed to {title}, details_url, html_url -- the required-builds
-// hook renders all three), the nullable conclusion/completed_at of an
+// hook renders all), the nullable conclusion/completed_at of an
 // in-progress run as null, and the app object trimmed to {id}.
 func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
@@ -321,7 +321,7 @@ func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 // TestCachedCommitCI_RefKeying: every verbatim ref spelling -- a branch, a
 // sha, a slashed branch -- is its own row, slashed refs route into the cached
 // routes (the suffix-anchored subtree dispatch), and the status and
-// check-runs snapshots for one ref are independent rows.
+// check-runs snapshots for ref are independent rows.
 func TestCachedCommitCI_RefKeying(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 
@@ -364,7 +364,7 @@ func TestCachedCommitCI_RefKeying(t *testing.T) {
 // query params, a non-default Accept, and every OTHER /commits/* subtree tail
 // (the single-commit read, /check-suites, a branch literally named "status"
 // read as a single commit). (?per_page/?page themselves became modeled in
-// round 2 -- see TestCachedCommitCI_PaginationKeying.)
+// round -- see TestCachedCommitCI_PaginationKeying.)
 func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 
@@ -385,7 +385,7 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.checkRunsHits))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 
-	// A non-default Accept passes through on all three route forms.
+	// A non-default Accept passes through on all route forms.
 	for _, target := range []string{
 		"/repos/org1/repo1/commits/main/status",
 		"/repos/org1/repo1/commits/main/check-runs",
@@ -418,10 +418,10 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
 }
 
-// TestCachedCommitCI_PaginationKeying: round 2 made ?per_page/?page part of
+// TestCachedCommitCI_PaginationKeying: round made ?per_page/?page part of
 // the cache key on every commit-CI form -- each paginated shape is its own
 // self-contained snapshot (the required-builds hook paginates check-runs and
-// statuses at per_page=100&page=N until a short page), the bare shape stores
+// statuses at per_page=&page=N until a short page), the bare shape stores
 // under GitHub's defaults as its own key, and the combined /status route
 // inherits the same parse.
 func TestCachedCommitCI_PaginationKeying(t *testing.T) {

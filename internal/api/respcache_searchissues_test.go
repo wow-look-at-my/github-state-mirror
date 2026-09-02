@@ -12,9 +12,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Search-results route tests. The security property under test is the one
+// Search-results route tests. The security property under test is the
 // this route exists to protect: search results are permission-scoped per
-// GitHub token, so two credentials asking the identical query must never
+// GitHub token, so credentials asking the identical query must never
 // share a row.
 
 func defaultSearchIssuesUpstream(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +48,7 @@ func TestCachedSearchIssues_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.searchIssuesHits), "a hit must not call upstream")
 }
 
-// The security property: two credentials asking the identical query must
+// The security property: credentials asking the identical query must
 // never share a cached row, because GitHub's own results differ by caller.
 func TestCachedSearchIssues_NeverSharedAcrossCredentials(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

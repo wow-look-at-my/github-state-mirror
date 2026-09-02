@@ -28,7 +28,7 @@ type Event struct {
 	// Org info
 	OrgLogin string
 
-	InstallationID int64 // the delivering App installation; 0 when absent
+	InstallationID int64 // the delivering App installation; when absent
 
 	// Raw payload for anything that needs deeper inspection.
 	Raw json.RawMessage

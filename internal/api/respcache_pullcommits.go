@@ -11,12 +11,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached PR commits list (tier 2): GET /repos/{owner}/{repo}/pulls/{number}/commits, reusing the repo commits-list storage whole.
+// The cached PR commits list (tier): GET /repos/{owner}/{repo}/pulls/{number}/commits, reusing the repo commits-list storage whole.
 // see docs/cache/rest-routes.md
 
 const (
 	pullCommitsDefaultPerPage = 30
-	// pullCommitsMaxCachedPage caps modeled pages (GitHub's PR-commits list stops at 250); deeper pagination passes through.
+	// pullCommitsMaxCachedPage caps modeled pages (GitHub's PR-commits list stops at); deeper pagination passes through.
 	pullCommitsMaxCachedPage = 10
 )
 
@@ -24,7 +24,7 @@ func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }
 
-// cachedPullCommits serves one page of a PR's commits, fetching and absorbing
+// cachedPullCommits serves page of a PR's commits, fetching and absorbing
 // on a miss.
 func (h *handlers) cachedPullCommits(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
@@ -74,7 +74,7 @@ func (h *handlers) cachedPullCommits(w http.ResponseWriter, r *http.Request) {
 
 	commits, absorbed := absorbCommitsList(owner, repo, resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 (unknown PR, can be opened later) and 5xx: relayed verbatim, never stored.
+		// Includes (unknown PR, can be opened later) and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}

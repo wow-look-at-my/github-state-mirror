@@ -18,9 +18,9 @@ const (
 	DispSuperseded = "superseded"
 )
 
-// DispatchResult summarizes what Dispatch did with one webhook event. The
+// DispatchResult summarizes what Dispatch did with webhook event. The
 // handler serializes it as the HTTP response body so the outcome is visible in
-// GitHub's delivery record instead of being hidden behind a blind 200.
+// GitHub's delivery record instead of being hidden behind a blind.
 type DispatchResult struct {
 	Event       string `json:"event"`
 	Action      string `json:"action,omitempty"`
@@ -29,7 +29,7 @@ type DispatchResult struct {
 	Detail      string `json:"detail,omitempty"`
 }
 
-// StatusCode maps a disposition to GitHub's status: only error is non-2xx, applied is 200, the rest 202.
+// StatusCode maps a disposition to GitHub's status: only error is non-2xx, applied is, the rest.
 func (r DispatchResult) StatusCode() int {
 	switch r.Disposition {
 	case DispApplied:

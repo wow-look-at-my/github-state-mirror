@@ -138,7 +138,7 @@ func TestDispatch_Status_AppliesRollup(t *testing.T) {
 	// org repos must NOT be invalidated — the rollup was applied directly.
 	assert.Equal(t, freshness.StateFresh, metaState(t, fStore, KindOrgRepos, "my-org"))
 
-	// A second, failing context flips the rollup to FAILURE.
+	// A, failing context flips the rollup to FAILURE.
 	dispatcher.Dispatch(ctx, webhook.ParseEvent("status", makeStatusPayload(t, "my-org", "my-repo", "sha1", "failure", "ci/test")))
 	pr, err = store.GetPullRequest(ctx, "my-org", "my-repo", 1)
 	require.Nil(t, err)
@@ -200,7 +200,7 @@ func TestDispatch_PRUpsert_PreservesStatus(t *testing.T) {
 		HeadRefOid: sql.NullString{String: "abc123", Valid: true},
 	}, time.Now()))
 
-	// CI status arrives first.
+	// CI status arrives.
 	dispatcher.Dispatch(ctx, webhook.ParseEvent("status", makeStatusPayload(t, "my-org", "my-repo", "abc123", "success", "ci")))
 
 	// Then a pull_request webhook (e.g. "labeled") with no CI status.
@@ -392,7 +392,7 @@ func makeCheckSuitePayload(t *testing.T, owner, repo, sha, headBranch, defaultBr
 }
 
 // TestDispatch_CheckSuite_DefaultBranchStatus verifies a check_suite on the
-// default branch updates the repo's default_branch_status in place, and one on
+// default branch updates the repo's default_branch_status in place, and on
 // another branch does not.
 func TestDispatch_CheckSuite_DefaultBranchStatus(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -458,7 +458,7 @@ func TestDispatch_RepositoryLifecycle(t *testing.T) {
 	repo, _ = store.GetRepo(ctx, "my-org", "r1")
 	assert.Equal(t, ghdata.VisibilityPublic, repo.Visibility)
 
-	// renamed: the old row's truth is dropped, the new one stands.
+	// renamed: the old row's truth is dropped, the new stands.
 	dispatcher.Dispatch(ctx, mkEvent("renamed", repoObj("r1-new", "public", false),
 		map[string]interface{}{"changes": map[string]interface{}{"repository": map[string]interface{}{"name": map[string]interface{}{"from": "r1"}}}}))
 	_, err = store.GetRepo(ctx, "my-org", "r1")

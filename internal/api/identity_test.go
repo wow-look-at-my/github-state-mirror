@@ -67,7 +67,7 @@ func TestModeB_AppIdentityPartition(t *testing.T) {
 }
 
 // TestModeB_InvalidIdentityRejected verifies a forged/expired App JWT (GitHub
-// rejects it at GET /app) yields 401 on a cached route, not a silent fallthrough.
+// rejects it at GET /app) yields on a cached route, not a silent fallthrough.
 func TestModeB_InvalidIdentityRejected(t *testing.T) {
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app" {

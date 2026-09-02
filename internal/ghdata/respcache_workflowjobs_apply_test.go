@@ -62,11 +62,11 @@ func TestApplyWorkflowJob_RewritesOneEntry(t *testing.T) {
 	assert.Equal(t, "success", *page.Jobs[1].Conclusion)
 }
 
-// The clock follows what is left MOVING in the answer, and it is three-way
-// because one part of it no delivery can keep current: GitHub sends one
+// The clock follows what is left MOVING in the answer, and it is -way
+// because part of it no delivery can keep current: GitHub sends
 // delivery per job transition, while a RUNNING job's steps advance between
 // them unreported. A queued job has no steps yet, so a rewritten entry is
-// exactly right and earns the longer live clock; a running one does not.
+// exactly right and earns the longer live clock; a running does not.
 func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
@@ -103,7 +103,7 @@ func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
 	}
 }
 
-// The two things a delivery cannot answer, both of which drop the run's rows
+// The things a delivery cannot answer, both of which drop the run's rows
 // so a fetch can settle them.
 func TestApplyWorkflowJob_FlushesWhatItCannotAnswer(t *testing.T) {
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestApplyWorkflowJob_FlushesWhatItCannotAnswer(t *testing.T) {
 	})
 }
 
-// A run has many single-job rows and a delivery names one. The others are not
+// A run has many single-job rows and a delivery names. The others are not
 // about this delivery at all, so skipping them must not read as "cannot
 // absorb" and drag the whole run into a flush.
 func TestApplyWorkflowJob_LeavesOtherJobsRowsAlone(t *testing.T) {

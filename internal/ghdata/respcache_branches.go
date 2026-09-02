@@ -16,7 +16,7 @@ import (
 const BranchesCacheTTL = 24 * time.Hour
 
 // GetCachedBranchesList returns the cached trimmed branches-page document, or
-// ("", false) on a miss (no row, or an expired one). A hit refreshes the
+// ("", false) on a miss (no row, or an expired). A hit refreshes the
 // row's LRU timestamp.
 func (s *Store) GetCachedBranchesList(ctx context.Context, owner, repo string, perPage, page int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
@@ -38,7 +38,7 @@ func (s *Store) GetCachedBranchesList(ctx context.Context, owner, repo string, p
 	return row.Doc, true, nil
 }
 
-// PutCachedBranchesList records one fetched branches page, then prunes the
+// PutCachedBranchesList records fetched branches page, then prunes the
 // table (expired rows + LRU beyond the cap). owner/repo are normalized here
 // so callers can pass URL casing.
 func (s *Store) PutCachedBranchesList(ctx context.Context, owner, repo string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {

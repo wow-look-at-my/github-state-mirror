@@ -11,7 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// docker-updater discovers these by RFC 8615 convention, with no label needed.
+// docker-updater discovers these by RFC convention, with no label needed.
 const (
 	wellKnownHealth    = "/.well-known/docker-updater/health"
 	wellKnownPreUpdate = "/.well-known/docker-updater/pre-update"
@@ -23,7 +23,7 @@ const pingTimeout = 2 * time.Second
 // registerUpdateChecks wires both endpoints. They answer with a status code and
 // nothing else; anything in the body is ignored by the prober.
 func registerUpdateChecks(r chi.Router, store *ghdata.Store, mgr *freshness.Manager) {
-	// Asserts what a bare 200 cannot: that the cache database still answers.
+	// Asserts what a bare cannot: that the cache database still answers.
 	r.Get(wellKnownHealth, func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithTimeout(req.Context(), pingTimeout)
 		defer cancel()

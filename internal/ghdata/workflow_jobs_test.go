@@ -24,8 +24,8 @@ func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	// A completed job well past the 14-day retention, last touched just as
-	// long ago (the explicit UpdatedAt models a row recorded 15 days back).
+	// A completed job well past the -day retention, last touched just as
+	// long ago (the explicit UpdatedAt models a row recorded days back).
 	require.NoError(t, s.RecordWorkflowJob(ctx, WorkflowJob{
 		Owner: "o", Repo: "r", JobID: 1, Name: "ancient", Status: "completed",
 		Conclusion: "success", StartedAt: ts(t, 16*24*time.Hour), CompletedAt: ts(t, 15*24*time.Hour),
@@ -53,8 +53,8 @@ func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 }
 
 // TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress pins the
-// out-of-order guarantee against the retention prune (the 2026-07-17 CI
-// incident): a completed event whose completed_at is already past the 14-day
+// out-of-order guarantee against the retention prune (the -- CI
+// incident): a completed event whose completed_at is already past the -day
 // horizon (a replayed/redelivered old delivery) is still fresh telemetry --
 // the on-write prune keys on updated_at too, so it cannot delete the row it
 // just wrote -- and a late in_progress for that job is absorbed by the upsert
@@ -113,8 +113,8 @@ func TestRecordWorkflowJob_CompletedWithoutTimestamp(t *testing.T) {
 	}
 }
 
-// TestRecentWorkflowJobs_Ordering verifies the read order: running jobs first
-// (newest started first), then completed jobs (newest completed first).
+// TestRecentWorkflowJobs_Ordering verifies the read order: running jobs
+// (newest started), then completed jobs (newest completed).
 func TestRecentWorkflowJobs_Ordering(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

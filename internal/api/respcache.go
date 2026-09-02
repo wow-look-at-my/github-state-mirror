@@ -27,10 +27,10 @@ const (
 	mintExpiryBuffer = 10 * time.Minute
 
 	// maxAbsorbBodyBytes caps how much of an upstream response the cached
-	maxAbsorbBodyBytes = 8 << 20 // 8 MiB
+	maxAbsorbBodyBytes = 8 << 20 //  MiB
 
 	// maxMintBodyBytes caps the buffered token-mint request body (a
-	maxMintBodyBytes = 1 << 20 // 1 MiB
+	maxMintBodyBytes = 1 << 20 //  MiB
 
 	// cacheHeader marks responses served by a cached route: "hit" (rebuilt
 	cacheHeader = "X-GSM-Cache"
@@ -52,10 +52,10 @@ func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status
 }
 
 // acceptsDefaultJSON reports whether the request asks for GitHub's default
-// JSON representation — the only one the cache models. Media types that
+// JSON representation — the only the cache models. Media types that
 // change the response shape (application/vnd.github.raw, .html, .object,
 // .diff, ...) make the route pass through instead. Every listed media range
-// must be a JSON-default one; an empty Accept means "anything" and is fine.
+// must be a JSON-default; an empty Accept means "anything" and is fine.
 func acceptsDefaultJSON(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	if strings.TrimSpace(accept) == "" {
@@ -121,7 +121,7 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 }
 
 // hopByHopHeaders are connection-scoped request headers never forwarded
-// upstream (per RFC 9110); Accept-Encoding is also dropped so the transport
+// upstream (per RFC); Accept-Encoding is also dropped so the transport
 var hopByHopHeaders = []string{
 	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
 	"Te", "Trailer", "Transfer-Encoding", "Upgrade", "Accept-Encoding",

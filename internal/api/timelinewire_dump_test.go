@@ -15,7 +15,7 @@ import (
 // TestTimelineWireDumpPayloads writes a realistic FULL-RING window in both
 // encodings, for measuring the browser side against the SHIPPED decoder:
 //
-//	GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
+//	GSM_DUMP=/tmp go test./internal/api -run TestTimelineWireDumpPayloads -v
 //
 // It is a measurement fixture, not an assertion — inert unless GSM_DUMP is
 // set. The size claim itself is asserted by TestTimelineWireIsMuchSmallerThanJSON.
@@ -25,13 +25,13 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 		t.Skip("set GSM_DUMP=<dir> to write the measurement payloads")
 	}
 	tl := realisticRing(100000, 24*time.Hour)
-	// The full ring, plus the one-hour window the chart paints on first load — its decode has a frame budget.
+	// The full ring, plus the -hour window the chart paints on load — its decode has a frame budget.
 	hour := tl.SnapshotRange(time.Now().UTC().Add(-time.Hour), time.Time{})
 	hourWire := mustEncodeTimeline(t, hour)
 	require.NoError(t, os.WriteFile(dir+"/timeline-1h.bin", hourWire, 0o644))
 
 	t.Logf("1h window: %d events, %d B", len(hour.Events), len(hourWire))
-	// A shorter first window, measuring how the chart's load burst scales with what is on screen (browsercheck.ts).
+	// A shorter window, measuring how the chart's load burst scales with what is on screen (browsercheck.ts).
 	short := tl.SnapshotRange(time.Now().UTC().Add(-20*time.Minute), time.Time{})
 	shortWire := mustEncodeTimeline(t, short)
 	require.NoError(t, os.WriteFile(dir+"/timeline-20m.bin", shortWire, 0o644))
@@ -61,8 +61,8 @@ type legacyTimelineJSON struct {
 }
 
 // realisticRing builds a ring shaped like real mirror traffic: mostly requests
-// across a handful of route shapes, ~11% webhook deliveries carrying UNIQUE
-// delivery GUIDs (the one field no dictionary can compress — leaving them out
+// across a handful of route shapes, ~% webhook deliveries carrying UNIQUE
+// delivery GUIDs (the field no dictionary can compress — leaving them out
 // would flatter the format), a few outbound notifications. Deterministic.
 func realisticRing(n int, span time.Duration) *reqtimeline.Recorder {
 	rng := rand.New(rand.NewSource(7))

@@ -27,7 +27,7 @@ const (
 	maxPassthroughDebounce     = 30 * time.Second
 )
 
-// maxWebhookReorderWindow stays under GitHub's single-digit-second delivery timeout.
+// maxWebhookReorderWindow stays under GitHub's single-digit- delivery timeout.
 const (
 	defaultWebhookReorderWindow = 2 * time.Second
 	maxWebhookReorderWindow     = 5 * time.Second
@@ -46,7 +46,7 @@ type Config struct {
 	// PassthroughDebounce holds an eligible uncacheable read so concurrent
 	PassthroughDebounce time.Duration
 
-	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-first; 0 skips straight to the watermark gate.
+	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-; skips straight to the watermark gate.
 	WebhookReorderWindow time.Duration
 
 	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
@@ -115,7 +115,7 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// parseCacheMaxRows parses CACHE_MAX_ROWS; unparseable or < 1 fails startup rather than silently falling back.
+// parseCacheMaxRows parses CACHE_MAX_ROWS; unparseable or < fails startup rather than silently falling back.
 func parseCacheMaxRows(s string) (int64, error) {
 	if s == "" {
 		return defaultCacheMaxRows, nil
@@ -145,7 +145,7 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// parseReplayInterval parses WEBHOOK_REPLAY_INTERVAL; an explicit 0 disables the replayer, accepting missed deliveries stay missed.
+// parseReplayInterval parses WEBHOOK_REPLAY_INTERVAL; an explicit disables the replayer, accepting missed deliveries stay missed.
 func parseReplayInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultReplayInterval, nil
@@ -223,7 +223,7 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// unescapeNewlines turns a literal "\n"-escaped single-line PEM into a real multi-line one; real newlines pass through.
+// unescapeNewlines turns a literal "\n"-escaped single-line PEM into a real multi-line; real newlines pass through.
 func unescapeNewlines(s string) string {
 	if strings.Contains(s, "\n") {
 		return s

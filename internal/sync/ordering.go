@@ -12,7 +12,7 @@ import (
 // OutOfOrderSampleLimit bounds the retained recent-sample ring; only the recent samples matter to an operator.
 const OutOfOrderSampleLimit = 50
 
-// OutOfOrderSample is one refused delivery, kept for the dashboard.
+// OutOfOrderSample is refused delivery, kept for the dashboard.
 type OutOfOrderSample struct {
 	At              time.Time `json:"at"`
 	EventType       string    `json:"event_type"`
@@ -39,7 +39,7 @@ type OrderingStats struct {
 	unorderable int64 // the payload states no clock this service can use
 	failed      int64 // the watermark read/claim itself errored (applied anyway)
 
-	// Lateness distribution of the refused ones, in two bands that mean different things operationally.
+	// Lateness distribution of the refused ones, in bands that mean different things operationally.
 	withinGrace int64 // <= OutOfOrderGrace: ordinary delivery jitter
 	beyondGrace int64 // > OutOfOrderGrace: a redelivery, or a real gap
 	worst       time.Duration
@@ -61,7 +61,7 @@ func NewOrderingStats() *OrderingStats {
 	return &OrderingStats{byEvent: map[string]int64{}}
 }
 
-// recordHeld notes one delivery's time in the reorder window; recordWindow records the window it was configured with.
+// recordHeld notes delivery's time in the reorder window; recordWindow records the window it was configured with.
 func (s *OrderingStats) recordHeld(d time.Duration) {
 	s.bump(func() {
 		s.held++
@@ -93,7 +93,7 @@ type OrderingSnapshot struct {
 	ByEvent              map[string]int64   `json:"by_event,omitempty"`
 	Recent               []OutOfOrderSample `json:"recent,omitempty"`
 
-	// The reorder window's own numbers; a held count with zero reordered means the window buys nothing.
+	// The reorder window's own numbers; a held count with reordered means the window buys nothing.
 	Held              int64   `json:"held"`
 	Reordered         int64   `json:"reordered"`
 	MeanHoldSeconds   float64 `json:"mean_hold_seconds"`
@@ -170,7 +170,7 @@ func (s *OrderingStats) recordSuperseded(sample OutOfOrderSample) {
 	}
 }
 
-// checkOrder runs the gate for one delivery. It reports whether the delivery
+// checkOrder runs the gate for delivery. It reports whether the delivery
 // may write, and (when it may not) the outcome to return.
 func (d *WebhookDispatcher) checkOrder(ctx context.Context, event webhook.Event) (superseded bool, out outcome) {
 	order, ok := webhook.OrderOf(event)

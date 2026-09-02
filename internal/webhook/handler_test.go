@@ -212,7 +212,7 @@ func TestHandler_RecordsDelivery(t *testing.T) {
 // TestHandler_RecordsUnverified: a delivery that fails signature verification
 // IS recorded (everything on the chart — a gap is a bug), under the
 // unverified disposition with the claimed metadata, real duration, and an
-// unchanged 403 response. The dispatcher is never invoked.
+// unchanged response. The dispatcher is never invoked.
 func TestHandler_RecordsUnverified(t *testing.T) {
 	rec := &recordingDeliveryRecorder{}
 	dispatcher := &recordingDispatcher{}
@@ -299,7 +299,7 @@ func TestHandler_WritesOutcome(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// A no-op delivery is a 202 (received, nothing applied), distinct from the 200 of an applied delivery.
+	// A no-op delivery is a (received, nothing applied), distinct from the of an applied delivery.
 	assert.Equal(t, http.StatusAccepted, w.Code)
 	assert.Equal(t, DispIgnored, w.Header().Get("X-GSM-Disposition"))
 

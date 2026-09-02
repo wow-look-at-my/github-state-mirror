@@ -58,7 +58,7 @@ func TestKnownBranchTip(t *testing.T) {
 	}
 
 	// An absent-ref verdict says the branch does not exist. It is not a tip,
-	// and reading its doc as one would compare a comparison against nothing.
+	// and reading its doc as would compare a comparison against nothing.
 	t.Run("404 verdict is not a tip", func(t *testing.T) {
 		s := testStore(t)
 		require.NoError(t, s.PutCachedGitRef(ctx, CachedGitRef{

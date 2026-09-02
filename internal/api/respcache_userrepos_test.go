@@ -57,7 +57,7 @@ func TestCachedUserRepos_ShapeGuards(t *testing.T) {
 
 	for _, target := range []string{
 		"/user/repos?affiliation=owner",
-		"/user/repos?sort=stars", // not one of GitHub's documented sort values
+		"/user/repos?sort=stars", // not of GitHub's documented sort values
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
 		require.Equal(t, http.StatusOK, w.Code, target)

@@ -9,9 +9,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The reorder window: a short hold that lets deliveries for one subject apply
+// The reorder window: a short hold that lets deliveries for subject apply
 
-// reorderBuffer holds in-flight batches, one per subject.
+// reorderBuffer holds in-flight batches, per subject.
 type reorderBuffer struct {
 	window time.Duration
 	stats  *OrderingStats
@@ -38,11 +38,11 @@ func newReorderBuffer(window time.Duration, stats *OrderingStats) *reorderBuffer
 }
 
 // admit holds an orderable delivery for its subject's window and returns the
-// result of dispatching it in sorted position. A zero/negative window, or an
+// result of dispatching it in sorted position. A /negative window, or an
 // unorderable delivery (no subject), dispatches immediately -- there is
 // nothing to sort it against.
 //
-// dispatch is called on a background context: once a delivery is buffered its
+// dispatch is called on a background context: a delivery is buffered its
 // write must land even if the HTTP request that carried it goes away, and the
 // caller may have stopped waiting.
 func (b *reorderBuffer) admit(ctx context.Context, subject string, at time.Time, event webhook.Event, dispatch func(context.Context, webhook.Event) webhook.DispatchResult) (webhook.DispatchResult, bool) {
@@ -91,7 +91,7 @@ func (b *reorderBuffer) flushAfter(subject string, dispatch func(context.Context
 		return
 	}
 
-	// Oldest view first; SliceStable keeps arrival order among same-second (second-granular) timestamps.
+	// Oldest view; SliceStable keeps arrival order among same- (-granular) timestamps.
 	items := batch.items
 	sort.SliceStable(items, func(i, j int) bool { return items[i].at.Before(items[j].at) })
 

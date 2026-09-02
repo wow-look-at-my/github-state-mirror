@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached SINGLE check-run route (tier 2 of the
+// This file implements the cached SINGLE check-run route (tier of the
 // cache contract):
 //
 //	GET /repos/{owner}/{repo}/check-runs/{check_run_id}

@@ -17,7 +17,7 @@ const (
 	OutcomeGated = "gated"
 )
 
-// Attempt is one recorded delivery outcome for the admin view.
+// Attempt is recorded delivery outcome for the admin view.
 type Attempt struct {
 	At             string `json:"at"` // RFC3339Nano UTC
 	SubscriptionID string `json:"subscription_id"`
@@ -80,7 +80,7 @@ func (l *activityLog) record(a Attempt) {
 }
 
 // snapshot returns the counters and up to limit recent attempts, newest
-// first. Nil-safe (returns zero values).
+// . Nil-safe (returns values).
 func (l *activityLog) snapshot(limit int) (Counters, []Attempt) {
 	if l == nil {
 		return Counters{}, nil

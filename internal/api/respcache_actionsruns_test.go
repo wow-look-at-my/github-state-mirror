@@ -15,7 +15,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// upstreamWorkflowRun builds one GitHub-shaped workflow_runs entry: the full
+// upstreamWorkflowRun builds GitHub-shaped workflow_runs entry: the full
 // actor/repository/head_commit objects and every *_url the rebuild must drop
 // around the fields the model keeps. name/conclusion/runStartedAt may be nil.
 func upstreamWorkflowRun(id int, name any, headSHA, status string, conclusion, runStartedAt any) map[string]any {
@@ -119,7 +119,7 @@ func (u *workflowRunsUpstream) handler() http.Handler {
 			atomic.AddInt32(&u.runsHits, 1)
 			u.runs(w, r)
 		case strings.Contains(r.URL.Path, "/actions/runs/"):
-			// Deeper run-scoped paths (/actions/runs/{id}/jobs, ...): answer
+			// Deeper run-scoped paths (/actions/runs/{id}/jobs,...): answer
 			atomic.AddInt32(&u.otherHits, 1)
 			servePRJSON(w, map[string]any{"forwarded": true})
 		case len(parts) == 3 && parts[0] == "repos":
@@ -139,11 +139,11 @@ func workflowRunsStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *wor
 	return router, store, db, u
 }
 
-// TestCachedWorkflowRuns_MissAbsorbHit covers the core flow: the first read
-// fetches + absorbs the whole trimmed page (miss), the second serves the
-// byte-identical stored doc (hit, zero upstream calls). total_count is copied
-// VERBATIM -- GitHub's total matching count, not the page length (here 3 over
-// a 2-run page: pr-minder's per_page=1 probe reads exactly this) -- the
+// TestCachedWorkflowRuns_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs the whole trimmed page (miss), the serves the
+// byte-identical stored doc (hit, upstream calls). total_count is copied
+// VERBATIM -- GitHub's total matching count, not the page length (here over
+// a -run page: pr-minder's per_page= probe reads exactly this) -- the
 // nullable name/conclusion/run_started_at keys survive as null, html_url is
 // the pinned consumer-read exception, and the actor/repository/head_commit
 // objects plus every other URL field are dropped.
@@ -186,9 +186,9 @@ func TestCachedWorkflowRuns_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedWorkflowRuns_KeyedPerShaAndPage: the sha and the pagination shape
-// are both part of the key -- the consumers' two shapes (pr-minder's
-// per_page=1 and required-builds' per_page=100&page=N) are independent
-// snapshots of one sha, another sha is another row, and a differently-CASED
+// are both part of the key -- the consumers' shapes (pr-minder's
+// per_page= and required-builds' per_page=&page=N) are independent
+// snapshots of sha, another sha is another row, and a differently-CASED
 // sha spelling folds onto the same row (the key is lowercase-normalized).
 func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
@@ -220,10 +220,10 @@ func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 }
 
 // TestCachedWorkflowRuns_ListingFromTruth: the repo-wide listing -- the GHA
-// runner coordinator's `?status=queued&per_page=100` backlog poll, the
+// runner coordinator's `?status=queued&per_page=` backlog poll, the
 // largest single slice of forwarded traffic there has ever been -- is served
 // from the workflow_runs TRUTH rows behind the completeness proof, NOT from a
-// snapshot. The short page-1 answer is what sets that proof.
+// snapshot. The short page- answer is what sets that proof.
 func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
@@ -239,7 +239,7 @@ func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
 
-	// The listing is state, not a stored document: run rows plus one
+	// The listing is state, not a stored document: run rows plus
 	var runs, markers, snapshots int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs`).Scan(&runs))
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_list_cache`).Scan(&markers))
@@ -251,13 +251,13 @@ func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 
 // TestCachedWorkflowRuns_ListingTracksAppliedRunState is the whole point of
 // the redesign: after a run's state is APPLIED (as a webhook does), the
-// backlog answer changes by that one run -- served from rows, with no
+// backlog answer changes by that run -- served from rows, with no
 // re-fetch and with every other run's answer intact.
 func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
 	router, store, _, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
 
-	// Prime: the fake upstream lists run 9001 completed and 9002 queued.
+	// Prime: the fake upstream lists run completed and queued.
 	require.Equal(t, http.StatusOK, do(t, router, authedReq("GET", target, nil)).Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
 
@@ -280,7 +280,7 @@ func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
 
 // TestCachedWorkflowRuns_ListingKeyedPerFilter: the completeness proof is per
 // filter set, and its key is CANONICAL -- the same filters sent in a
-// different query-string order are the same request, not a second proof.
+// different query-string order are the same request, not a proof.
 func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 
@@ -353,7 +353,7 @@ func TestCachedWorkflowRuns_ShapePassthroughs(t *testing.T) {
 	assert.Zero(t, count, "passthrough shapes must store no row")
 }
 
-// TestCachedWorkflowRuns_EmptyListingCacheable: total_count 0 with an empty
+// TestCachedWorkflowRuns_EmptyListingCacheable: total_count with an empty
 // workflow_runs array -- the "no runs yet" verdict pr-minder's zombie probe
 // is after -- is a valid, cacheable answer.
 func TestCachedWorkflowRuns_EmptyListingCacheable(t *testing.T) {

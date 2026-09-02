@@ -22,12 +22,12 @@ var pragmas = []string{
 }
 
 // Open opens (or creates) the SQLite database at path. A file whose schema is
-// not the one this binary was built against, or that cannot be read at all, is
+// not the this binary was built against, or that cannot be read at all, is
 // deleted and rebuilt. This is a cache — data loss is acceptable.
 //
 // A schema change is the ONLY thing that rebuilds it, and it always does: the
 // comparison is against schema.sql's own scrubbed fingerprint, so there is no
-// declaration to keep in step with the file and no lever to pull without one.
+// declaration to keep in step with the file and no lever to pull without.
 func Open(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return createFresh(path)

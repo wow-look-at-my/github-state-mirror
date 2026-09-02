@@ -43,10 +43,10 @@ func TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA(t *testing.T) {
 }
 
 // TestDispatch_WorkflowRun_AppliesRunState is the property the repo-wide runs
-// listing depends on: a workflow_run delivery UPDATES THE ONE RUN it names
+// listing depends on: a workflow_run delivery UPDATES THE RUN it names
 // and leaves every other run answerable. Nothing is cleared, so the backlog
-// view changes by exactly one row -- the difference between maintaining a
-// cache and invalidating one.
+// view changes by exactly row -- the difference between maintaining a
+// cache and invalidating.
 func TestDispatch_WorkflowRun_AppliesRunState(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	s := r2Seeder{t: t, store: store, now: time.Now()}
@@ -73,7 +73,7 @@ func TestDispatch_WorkflowRun_AppliesRunState(t *testing.T) {
 
 // TestDispatch_WorkflowRunRequested_EntersTheBacklog: `requested` is a run
 // ENTERING the queue, and it is the only delivery for a run that creates no
-// jobs at all (a startup_failure, or one held by a concurrency group). It has
+// jobs at all (a startup_failure, or held by a concurrency group). It has
 // to apply, or the backlog never learns about that run.
 func TestDispatch_WorkflowRunRequested_EntersTheBacklog(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -93,7 +93,7 @@ func TestDispatch_WorkflowRunRequested_EntersTheBacklog(t *testing.T) {
 }
 
 // TestDispatch_WorkflowJob_MaintainsItsRun: a job delivery names its RUN, so
-// it maintains that run's row -- for EVERY action, including the queued one
+// it maintains that run's row -- for EVERY action, including the queued
 // the job table drops as ignored (a queued job is a run entering the
 // backlog). It carries no run-level status, so it may only raise the floor.
 func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
@@ -101,7 +101,7 @@ func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
 	s := r2Seeder{t: t, store: store, now: time.Now()}
 	s.seedRun(1, "queued")
 
-	// makeWorkflowJobPayload pins run id 555 (42 is the JOB id).
+	// makeWorkflowJobPayload pins run id (is the JOB id).
 	result := dispatcher.Dispatch(context.Background(), webhook.ParseEvent("workflow_job",
 		makeWorkflowJobPayload(t, "queued", "org1", "repo1", 42, "build", "queued", "")))
 
@@ -116,7 +116,9 @@ func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
 }
 
 // TestDispatch_RunStateEvents_NeverClearTheListing pins the doctrine the
-// first cut of this route violated: run-state deliveries MAINTAIN the run
+//
+//	cut of this route violated: run-state deliveries MAINTAIN the run
+//
 // rows, so none of them may clear the repo's rows or its completeness proof.
 // Only `repository` invalidates. If this regresses, every job event in a busy
 // repo throws away every other run's answer -- invalidate-and-refetch wearing
@@ -180,7 +182,7 @@ func TestDispatch_RunStateEvents_NeverClearTheListing(t *testing.T) {
 		})
 	}
 
-	// repository is the one event that DOES invalidate: a rename, delete, or
+	// repository is the event that DOES invalidate: a rename, delete, or
 	// visibility change makes the rows themselves wrong, not merely stale.
 	t.Run("repository is the exception", func(t *testing.T) {
 		dispatcher, _, _, store := setupDispatcher(t)

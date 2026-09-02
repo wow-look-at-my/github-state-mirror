@@ -213,7 +213,7 @@ func TestNotifierSignatureAndPayloadShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now(), sentAt, time.Minute)
 
-	// Absent identifiers are omitted, not zero-valued.
+	// Absent identifiers are omitted, not -valued.
 	var asMap map[string]any
 	require.NoError(t, json.Unmarshal(body, &asMap))
 	assert.NotContains(t, asMap, "ref", "a PR event has no ref field")
@@ -258,7 +258,7 @@ func TestNotifierPushPayloadIdentifiers(t *testing.T) {
 // carries the run's head sha (via webhook.ParseWorkflowRunHeadSHA), the same
 // correlation field a status/check_run notification carries — a required-
 // builds-manager-style consumer keys off owner/repo/sha regardless of which
-// of the three build listing types the event is.
+// of the build listing types the event is.
 func TestNotifierWorkflowRunPayloadIdentifiers(t *testing.T) {
 	access := newFakeAccess()
 	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)

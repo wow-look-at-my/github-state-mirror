@@ -64,7 +64,7 @@ type restPRJSON struct {
 	RequestedTeams     []json.RawMessage `json:"requested_teams"`
 }
 
-// absorbPullsListBody parses a /pulls 200 array into storable rows + labels.
+// absorbPullsListBody parses a /pulls array into storable rows + labels.
 // Reports false -- serve verbatim, store nothing -- for any other status or
 // any item the model cannot hold.
 func absorbPullsListBody(owner, repo string, status int, body []byte) ([]dbgen.PullRequest, map[int64][]dbgen.PrLabel, bool) {
@@ -88,7 +88,7 @@ func absorbPullsListBody(owner, repo string, status int, body []byte) ([]dbgen.P
 	return rows, labelsByPR, true
 }
 
-// absorbRestPR converts one REST PR object into a pull_requests row (+ label
+// absorbRestPR converts REST PR object into a pull_requests row (+ label
 // rows), reporting false when required fields are missing. owner/repo come
 // from the response's own base.repo (canonical casing, so rows collide with
 // webhook/GraphQL-written ones); the URL values are only the fallback.
@@ -297,7 +297,7 @@ func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJS
 }
 
 // renderClosedPull renders the trimmed document a CLOSED/merged answer is
-// stored and served as -- rendered once at absorb time, so hit and miss are
+// stored and served as -- rendered at absorb time, so hit and miss are
 func renderClosedPull(pr dbgen.PullRequest, labels []dbgen.PrLabel, merged bool) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels), Merged: merged}
 	applySinglePullFields(&out, pr)

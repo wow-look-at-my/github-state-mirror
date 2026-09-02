@@ -12,15 +12,15 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
-// TestTimeline_SignInCallsRecorded: a dashboard sign-in makes two real GitHub
+// TestTimeline_SignInCallsRecorded: a dashboard sign-in makes real GitHub
 // calls -- the OAuth code-for-token exchange and GET /user -- and both are on
 // the chart.
 //
-// They were the mirror's one unobserved outbound path: internal/auth built
+// They were the mirror's unobserved outbound path: internal/auth built
 // its own http.Client, so the dashboard could not show traffic it was itself
 // generating. The observation now hangs off that client's TRANSPORT, which is
 // what makes it true of any call the package adds later rather than of these
-// two.
+// .
 func TestTimeline_SignInCallsRecorded(t *testing.T) {
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

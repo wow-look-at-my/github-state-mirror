@@ -53,7 +53,7 @@ func parseWorkflowJobsShape(q url.Values) (perPage, page int, ok bool) {
 	return perPage, page, true
 }
 
-// cachedRunJobs serves one page of a run's jobs.
+// cachedRunJobs serves page of a run's jobs.
 func (h *handlers) cachedRunJobs(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
 	runID, err := strconv.ParseInt(chi.URLParam(r, "run_id"), 10, 64)
@@ -78,7 +78,7 @@ func (h *handlers) cachedRunJobs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// cachedWorkflowJob serves one job.
+// cachedWorkflowJob serves job.
 func (h *handlers) cachedWorkflowJob(w http.ResponseWriter, r *http.Request) {
 	owner, repo := chi.URLParam(r, "owner"), chi.URLParam(r, "repo")
 	jobID, err := strconv.ParseInt(chi.URLParam(r, "job_id"), 10, 64)
@@ -103,7 +103,8 @@ func (h *handlers) cachedWorkflowJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // workflowJobsRoute is the per-route configuration the shared flow needs. The
-// two routes differ only in their key, their deny kind, and how a response is
+//
+//	routes differ only in their key, their deny kind, and how a response is
 type workflowJobsRoute struct {
 	owner, repo string
 	kind        string
@@ -115,7 +116,7 @@ type workflowJobsRoute struct {
 	absorb func(status int, body []byte) (absorbedJobs, bool)
 }
 
-// absorbedJobs is one rendered job answer plus what decides how long it may be
+// absorbedJobs is rendered job answer plus what decides how long it may be
 // served: the owning run, and what in it is still moving.
 type absorbedJobs struct {
 	doc      string
@@ -153,7 +154,7 @@ func (h *handlers) serveWorkflowJobs(w http.ResponseWriter, r *http.Request, rt 
 
 	got, absorbed := rt.absorb(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404, or an unmodeled shape: relayed verbatim, never stored.
+		// A, or an unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -222,7 +223,7 @@ func absorbRunJobs(status int, body []byte) (absorbedJobs, bool) {
 	return got, true
 }
 
-// absorbSingleJob renders one job. A job still moving is absorbed too, marked
+// absorbSingleJob renders job. A job still moving is absorbed too, marked
 // live: its own deliveries rewrite the row.
 func absorbSingleJob(status int, body []byte) (absorbedJobs, bool) {
 	if status != http.StatusOK {

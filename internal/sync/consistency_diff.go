@@ -18,7 +18,7 @@ import (
 // pulls-list marker probe is a pure read); the corrections live in
 // consistency_apply.go.
 
-// diffOwner compares the cached repos/PRs/labels for one owner against the data
+// diffOwner compares the cached repos/PRs/labels for owner against the data
 // freshly fetched from GitHub, appending discrepancies to the report.
 // visibility (repo name -> live visibility + archive state, as the App sees it,
 // INCLUDING archived repos) classifies missing repos and feeds the visibility/
@@ -230,7 +230,7 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	// explicit github value: GraphQL's defaultBranchRef is null for a repo with
 	// no commits (REST still reports the CONFIGURED default_branch name, which
 	// is what the webhook/REST absorb paths cache), and the bare add() rendered
-	// that as "" -- dropped from the JSON by omitempty, leaving a one-sided
+	// that as "" -- dropped from the JSON by omitempty, leaving a -sided
 	// entry.
 	if ns(c.DefaultBranch) != ns(g.DefaultBranch) {
 		d := Discrepancy{

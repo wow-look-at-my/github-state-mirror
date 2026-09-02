@@ -12,12 +12,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Cached git-ref lookup (tier 2 of the cache contract): GET /repos/{owner}/{repo}/git/ref/{ref...}
+// Cached git-ref lookup (tier of the cache contract): GET /repos/{owner}/{repo}/git/ref/{ref...}
 
 // gitRefCacheTTL is only the backstop for a missed push delivery; a delivered push applies its own tip.
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
-// cachedGitRef serves one ref's tip from a stored snapshot, fetching and
+// cachedGitRef serves ref's tip from a stored snapshot, fetching and
 // absorbing on a miss -- or when the stored snapshot contradicts something
 // else this mirror holds (see the contradiction check below).
 func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +80,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if overflow || !absorbed {
-		// 5xx and the 200 ARRAY form (see gitRefCacheable): relayed verbatim, never stored.
+		// 5xx and the ARRAY form (see gitRefCacheable): relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -96,7 +96,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, status, []byte(doc), false)
 }
 
-// gitRefCacheable requires a fully-qualified two-part ref; a bare ref answers an ARRAY, a shape this route does not hold.
+// gitRefCacheable requires a fully-qualified -part ref; a bare ref answers an ARRAY, a shape this route does not hold.
 func gitRefCacheable(ref string) bool {
 	if ref == "" || strings.ContainsAny(ref, "?#") {
 		return false
@@ -124,8 +124,8 @@ type gitRefObjJSON struct {
 	Type string `json:"type"`
 }
 
-// absorbGitRef parses a /git/ref/{ref} 200 into the trimmed document,
-// rendered once here so hit and miss serve identical bytes. Reports false --
+// absorbGitRef parses a /git/ref/{ref} into the trimmed document,
+// rendered here so hit and miss serve identical bytes. Reports false --
 // serve verbatim, store nothing -- for any other status, for the ARRAY form
 // (a partial ref, which the route guard already refuses), and for a body
 // missing the ref name or a full-hex object sha.

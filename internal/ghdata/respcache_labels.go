@@ -13,14 +13,14 @@ import (
 //
 //	GET /repos/{owner}/{repo}/labels/{name}
 //
-// One row per (owner, repo, VERBATIM requested name). The name is never
+//  row per (owner, repo, VERBATIM requested name). The name is never
 // canonicalized -- GitHub resolves label names case-insensitively but the
 // mirror does not model that, so each requested spelling keys its own row and
 // every flush is repo-wide, which covers all of them. WHO may read a row is
 // the reveal layer's job (internal/api).
 
 // GetCachedLabel returns the stored label document, or ("", false) on a miss
-// (no row, or an expired one). A hit refreshes the row's LRU stamp.
+// (no row, or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedLabel(ctx context.Context, owner, repo, name string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetLabelCache(ctx, dbgen.GetLabelCacheParams{Owner: ownerKey, Repo: repoKey, Name: name})
@@ -39,7 +39,7 @@ func (s *Store) GetCachedLabel(ctx context.Context, owner, repo, name string, no
 	return row.Doc, true, nil
 }
 
-// PutCachedLabel records one fetched label, then prunes the table (expired
+// PutCachedLabel records fetched label, then prunes the table (expired
 // rows + LRU beyond the cap).
 func (s *Store) PutCachedLabel(ctx context.Context, owner, repo, name, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertLabelCache(ctx, dbgen.UpsertLabelCacheParams{
@@ -55,7 +55,7 @@ func (s *Store) PutCachedLabel(ctx context.Context, owner, repo, name, doc strin
 }
 
 // InvalidateLabelCache drops a repo's cached labels. Repo-wide is the only
-// grain: a `label` rename moves two names at once, and one label answers under
+// grain: a `label` rename moves names at, and label answers under
 // every spelling a caller might request.
 func (s *Store) InvalidateLabelCache(ctx context.Context, owner, repo string) error {
 	return s.q.DeleteLabelCacheByRepo(ctx, dbgen.DeleteLabelCacheByRepoParams{

@@ -54,7 +54,7 @@ func TestCachedLabel_MissAbsorbHit(t *testing.T) {
 }
 
 // A null description keeps its key: a consumer branches on null vs a string,
-// and dropping the field would make the two indistinguishable.
+// and dropping the field would make the indistinguishable.
 func TestCachedLabel_NullDescriptionKeepsItsKey(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.label = func(w http.ResponseWriter, _ *http.Request) {
@@ -71,7 +71,7 @@ func TestCachedLabel_NullDescriptionKeepsItsKey(t *testing.T) {
 }
 
 // Every `label` delivery flushes the repo's labels, whatever the action: an
-// edit can RENAME (two names in one delivery) and each requested spelling of
+// edit can RENAME (names in delivery) and each requested spelling of
 // a name is its own row, so the flush is unconditional and repo-wide rather
 // than trying to match the name the payload happens to carry.
 func TestCachedLabel_EveryLabelEventFlushes(t *testing.T) {
@@ -166,7 +166,7 @@ func TestCachedLabel_AbsentIsNeverStored(t *testing.T) {
 	}
 }
 
-// Rows key the VERBATIM requested name, so one label's row can never answer
+// Rows key the VERBATIM requested name, so label's row can never answer
 // for a different name.
 func TestCachedLabel_NamesAreDistinctRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

@@ -82,7 +82,7 @@ func (s *Store) CommitCheckStates(ctx context.Context, owner, repo, sha string) 
 }
 
 // ForceCheckRollup replaces the aggregated verdict with GitHub's directly
-// fetched one, including NULL; see docs/dashboard/operator-tooling.md for why the correction sticks.
+// fetched, including NULL; see docs/dashboard/operator-tooling.md for why the correction sticks.
 func (s *Store) ForceCheckRollup(ctx context.Context, owner, repo, sha string, rollup sql.NullString) error {
 	if sha == "" {
 		return nil

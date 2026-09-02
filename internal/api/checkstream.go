@@ -11,7 +11,7 @@ import (
 // Streaming mode for the admin consistency check / reconcile.
 // see docs/dashboard/operator-tooling.md
 
-// checkStreamLine is one NDJSON line: a checker progress event, extended with
+// checkStreamLine is NDJSON line: a checker progress event, extended with
 // the terminal report/error fields for the final line.
 type checkStreamLine struct {
 	syncpkg.ProgressEvent
@@ -53,7 +53,7 @@ func (d *dashboard) streamCacheCheck(w http.ResponseWriter, r *http.Request, org
 		writeLine(checkStreamLine{ProgressEvent: ev})
 	})
 	if err != nil {
-		// The error line is the error channel; it mirrors the non-stream 502 body.
+		// The error line is the error channel; it mirrors the non-stream body.
 		slog.Warn("consistency check failed", "apply", apply, "stream", true, "error", err)
 		writeLine(checkStreamLine{ProgressEvent: syncpkg.ProgressEvent{Phase: "error"}, Error: "consistency check failed: " + err.Error()})
 		return true

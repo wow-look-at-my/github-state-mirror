@@ -13,7 +13,7 @@ import (
 
 // TestOAuthAccessToken_RelaysToGitHubWithCORS verifies the OAuth token-exchange
 // relay: it forwards the form body to github.com's token endpoint with no bearer
-// token, returns GitHub's response verbatim, and carries exactly one
+// token, returns GitHub's response verbatim, and carries exactly
 // Access-Control-Allow-Origin (the mirror's) so a browser can read the token.
 func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 	var gotBody, gotCT, gotAuth string
@@ -39,7 +39,7 @@ func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/login/oauth/access_token", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", "https://sites.pazer.build")
-	// Deliberately no Authorization header: the relay must work without one.
+	// Deliberately no Authorization header: the relay must work without.
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -51,7 +51,7 @@ func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 	assert.Equal(t, "application/x-www-form-urlencoded", gotCT)
 	assert.Empty(t, gotAuth, "relay must not attach a bearer token")
 
-	// Exactly one Access-Control-Allow-Origin (the mirror's), not GitHub's too.
+	// Exactly Access-Control-Allow-Origin (the mirror's), not GitHub's too.
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "must not duplicate Access-Control-Allow-Origin")
 	assert.Equal(t, "*", acao[0])
@@ -59,7 +59,7 @@ func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 }
 
 // TestOAuthAccessToken_Preflight verifies a CORS preflight to the relay is
-// answered (204 + ACAO) without reaching GitHub, so the browser proceeds.
+// answered (+ ACAO) without reaching GitHub, so the browser proceeds.
 func TestOAuthAccessToken_Preflight(t *testing.T) {
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
@@ -76,7 +76,7 @@ func TestOAuthAccessToken_Preflight(t *testing.T) {
 // TestOAuthDeviceCode_RelaysToGitHubWithCORS verifies the device-code relay:
 // it forwards the SPA's JSON body to github.com's device authorization
 // endpoint byte-identical with no bearer token, returns GitHub's device-code
-// response verbatim, and carries exactly one Access-Control-Allow-Origin (the
+// response verbatim, and carries exactly Access-Control-Allow-Origin (the
 // mirror's) so a browser can start the device flow.
 func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 	deviceJSON := `{"device_code":"3584d83530557fdd1f46af8289938c8ef79f9dc5","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}`
@@ -106,7 +106,7 @@ func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Origin", "https://sites.pazer.build")
-	// Deliberately no Authorization header: the relay must work without one.
+	// Deliberately no Authorization header: the relay must work without.
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -119,7 +119,7 @@ func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 	assert.Equal(t, "application/json", gotAccept)
 	assert.Empty(t, gotAuth, "relay must not attach a bearer token")
 
-	// Exactly one Access-Control-Allow-Origin (the mirror's), not GitHub's too.
+	// Exactly Access-Control-Allow-Origin (the mirror's), not GitHub's too.
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "must not duplicate Access-Control-Allow-Origin")
 	assert.Equal(t, "*", acao[0])
@@ -127,7 +127,7 @@ func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 }
 
 // TestOAuthDeviceCode_Preflight verifies a CORS preflight to the device-code
-// relay is answered (204 + ACAO) without reaching GitHub, so the browser
+// relay is answered (+ ACAO) without reaching GitHub, so the browser
 // proceeds.
 func TestOAuthDeviceCode_Preflight(t *testing.T) {
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -156,7 +156,7 @@ func TestOAuthAccessToken_DeviceGrantPassthrough(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		// GitHub answers a still-pending device grant with HTTP 200 + an error
+		// GitHub answers a still-pending device grant with HTTP + an error
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, pendingJSON)
 	}))

@@ -30,7 +30,7 @@ func decodeTimeline(t *testing.T, b []byte) ([]reqtimeline.Event, timelinewire.H
 	return events, h
 }
 
-// sampleTimeline records one of every event shape the ring can hold.
+// sampleTimeline records of every event shape the ring can hold.
 func sampleTimeline(t *testing.T) *reqtimeline.Recorder {
 	t.Helper()
 	tl := reqtimeline.New()
@@ -54,7 +54,7 @@ func sampleTimeline(t *testing.T) *reqtimeline.Recorder {
 }
 
 // The invariant that matters on this side: every field of an Event survives
-// the round trip, so the columnar payload carries exactly what the JSON one
+// the round trip, so the columnar payload carries exactly what the JSON
 // does. A field that loses its `wire:` tag fails here rather than going
 // quietly missing from the chart.
 func TestTimelineWireCarriesEveryEventField(t *testing.T) {
@@ -67,7 +67,7 @@ func TestTimelineWireCarriesEveryEventField(t *testing.T) {
 	require.Equal(t, len(snap.Events), len(events))
 
 	for i, want := range snap.Events {
-		// Start is ms-resolution on the wire, as it is in JSON once parsed.
+		// Start is ms-resolution on the wire, as it is in JSON parsed.
 		want.Start = want.Start.Truncate(time.Millisecond).UTC()
 		require.Equal(t, want, events[i])
 	}
@@ -118,7 +118,7 @@ var (
 	tsCols = `(?s)const SCHEMA: WireSchema = \{.*?\n\};`
 )
 
-// tsList reads one array field out of the chart's SCHEMA literal. A regex
+// tsList reads array field out of the chart's SCHEMA literal. A regex
 // rather than a TypeScript parser: the literal is a flat list of string
 // constants, and a field this cannot find fails the test rather than passing
 // vacuously.
@@ -157,7 +157,7 @@ func TestTimelineWireIsMuchSmallerThanJSON(t *testing.T) {
 	snap := tl.Snapshot(0)
 	wire := len(mustEncodeTimeline(t, snap))
 	perEvent := float64(wire) / float64(len(snap.Events))
-	// Measured ~24 B/event on real traffic (docs/timeline-wire-format.md); 40 is a loose ceiling.
+	// Measured ~ B/event on real traffic (docs/timeline-wire-format.md); is a loose ceiling.
 	assert.LessOrEqual(t, perEvent, 40.0,
 		"columnar payload is %.1f B/event (%d bytes) — expected well under 40", perEvent, wire)
 

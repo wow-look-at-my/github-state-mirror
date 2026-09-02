@@ -17,7 +17,7 @@ import (
 // exact-match Origin is echoed back; a non-matching Origin gets no ACAO header
 // and the browser blocks the response.
 //
-// Preflight OPTIONS requests are answered here with 204 and never reach
+// Preflight OPTIONS requests are answered here with and never reach
 // requireAuth, because browsers do not send the Authorization header on
 // preflight. chi runs r.Use middleware before route matching, so this also
 // intercepts preflight for method-specific routes like POST /graphql.

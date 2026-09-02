@@ -71,7 +71,7 @@ func TestDispatch_NeverSeenRepoAppliesGlobally(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ghdata.VisibilityPrivate, repo.Visibility)
 	assert.Equal(t, "main", repo.DefaultBranch.String)
-	// And the check state landed in global truth (readable once revealed).
+	// And the check state landed in global truth (readable revealed).
 	assert.Equal(t, "SUCCESS", repo.DefaultBranchStatus.String, "the default-branch status applied on first contact")
 }
 

@@ -13,7 +13,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// mergeable_state is the one merge facet a tip move does NOT invalidate: a
+// mergeable_state is the merge facet a tip move does NOT invalidate: a
 // check or status result flips unstable/blocked <-> clean while every sha
 // stays put. It therefore has no other invalidator, and CI events are what
 // must un-resolve it.
@@ -21,7 +21,7 @@ import (
 // TestDispatch_CIEventsUnresolveMergeableState: each CI event un-resolves the
 // state for the open PRs on the sha it names, and touches nothing else --
 // mergeable and the test-merge sha stay, because a check result cannot change
-// whether two trees conflict.
+// whether trees conflict.
 func TestDispatch_CIEventsUnresolveMergeableState(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const otherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -95,7 +95,7 @@ func TestDispatch_CIEventsUnresolveMergeableState(t *testing.T) {
 // TestDispatch_PullRequestSynchronize_UnresolvesMergeableState: the fork-head
 // freeze applies to the state facet too. A synchronize carries RETAINED
 // pre-move merge fields, so a 'clean' describing the old head must not be
-// stored against the new one -- the exact shape that made a stale answer
+// stored against the new -- the exact shape that made a stale answer
 // serve frozen for mergeable.
 func TestDispatch_PullRequestSynchronize_UnresolvesMergeableState(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)

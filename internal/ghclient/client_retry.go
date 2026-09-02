@@ -18,7 +18,7 @@ const doJSONAttempts = 3
 // retryAfterCap stops a huge Retry-After from wedging a deadline-bounded fetch.
 const retryAfterCap = 10 * time.Second
 
-// defaultRetryBackoff: the sleep before attempts 2, 3, ...; the last repeats.
+// defaultRetryBackoff: the sleep before attempts,,...; the last repeats.
 var defaultRetryBackoff = []time.Duration{500 * time.Millisecond, 2 * time.Second}
 
 // SetRetryBackoff must be called during wiring: the field is read unsynchronized.
@@ -34,7 +34,7 @@ func retryableStatus(status int) bool {
 	return false
 }
 
-// retryDelay returns the sleep before the given attempt (attempt >= 2): the
+// retryDelay returns the sleep before the given attempt (attempt >=): the
 // configured backoff, raised to a retryable response's parseable Retry-After
 // (capped at retryAfterCap).
 func (c *Client) retryDelay(attempt int, resp *http.Response) time.Duration {
@@ -53,7 +53,7 @@ func (c *Client) retryDelay(attempt int, resp *http.Response) time.Duration {
 	return d
 }
 
-// retryAfterDelay parses a response's Retry-After header (seconds form; zero
+// retryAfterDelay parses a response's Retry-After header (seconds form;
 // when absent/unparseable), capped at retryAfterCap.
 func retryAfterDelay(resp *http.Response) time.Duration {
 	if resp == nil {
@@ -87,7 +87,7 @@ func (c *Client) sleepBeforeRetry(ctx context.Context, attempt int, resp *http.R
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
-	// Buffer once: an io.Reader is consumed by the first attempt.
+	// Buffer: an io.Reader is consumed by the attempt.
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -97,7 +97,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader
 		}
 	}
 	url := c.baseURL + path
-	// A request without one is sent unauthenticated and rejected by GitHub.
+	// A request without is sent unauthenticated and rejected by GitHub.
 	token := tokenFromContext(ctx)
 
 	var resp *http.Response

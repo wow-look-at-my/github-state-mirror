@@ -25,7 +25,7 @@ import (
 // cannot resolve GET /user), so the handler verifies it itself via
 // VerifyAppIdentity — the same unforgeable check the X-Mirror-Identity header
 // uses — and partitions by the verified app id. Cache key: (app id,
-// installation id, SHA-256 of the canonicalized request body) — an empty body
+// installation id, SHA- of the canonicalized request body) — an empty body
 // and a permissions/repositories subset mint DIFFERENT tokens. A caller whose
 // JWT does not verify is forwarded to GitHub unchanged, uncached.
 func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 	h.serveInstallToken(w, t, false)
 }
 
-// mintTokenJSON is the trimmed rebuild of a token-mint 201. GitHub's response
+// mintTokenJSON is the trimmed rebuild of a token-mint. GitHub's response
 // has no URL fields, but it can carry a huge `repositories` array (full repo
 // objects, urls and all) — dropped; output is exactly these state fields.
 type mintTokenJSON struct {
@@ -115,7 +115,7 @@ func (h *handlers) serveInstallToken(w http.ResponseWriter, t ghdata.CachedInsta
 	writeRebuilt(w, http.StatusCreated, body, hit)
 }
 
-// absorbInstallToken parses a mint response into cacheable state. Only a 201
+// absorbInstallToken parses a mint response into cacheable state. Only a
 // whose expires_at parses AND leaves usable lifetime past the safety buffer
 // is absorbed — a token about to expire is served but never stored, so a
 // cached mint always has at least mintExpiryBuffer of validity left.
@@ -147,7 +147,7 @@ func absorbInstallToken(installID, bodyHash string, status int, body []byte, now
 	}, serveUntil, true
 }
 
-// canonicalBodyHash re-marshals JSON with sorted keys first, so equivalent bodies share a cache key.
+// canonicalBodyHash re-marshals JSON with sorted keys, so equivalent bodies share a cache key.
 func canonicalBodyHash(body []byte) string {
 	canon := bytes.TrimSpace(body)
 	if len(canon) > 0 {
@@ -164,7 +164,7 @@ func canonicalBodyHash(body []byte) string {
 
 // ---- shared plumbing ----
 
-// contentsResourceKey is the deny-cache resource key for one contents read.
+// contentsResourceKey is the deny-cache resource key for contents read.
 func contentsResourceKey(owner, repo, path, ref string) string {
 	return owner + "/" + repo + "/" + path + "?ref=" + ref
 }

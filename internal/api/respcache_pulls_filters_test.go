@@ -13,7 +13,7 @@ import (
 )
 
 // Open-PR list tests for the query-shape guards, the head/base filters, and
-// the two backstops (global reveal sharing, the marker TTL).
+// the backstops (global reveal sharing, the marker TTL).
 
 func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -22,7 +22,7 @@ func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 		"/repos/org1/repo1/pulls?sort=updated",          // unknown param
 		"/repos/org1/repo1/pulls?state=closed",          // non-open state
 		"/repos/org1/repo1/pulls?state=all",             // non-open state
-		"/repos/org1/repo1/pulls?page=2",                // beyond page 1
+		"/repos/org1/repo1/pulls?page=2",                // beyond page
 		"/repos/org1/repo1/pulls?per_page=200",          // out of range
 		"/repos/org1/repo1/pulls?head=justabranch",      // head without owner:
 		"/repos/org1/repo1/pulls?state=open&state=open", // repeated param
@@ -51,7 +51,7 @@ func TestCachedPullsList_HeadFilter(t *testing.T) {
 	do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?state=open&per_page=100", nil))
 	require.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 
-	// Filter matching PR #7, roomy per_page: served from state.
+	// Filter matching PR #, roomy per_page: served from state.
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?head=org1:feature&state=open", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader))
@@ -60,13 +60,13 @@ func TestCachedPullsList_HeadFilter(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, float64(7), items[0]["number"])
 
-	// No match: a cached empty array, even at per_page=1.
+	// No match: a cached empty array, even at per_page=.
 	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?head=org1:no-such-branch&state=open&per_page=1", nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
 	assert.JSONEq(t, `[]`, w2.Body.String())
 
-	// A match at per_page=1 fills the page -> pagination guard -> miss.
+	// A match at per_page= fills the page -> pagination guard -> miss.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/pulls?head=org1:feature&state=open&per_page=1", nil))
 	assert.Equal(t, "miss", w3.Header().Get(cacheHeader))
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
@@ -74,7 +74,7 @@ func TestCachedPullsList_HeadFilter(t *testing.T) {
 
 // TestCachedPullsList_BaseFilter: `base` is a pure filter over the open set
 // the completeness marker already vouches for, so it is answered from state
-// exactly like `head` -- and, like any filtered response, a fetched one never
+// exactly like `head` -- and, like any filtered response, a fetched never
 // SETS the marker.
 func TestCachedPullsList_BaseFilter(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -110,9 +110,9 @@ func TestCachedPullsList_BaseFilter(t *testing.T) {
 }
 
 // TestCachedPullsList_GlobalSharedViaReveal: the absorbed list is GLOBAL
-// truth. A second user pays one reveal probe (their own token proving repo
+// truth. A user pays reveal probe (their own token proving repo
 // access) and then reads the same rebuilt list -- the list itself is fetched
-// once, ever.
+// , ever.
 func TestCachedPullsList_GlobalSharedViaReveal(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"

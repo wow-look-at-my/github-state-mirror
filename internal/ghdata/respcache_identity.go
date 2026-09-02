@@ -37,7 +37,7 @@ func (s *Store) GetCachedIdentity(ctx context.Context, subjectKey, kind string, 
 	return row.Doc, true, nil
 }
 
-// PutCachedIdentity stores one identity document, then prunes (expired rows +
+// PutCachedIdentity stores identity document, then prunes (expired rows +
 // LRU beyond the cap).
 func (s *Store) PutCachedIdentity(ctx context.Context, subjectKey, kind, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertIdentityCache(ctx, dbgen.UpsertIdentityCacheParams{

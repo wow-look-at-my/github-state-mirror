@@ -123,7 +123,8 @@ func TestNullPRMergeableOnTipMove_BaseOidDriftIgnored(t *testing.T) {
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
 }
 
-// First sight is a no-op: with no stored row there are no merge fields to
+//	sight is a no-op: with no stored row there are no merge fields to
+//
 // protect (and nothing to compare against).
 func TestNullPRMergeableOnTipMove_FirstSightNoOp(t *testing.T) {
 	s := testStore(t)

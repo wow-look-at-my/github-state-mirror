@@ -24,7 +24,7 @@ type AppAuthenticator struct {
 	client *Client
 }
 
-// Installation is a GitHub App installation (the app installed on one account).
+// Installation is a GitHub App installation (the app installed on account).
 type Installation struct {
 	ID      int64 `json:"id"`
 	Account struct {
@@ -33,8 +33,8 @@ type Installation struct {
 	} `json:"account"`
 }
 
-// NewAppAuthenticator parses the app's PEM-encoded private key (PKCS#1 or
-// PKCS#8) and returns an authenticator that uses client for its HTTP calls.
+// NewAppAuthenticator parses the app's PEM-encoded private key (PKCS# or
+// PKCS#) and returns an authenticator that uses client for its HTTP calls.
 func NewAppAuthenticator(appID string, privateKeyPEM []byte, client *Client) (*AppAuthenticator, error) {
 	if appID == "" {
 		return nil, errors.New("github app id is empty")
@@ -50,7 +50,7 @@ func NewAppAuthenticator(appID string, privateKeyPEM []byte, client *Client) (*A
 const installationsPerPage = 100
 
 // Installations lists every installation of the app, paging until a short page
-// (a single 100-cap page silently truncated fleets past 100 installations).
+// (a single -cap page silently truncated fleets past installations).
 func (a *AppAuthenticator) Installations(ctx context.Context) ([]Installation, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
@@ -77,7 +77,7 @@ var AlwaysDeliveredEvents = set.Of(
 	"github_app_authorization",
 )
 
-// SubscribedEvents is GitHub's own authoritative answer (GET /app); a delivery log can prove an event arrived, never that a silent one is unsubscribed.
+// SubscribedEvents is GitHub's own authoritative answer (GET /app); a delivery log can prove an event arrived, never that a silent is unsubscribed.
 func (a *AppAuthenticator) SubscribedEvents(ctx context.Context) ([]string, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
@@ -93,7 +93,7 @@ func (a *AppAuthenticator) SubscribedEvents(ctx context.Context) ([]string, erro
 	return out.Events, nil
 }
 
-// HookDelivery is one entry of the App's own webhook delivery log.
+// HookDelivery is entry of the App's own webhook delivery log.
 type HookDelivery struct {
 	ID          int64     `json:"id"`
 	GUID        string    `json:"guid"`
@@ -109,7 +109,7 @@ type HookDelivery struct {
 const hookDeliveriesPerPage = 100
 
 // FailedHookDeliveries lists deliveries GitHub could not hand to this mirror,
-// newest first. One page only: a short read cycle acts on the latest failures.
+// newest. page only: a short read cycle acts on the latest failures.
 // see docs/webhooks/delivery-gaps.md
 func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDelivery, error) {
 	jwt, err := a.mintJWT(time.Now())
@@ -125,7 +125,7 @@ func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDeli
 	return out, nil
 }
 
-// RedeliverHook asks GitHub to resend one delivery, which arrives as an
+// RedeliverHook asks GitHub to resend delivery, which arrives as an
 // ordinary delivery carrying its ORIGINAL payload -- the write paths refusing
 // a stale view, not idempotence, are what makes replaying it safe.
 // see docs/webhooks/delivery-gaps.md
@@ -139,7 +139,7 @@ func (a *AppAuthenticator) RedeliverHook(ctx context.Context, deliveryID int64) 
 	return a.client.doJSON(ctx, "POST", path, nil, nil)
 }
 
-// InstallationToken mints a short-lived (~1h) access token for one installation.
+// InstallationToken mints a short-lived (~1h) access token for installation.
 func (a *AppAuthenticator) InstallationToken(ctx context.Context, installID int64) (string, error) {
 	jwt, err := a.mintJWT(time.Now())
 	if err != nil {
@@ -160,7 +160,7 @@ func (a *AppAuthenticator) InstallationToken(ctx context.Context, installID int6
 }
 
 // mintJWT builds and signs an RS256 JWT for app-level authentication. GitHub
-// requires exp within 10 minutes of iat; iat is backdated 60s to tolerate clock
+// requires exp within minutes of iat; iat is backdated 60s to tolerate clock
 // skew between this host and GitHub.
 func (a *AppAuthenticator) mintJWT(now time.Time) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
@@ -184,7 +184,7 @@ func (a *AppAuthenticator) mintJWT(now time.Time) (string, error) {
 }
 
 // parseRSAPrivateKey decodes a PEM-encoded RSA private key, accepting both
-// PKCS#1 ("RSA PRIVATE KEY", GitHub's default download) and PKCS#8 ("PRIVATE
+// PKCS# ("RSA PRIVATE KEY", GitHub's default download) and PKCS# ("PRIVATE
 // KEY") encodings.
 func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)

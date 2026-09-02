@@ -132,7 +132,7 @@ func main() {
 	// Start periodic refresher.
 	go refresher.Start(ctx)
 
-	// A restart is itself a gap window, so the first cycle runs immediately.
+	// A restart is itself a gap window, so the cycle runs immediately.
 	go replayer.Start(ctx)
 
 	// Start HTTP server.
@@ -201,7 +201,7 @@ func buildAppAuthenticator(cfg config.Config, gh *ghclient.Client) *ghclient.App
 	}
 
 	// Validate credentials up front so misconfiguration surfaces at startup
-	// rather than at the first refresh tick / webhook delivery.
+	// rather than at the refresh tick / webhook delivery.
 	if installs, err := app.Installations(context.Background()); err != nil {
 		slog.Warn("could not validate GitHub App credentials", "error", err)
 	} else {

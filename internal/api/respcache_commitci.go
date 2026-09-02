@@ -14,12 +14,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached commit-CI routes (tier 2 of the cache
+// This file implements the cached commit-CI routes (tier of the cache
 
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
 const (
-	// commitCIDefaultPerPage is GitHub's default page size across all three listing forms.
+	// commitCIDefaultPerPage is GitHub's default page size across all listing forms.
 	commitCIDefaultPerPage = 30
 
 	// commitCIMaxCachedPage caps modeled pages; deeper pagination (pathological in practice) passes through.
@@ -64,7 +64,7 @@ func parseCommitCIShape(q url.Values) (perPage, page int, ok bool) {
 // tail the cached raw statuses list -- the suffix anchor is what lets a ref
 // carry slashes (claude/my-branch/status), which a single-segment route
 // parameter could never match. Every other tail (the single-commit read,
-// /check-suites, ...) is forwarded to the passthrough proxy, exactly as it
+// /check-suites,...) is forwarded to the passthrough proxy, exactly as it
 // was before this subtree was registered.
 func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	tail := chi.URLParam(r, "*")
@@ -95,9 +95,9 @@ func (h *handlers) statusesAlias(w http.ResponseWriter, r *http.Request) {
 	h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
 }
 
-// cachedCommitCI serves one commit-CI snapshot (combined status, check runs,
+// cachedCommitCI serves commit-CI snapshot (combined status, check runs,
 // or the raw statuses list) from absorbed state, fetching and absorbing on a
-// miss. All three kinds share the pagination shape parse: per_page/page join
+// miss. All kinds share the pagination shape parse: per_page/page join
 // the cache key, so each paginated form is its own self-contained snapshot.
 func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, kind, denyKind string) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
@@ -126,7 +126,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
 		slog.Warn("commit CI cache read failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	} else if ok {
-		// The stored row's status is what was absorbed: 200 (a real snapshot) or 404 (an unknown-ref verdict).
+		// The stored row's status is what was absorbed: (a real snapshot) or (an unknown-ref verdict).
 		h.serveCommitCI(w, r, c.Status, c.Doc, true)
 		return
 	}
@@ -142,14 +142,14 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	status := http.StatusOK
 	doc, absorbed := absorbCommitCI(kind, resp.StatusCode, body)
 	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {
-		// The 404 unknown-ref VERDICT is absorbed too, honest via the same flushes as a 200 row.
+		// The unknown-ref VERDICT is absorbed too, honest via the same flushes as a row.
 		// see docs/cache/rest-routes.md
 		if doc404, mErr := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"}); mErr == nil {
 			doc, absorbed, status = string(doc404), true, http.StatusNotFound
 		}
 	}
 	if overflow || !absorbed {
-		// 403 and 5xx: relayed verbatim, never stored.
+		//  and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -164,7 +164,7 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 }
 
 // serveCommitCI writes the stored commit-CI document under the status it
-// absorbed (200 snapshot / 404 verdict). The doc is rendered once at absorb
+// absorbed (snapshot / verdict). The doc is rendered at absorb
 // time and stored verbatim, so hit and miss serve identical bytes.
 func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, status int, doc string, hit bool) {
 	if hit {
@@ -177,10 +177,12 @@ func (h *handlers) serveCommitCI(w http.ResponseWriter, r *http.Request, status 
 	writeRebuilt(w, status, []byte(doc), hit)
 }
 
-// absorbCommitCI parses a commit-CI 200 into the trimmed document (rendered
-// once here; hits serve the stored bytes). Reports false -- serve verbatim,
+// absorbCommitCI parses a commit-CI into the trimmed document (rendered
+//
+//	here; hits serve the stored bytes). Reports false -- serve verbatim,
+//
 // store nothing -- for any other status or any shape the model cannot hold.
-// The statuses LIST is a bare JSON array; the other two kinds are objects.
+// The statuses LIST is a bare JSON array; the other kinds are objects.
 func absorbCommitCI(kind string, status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -208,7 +210,7 @@ func absorbCommitCI(kind string, status int, body []byte) (string, bool) {
 	}
 }
 
-// commitStatusItemJSON is one trimmed entry of the combined status's statuses array: state fields only.
+// commitStatusItemJSON is trimmed entry of the combined status's statuses array: state fields only.
 // see docs/cache/rest-routes.md
 type commitStatusItemJSON struct {
 	Context     string  `json:"context"`
@@ -226,7 +228,7 @@ type combinedStatusJSON struct {
 	Statuses   []commitStatusItemJSON `json:"statuses"`
 }
 
-// absorbCombinedStatus parses a combined-status 200 into the trimmed
+// absorbCombinedStatus parses a combined-status into the trimmed
 // document. The statuses array must be PRESENT (it is always present
 // upstream, empty when the ref has no statuses -- state reads "pending"
 // there) and the resolved sha must be a full hex object id.
@@ -270,7 +272,7 @@ func absorbCombinedStatus(trimmed []byte) (string, bool) {
 	return string(rendered), true
 }
 
-// statusListItemJSON is one trimmed entry of the raw statuses LIST; item order must be preserved exactly (consumers dedupe by context FIRST-WINS).
+// statusListItemJSON is trimmed entry of the raw statuses LIST; item order must be preserved exactly (consumers dedupe by context -WINS).
 // see docs/cache/rest-routes.md
 type statusListItemJSON struct {
 	Context     string  `json:"context"`
@@ -281,8 +283,8 @@ type statusListItemJSON struct {
 	UpdatedAt   string  `json:"updated_at"`
 }
 
-// absorbStatusesList parses a raw statuses-list 200 -- a BARE JSON ARRAY,
-// unlike the other two kinds -- into the trimmed document. Every item must
+// absorbStatusesList parses a raw statuses-list -- a BARE JSON ARRAY,
+// unlike the other kinds -- into the trimmed document. Every item must
 // carry a context and a state; an empty array (a ref with no statuses, or a
 // page past the end) is a valid, cacheable answer.
 func absorbStatusesList(trimmed []byte) (string, bool) {
@@ -321,7 +323,7 @@ type (
 	checkRunsJSON    = ghdata.StoredCheckRunsPage
 )
 
-// absorbCheckRuns parses a check-runs 200 into the trimmed document. The
+// absorbCheckRuns parses a check-runs into the trimmed document. The
 // check_runs array must be PRESENT (always present upstream, empty when the
 // ref has none) and every run must carry a status and a full-hex head sha.
 func absorbCheckRuns(trimmed []byte) (string, bool) {

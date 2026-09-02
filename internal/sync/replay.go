@@ -28,7 +28,7 @@ type DeliveryReplayer struct {
 }
 
 // ReplayStore is the bookkeeping the replayer needs: which deliveries it has
-// already asked for, so a failure that stays listed is asked for once.
+// already asked for, so a failure that stays listed is asked for.
 type ReplayStore interface {
 	WebhookReplayRequested(ctx context.Context, deliveryID int64) (bool, error)
 	RecordWebhookReplay(ctx context.Context, deliveryID int64, guid, eventType string, deliveredAt, now time.Time) error
@@ -39,9 +39,9 @@ func NewDeliveryReplayer(app *ghclient.AppAuthenticator, store ReplayStore, inte
 	return &DeliveryReplayer{app: app, store: store, interval: interval}
 }
 
-// Start runs one recovery cycle immediately, then one per interval, until ctx
+// Start runs recovery cycle immediately, then per interval, until ctx
 // is canceled. The immediate run is the point: a restart is itself a window in
-// which deliveries fail, so the first thing a fresh process should do is ask
+// which deliveries fail, so the thing a fresh process should do is ask
 // what it missed while it was not listening.
 func (d *DeliveryReplayer) Start(ctx context.Context) {
 	if d == nil || d.app == nil || d.store == nil || d.interval <= 0 {

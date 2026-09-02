@@ -10,9 +10,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// A `status` delivery carries the whole status it announces, so the two
+// A `status` delivery carries the whole status it announces, so the
 
-// CommitStatusUpdate is one `status` delivery's account of one commit status,
+// CommitStatusUpdate is `status` delivery's account of commit status,
 // in GitHub's own spelling of every field the stored documents carry.
 type CommitStatusUpdate struct {
 	SHA         string
@@ -41,7 +41,7 @@ type storedCombinedStatus struct {
 	Statuses   []storedCommitStatusItem `json:"statuses"`
 }
 
-// storedStatusListItem is one entry of the kind-"statuses_list" document (a
+// storedStatusListItem is entry of the kind-"statuses_list" document (a
 // bare array). Same rule as above: field order is wire order.
 type storedStatusListItem struct {
 	Context     string  `json:"context"`
@@ -93,7 +93,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Status 200: combinedStatusDescribes only matched a sha-named doc, never a 404 tombstone.
+			// Status: combinedStatusDescribes only matched a sha-named doc, never a tombstone.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
@@ -118,7 +118,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Status 200: a 404 tombstone (an object, not an array) fails to unmarshal into patchStatusesList's input.
+			// Status: a tombstone (an object, not an array) fails to unmarshal into patchStatusesList's input.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return perr
@@ -167,7 +167,7 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 			continue
 		}
 		if perr := s.PutCachedCommitCI(ctx, CachedCommitCI{
-			// Status 200: patchCheckRunsPage only succeeds against a page of this run's own commit.
+			// Status: patchCheckRunsPage only succeeds against a page of this run's own commit.
 			Owner: ownerKey, Repo: repoKey, Ref: row.Ref, Kind: row.Kind, Status: 200, Doc: patched,
 		}, int(row.PerPage), int(row.Page), now, ttl); perr != nil {
 			return false, perr
@@ -268,7 +268,7 @@ func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun
 	return true
 }
 
-// InvalidateCommitCIForRefKind drops one ref spelling's snapshots of ONE kind.
+// InvalidateCommitCIForRefKind drops ref spelling's snapshots of kind.
 // A check delivery uses it for the check-runs kind: a check run never appears
 // in a commit's statuses, so flushing those rows too would re-fetch answers
 // the delivery cannot have changed.
@@ -294,11 +294,11 @@ func combinedStatusDescribes(doc, sha string) bool {
 
 // patchCombinedStatus rewrites a stored combined status from the delivery: the
 // context's previous entry is REPLACED (the endpoint holds the latest per
-// context) and the new one lands at the end, where the array's oldest-first
+// context) and the new lands at the end, where the array's oldest-
 // order puts the newest status.
 //
 // Reports false -- the caller drops the row instead -- whenever the result is
-// not provably what a fetch would return: a page other than the first, a page
+// not provably what a fetch would return: a page other than the, a page
 // that does not hold every context (total_count above its own length), a page
 // with no room for a new context, or a status that is not the newest on the
 // commit and so does not belong at the end.
@@ -342,14 +342,14 @@ func patchCombinedStatus(doc string, perPage, page int64, up CommitStatusUpdate)
 }
 
 // patchStatusesList rewrites a stored raw statuses list from the delivery. The
-// list is append-only history, newest-first, so the new status is PREPENDED --
+// list is append-only history, newest-, so the new status is PREPENDED --
 // the context's older entries stay, exactly as upstream keeps them. A page
-// that overflows drops its oldest entry, which is precisely where page 2
+// that overflows drops its oldest entry, which is precisely where page
 // begins; every other page of this ref is dropped by the caller's fallback,
 // since their contents shift.
 //
-// Reports false for a page other than the first, an unreadable document, or a
-// status older than the one already at the head (its position is then unknown).
+// Reports false for a page other than the, an unreadable document, or a
+// status older than the already at the head (its position is then unknown).
 func patchStatusesList(doc string, perPage, page int64, up CommitStatusUpdate) (string, bool) {
 	if page != 1 || perPage < 1 {
 		return "", false

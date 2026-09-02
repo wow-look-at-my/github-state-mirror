@@ -12,7 +12,7 @@ import (
 )
 
 // Repo-installation route tests (GET /repos/{owner}/{repo}/installation);
-// shared fixtures (pullsCacheStack, ...) live in respcache_pulls_test.go.
+// shared fixtures (pullsCacheStack,...) live in respcache_pulls_test.go.
 
 // TestCachedRepoInstallation_HitAndFlush: the App-JWT-authed repo-installation
 // lookup is cached per app, rebuilt without URL fields, flushed by
@@ -44,7 +44,7 @@ func TestCachedRepoInstallation_HitAndFlush(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits))
 
-	// installation event for id 42 -> flush -> refetch.
+	// installation event for id -> flush -> refetch.
 	postWebhook(t, router, "installation_repositories", `{"action":"added","installation":{"id":42}}`)
 	w3 := get(goodAppJWT)
 	require.Equal(t, http.StatusOK, w3.Code)
@@ -80,7 +80,7 @@ func TestCachedRepoInstallation_RecordsAppIdentity(t *testing.T) {
 }
 
 // The OWNER-level lookups share the repo route's absorb, rebuild, and row
-// space (under sentinel repo values). This pins the two properties that
+// space (under sentinel repo values). This pins the properties that
 // sharing must not break: each scope caches independently, and neither
 // collides with the repo-level answer for the same login.
 func TestCachedOwnerInstallation_ScopesAreIndependent(t *testing.T) {
@@ -117,7 +117,7 @@ func TestCachedOwnerInstallation_ScopesAreIndependent(t *testing.T) {
 	}
 }
 
-// The authoritative "not installed here" 404 is a cacheable VERDICT: replayed
+// The authoritative "not installed here" is a cacheable VERDICT: replayed
 // under its own status without touching GitHub, and cleared by an installation
 // event (verdict rows carry no installation id, so the by-id flush cannot
 // reach them — a separate sweep must).
@@ -155,7 +155,7 @@ func TestCachedOwnerInstallation_AbsentVerdictCachedAndFlushed(t *testing.T) {
 }
 
 // A verdict is scoped like every other row here: per app, per account, per
-// question. One account's 404 must never answer another's, and the org and
+// question. account's must never answer another's, and the org and
 // user questions stay distinct even for the same login.
 func TestCachedOwnerInstallation_AbsentVerdictIsScoped(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
