@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: ['**']
 
 # See docs/ci.md for why each grant below is required.
 permissions:
