@@ -16,7 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// replayStore is an in-memory stand-in for the real two-column replay bookkeeping table.
+// replayStore is an in-memory stand-in for the real -column replay bookkeeping table.
 type replayStore struct {
 	mu       sync.Mutex
 	asked    map[int64]bool
@@ -55,8 +55,8 @@ type fakeHooks struct {
 	mu         sync.Mutex
 	failures   []map[string]any
 	redelivers []int64
-	listStatus int  // non-zero to fail the list
-	attemptErr bool // 500 the redelivery request
+	listStatus int  // non- to fail the list
+	attemptErr bool //  the redelivery request
 	listQuery  string
 }
 
@@ -121,7 +121,7 @@ func TestDeliveryReplayer_RequestsUnseenFailures(t *testing.T) {
 }
 
 // GitHub keeps a failed delivery listed forever, so "already asked" has to be
-// remembered -- otherwise every cycle re-requests the same delivery and one
+// remembered -- otherwise every cycle re-requests the same delivery and
 // lost push becomes a permanent replay loop.
 func TestDeliveryReplayer_AsksOncePerDelivery(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(7, "push", time.Minute)}}
@@ -178,7 +178,7 @@ func TestDeliveryReplayer_RefusedRequestIsNotRetriedInALoop(t *testing.T) {
 	assert.Empty(t, gh.requested())
 }
 
-// The bookkeeping write is what makes "ask once" true, so a failed write must
+// The bookkeeping write is what makes "ask " true, so a failed write must
 // stop the request rather than let it go out unrecorded.
 func TestDeliveryReplayer_UnrecordableRequestIsNotSent(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(3, "push", time.Minute)}}
@@ -214,7 +214,7 @@ func TestDeliveryReplayer_InertWithoutAnApp(t *testing.T) {
 	}
 }
 
-// A zero interval is the operator switching recovery off; it must not run a
+// A interval is the operator switching recovery off; it must not run a
 // startup cycle either.
 func TestDeliveryReplayer_ZeroIntervalDisables(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(1, "push", time.Minute)}}

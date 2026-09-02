@@ -20,7 +20,7 @@ const (
 	HooksScopeOrg  = "org"
 )
 
-// HooksTarget names one hook listing's subject: a repository, or an
+// HooksTarget names hook listing's subject: a repository, or an
 // organization (Repo empty).
 type HooksTarget struct {
 	Scope string
@@ -39,7 +39,7 @@ func OrgHooksTarget(org string) HooksTarget {
 }
 
 // GetCachedHooks returns the stored listing, or ("", false) on a miss (no row,
-// or an expired one). A hit refreshes the row's LRU stamp.
+// or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedHooks(ctx context.Context, tokenFP string, t HooksTarget, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetHooksCache(ctx, dbgen.GetHooksCacheParams{
 		TokenFp: tokenFP, Scope: t.Scope, Owner: t.Owner, Repo: t.Repo, PerPage: perPage, Page: page,
@@ -60,7 +60,7 @@ func (s *Store) GetCachedHooks(ctx context.Context, tokenFP string, t HooksTarge
 	return row.Doc, true, nil
 }
 
-// PutCachedHooks records one fetched listing page, then prunes the table
+// PutCachedHooks records fetched listing page, then prunes the table
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedHooks(ctx context.Context, tokenFP string, t HooksTarget, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertHooksCache(ctx, dbgen.UpsertHooksCacheParams{
@@ -76,9 +76,9 @@ func (s *Store) PutCachedHooks(ctx context.Context, tokenFP string, t HooksTarge
 	return s.q.PruneHooksCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateHooksForTarget drops one target's listings across EVERY
+// InvalidateHooksForTarget drops target's listings across EVERY
 // credential. Rows are per-credential but a hook change is not: a hook created
-// through the mirror by one caller changes the answer every other caller gets.
+// through the mirror by caller changes the answer every other caller gets.
 func (s *Store) InvalidateHooksForTarget(ctx context.Context, t HooksTarget) error {
 	return s.q.DeleteHooksCacheForTarget(ctx, dbgen.DeleteHooksCacheForTargetParams{
 		Scope: t.Scope, Owner: t.Owner, Repo: t.Repo,

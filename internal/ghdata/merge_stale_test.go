@@ -21,9 +21,9 @@ const (
 	staleShaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the pre-push test-merge sha
 	staleShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // GitHub's recomputed sha
 
-	// restPR's defaults are the PRE-push tips: base "2222...", head "1111...".
+	// restPR's defaults are the PRE-push tips: base "...", head "...".
 	pushedBaseTip  = "3333333333333333333333333333333333333333" // a base push's after tip
-	pushedBaseTip2 = "5555555555555555555555555555555555555555" // a second base push's after
+	pushedBaseTip2 = "5555555555555555555555555555555555555555" // a base push's after
 	pushedHeadTip  = "4444444444444444444444444444444444444444" // a head push's after tip
 )
 
@@ -71,8 +71,8 @@ func seedResolvedPR(t *testing.T, s *Store, now time.Time) {
 
 // TestNullPRMergeableByBranch_RemembersInvalidatedSha: the push-time
 // un-resolve nulls mergeable + merge_commit_sha AND records the nulled sha
-// with its stamp; a second push before re-resolution keeps the remembered sha
-// (there is no newer one to remember).
+// with its stamp; a push before re-resolution keeps the remembered sha
+// (there is no newer to remember).
 func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -86,7 +86,7 @@ func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "the invalidated sha must be remembered")
 	assert.True(t, row.MergeStaleAt.Valid, "the marker must be stamped")
 
-	// A second push while still unresolved: the remembered sha survives.
+	// A push while still unresolved: the remembered sha survives.
 	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now.Add(time.Minute)))
 	row = getPR(t, s, 7)
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "a second push must keep the remembered sha")
@@ -155,7 +155,7 @@ func TestAbsorbSinglePull_ExpiredMarkerAccepts(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	seedResolvedPR(t, s, now.Add(-2*time.Hour))
-	// The push (and its stamp) happened two hours ago; the window is 1h.
+	// The push (and its stamp) happened hours ago; the window is 1h.
 	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", "", now.Add(-2*time.Hour)))
 
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now)
@@ -244,7 +244,7 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	assert.False(t, row.MergeCommitSha.Valid)
 	assert.Equal(t, "PR_node", row.NodeID.String, "the sync must not degrade the row's REST columns")
 
-	// Control 1: a PURE GraphQL row (never REST-fetched) still takes the
+	// Control: a PURE GraphQL row (never REST-fetched) still takes the
 	gql9 := gqlPR
 	gql9.Number = 9
 	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(
@@ -254,7 +254,7 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	row9 := getPR(t, s, 9)
 	assert.Equal(t, "MERGEABLE", row9.Mergeable.String, "a pure GraphQL row keeps taking the sync's mergeable")
 
-	// Control 2: once REST re-resolves with a fresh sha, the sync may update
+	// Control: REST re-resolves with a fresh sha, the sync may update
 	_, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaB), nil, now.Add(2*time.Minute))
 	require.NoError(t, err)
 	gqlConflicting := gqlPR
@@ -291,4 +291,4 @@ func TestNullPRMergeableByRepo(t *testing.T) {
 
 // ---- The push-tip proof (merge_stale_ref/merge_stale_after) ----
 
-// A second push overwrites the proof with its own after tip, keeping the sha.
+// A push overwrites the proof with its own after tip, keeping the sha.

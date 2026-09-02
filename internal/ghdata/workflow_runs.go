@@ -18,7 +18,7 @@ const workflowRunRetention = 14 * 24 * time.Hour
 // WorkflowRunsListTTL is a backstop, not the mechanism: see docs/cache/rest-routes.md
 const WorkflowRunsListTTL = 2 * time.Minute
 
-// WorkflowRun is one Actions run's recorded state. Empty string means the
+// WorkflowRun is Actions run's recorded state. Empty string means the
 // source did not report the field; the API layer renders those as JSON null
 // (name, conclusion until completed, run_started_at until it starts).
 type WorkflowRun struct {
@@ -37,7 +37,7 @@ type WorkflowRun struct {
 	RunStartedAt string
 }
 
-// WorkflowRunFilter: an empty field means no filter; the zero value is unfiltered.
+// WorkflowRunFilter: an empty field means no filter; the value is unfiltered.
 type WorkflowRunFilter struct {
 	Status     string
 	HeadBranch string
@@ -69,7 +69,7 @@ func (s *Store) ApplyWorkflowRunFromJob(ctx context.Context, j WorkflowJob, now 
 	if j.RunID <= 0 {
 		return nil
 	}
-	// One job's state says nothing about the others'.
+	//  job's state says nothing about the others'.
 	status := "queued"
 	if j.Status == "in_progress" {
 		status = "in_progress"
@@ -84,10 +84,10 @@ func (s *Store) ApplyWorkflowRunFromJob(ctx context.Context, j WorkflowJob, now 
 	})
 }
 
-// ListWorkflowRuns returns one page of a repo's runs matching the filter,
-// newest first (GitHub's own ordering), together with the total number of
+// ListWorkflowRuns returns page of a repo's runs matching the filter,
+// newest (GitHub's own ordering), together with the total number of
 // matches. The count is exact only because the caller checked the
-// completeness marker first -- rows alone never prove a list.
+// completeness marker -- rows alone never prove a list.
 func (s *Store) ListWorkflowRuns(ctx context.Context, owner, repo string, f WorkflowRunFilter, perPage, page int) ([]WorkflowRun, int64, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	shaKey := strings.ToLower(f.HeadSHA)
@@ -119,7 +119,7 @@ func (s *Store) ListWorkflowRuns(ctx context.Context, owner, repo string, f Work
 }
 
 // ReconcileWorkflowRuns drops rows a complete response contradicts: a run
-// that still MATCHES the filter in truth but was absent from a short page-1
+// that still MATCHES the filter in truth but was absent from a short page-
 // answer for that same filter has provably moved, and the answer did not say
 // where to. Deleting it is the honest correction -- the next read re-absorbs
 // the run under whatever state it now has.
@@ -137,7 +137,7 @@ func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f
 }
 
 // WorkflowRunsListComplete reports whether truth provably holds every run
-// matching this filter -- i.e. a short page-1 answer for exactly this filter
+// matching this filter -- i.e. a short page- answer for exactly this filter
 // was absorbed recently enough that the marker has not expired.
 func (s *Store) WorkflowRunsListComplete(ctx context.Context, owner, repo, filters string, now time.Time) (bool, error) {
 	row, err := s.q.GetWorkflowRunsListMarker(ctx, dbgen.GetWorkflowRunsListMarkerParams{
@@ -153,8 +153,8 @@ func (s *Store) WorkflowRunsListComplete(ctx context.Context, owner, repo, filte
 	return perr == nil && exp.After(now), nil
 }
 
-// MarkWorkflowRunsListComplete records the completeness proof for one filter
-// set. Only a short page-1 absorb may call this; a run DELIVERY must never
+// MarkWorkflowRunsListComplete records the completeness proof for filter
+// set. Only a short page- absorb may call this; a run DELIVERY must never
 // touch it, because deliveries maintain the rows the marker vouches for.
 func (s *Store) MarkWorkflowRunsListComplete(ctx context.Context, owner, repo, filters string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertWorkflowRunsListMarker(ctx, dbgen.UpsertWorkflowRunsListMarkerParams{

@@ -41,7 +41,7 @@ type gqlOwnerVisibilityResponse struct {
 	} `json:"errors"`
 }
 
-// OwnerRepoVisibility is one repo's live visibility + archive state as GitHub
+// OwnerRepoVisibility is repo's live visibility + archive state as GitHub
 // answers the App, from the checker-private owner query.
 type OwnerRepoVisibility struct {
 	Visibility string // "public" | "private" | "internal" (lowercased enum)

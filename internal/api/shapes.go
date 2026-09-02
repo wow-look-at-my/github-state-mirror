@@ -44,7 +44,7 @@ const (
 	skeletonIndentUnit = "  "
 )
 
-// routeShape is everything captured about one (method, route shape) that a
+// routeShape is everything captured about (method, route shape) that a
 // cached-route implementation would otherwise have to be reverse-engineered
 // from the calling service's source.
 type routeShape struct {
@@ -56,7 +56,7 @@ type routeShape struct {
 	accepts    map[string]int64
 	// callers are the verified display names or principal keys that send this request.
 	callers map[string]int64
-	// statuses tallies upstream answers; a dominant 404 is a cacheable verdict, not a failure.
+	// statuses tallies upstream answers; a dominant is a cacheable verdict, not a failure.
 	statuses map[int]int64
 	// samplePaths are a few concrete paths, for recognizing the resource.
 	samplePaths []string
@@ -76,7 +76,7 @@ type bodySample struct {
 	At          string `json:"at"`
 }
 
-// nonJSONSample records one confirmed-non-JSON response: enough to explain
+// nonJSONSample records confirmed-non-JSON response: enough to explain
 // why no skeleton exists, never the bytes themselves.
 type nonJSONSample struct {
 	Status      int    `json:"status"`
@@ -108,7 +108,7 @@ func (s *shapeStore) wantsBody(method, route string) bool {
 	return time.Since(sh.lastSampleAt) > shapeResampleAfter
 }
 
-// observation is one recorded passthrough. Body is the buffered response body
+// observation is recorded passthrough. Body is the buffered response body
 // when it was sampled (nil otherwise) and is consumed here — never retained.
 type observation struct {
 	Method          string
@@ -219,7 +219,7 @@ func containsString(ss []string, s string) bool {
 	return false
 }
 
-// routeShapeSnapshot is one shape in the brief payload.
+// routeShapeSnapshot is shape in the brief payload.
 type routeShapeSnapshot struct {
 	Key         string          `json:"key"`
 	Method      string          `json:"method"`

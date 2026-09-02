@@ -14,7 +14,7 @@ const (
 	otherTestSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// TestCachedWorkflowRuns_RoundTrip: put/get one workflow-runs page per exact
+// TestCachedWorkflowRuns_RoundTrip: put/get workflow-runs page per exact
 // pagination shape, expiry as a miss, per-sha and repo-wide invalidation.
 func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 	s := testStore(t)
@@ -62,7 +62,8 @@ func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 // TestWorkflowRuns_ApplyMovesOneRun is the property the whole listing design
 // rests on: applying a run's new state UPDATES THAT RUN and leaves every
 // other run answerable. Nothing is cleared, so the filtered view changes by
-// one row.
+//
+//	row.
 func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -86,7 +87,7 @@ func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 	require.NoError(t, s.ApplyWorkflowRun(ctx, run(3, "queued", "3"), now))
 	require.Len(t, queued(), 3, "three runs are queued")
 
-	// One run starts; only it leaves the backlog, the others stay served from the same rows.
+	//  run starts; only it leaves the backlog, the others stay served from the same rows.
 	require.NoError(t, s.ApplyWorkflowRun(ctx, run(2, "in_progress", "4"), now))
 	rows := queued()
 	require.Len(t, rows, 2, "exactly one run left the backlog")
@@ -142,7 +143,7 @@ func TestWorkflowRuns_OutOfOrderAndJobFloor(t *testing.T) {
 	assert.Equal(t, "success", concl)
 
 	// A LATE job delivery for the settled run must not resurrect it either:
-	// one job's state says nothing about a run that already concluded.
+	//  job's state says nothing about a run that already concluded.
 	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
 		Owner: "org1", Repo: "repo1", RunID: 7, Status: "in_progress", HeadSHA: testSHA,
 	}, now))
@@ -199,7 +200,7 @@ func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, otherFilter, "a marker vouches for its own filter only")
 
-	// Reconcile: a short page-1 answer that omits a still-matching row proves
+	// Reconcile: a short page- answer that omits a still-matching row proves
 	// that row moved, so it goes.
 	for _, id := range []int64{1, 2, 3} {
 		require.NoError(t, s.ApplyWorkflowRun(ctx, WorkflowRun{
@@ -224,7 +225,7 @@ func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
 	assert.False(t, complete(now), "a repository event clears the completeness proof")
 }
 
-// TestCachedGitCommitMiss_RoundTrip: put/get one 404 verdict, expiry as a
+// TestCachedGitCommitMiss_RoundTrip: put/get verdict, expiry as a
 // miss, the explicit clear, and the repo-wide flush.
 func TestCachedGitCommitMiss_RoundTrip(t *testing.T) {
 	s := testStore(t)
@@ -254,10 +255,10 @@ func TestCachedGitCommitMiss_RoundTrip(t *testing.T) {
 	assert.False(t, ok, "a repo-wide flush must drop miss markers")
 }
 
-// TestGitCommitUpsert_ClearsMissMarker locks the round-2 invariant: EVERY
+// TestGitCommitUpsert_ClearsMissMarker locks the round- invariant: EVERY
 // path that upserts a REAL git commit funnels through ghdata.upsertGitCommit,
-// which clears the sha's 404 miss marker -- so a sha that materializes stops
-// answering 404 immediately, no matter which absorber saw it first.
+// which clears the sha's miss marker -- so a sha that materializes stops
+// answering immediately, no matter which absorber saw it.
 func TestGitCommitUpsert_ClearsMissMarker(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
@@ -315,7 +316,7 @@ func TestGitCommitUpsert_ClearsMissMarker(t *testing.T) {
 	})
 }
 
-// TestCachedPullDiff406_RoundTrip: put/get one 406 verdict, expiry as a miss,
+// TestCachedPullDiff406_RoundTrip: put/get verdict, expiry as a miss,
 // per-PR and repo-wide invalidation.
 func TestCachedPullDiff406_RoundTrip(t *testing.T) {
 	s := testStore(t)
@@ -348,7 +349,7 @@ func TestCachedPullDiff406_RoundTrip(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestInvalidateCommitCIForRef: the per-ref flush drops one verbatim ref
+// TestInvalidateCommitCIForRef: the per-ref flush drops verbatim ref
 // spelling's snapshots across every kind and pagination shape, leaving other
 // refs' snapshots alone; the pagination shape is part of the read key.
 func TestInvalidateCommitCIForRef(t *testing.T) {
@@ -424,7 +425,7 @@ func TestInvalidateCompareForRef(t *testing.T) {
 	assert.True(t, serves("dev...other"), "a comparison not naming the ref must survive")
 }
 
-// TestInvalidateCommitsListForRef: the per-ref flush drops one requested ref
+// TestInvalidateCommitsListForRef: the per-ref flush drops requested ref
 // spelling's snapshots (the empty ref is the default-branch listing's own
 // spelling) and leaves other refs' snapshots and the commit rows alone.
 func TestInvalidateCommitsListForRef(t *testing.T) {
@@ -460,7 +461,7 @@ func TestInvalidateCommitsListForRef(t *testing.T) {
 	assert.True(t, ok, "the immutable commit rows must survive snapshot flushes")
 }
 
-// TestInvalidateContentsForRef: the per-ref flush drops one requested ref
+// TestInvalidateContentsForRef: the per-ref flush drops requested ref
 // spelling's contents rows (the empty ref is the default-branch spelling)
 // and leaves other refs' rows alone.
 func TestInvalidateContentsForRef(t *testing.T) {

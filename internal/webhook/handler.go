@@ -132,7 +132,7 @@ func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, no
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
-// distinguishes "applied" (200) from a no-op (202) and an internal error (500);
+// distinguishes "applied" () from a no-op () and an internal error ();
 // the body and headers carry the detail so it shows up in GitHub's delivery UI.
 func writeResult(w http.ResponseWriter, result DispatchResult) {
 	w.Header().Set("Content-Type", "application/json")

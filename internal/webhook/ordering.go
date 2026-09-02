@@ -11,7 +11,7 @@ import (
 // What a delivery says about WHEN it happened, and WHAT it is a view of.
 // see docs/webhooks/ordering.md
 
-// EventOrder is one delivery's position: the subject, the moment, and which payload field it came from.
+// EventOrder is delivery's position: the subject, the moment, and which payload field it came from.
 type EventOrder struct {
 	Subject string
 	At      time.Time
@@ -19,7 +19,7 @@ type EventOrder struct {
 }
 
 // orderPayload is every timestamp/identity field the extractors below read,
-// in one unmarshal. Pointers where absence is meaningful.
+// in unmarshal. Pointers where absence is meaningful.
 type orderPayload struct {
 	Action     string `json:"action"`
 	Repository *struct {
@@ -28,7 +28,7 @@ type orderPayload struct {
 		Owner    struct {
 			Login string `json:"login"`
 		} `json:"owner"`
-		// Decoded by hand: a typed field would fail on one shape and take every other field in the struct with it.
+		// Decoded by hand: a typed field would fail on shape and take every other field in the struct with it.
 		PushedAt  json.RawMessage `json:"pushed_at"`
 		UpdatedAt string          `json:"updated_at"`
 	} `json:"repository"`
@@ -79,7 +79,7 @@ type orderPayload struct {
 
 // OrderOf reports the delivery's subject and event time, or ok=false when the
 // payload states no time this service can order by. An unorderable delivery is
-// applied unconditionally -- refusing one would drop state over a clock we
+// applied unconditionally -- refusing would drop state over a clock we
 // never had.
 func OrderOf(e Event) (EventOrder, bool) {
 	var p orderPayload
@@ -90,7 +90,7 @@ func OrderOf(e Event) (EventOrder, bool) {
 
 	switch e.Type {
 	case "push":
-		// The ref is the subject: a push moves exactly one, and two pushes to
+		// The ref is the subject: a push moves exactly, and pushes to
 		// different branches are unordered with respect to each other.
 		if repo == "" || p.Ref == "" {
 			return EventOrder{}, false
@@ -133,7 +133,7 @@ func OrderOf(e Event) (EventOrder, bool) {
 		return EventOrder{Subject: fmt.Sprintf("comment:%s:%d", repo, p.Comment.ID), At: at, Field: "comment.updated_at"}, true
 
 	case "status":
-		// sha + CONTEXT, never the sha alone, or one context's result would discard another's.
+		// sha + CONTEXT, never the sha alone, or context's result would discard another's.
 		if repo == "" || p.SHA == "" || p.Context == "" {
 			return EventOrder{}, false
 		}
@@ -251,8 +251,8 @@ func (p orderPayload) pushedAt() (time.Time, bool) {
 	return time.Unix(secs, 0).UTC(), true
 }
 
-// firstTime picks the first parseable timestamp from a preference list, and
-// names which one it used.
+// firstTime picks the parseable timestamp from a preference list, and
+// names which it used.
 func firstTime(candidates [2][2]string) (time.Time, string, bool) {
 	for _, c := range candidates {
 		if at, ok := parseEventTime(c[0]); ok {

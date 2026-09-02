@@ -8,7 +8,8 @@ import (
 // The stored shape of GET /repos/{owner}/{repo}/commits/{ref}/check-runs
 
 // StoredCheckRunApp is a check run's producing app, trimmed to its id -- the
-// one app field the known consumer contract branches on.
+//
+//	app field the known consumer contract branches on.
 type StoredCheckRunApp struct {
 	ID int64 `json:"id"`
 }
@@ -18,7 +19,7 @@ type StoredCheckRunOutput struct {
 	Title *string `json:"title"` // nullable; key always emitted
 }
 
-// StoredCheckRun is one trimmed check run.
+// StoredCheckRun is trimmed check run.
 type StoredCheckRun struct {
 	ID          int64                `json:"id"`
 	HeadSHA     string               `json:"head_sha"`
@@ -33,7 +34,7 @@ type StoredCheckRun struct {
 	HTMLURL     *string              `json:"html_url"`     // nullable; pinned consumer-read exception
 }
 
-// StoredCheckRunsPage is one page of a ref's check runs. TotalCount is
+// StoredCheckRunsPage is page of a ref's check runs. TotalCount is
 // GitHub's TOTAL and can exceed the page's own length.
 type StoredCheckRunsPage struct {
 	TotalCount int64            `json:"total_count"`
@@ -61,7 +62,7 @@ type RawCheckRun struct {
 	HTMLURL    *string `json:"html_url"`
 }
 
-// TrimCheckRun converts one raw check run, reporting false when the model
+// TrimCheckRun converts raw check run, reporting false when the model
 // cannot hold it (no status, or a head sha that is not a full hex object id).
 func TrimCheckRun(cr RawCheckRun) (StoredCheckRun, bool) {
 	sha := strings.ToLower(cr.HeadSHA)
@@ -77,7 +78,7 @@ func TrimCheckRun(cr RawCheckRun) (StoredCheckRun, bool) {
 		out.App = &StoredCheckRunApp{ID: cr.App.ID}
 	}
 	// GitHub always sends the output object on real check runs; a missing or
-	// null one still rebuilds as {"title": null} so the key is stable.
+	// null still rebuilds as {"title": null} so the key is stable.
 	if cr.Output != nil {
 		out.Output = StoredCheckRunOutput{Title: cr.Output.Title}
 	}

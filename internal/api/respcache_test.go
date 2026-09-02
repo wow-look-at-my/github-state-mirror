@@ -64,7 +64,7 @@ func TestCachedInstallToken_HitVariantsAndFlush(t *testing.T) {
 	assert.Equal(t, w3.Body.String(), w4.Body.String())
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.mintHits))
 
-	// installation event for id 42 -> flush -> next mint refetches.
+	// installation event for id -> flush -> next mint refetches.
 	postWebhook(t, router, "installation", `{"action":"suspend","installation":{"id":42}}`)
 	w5 := mint("")
 	require.Equal(t, http.StatusCreated, w5.Code)
@@ -77,7 +77,7 @@ func TestCachedInstallToken_HitVariantsAndFlush(t *testing.T) {
 // re-mints — a cached mint always has usable lifetime left.
 func TestCachedInstallToken_ExpiryBufferRemint(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
-	u.tokenExpiry = time.Now().Add(5 * time.Minute) // < 10-minute buffer
+	u.tokenExpiry = time.Now().Add(5 * time.Minute) // < -minute buffer
 
 	for i := 1; i <= 2; i++ {
 		req := httptest.NewRequest("POST", "/app/installations/42/access_tokens", strings.NewReader(""))

@@ -9,7 +9,7 @@ import (
 )
 
 // Identity/self route tests: GET /app, GET /user, GET /user/orgs. These
-// three deliberately do NOT follow the trimmed-rebuild contract every other
+//  deliberately do NOT follow the trimmed-rebuild contract every other
 // file in this package tests against -- see the file header in
 
 func defaultUserOrgsUpstream(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +35,7 @@ func TestCachedApp_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.JSONEq(t, `{"id":777,"slug":"testapp"}`, w1.Body.String(),
 		"a hit/miss body must be byte-identical to GitHub's own -- no trimming")
-	after1 := u.appHits // VerifyAppIdentity's own call + this route's own miss fetch, both uncached the first time
+	after1 := u.appHits // VerifyAppIdentity's own call + this route's own miss fetch, both uncached the time
 
 	w2 := do(t, router, appJWTReq("/app"))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -118,7 +118,7 @@ func TestCachedUserOrgs_EmptyIsCacheable(t *testing.T) {
 	assert.Equal(t, int32(1), u.userOrgsHits)
 }
 
-// A 401 (e.g. a revoked App JWT) relays unstored.
+// A (e.g. a revoked App JWT) relays unstored.
 func TestCachedApp_UnauthorizedForwards(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 

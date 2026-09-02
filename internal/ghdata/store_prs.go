@@ -19,7 +19,7 @@ func (s *Store) ListOpenPRsByRepo(ctx context.Context, owner, repo string) ([]db
 	return s.q.ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Owner: owner, Repo: repo})
 }
 
-// UpsertPR merges one source's view of a PR into truth, stamping touched_at; a view that cannot prove it postdates a recorded close is refused.
+// UpsertPR merges source's view of a PR into truth, stamping touched_at; a view that cannot prove it postdates a recorded close is refused.
 func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Time) error {
 	_, err := upsertPRTx(ctx, s.q, pr, rfc3339(now))
 	return err
@@ -27,7 +27,7 @@ func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Tim
 
 // UpsertPRWithChecks upserts a PR plus its labels and re-derives
 // last_commit_status from the commit checks already recorded for the PR's head
-// commit: a PR payload carries no CI state, so a PR first seen AFTER its head
+// commit: a PR payload carries no CI state, so a PR seen AFTER its head
 // commit's checks finished (e.g. a pr-minder auto-opened PR) would otherwise
 // stay NULL until a later check event. When no checks are recorded the
 // (COALESCE-preserved) status is left untouched.
@@ -121,14 +121,14 @@ func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch
 	})
 }
 
-// NullPRMergeableOnTipMove un-resolves ONE PR's merge fields when the incoming webhook doc reports a moved tip against the stored row.
+// NullPRMergeableOnTipMove un-resolves PR's merge fields when the incoming webhook doc reports a moved tip against the stored row.
 // see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.PullRequest, now time.Time) (bool, error) {
 	existing, err := s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
 		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil // first sight: no stored merge fields to protect
+		return false, nil //  sight: no stored merge fields to protect
 	}
 	if err != nil {
 		return false, err

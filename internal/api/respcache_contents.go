@@ -20,8 +20,8 @@ import (
 
 // cachedContents serves repo contents from absorbed state, fetching and
 // absorbing on a miss. Cache key: (actor, owner, repo, path, ref) — the raw
-// `ref` query value matters. Both 200 (file or directory) and 404 are
-// absorbed; the default JSON and raw file-body Accept shapes share one row.
+// `ref` query value matters. Both (file or directory) and are
+// absorbed; the default JSON and raw file-body Accept shapes share row.
 // see docs/cache/rest-routes.md
 func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
@@ -34,7 +34,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
-	// The contents endpoint takes exactly one query param, ref; anything else passes through.
+	// The contents endpoint takes exactly query param, ref; anything else passes through.
 	q := r.URL.Query()
 	ref := q.Get("ref")
 	delete(q, "ref")
@@ -93,7 +93,7 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.PutCachedContents(r.Context(), c, now, contentsCacheTTL); err != nil {
 		slog.Warn("contents cache write failed", "owner", owner, "repo", repo, "path", path, "error", err)
 	}
-	// A 2xx is fresh proof of access -- renew the grant; a 404 is not proof either way, since the reveal layer already vouched for this read.
+	// A 2xx is fresh proof of access -- renew the grant; a is not proof either way, since the reveal layer already vouched for this read.
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	if rawAccept && c.Kind == ghdata.ContentsKindFile {
@@ -129,7 +129,7 @@ type contentsFileJSON struct {
 	SHA      string `json:"sha"`
 }
 
-// contentsEntryJSON is one trimmed directory-listing entry.
+// contentsEntryJSON is trimmed directory-listing entry.
 type contentsEntryJSON struct {
 	Type string `json:"type"`
 	Size int64  `json:"size"`
@@ -138,7 +138,7 @@ type contentsEntryJSON struct {
 	SHA  string `json:"sha"`
 }
 
-// notFoundJSON is the trimmed rebuild of a 404: GitHub's message + status,
+// notFoundJSON is the trimmed rebuild of a: GitHub's message + status,
 // documentation_url dropped.
 type notFoundJSON struct {
 	Message string `json:"message"`
@@ -146,8 +146,8 @@ type notFoundJSON struct {
 }
 
 // absorbContents parses an upstream contents response into cacheable state.
-// It absorbs a 200 file (base64-encoded — the >1 MiB "encoding":"none" form
-// is not modeled), a 200 directory listing, and a 404. Anything else — other
+// It absorbs a file (base64-encoded — the > MiB "encoding":"none" form
+// is not modeled), a directory listing, and a. Anything else — other
 // statuses, symlink/submodule objects, unexpected shapes — reports false and
 // is served verbatim, unstored.
 func absorbContents(owner, repo, path, ref string, status int, body []byte) (ghdata.CachedContents, bool) {

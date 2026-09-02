@@ -37,7 +37,7 @@ func tokenFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Fingerprint is a stable, non-reversible identifier for a token (hex SHA-256); the raw token is never stored or logged.
+// Fingerprint is a stable, non-reversible identifier for a token (hex SHA-); the raw token is never stored or logged.
 func Fingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -62,7 +62,7 @@ func (c *Client) SetRateObserver(obs RateObserver) { c.rateObserver = obs }
 // ExchangeObserver receives every real HTTP exchange this client performs, with its measured duration.
 type ExchangeObserver func(identity, name, method, path string, status int, start time.Time, duration time.Duration)
 
-// SetExchangeObserver wraps the transport so every request is timed at one choke point.
+// SetExchangeObserver wraps the transport so every request is timed at choke point.
 func (c *Client) SetExchangeObserver(obs ExchangeObserver) {
 	if obs == nil {
 		return
@@ -142,15 +142,15 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// ErrBadCredential marks a 401 on GET /user, distinct from a transient resolution failure.
+// ErrBadCredential marks a on GET /user, distinct from a transient resolution failure.
 var ErrBadCredential = errors.New("github rejected the credential")
 
 // TokenIdentity is the resolved identity of a bearer token, learned from
 // GET /user with that token.
 type TokenIdentity struct {
-	// IsUser is a DEFINITIVE verdict (a non-rate-limit 403/404 on /user), not a failure.
+	// IsUser is a DEFINITIVE verdict (a non-rate-limit / on /user), not a failure.
 	IsUser bool
-	// ID is the user's numeric id, stable across login renames. Zero when !IsUser.
+	// ID is the user's numeric id, stable across login renames. when !IsUser.
 	ID int64
 	// Login is the user's current login. Empty when !IsUser.
 	Login string
@@ -158,18 +158,18 @@ type TokenIdentity struct {
 
 // ResolveTokenIdentity resolves the token in ctx to its GitHub user via
 // GET /user, caching the answer — including the definitive "not a user"
-// verdict — per token, so GitHub is asked once per unique token.
+// verdict — per token, so GitHub is asked per unique token.
 //
 // Outcomes:
 //   - user token: TokenIdentity{IsUser: true, ID, Login}, cached
-//   - definitively not a user (403/404 — installation tokens and the like):
+//   - definitively not a user (/ — installation tokens and the like):
 //     TokenIdentity{IsUser: false}, cached
-//   - invalid credential (401): an error wrapping ErrBadCredential, uncached
-//   - anything transient (network error, 5xx, 429, a rate-limited 403): an
+//   - invalid credential (): an error wrapping ErrBadCredential, uncached
+//   - anything transient (network error, 5xx,, a rate-limited): an
 //     error, and NOTHING is cached — the next call retries
 //
-// A 403 counts as transient (not a verdict) when it looks like rate limiting
-// (Retry-After, or X-RateLimit-Remaining: 0): caching "not a user" for a
+// A counts as transient (not a verdict) when it looks like rate limiting
+// (Retry-After, or X-RateLimit-Remaining:): caching "not a user" for a
 // rate-limited USER token would silently mis-partition that user for the
 // process lifetime.
 func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error) {
@@ -250,17 +250,17 @@ type appResp struct {
 }
 
 // VerifyAppIdentity validates a GitHub App JWT by calling GET /app with it. The
-// App JWT is signed with the app's private key (RS256); GitHub only returns 200
+// App JWT is signed with the app's private key (RS256); GitHub only returns
 // if that signature checks out against the public key it holds for the app, so a
 // successful response is unforgeable proof that the caller holds the app's
 // private key — exactly the "GitHub agrees you are app X" assertion. The result
-// is cached per JWT (a caller reuses one JWT for its ~9-minute validity), so this
-// costs one upstream call per JWT, not per request.
+// is cached per JWT (a caller reuses JWT for its ~-minute validity), so this
+// costs upstream call per JWT, not per request.
 //
 // The returned identity is meant to be used as a stable cache partition for a
-// trusted first-party app caller (e.g. a webhook handler) whose underlying
-// installation tokens rotate hourly: every one of those tokens proves the same
-// app identity, so they all share one bucket.
+// trusted -party app caller (e.g. a webhook handler) whose underlying
+// installation tokens rotate hourly: every of those tokens proves the same
+// app identity, so they all share bucket.
 func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity, error) {
 	if v, ok := c.appIdentityCache.Load(jwt); ok {
 		return v.(AppIdentity), nil

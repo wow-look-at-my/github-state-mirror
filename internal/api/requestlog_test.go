@@ -149,7 +149,9 @@ func TestDashboard_Requests_ActorName(t *testing.T) {
 
 // TestDashboard_Requests_Admin drives real requests through the router and
 // verifies the dashboard's /api/requests reports their cache dispositions: the
-// first org-repos query is a miss, the second a hit, and an uncached path a
+//
+//	org-repos query is a miss, the a hit, and an uncached path a
+//
 // passthrough.
 func TestDashboard_Requests_Admin(t *testing.T) {
 	svc := configuredAuth(t)
@@ -163,7 +165,7 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.Equal(t, http.StatusOK, w.Code)
 	}
-	// Uncached path -> passthrough (the test upstream answers any path 200).
+	// Uncached path -> passthrough (the test upstream answers any path).
 	passReq := authedReq("GET", "/repos/o/r/releases", nil)
 	pw := httptest.NewRecorder()
 	router.ServeHTTP(pw, passReq)
@@ -248,7 +250,7 @@ func TestDashboard_Requests_DBSize(t *testing.T) {
 }
 
 // TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records
-// the status GitHub returned (e.g. 502), so the dashboard shows whether the
+// the status GitHub returned (e.g.), so the dashboard shows whether the
 // forwarded call actually succeeded — not just that it was forwarded.
 func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 	svc := configuredAuth(t)
@@ -257,7 +259,7 @@ func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			return
 		}
-		w.WriteHeader(http.StatusBadGateway) // simulate GitHub 502 on the proxied path
+		w.WriteHeader(http.StatusBadGateway) // simulate GitHub on the proxied path
 		_, _ = w.Write([]byte("upstream boom"))
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)

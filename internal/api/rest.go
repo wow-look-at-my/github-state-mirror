@@ -34,7 +34,7 @@ type handlers struct {
 }
 
 // Cached REST routes rebuild the response without any URL field, under an
-// explicit contract. see docs/cache/three-tier-contract.md
+// explicit contract. see docs/cache/-tier-contract.md
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

@@ -55,7 +55,7 @@ func TestCachedGitTree_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitTreeHits), "a hit must not call upstream")
 }
 
-// recursive=1 is a DIFFERENT resource (a different entry set for the same
+// recursive= is a DIFFERENT resource (a different entry set for the same
 // sha), so it must never be answered by the non-recursive row or vice versa.
 func TestCachedGitTree_RecursiveIsADistinctRow(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -93,7 +93,7 @@ func TestCachedGitTree_ShapeGuards(t *testing.T) {
 
 	for _, target := range []string{
 		"/repos/org1/repo1/git/trees/" + shaTree1[:7], // short sha
-		gitTreeTarget + "?recursive=0",                // GitHub only defines recursive=1
+		gitTreeTarget + "?recursive=0",                // GitHub only defines recursive=
 		gitTreeTarget + "?per_page=1",
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
@@ -107,7 +107,7 @@ func TestCachedGitTree_ShapeGuards(t *testing.T) {
 	assert.Equal(t, int32(4), atomic.LoadInt32(&u.gitTreeHits), "every unmodeled shape forwards to GitHub uncached")
 }
 
-// A 404 (bad or GC'd sha) relays unstored -- no miss-marker table exists for
+// A (bad or GC'd sha) relays unstored -- no miss-marker table exists for
 // this route (see the file header).
 func TestCachedGitTree_NotFoundRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

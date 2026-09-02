@@ -17,7 +17,7 @@ import (
 )
 
 // The out-of-order gate. GitHub orders nothing; these pin that a view older
-// than one already applied never writes, that the grain is fine enough for
+// than already applied never writes, that the grain is fine enough for
 // "older" to mean "superseded", and that what a refused delivery still carries
 // -- facts that cannot be stale -- is kept.
 
@@ -69,9 +69,9 @@ func TestOrdering_OlderViewOfOneSubjectNeverWrites(t *testing.T) {
 	assert.Equal(t, int64(1), stats.ByEvent["pull_request"])
 }
 
-// Equal timestamps apply. GitHub's payload clocks are second-granular, so two
-// distinct views of one subject can share a timestamp and refusing on equality
-// would drop the second one on rounding alone.
+// Equal timestamps apply. GitHub's payload clocks are -granular, so
+// distinct views of subject can share a timestamp and refusing on equality
+// would drop the on rounding alone.
 func TestOrdering_EqualTimestampsApply(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -88,8 +88,8 @@ func TestOrdering_EqualTimestampsApply(t *testing.T) {
 	assert.Equal(t, int64(0), dispatcher.Ordering().Superseded)
 }
 
-// Different subjects are independent: one PR's newer event must never make
-// another PR's older-but-first-seen event look late.
+// Different subjects are independent: PR's newer event must never make
+// another PR's older-but--seen event look late.
 func TestOrdering_SubjectsAreIndependent(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -105,9 +105,11 @@ func TestOrdering_SubjectsAreIndependent(t *testing.T) {
 	assert.Equal(t, "PR two", pr.Title)
 }
 
-// The grain that matters most: one commit carries many status CONTEXTS, and
+// The grain that matters most: commit carries many status CONTEXTS, and
 // they supersede only themselves. Keyed on the sha alone, `all-builds` landing
-// first would discard a `ci` result posted a second earlier -- silently losing
+//
+//	would discard a `ci` result posted a earlier -- silently losing
+//
 // a check the mirror is the source of truth for.
 func TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -130,7 +132,7 @@ func TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther(t *testing.T) {
 	assert.Equal(t, webhook.DispSuperseded, again.Disposition)
 }
 
-// The one thing a reordering buffer would have bought: a push carries commit
+// The thing a reordering buffer would have bought: a push carries commit
 // objects the newer push never restates. They are immutable and
 // content-addressed, so absorbing them out of order is not a stale write --
 // dropping them would just mean fetching them back later.
@@ -184,7 +186,7 @@ func TestOrdering_UnorderablePayloadStillApplies(t *testing.T) {
 	assert.Equal(t, int64(0), stats.Superseded)
 }
 
-// The two lateness bands mean different things operationally: jitter versus a
+// The lateness bands mean different things operationally: jitter versus a
 // delivery something held. Both refuse; the split is what the dashboard reads.
 func TestOrdering_LatenessBandsAndSampleBound(t *testing.T) {
 	dispatcher, _, _, _ := setupDispatcher(t)

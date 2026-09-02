@@ -22,7 +22,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// fakeOwner is one owner's live state served by the fake GitHub.
+// fakeOwner is owner's live state served by the fake GitHub.
 type fakeOwner struct {
 	repos []map[string]any // ownerDataQuery repo nodes
 	vis   []map[string]any // ownerRepoVisibilityQuery nodes (includes archived)
@@ -34,7 +34,7 @@ func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.
 }
 
 // consistencyFakeGitHubFailing is consistencyFakeGitHub with a transient-
-// failure knob: the first fail502 /graphql requests answer 502 Bad Gateway
+// failure knob: the fail502 /graphql requests answer Bad Gateway
 // before the normal responses resume (the client's bounded-retry path).
 func consistencyFakeGitHubFailing(t *testing.T, owners map[string]fakeOwner, fail502 int) *httptest.Server {
 	t.Helper()
@@ -165,7 +165,7 @@ func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.S
 	t.Cleanup(func() { db.Close() })
 
 	gh := ghclient.NewWithBaseURL(srvURL)
-	// Zero backoff: a test exercising the transient-retry path must not sleep.
+	//  backoff: a test exercising the transient-retry path must not sleep.
 	gh.SetRetryBackoff([]time.Duration{0})
 	store := ghdata.NewStore(db)
 	fresh := freshness.NewStore(db)
@@ -182,7 +182,7 @@ func seedPullsListMarker(t *testing.T, store *ghdata.Store, owner, repo string) 
 	require.NoError(t, store.AbsorbPullsList(context.Background(), owner, repo, nil, nil, true, now, now, time.Hour))
 }
 
-// findDiscrepancy returns the first discrepancy matching repo+field (field may be
+// findDiscrepancy returns the discrepancy matching repo+field (field may be
 // "" to match only_in_cache / only_on_github entries by issue).
 func findDiscrepancy(rep *ConsistencyReport, repo, field, issue string) *Discrepancy {
 	for i := range rep.Discrepancies {
@@ -262,7 +262,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		Owner: "someuser", Name: "y", NameWithOwner: "someuser/y", Url: "u",
 	}))
 
-	// PR #1 cached with stale fields; PR #99 cached open but gone from GitHub.
+	// PR # cached with stale fields; PR # cached open but gone from GitHub.
 	require.NoError(t, store.UpsertPR(ctx, dbgen.PullRequest{
 		Owner: "org1", Repo: "repo1", Number: 1, Title: "Old title", Url: "https://github.com/org1/repo1/pull/1",
 		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-02", IsDraft: 1,
@@ -341,7 +341,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.NotNil(t, findDiscrepancy(rep, "org1/repo1", "label:stale-label", "field_mismatch"), "stale label only in cache")
 	assert.NotNil(t, findDiscrepancy(rep, "org1/repo1", "label:bug", "field_mismatch"), "bug label only on github")
 
-	// PR #99 (cached open, absent from GitHub's open set) carries the cached
+	// PR # (cached open, absent from GitHub's open set) carries the cached
 	// row's detail for triage.
 	if d := findDiscrepancy(rep, "org1/repo1", "", "only_in_cache"); assert.NotNil(t, d) {
 		assert.Equal(t, int64(99), d.PR)

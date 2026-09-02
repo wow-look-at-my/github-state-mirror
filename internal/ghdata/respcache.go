@@ -43,10 +43,10 @@ func NormalizeRepoKey(s string) string { return strings.ToLower(s) }
 const (
 	ContentsKindFile    = "file"
 	ContentsKindDir     = "dir"
-	ContentsKindMissing = "missing" // a cached 404
+	ContentsKindMissing = "missing" // a cached
 )
 
-// CachedContents is the absorbed state of one contents response.
+// CachedContents is the absorbed state of contents response.
 type CachedContents struct {
 	Owner    string // lowercased
 	Repo     string // lowercased
@@ -59,10 +59,10 @@ type CachedContents struct {
 	Encoding string
 	Content  string // base64 exactly as GitHub sent it (incl. line breaks)
 	Entries  string // dir listings: JSON array of trimmed entries
-	Message  string // missing: GitHub's 404 message
+	Message  string // missing: GitHub's message
 }
 
-// GetCachedContents returns the cached contents state, or (zero, false) on a
+// GetCachedContents returns the cached contents state, or (, false) on a
 // miss. An expired row is a miss (deleted lazily by the next write's prune). A
 // hit refreshes the row's LRU timestamp. Callers must have passed the reveal
 // check before serving this.
@@ -123,7 +123,7 @@ func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref s
 
 // ---- Git commits (GET /repos/{owner}/{repo}/git/commits/{sha}) ----
 
-// CachedGitCommit is the absorbed state of one git commit. Rows come from two
+// CachedGitCommit is the absorbed state of git commit. Rows come from
 // sources -- an upstream fetch, or a push webhook payload -- and both rebuild to
 // the same trimmed shape, so the struct is the single source of truth.
 type CachedGitCommit struct {
@@ -141,7 +141,7 @@ type CachedGitCommit struct {
 	Parents        []string
 }
 
-// GetCachedGitCommit returns the cached commit, or (zero, false) on a miss.
+// GetCachedGitCommit returns the cached commit, or (, false) on a miss.
 // Commits are immutable: no TTL check. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string, now time.Time) (CachedGitCommit, bool, error) {
 	row, err := s.q.GetGitCommitCache(ctx, dbgen.GetGitCommitCacheParams{
@@ -164,7 +164,7 @@ func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string,
 	}, true, nil
 }
 
-// PutCachedGitCommit stores one commit, then prunes.
+// PutCachedGitCommit stores commit, then prunes.
 func (s *Store) PutCachedGitCommit(ctx context.Context, c CachedGitCommit, now time.Time) error {
 	if err := s.upsertGitCommit(ctx, s.q, c, now); err != nil {
 		return err
@@ -172,8 +172,8 @@ func (s *Store) PutCachedGitCommit(ctx context.Context, c CachedGitCommit, now t
 	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
-// UpsertGitCommits absorbs push-payload commits into global truth in one
-// transaction -- the webhook dispatcher's write path. Prunes once afterwards.
+// UpsertGitCommits absorbs push-payload commits into global truth in
+// transaction -- the webhook dispatcher's write path. Prunes afterwards.
 func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit, now time.Time) error {
 	if len(commits) == 0 {
 		return nil
@@ -205,7 +205,7 @@ func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedG
 	}); err != nil {
 		return err
 	}
-	// Every absorb path funnels through here so a real commit always clears its 404 miss marker -- see docs/cache/rest-routes.md.
+	// Every absorb path funnels through here so a real commit always clears its miss marker -- see docs/cache/rest-routes.md.
 	return q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Sha: strings.ToLower(c.SHA),
 	})
@@ -223,7 +223,7 @@ func splitParents(s string) []string {
 
 // ---- Installation tokens (POST /app/installations/{id}/access_tokens) ----
 
-// CachedInstallToken is the absorbed state of one token-mint 201 response.
+// CachedInstallToken is the absorbed state of token-mint response.
 type CachedInstallToken struct {
 	InstallationID      string
 	BodyHash            string
@@ -234,7 +234,7 @@ type CachedInstallToken struct {
 }
 
 // GetCachedInstallToken returns the cached mint for the given app actor, or
-// (zero, false) on a miss. A row past its serve-until expiry is a miss.
+// (, false) on a miss. A row past its serve-until expiry is a miss.
 func (s *Store) GetCachedInstallToken(ctx context.Context, appActor, installationID, bodyHash string, now time.Time) (CachedInstallToken, bool, error) {
 	row, err := s.q.GetInstallTokenCache(ctx, dbgen.GetInstallTokenCacheParams{
 		Actor: appActor, InstallationID: installationID, BodyHash: bodyHash,
@@ -277,7 +277,7 @@ func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID 
 	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
 }
 
-// InvalidateInstallTokenByToken reacts to a 401/403 on the minted token itself, since a consumer App's own permission change reaches no webhook here.
+// InvalidateInstallTokenByToken reacts to a / on the minted token itself, since a consumer App's own permission change reaches no webhook here.
 func (s *Store) InvalidateInstallTokenByToken(ctx context.Context, token string) error {
 	if token == "" {
 		return nil

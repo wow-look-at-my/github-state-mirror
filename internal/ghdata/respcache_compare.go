@@ -11,25 +11,25 @@ import (
 
 // The storage layer for the cached compare route (.../compare/{basehead}); see docs/cache/rest-routes.md.
 
-// CachedCompare is one cached comparison: the rendered document exactly as
-// the API layer will serve it. BaseRef/HeadRef are the basehead's two sides
+// CachedCompare is cached comparison: the rendered document exactly as
+// the API layer will serve it. BaseRef/HeadRef are the basehead's sides
 // (the API layer splits at the "..." its route guard already requires), kept
-// as their own columns so a push to one ref can flush exactly the
-// comparisons naming it. Status is the upstream answer the row absorbed: 200
+// as their own columns so a push to ref can flush exactly the
+// comparisons naming it. Status is the upstream answer the row absorbed:
 type CachedCompare struct {
 	Owner    string // lowercased
 	Repo     string // lowercased
 	Basehead string // raw base...head path tail, exact
 	BaseRef  string // basehead's base side (before the "...")
 	HeadRef  string // basehead's head side (after the "...")
-	// BaseTipSha is base_commit.sha; empty when unstated (or on a 404 verdict row).
+	// BaseTipSha is base_commit.sha; empty when unstated (or on a verdict row).
 	BaseTipSha string
-	Status     int    // 200, or 404 (unknown-ref miss marker)
-	Doc        string // rendered document as JSON (trimmed compare, or the 404 body)
+	Status     int    // , or (unknown-ref miss marker)
+	Doc        string // rendered document as JSON (trimmed compare, or the body)
 }
 
-// GetCachedCompare returns the cached comparison, or (zero, false) on a miss
-// (no row, or an expired one). A hit refreshes the row's LRU timestamp.
+// GetCachedCompare returns the cached comparison, or (, false) on a miss
+// (no row, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedCompare(ctx context.Context, owner, repo, basehead string, now time.Time) (CachedCompare, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetCompareCache(ctx, dbgen.GetCompareCacheParams{
@@ -71,7 +71,7 @@ func (s *Store) baseBranchMoved(ctx context.Context, owner, repo, baseRef, baseT
 	return tip != baseTipSha, nil
 }
 
-// PutCachedCompare absorbs one comparison plus its commits, in one transaction; c and commits must carry normalized owner/repo and lowercased shas.
+// PutCachedCompare absorbs comparison plus its commits, in transaction; c and commits must carry normalized owner/repo and lowercased shas.
 func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits []CachedGitCommit, now time.Time, ttl time.Duration) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

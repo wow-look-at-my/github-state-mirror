@@ -30,8 +30,8 @@ func (failOrgFetcher) Fetch(_ context.Context, _ string, _ string) (freshness.Re
 }
 
 // When the org_repos fetch fails and nothing is cached, the handler must NOT
-// return an empty "200 OK" (which is indistinguishable from "no repos"); it must
-// surface the upstream error with a non-200 status and the reason in the body.
+// return an empty " OK" (which is indistinguishable from "no repos"); it must
+// surface the upstream error with a non- status and the reason in the body.
 func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 	dir := t.TempDir()
 	db := openTestDB(t, filepath.Join(dir, "test.db"))
@@ -62,7 +62,7 @@ func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 }
 
 // TestGraphQL_StaleServedOnErrorCarriesHeaders: when the refresh fails but
-// cached data exists, the handler serves the stale cache with 200 — and must
+// cached data exists, the handler serves the stale cache with — and must
 // say so via the X-GSM-Stale / X-GSM-Last-Fetched response HEADERS (never the
 // body, which stays byte-identical to GitHub's shape).
 func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
@@ -226,7 +226,7 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 
 // TestGraphQL_PRWithoutStatus verifies that a PR with no recorded CI status still
 // returns a well-formed commits object whose statusCheckRollup is null, rather
-// than a null commits. Clients dereference commits.nodes[0].commit unconditionally,
+// than a null commits. Clients dereference commits.nodes[].commit unconditionally,
 // so a null commits would crash them.
 func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	router, store := setupTestRouter(t)
@@ -380,7 +380,7 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 
 // The locked query selects repositories(isArchived: false), so GitHub itself
 // never returns an archived repo -- and the node has no isArchived field, so a
-// client cannot filter one out either. Truth holds archived repos (the owner
+// client cannot filter out either. Truth holds archived repos (the owner
 // query the fleet refresher uses has no such filter), so the assembly must
 // drop them or the mirror answers with rows GitHub would have withheld.
 func TestGraphQL_ArchivedReposExcluded(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 // OrgRunnersCacheTTL is short: no webhook announces a runner's status changing.
 const OrgRunnersCacheTTL = 30 * time.Second
 
-// GetCachedOrgRunners returns one page's cached document, or (empty, false)
+// GetCachedOrgRunners returns page's cached document, or (empty, false)
 // on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedOrgRunners(ctx context.Context, tokenFP, org string, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetOrgRunnersCache(ctx, dbgen.GetOrgRunnersCacheParams{
@@ -35,7 +35,7 @@ func (s *Store) GetCachedOrgRunners(ctx context.Context, tokenFP, org string, pe
 	return row.Doc, true, nil
 }
 
-// PutCachedOrgRunners stores one page, then prunes (expired rows + LRU beyond
+// PutCachedOrgRunners stores page, then prunes (expired rows + LRU beyond
 // the cap).
 func (s *Store) PutCachedOrgRunners(ctx context.Context, tokenFP, org string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertOrgRunnersCache(ctx, dbgen.UpsertOrgRunnersCacheParams{

@@ -11,10 +11,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached git-tree route (tier 2 of the cache
+// This file implements the cached git-tree route (tier of the cache
 // contract):
 //
-//	GET /repos/{owner}/{repo}/git/trees/{sha}[?recursive=1]
+//	GET /repos/{owner}/{repo}/git/trees/{sha}[?recursive=]
 //
 // Trees are immutable and content-addressed by sha, the git_commits_cache
 // precedent: no TTL, no webhook invalidation (no delivery ever names a tree
@@ -66,7 +66,7 @@ func (h *handlers) cachedGitTree(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbGitTree(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404 (bad/expired sha) or anything unmodeled relays unstored -- GitHub GC'ing a tree is too rare to need a miss-marker cache.
+		// A (bad/expired sha) or anything unmodeled relays unstored -- GitHub GC'ing a tree is too rare to need a miss-marker cache.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -80,7 +80,7 @@ func (h *handlers) cachedGitTree(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseGitTreeShape reports the modeled recursive value: absent, or
-// recursive=1 (the only value GitHub's docs define; any other value is
+// recursive= (the only value GitHub's docs define; any other value is
 // GitHub's own to reject, so it stays unmodeled and passes through), and no
 // other query parameter.
 func parseGitTreeShape(q map[string][]string) (recursive string, ok bool) {
@@ -116,7 +116,7 @@ type gitTreeJSON struct {
 }
 
 // absorbGitTree parses and renders an upstream tree response. Only a
-// well-formed 200 is absorbed.
+// well-formed is absorbed.
 func absorbGitTree(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

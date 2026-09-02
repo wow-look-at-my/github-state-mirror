@@ -2,7 +2,7 @@ package ghclient
 
 import "context"
 
-// RateLimitResource is one GitHub rate-limit bucket (core, graphql, search, ...).
+// RateLimitResource is GitHub rate-limit bucket (core, graphql, search,...).
 type RateLimitResource struct {
 	Limit     int   `json:"limit"`
 	Remaining int   `json:"remaining"`

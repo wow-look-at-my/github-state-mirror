@@ -17,11 +17,11 @@ import (
 )
 
 // These tests lock the push handler's merge-field invalidation against the
-// two H1 holes: an error in another step of the handler silently skipping the
+//  H1 holes: an error in another step of the handler silently skipping the
 // invalidation, and an unparseable payload skipping it entirely. A skipped
 // invalidation leaves the single-PR route serving the pre-push mergeable /
 // test-merge sha as a hit -- and hits never reach GitHub, so nothing ever
-// triggers the recompute (the webhooks#66 frozen-sha incident).
+// triggers the recompute (the webhooks# frozen-sha incident).
 
 // seedResolvedOpenPR writes a REST-complete open PR row with a resolved
 // mergeable and test-merge sha, based on the given branch.
@@ -70,7 +70,7 @@ func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 
 // TestOnPush_MergeInvalidationSurvivesPushedAtFailure: the merge-field
 // un-resolve must run even when a later step of the handler fails. The old
-// handler ordered SetRepoPushedAt FIRST and returned on its error, so a
+// handler ordered SetRepoPushedAt and returned on its error, so a
 // transient DB failure skipped the invalidation entirely and the pre-push
 // answer kept serving as a hit. The repos table is broken here (renamed) so
 // SetRepoPushedAt fails exactly like a transient DB error -- pull_requests is

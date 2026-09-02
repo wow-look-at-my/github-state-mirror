@@ -14,7 +14,7 @@ import (
 // AppInstallationsCacheTTL bounds a stale answer for a missed delivery.
 const AppInstallationsCacheTTL = time.Hour
 
-// GetCachedAppInstallations returns one page's cached document, or (empty,
+// GetCachedAppInstallations returns page's cached document, or (empty,
 // false) on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedAppInstallations(ctx context.Context, appKey string, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetAppInstallationsCache(ctx, dbgen.GetAppInstallationsCacheParams{
@@ -35,7 +35,7 @@ func (s *Store) GetCachedAppInstallations(ctx context.Context, appKey string, pe
 	return row.Doc, true, nil
 }
 
-// PutCachedAppInstallations stores one page, then prunes (expired rows + LRU
+// PutCachedAppInstallations stores page, then prunes (expired rows + LRU
 // beyond the cap).
 func (s *Store) PutCachedAppInstallations(ctx context.Context, appKey string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertAppInstallationsCache(ctx, dbgen.UpsertAppInstallationsCacheParams{
@@ -50,7 +50,7 @@ func (s *Store) PutCachedAppInstallations(ctx context.Context, appKey string, pe
 	return s.q.PruneAppInstallationsCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateAppInstallationsForApp drops every cached page for one App --
+// InvalidateAppInstallationsForApp drops every cached page for App --
 func (s *Store) InvalidateAppInstallationsForApp(ctx context.Context, appKey string) error {
 	return s.q.DeleteAppInstallationsCacheForApp(ctx, appKey)
 }

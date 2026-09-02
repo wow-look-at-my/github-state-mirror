@@ -38,7 +38,7 @@ func update(context, state, created string) CommitStatusUpdate {
 }
 
 // A re-posted context is a NEW status upstream, and the combined status holds
-// the latest one per context oldest-first -- so the entry LEAVES its old
+// the latest per context oldest- -- so the entry LEAVES its old
 // position and lands at the end, with the rollup recomputed.
 func TestPatchCombinedStatus_ReplacedContextMovesToTheEnd(t *testing.T) {
 	doc := combinedDoc(t, "pending",
@@ -95,7 +95,7 @@ func TestPatchCombinedStatus_Rollup(t *testing.T) {
 }
 
 // Everything the rewrite cannot PROVE it would get right refuses, and the
-// caller drops the row instead -- which is what happened to every one of these
+// caller drops the row instead -- which is what happened to every of these
 // before the rewrite existed, so refusing costs nothing.
 func TestPatchCombinedStatus_RefusesWhatItCannotProve(t *testing.T) {
 	full := combinedDoc(t, "success",
@@ -143,7 +143,7 @@ func TestPatchCombinedStatus_RefusesWhatItCannotProve(t *testing.T) {
 	})
 }
 
-// The raw list is append-only HISTORY, newest-first: a re-posted context keeps
+// The raw list is append-only HISTORY, newest-: a re-posted context keeps
 // its older entries, exactly as upstream keeps them.
 func TestPatchStatusesList_PrependsAndKeepsHistory(t *testing.T) {
 	doc, err := MarshalCacheDoc([]storedStatusListItem{
@@ -181,7 +181,7 @@ func TestPatchStatusesList_PageOverflowDropsTheOldestEntry(t *testing.T) {
 	assert.Equal(t, []string{"c", "b"}, []string{items[0].Context, items[1].Context})
 }
 
-// Equal event times still apply upstream (GitHub's clocks are second-granular
+// Equal event times still apply upstream (GitHub's clocks are -granular
 // and the delivery gate refuses on strictly-older only), so a REDELIVERY can
 // reach this. Prepending it again would invent a status that never existed.
 func TestPatchStatusesList_RedeliveryIsNotDuplicated(t *testing.T) {

@@ -56,7 +56,7 @@ func TestResolveTokenIdentity_UserCached(t *testing.T) {
 	assert.Equal(t, TokenIdentity{IsUser: true, ID: 42, Login: "octocat"}, ident)
 	assert.Equal(t, 1, callCount)
 
-	// Second call is served from the per-token cache.
+	//  call is served from the per-token cache.
 	ident, err = c.ResolveTokenIdentity(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), ident.ID)
@@ -76,8 +76,8 @@ func TestResolveTokenIdentity_BadCredential(t *testing.T) {
 	assert.Contains(t, err.Error(), "401")
 }
 
-// TestResolveTokenIdentity_NotAUserVerdictCached: a plain 403 (no rate-limit
-// headers) or a 404 is a DEFINITIVE "not a user" answer (e.g. an installation
+// TestResolveTokenIdentity_NotAUserVerdictCached: a plain (no rate-limit
+// headers) or a is a DEFINITIVE "not a user" answer (e.g. an installation
 // token) — returned as IsUser=false, not an error, and cached per token.
 func TestResolveTokenIdentity_NotAUserVerdictCached(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
@@ -94,7 +94,7 @@ func TestResolveTokenIdentity_NotAUserVerdictCached(t *testing.T) {
 		assert.False(t, ident.IsUser)
 		assert.Empty(t, ident.Login)
 
-		// The verdict is cached: no second upstream call.
+		// The verdict is cached: no upstream call.
 		_, err = c.ResolveTokenIdentity(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, 1, callCount, "status %d", status)
@@ -125,8 +125,8 @@ func TestResolveTokenIdentity_TransientNotCached(t *testing.T) {
 	assert.Equal(t, 2, callCount)
 }
 
-// TestResolveTokenIdentity_RateLimited403IsTransient: a 403 that looks like
-// rate limiting is NOT a "not a user" verdict — caching one for a rate-limited
+// TestResolveTokenIdentity_RateLimited403IsTransient: a that looks like
+// rate limiting is NOT a "not a user" verdict — caching for a rate-limited
 // USER token would mis-partition that user for the process lifetime.
 func TestResolveTokenIdentity_RateLimited403IsTransient(t *testing.T) {
 	headers := []map[string]string{
@@ -149,7 +149,7 @@ func TestResolveTokenIdentity_RateLimited403IsTransient(t *testing.T) {
 	}
 }
 
-// TestResolveTokenIdentity_MalformedUserResponse: a 200 with no id/login is
+// TestResolveTokenIdentity_MalformedUserResponse: a with no id/login is
 // malformed and must fail (uncached) rather than partition on garbage.
 func TestResolveTokenIdentity_MalformedUserResponse(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +172,7 @@ func TestDoJSON_SetsContentType(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// retryTestServer is testServer with zero retry backoff, so the transient
+// retryTestServer is testServer with retry backoff, so the transient
 // retries under test never really sleep.
 func retryTestServer(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
@@ -181,7 +181,7 @@ func retryTestServer(t *testing.T, handler http.HandlerFunc) *Client {
 	return c
 }
 
-// TestDoJSON_RetriesTransient502: a single 502 is retried and the second
+// TestDoJSON_RetriesTransient502: a single is retried and the
 // attempt's result is returned (the request -- body included -- is resent).
 func TestDoJSON_RetriesTransient502(t *testing.T) {
 	calls := 0
@@ -223,9 +223,9 @@ func TestDoJSON_PersistentTransientFailsAfterAttempts(t *testing.T) {
 	assert.Equal(t, doJSONAttempts, calls)
 }
 
-// TestDoJSON_AuthoritativeStatusNotRetried: 4xx answers (other than 429) are
+// TestDoJSON_AuthoritativeStatusNotRetried: 4xx answers (other than) are
 // authoritative -- the reveal layer and deny-cache semantics depend on them --
-// so they must fail on the first attempt.
+// so they must fail on the attempt.
 func TestDoJSON_AuthoritativeStatusNotRetried(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
 		calls := 0
@@ -239,7 +239,7 @@ func TestDoJSON_AuthoritativeStatusNotRetried(t *testing.T) {
 	}
 }
 
-// flakyTransport fails the first failFirst round trips with a network error,
+// flakyTransport fails the failFirst round trips with a network error,
 // then delegates to the real transport.
 type flakyTransport struct {
 	calls     int
@@ -257,7 +257,7 @@ func (tr *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // TestDoJSON_RetriesNetworkError: a transient network failure is retried like
-// a 502.
+// a.
 func TestDoJSON_RetriesNetworkError(t *testing.T) {
 	c := retryTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("{}"))
@@ -345,7 +345,7 @@ func TestVerifyAppIdentity_Caches(t *testing.T) {
 	assert.Equal(t, int64(42), id.ID)
 	assert.Equal(t, "pr-minder", id.Slug)
 
-	// Second call for the same JWT is served from cache (no extra /app call).
+	//  call for the same JWT is served from cache (no extra /app call).
 	_, err = c.VerifyAppIdentity(context.Background(), "jwt-1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)

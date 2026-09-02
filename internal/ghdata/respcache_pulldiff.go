@@ -9,11 +9,11 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// This file is the storage layer for the single-PR diff read's 406 verdicts (GET .../pulls/{number} with the diff media type).
+// This file is the storage layer for the single-PR diff read's verdicts (GET.../pulls/{number} with the diff media type).
 // see docs/cache/rest-routes.md
 
-// GetCachedPullDiff406 returns the cached 406 body for a PR, or ("", false)
-// on a miss (no verdict, or an expired one). A hit refreshes the row's LRU
+// GetCachedPullDiff406 returns the cached body for a PR, or ("", false)
+// on a miss (no verdict, or an expired). A hit refreshes the row's LRU
 // timestamp.
 func (s *Store) GetCachedPullDiff406(ctx context.Context, owner, repo string, number int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
@@ -35,7 +35,7 @@ func (s *Store) GetCachedPullDiff406(ctx context.Context, owner, repo string, nu
 	return row.Doc, true, nil
 }
 
-// PutCachedPullDiff406 records one fetched 406 verdict, then prunes the
+// PutCachedPullDiff406 records fetched verdict, then prunes the
 // table (expired rows + LRU beyond the cap). owner/repo are normalized here
 // so callers can pass URL casing.
 func (s *Store) PutCachedPullDiff406(ctx context.Context, owner, repo string, number int64, doc string, now time.Time, ttl time.Duration) error {
@@ -52,14 +52,14 @@ func (s *Store) PutCachedPullDiff406(ctx context.Context, owner, repo string, nu
 	return s.q.PrunePullDiff406CacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidatePullDiff406Cache drops every cached 406 verdict for a repo -- the push/repository flush (no per-PR signal for a base push moving the boundary).
+// InvalidatePullDiff406Cache drops every cached verdict for a repo -- the push/repository flush (no per-PR signal for a base push moving the boundary).
 func (s *Store) InvalidatePullDiff406Cache(ctx context.Context, owner, repo string) error {
 	return s.q.DeletePullDiff406CacheByRepo(ctx, dbgen.DeletePullDiff406CacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
-// InvalidatePullDiff406ForPR drops one PR's cached 406 verdict -- the
+// InvalidatePullDiff406ForPR drops PR's cached verdict -- the
 // pull_request/pull_request_review event flush (a head push or retarget can
 // shrink the diff back under the boundary). owner/repo are normalized here
 // so callers can pass payload casing.

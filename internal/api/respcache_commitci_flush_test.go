@@ -50,7 +50,7 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w3.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusesHits))
 
-	// A status event flushes the statuses-list snapshot too -- one table, one flush matrix.
+	// A status event flushes the statuses-list snapshot too -- table, flush matrix.
 	postWebhookJSON(t, router, "status", statusDelivery(shaTip))
 	w4 := do(t, router, authedReq("GET", alias, nil))
 	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a status event must flush the statuses-list snapshot")
@@ -96,19 +96,22 @@ func TestStatusPublishPassthrough(t *testing.T) {
 }
 
 // TestCachedCommitCI_WebhookFlush walks what each delivery does to a ref's
-// three snapshot kinds. Two rules decide every row of the table:
 //
-//   - The surfaces are DISJOINT. A commit status never appears in a check-runs
-//     listing and a check run never appears in a commit's statuses, so a CI
-//     delivery that dropped all three was re-fetching answers it could not
-//     have changed.
-//   - A `status` delivery CARRIES the status, so the documents it can identify
-//     are rewritten and keep serving. The combined status names the sha it
-//     resolved to, which is what makes a branch-form row usable; the raw list
-//     is a bare array with no sha in it, so only the sha-form row is provably
-//     about this commit and the branch spelling still flushes.
+//	snapshot kinds. rules decide every row of the table:
 //
-// (Round 2 made the CI-event grain per-ref: the payloads below all name "main"
+// - The surfaces are DISJOINT. A commit status never appears in a check-runs
+// listing and a check run never appears in a commit's statuses, so a CI
+//
+//	delivery that dropped all was re-fetching answers it could not
+//
+// have changed.
+// - A `status` delivery CARRIES the status, so the documents it can identify
+// are rewritten and keep serving. The combined status names the sha it
+// resolved to, which is what makes a branch-form row usable; the raw list
+// is a bare array with no sha in it, so only the sha-form row is provably
+// about this commit and the branch spelling still flushes.
+//
+// (Round made the CI-event grain per-ref: the payloads below all name "main"
 // -- via the status branches array or the suite head_branch -- exactly like
 // GitHub's real deliveries; a per-branch survival case lives in the dispatcher
 // tests.)
@@ -186,8 +189,8 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 }
 
 // A check run is UPDATED IN PLACE upstream -- the same id moves queued ->
-// in_progress -> completed -- so a delivery states the new value of one entry
-// and the stored page keeps its shape. The pin is the same as the status one:
+// in_progress -> completed -- so a delivery states the new value of entry
+// and the stored page keeps its shape. The pin is the same as the status:
 // the rewritten page must be what a fetch would now return, byte for byte.
 func TestCachedCommitCI_CheckRunEventRewritesThePage(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
@@ -228,7 +231,7 @@ func TestCachedCommitCI_CheckRunEventRewritesThePage(t *testing.T) {
 // TestCachedCommitCI_StatusEventRewritesTheCombinedDoc is the identity pin for
 // the rewrite: a status delivery's effect on a stored document must be
 // indistinguishable from the fetch it saved. The stored answer after the
-// delivery is byte-compared against what the same route returns once upstream
+// delivery is byte-compared against what the same route returns upstream
 // reports the new status -- so a drifted field order, a wrong rollup, or an
 // entry in the wrong position fails here rather than in a consumer.
 func TestCachedCommitCI_StatusEventRewritesTheCombinedDoc(t *testing.T) {
@@ -259,7 +262,7 @@ func TestCachedCommitCI_StatusEventRewritesTheCombinedDoc(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits), "a rewrite must cost no upstream call")
 
 	// What GitHub would now answer: lint's entry moved to the END (the array
-	// is oldest-first and a re-posted context is a NEW status object) and the
+	// is oldest- and a re-posted context is a NEW status object) and the
 	// rollup went to success.
 	u.status = func(w http.ResponseWriter, r *http.Request) {
 		servePRJSON(w, upstreamCombinedStatus(shaTip, "success", []any{
@@ -296,10 +299,10 @@ func TestCachedCommitCI_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
 }
 
-// TestCachedCommitCI_ForbiddenAndErrorNotStored: a 403 -- the caller's OWN
+// TestCachedCommitCI_ForbiddenAndErrorNotStored: a -- the caller's OWN
 // credential lacking Checks API scope entirely, a fact about the CALLER, not
 // the ref -- and a 5xx are relayed verbatim and store nothing, on both
-// routes. Unlike a 404 (see TestCachedCommitCI_404VerdictCached below), a 403
+// routes. Unlike a (see TestCachedCommitCI_404VerdictCached below), a
 // here must never mint a row: this table has no actor column, so a cached
 // denial would wrongly answer a differently-scoped caller too.
 func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
@@ -335,13 +338,13 @@ func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	assert.Zero(t, count, "a 403/5xx answer must store no snapshot")
 }
 
-// TestCachedCommitCI_404VerdictCached: the 404 unknown-ref verdict IS
+// TestCachedCommitCI_404VerdictCached: the unknown-ref verdict IS
 // absorbed (the compare_cache precedent) -- a fine-grained-PAT CI watcher
-// re-polls a sha that never resolves, re-earning the same 404 on every
-// sweep, and this is where 96% of the mirror's uncached traffic came from
-// before this existed. Absorbed as a status-404 row ({"message": ...,
-// "status": "404"}, documentation_url dropped), served from state on the
-// next read (zero upstream calls), and flushed by a push naming the ref.
+// re-polls a sha that never resolves, re-earning the same on every
+// sweep, and this is where % of the mirror's uncached traffic came from
+// before this existed. Absorbed as a status- row ({"message":...,
+// "status": ""}, documentation_url dropped), served from state on the
+// next read (upstream calls), and flushed by a push naming the ref.
 func TestCachedCommitCI_404VerdictCached(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	real404 := func(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +355,7 @@ func TestCachedCommitCI_404VerdictCached(t *testing.T) {
 	u.checkRuns = real404
 	target := "/repos/org1/repo1/commits/ghostsha/check-runs"
 
-	// Miss: the 404 verdict is absorbed and relayed REBUILT.
+	// Miss: the verdict is absorbed and relayed REBUILT.
 	w1 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusNotFound, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
@@ -401,7 +404,7 @@ func TestCachedCommitCI_RevealDenied(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, w2.Code, target)
 		assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "a cached deny verdict answers without GitHub: %s", target)
 	}
-	// One probe per denied resource kind+key; the CI endpoints were never hit.
+	//  probe per denied resource kind+key; the CI endpoints were never hit.
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.probeHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.statusHits))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.checkRunsHits))

@@ -67,7 +67,7 @@ func (s *Store) GlobalDataCounts(ctx context.Context) (DataCounts, error) {
 	return c, nil
 }
 
-// GrantsByPrincipal returns every UNEXPIRED grant one principal holds —
+// GrantsByPrincipal returns every UNEXPIRED grant principal holds —
 // live access only, matching CountLiveGrants (an expired row awaiting the
 // opportunistic prune is not access).
 func (s *Store) GrantsByPrincipal(ctx context.Context, principal string, now time.Time) ([]dbgen.AccessGrant, error) {
@@ -83,23 +83,23 @@ func (s *Store) CountLiveGrants(ctx context.Context, principal string, now time.
 	})
 }
 
-// FreshnessByKind returns cache_metadata for one actor (a principal, or
+// FreshnessByKind returns cache_metadata for actor (a principal, or
 // 'global' truth markers) grouped by resource kind and fetch state.
 func (s *Store) FreshnessByKind(ctx context.Context, actorKey string) ([]dbgen.ActorFreshnessByKindRow, error) {
 	return s.q.ActorFreshnessByKind(ctx, actorKey)
 }
 
-// Failure reasons for one actor's erroring resources; explains WHY, not just that.
+// Failure reasons for actor's erroring resources; explains WHY, not just that.
 func (s *Store) ErrorMessagesByKind(ctx context.Context, actorKey string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
 	return s.q.ActorErrorMessagesByKind(ctx, actorKey)
 }
 
-// RecentRefreshes returns the most recent refresh-log entries for one actor.
+// RecentRefreshes returns the most recent refresh-log entries for actor.
 func (s *Store) RecentRefreshes(ctx context.Context, actorKey string, limit int64) ([]dbgen.CacheRefreshLog, error) {
 	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorKey, Limit: limit})
 }
 
-// WebhookDelivery is one recorded webhook delivery and what the dispatcher did
+// WebhookDelivery is recorded webhook delivery and what the dispatcher did
 // with it. It is global -- see the webhook_deliveries table.
 type WebhookDelivery struct {
 	DeliveryID  string `json:"delivery_id"`
@@ -162,7 +162,7 @@ var RequiredWebhookEvents = []struct {
 // Subscribed status comes from the App itself, never inferred from the delivery log.
 // see docs/dashboard/dashboard.md
 
-// RecentWebhookDeliveries returns the most recent webhook deliveries, newest first.
+// RecentWebhookDeliveries returns the most recent webhook deliveries, newest.
 func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {
 	rows, err := s.q.ListRecentWebhookDeliveries(ctx, limit)
 	if err != nil {

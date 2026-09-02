@@ -27,7 +27,9 @@ import (
 )
 
 // checkerFakeGitHub serves the consistency checker's whole fetch surface for
-// one owner "org1" with one live repo: App installations, token mints, and
+//
+//	owner "org1" with live repo: App installations, token mints, and
+//
 // /graphql answering both owner-agnostic queries (data + visibility twins).
 func checkerFakeGitHub(t *testing.T) http.Handler {
 	t.Helper()
@@ -121,13 +123,13 @@ func decodeStreamLines(t *testing.T, body string) []map[string]any {
 	return out
 }
 
-// TestCacheCheckStream: ?stream=1 answers NDJSON -- one line per progress
+// TestCacheCheckStream: ?stream= answers NDJSON -- line per progress
 // event (start/owner/fetch/... phases in order) with the full report as the
 // final line, equal in content to what the non-stream path returns.
 func TestCacheCheckStream(t *testing.T) {
 	svc := configuredAuth(t)
 	router, store := newCheckerStack(t, svc, checkerFakeGitHub(t))
-	// One cached repo so org1 is an owner to check (drift-free vs the fake).
+	//  cached repo so org1 is an owner to check (drift-free vs the fake).
 	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{
 		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
 	}))
@@ -179,7 +181,7 @@ func TestCacheCheckStream(t *testing.T) {
 	assert.Nil(t, streamed.Applied)
 }
 
-// TestCacheCheckStream_Apply: the reconcile (POST ?apply=true&stream=1)
+// TestCacheCheckStream_Apply: the reconcile (POST ?apply=true&stream=)
 // streams too, including per-owner "applied" tally events, and the final
 // report carries the applied summary.
 func TestCacheCheckStream_Apply(t *testing.T) {
@@ -215,7 +217,7 @@ func TestCacheCheckStream_Apply(t *testing.T) {
 
 // TestCacheCheckStream_RunError: a run failing after the stream opened (here:
 // the installations listing 500s) surfaces as a terminal {"phase":"error"}
-// line -- the 200 is already committed, so the line IS the error channel.
+// line -- the is already committed, so the line IS the error channel.
 func TestCacheCheckStream_RunError(t *testing.T) {
 	svc := configuredAuth(t)
 	gh := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -296,13 +298,13 @@ func TestCacheCheckStream_FlushesIncrementally(t *testing.T) {
 	assert.Equal(t, "report", last["phase"])
 }
 
-// TestCacheCheckStream_GatesStillApply: stream=1 changes the response format
-// only -- the admin gate, the apply-needs-POST gate, and the no-App 503 all
+// TestCacheCheckStream_GatesStillApply: stream= changes the response format
+// only -- the admin gate, the apply-needs-POST gate, and the no-App all
 // fire before any streaming starts.
 func TestCacheCheckStream_GatesStillApply(t *testing.T) {
 	svc := configuredAuth(t)
 
-	// No GitHub App (the plain test stack): 503, not a stream.
+	// No GitHub App (the plain test stack):, not a stream.
 	router, _, _ := newTestStack(t, svc)
 	req := httptest.NewRequest("GET", "/api/cache/check?stream=1", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -310,14 +312,14 @@ func TestCacheCheckStream_GatesStillApply(t *testing.T) {
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 
-	// Apply on a GET: still 405.
+	// Apply on a GET: still.
 	req = httptest.NewRequest("GET", "/api/cache/check?stream=1&apply=true", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 
-	// Non-admin: still 403.
+	// Non-admin: still.
 	req = httptest.NewRequest("GET", "/api/cache/check?stream=1", nil)
 	req.AddCookie(mintSession(t, svc, "octocat"))
 	w = httptest.NewRecorder()

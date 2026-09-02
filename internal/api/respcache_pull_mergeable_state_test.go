@@ -18,7 +18,7 @@ import (
 
 // TestRenderedSinglePullCarriesConsumerFields pins the superset promise the
 // rebuilt shape makes. The fields listed here are read off mirror-served PR
-// objects by pr-minder; a rebuild that omits one hands back undefined, which
+// objects by pr-minder; a rebuild that omits hands back undefined, which
 // is indistinguishable from "GitHub said nothing" and fails silently forever.
 func TestRenderedSinglePullCarriesConsumerFields(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -45,7 +45,7 @@ func TestRenderedSinglePullCarriesConsumerFields(t *testing.T) {
 }
 
 // TestSinglePullMergeableStateSurvivesHitAndMiss: the miss serves the rebuild
-// too, so hit and miss must agree byte for byte. A field present on only one
+// too, so hit and miss must agree byte for byte. A field present on only
 // of them is the worse bug -- it works until the cache warms.
 func TestSinglePullMergeableStateSurvivesHitAndMiss(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)

@@ -51,7 +51,7 @@ func (s *Store) GetCachedSearchIssues(ctx context.Context, tokenFP, queryKey str
 	return row.Doc, true, nil
 }
 
-// PutCachedSearchIssues stores one query's result, then prunes (expired rows
+// PutCachedSearchIssues stores query's result, then prunes (expired rows
 // + LRU beyond the cap).
 func (s *Store) PutCachedSearchIssues(ctx context.Context, tokenFP, queryKey, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertSearchIssuesCache(ctx, dbgen.UpsertSearchIssuesCacheParams{

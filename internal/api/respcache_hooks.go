@@ -14,7 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached webhook CONFIGURATION listings (tier 2 of the cache contract):
+// The cached webhook CONFIGURATION listings (tier of the cache contract):
 //
 //	GET /repos/{owner}/{repo}/hooks
 //	GET /orgs/{org}/hooks
@@ -30,17 +30,17 @@ const (
 	hooksMaxCachedPage = 10
 )
 
-// cachedRepoHooks serves one page of a repository's webhook configuration.
+// cachedRepoHooks serves page of a repository's webhook configuration.
 func (h *handlers) cachedRepoHooks(w http.ResponseWriter, r *http.Request) {
 	h.serveHooks(w, r, ghdata.RepoHooksTarget(chi.URLParam(r, "owner"), chi.URLParam(r, "repo")))
 }
 
-// cachedOrgHooks serves one page of an organization's webhook configuration.
+// cachedOrgHooks serves page of an organization's webhook configuration.
 func (h *handlers) cachedOrgHooks(w http.ResponseWriter, r *http.Request) {
 	h.serveHooks(w, r, ghdata.OrgHooksTarget(chi.URLParam(r, "org")))
 }
 
-// serveHooks is the shared flow. The two routes differ only in the target they
+// serveHooks is the shared flow. The routes differ only in the target they
 // name: the request shape, the rebuild, the key, and the invalidation are
 // identical, because GitHub answers both with the same hook object.
 func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghdata.HooksTarget) {
@@ -79,7 +79,7 @@ func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghd
 
 	doc, absorbed := absorbHooks(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 403/404/5xx and unmodeled shapes relay unstored; a permission grant can change with no event reaching the mirror.
+		// //5xx and unmodeled shapes relay unstored; a permission grant can change with no event reaching the mirror.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -137,7 +137,7 @@ func parseHooksShape(q url.Values) (perPage, page int64, ok bool) {
 	return perPage, page, true
 }
 
-// hookJSON is one trimmed hook. config.url is a pinned no-URL exception: it is the hook's own destination, not a link into GitHub's API.
+// hookJSON is trimmed hook. config.url is a pinned no-URL exception: it is the hook's own destination, not a link into GitHub's API.
 // see docs/cache/rest-routes.md
 type hookJSON struct {
 	ID           int64                 `json:"id"`
@@ -151,7 +151,7 @@ type hookJSON struct {
 	LastResponse *hookLastResponseJSON `json:"last_response,omitempty"`
 }
 
-// hookConfigJSON preserves secret's PRESENCE exactly (a fixed mask means one is set); insecure_ssl rides as raw JSON since GitHub documents it as either a string or a number.
+// hookConfigJSON preserves secret's PRESENCE exactly (a fixed mask means is set); insecure_ssl rides as raw JSON since GitHub documents it as either a string or a number.
 type hookConfigJSON struct {
 	URL         string          `json:"url,omitempty"`
 	ContentType string          `json:"content_type,omitempty"`
@@ -166,8 +166,10 @@ type hookLastResponseJSON struct {
 	Message *string `json:"message"`
 }
 
-// absorbHooks parses a 200 hooks listing into the trimmed document, rendered
-// once here so hit and miss serve identical bytes. The body must be an ARRAY
+// absorbHooks parses a hooks listing into the trimmed document, rendered
+//
+//	here so hit and miss serve identical bytes. The body must be an ARRAY
+//
 // and every entry must carry a positive id and a name; an empty array (no
 // hooks configured, or a page past the end) is a valid cacheable answer -- it
 // IS what a reconciliation sweep is asking.

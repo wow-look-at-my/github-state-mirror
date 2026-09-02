@@ -140,7 +140,7 @@ func TestRepoFieldDiffs_Table(t *testing.T) {
 // must ALWAYS name both sides. GraphQL's defaultBranchRef is null for a repo
 // with no commits (REST still reports the CONFIGURED default_branch name,
 // which is what the cache holds), and the old shared add() rendered that as ""
-// -- silently dropped from the report JSON by omitempty, so the 2026-07-20
+// -- silently dropped from the report JSON by omitempty, so the --
 // entries carried no github value at all.
 func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
@@ -237,7 +237,7 @@ func TestConsistencyChecker_RacedDuringCheck(t *testing.T) {
 	ctx := context.Background()
 
 	// Cached truth matches the live state everywhere EXCEPT the raced fields,
-	// so the report isolates the two classifications under test.
+	// so the report isolates the classifications under test.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
 		Visibility:    "public",

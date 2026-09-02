@@ -26,14 +26,14 @@ type briefPayload struct {
 	Markdown    string           `json:"markdown"`
 }
 
-// briefCandidate is one uncached route: its counters joined to its shape.
+// briefCandidate is uncached route: its counters joined to its shape.
 type briefCandidate struct {
 	requestGroupSnapshot
 	Shape *routeShapeSnapshot `json:"shape,omitempty"`
 }
 
 // buildBrief joins the route groups to the captured shapes, keeping only
-// routes that actually forward reads uncached (passthrough > 0) — a fully
+// routes that actually forward reads uncached (passthrough >) — a fully
 // cached route has nothing to implement. Ranked by passthrough volume: the
 // brief's whole job is to name the next thing worth modeling.
 func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, limit int) []briefCandidate {
@@ -62,7 +62,7 @@ func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, l
 }
 
 // briefView is the template's data. It is a flat, already-computed view: the
-// template renders, it does not decide (the one exception is the trivial
+// template renders, it does not decide (the exception is the trivial
 // per-candidate arithmetic the FuncMap covers).
 type briefView struct {
 	GeneratedAt string
@@ -172,7 +172,7 @@ func joinCounts(m map[string]int64) string {
 	return strings.Join(parts, ", ")
 }
 
-// debounceVerdict names the one debounce reading that is otherwise easy to
+// debounceVerdict names the debounce reading that is otherwise easy to
 // misread: held-with-nothing-saved is pure added latency, because the polls
 // arrive further apart than the window.
 func debounceVerdict(held, saved int64) string {
@@ -254,8 +254,8 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"assertion. Then `npm run build && go-toolchain`.\n"
 
 // handleBrief renders the implementation brief (brief.go): every uncached
-// route joined to its captured request/response shape, plus the tier-2
-// checklist — the whole input for modeling the next cached route, in one
+// route joined to its captured request/response shape, plus the tier-
+// checklist — the whole input for modeling the next cached route, in
 // copyable document. Admin-only like every other operator view; the payload
 // carries no values (query parameters by name, bodies as key/type skeletons).
 func (d *dashboard) handleBrief(w http.ResponseWriter, r *http.Request) {

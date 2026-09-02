@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ownerRepoNode builds one repositoryOwner repo node with n open PRs.
+// ownerRepoNode builds repositoryOwner repo node with n open PRs.
 func ownerRepoNode(owner, name string, prs []map[string]any) map[string]any {
 	if prs == nil {
 		prs = []map[string]any{}
@@ -71,7 +71,7 @@ func ownerPage(hasNext bool, cursor string, nodes ...map[string]any) map[string]
 }
 
 // TestGetOwnerData_UserAccountAndFields: the owner-agnostic query resolves a
-// User login (the org query cannot) and carries the extra fields -- a >10
+// User login (the org query cannot) and carries the extra fields -- a >
 // label set, the armed auto-merge method (lowercased from the GraphQL enum),
 // and isArchived.
 func TestGetOwnerData_UserAccountAndFields(t *testing.T) {
@@ -140,7 +140,7 @@ func TestGetOwnerData_Pagination(t *testing.T) {
 	assert.Equal(t, "repo-b", data.Repos[1].Name)
 }
 
-// TestGetOwnerData_PRPagination: a repo whose first PR page reports
+// TestGetOwnerData_PRPagination: a repo whose PR page reports
 // hasNextPage is completed via the owner-agnostic per-repo PR query, and the
 // follow-up pages carry the owner-only fields too.
 func TestGetOwnerData_PRPagination(t *testing.T) {
@@ -187,7 +187,7 @@ func TestGetOwnerData_PRPagination(t *testing.T) {
 
 // TestGetOwnerData_PageHook: the optional per-page callback reports the
 // cumulative repos fetched plus the connection's totalCount after EVERY page
-// (the owner query selects totalCount, so "N of M" is known from page one).
+// (the owner query selects totalCount, so "N of M" is known from page).
 func TestGetOwnerData_PageHook(t *testing.T) {
 	assert.Contains(t, ownerDataQuery, "totalCount", "the owner query must select the connection total for progress reporting")
 
@@ -232,7 +232,7 @@ func TestGetOwnerData_PageHook(t *testing.T) {
 // enum (an owner-only extra the locked org query must never grow) and
 // convertRepo lowercases it into the repo row, so the fleet refresher's
 // SyncOrgTruth stamps it into truth. Without this every refresher-synced row
-// sat at '' = fail-closed unknown (the 2026-07-20 report's 203
+// sat at '' = fail-closed unknown (the -- report's
 // visibility_unknown entries).
 func TestGetOwnerData_CarriesVisibility(t *testing.T) {
 	assert.Contains(t, ownerDataQuery, "visibility",
@@ -264,8 +264,9 @@ func TestGetOwnerData_NullOwnerFailsLoudly(t *testing.T) {
 }
 
 // TestGetOwnerData_GraphQLErrorsNotRetried: GraphQL-level errors[] arrive as
-// HTTP 200 semantic answers, not transport blips -- they must fail fast on the
-// first attempt (only 502/503/504/429 and network errors are retried).
+// HTTP semantic answers, not transport blips -- they must fail fast on the
+//
+//	attempt (only /// and network errors are retried).
 func TestGetOwnerData_GraphQLErrorsNotRetried(t *testing.T) {
 	calls := 0
 	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -342,14 +343,14 @@ func TestOrgQueryUntouched(t *testing.T) {
 	assert.NotContains(t, orgDataQuery, "isArchived\n")
 	// visibility is owner-query-only: UpsertRepo's non-empty guard means an org-query sync can never blank a stamped value.
 	assert.NotContains(t, orgDataQuery, "visibility")
-	// totalCount is owner-query-only (the progress hook's "N of M"); the locked query's only totalCount is prFields' reviewRequests one.
+	// totalCount is owner-query-only (the progress hook's "N of M"); the locked query's only totalCount is prFields' reviewRequests.
 	assert.NotContains(t, orgDataQuery, "totalCount\n")
 	assert.Contains(t, orgDataQuery, "labels(first: 10)")
 	assert.Contains(t, prFields, "labels(first: 10)")
 	assert.NotContains(t, prFields, "autoMergeRequest")
 }
 
-// TestInstallations_Paginates: a fleet past one page (100) is no longer
+// TestInstallations_Paginates: a fleet past page () is no longer
 // silently truncated.
 func TestInstallations_Paginates(t *testing.T) {
 	mux := http.NewServeMux()

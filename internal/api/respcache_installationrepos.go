@@ -12,7 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Cached installation-repositories listing (tier 2 of the cache contract): GET /installation/repositories
+// Cached installation-repositories listing (tier of the cache contract): GET /installation/repositories
 // see docs/cache/rest-routes.md
 
 const (
@@ -24,7 +24,7 @@ const (
 	installationReposMaxCachedPage = 20
 )
 
-// cachedInstallationRepos serves one page of the caller's own installation
+// cachedInstallationRepos serves page of the caller's own installation
 // repository listing.
 func (h *handlers) cachedInstallationRepos(w http.ResponseWriter, r *http.Request) {
 	token := bearerToken(r)
@@ -62,7 +62,7 @@ func (h *handlers) cachedInstallationRepos(w http.ResponseWriter, r *http.Reques
 
 	doc, absorbed := absorbInstallationRepos(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 401/403 and any unmodeled shape: relayed verbatim, never stored.
+		// / and any unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -111,7 +111,7 @@ type installationReposJSON struct {
 	Repositories        []installationRepoJSON `json:"repositories"`
 }
 
-// installationRepoJSON is one trimmed repository entry: the identity and
+// installationRepoJSON is trimmed repository entry: the identity and
 // state fields, with the dozens of *_url templates GitHub attaches dropped.
 // `visibility` is nullable-but-always-keyed rather than defaulted -- an
 // answer that did not carry it must not read as "public".
@@ -134,8 +134,10 @@ type installationOwnerJSON struct {
 	Type  string `json:"type,omitempty"`
 }
 
-// absorbInstallationRepos parses a 200 into the trimmed document, rendered
-// once here so hit and miss serve identical bytes. total_count and the
+// absorbInstallationRepos parses a into the trimmed document, rendered
+//
+//	here so hit and miss serve identical bytes. total_count and the
+//
 // repositories array must both be PRESENT, and every entry must carry a
 // positive id and a full name -- an answer the model cannot hold is relayed
 // instead. An empty page (past the end) is a valid cacheable answer.

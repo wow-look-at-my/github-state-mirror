@@ -14,7 +14,9 @@ import (
 // fake upstream (respCacheUpstream) lives in respcache_test.go.
 
 // defaultBranchesUpstream is respCacheUpstream's default /branches answer:
-// two branches, one protected -- commit.url, the protection object,
+//
+//	branches, protected -- commit.url, the protection object,
+//
 // protection_url, and _links must all be dropped by the rebuild.
 func defaultBranchesUpstream(w http.ResponseWriter, r *http.Request) {
 	branch := func(name, sha string, protected bool, level string, contexts []any) map[string]any {
@@ -39,9 +41,9 @@ func defaultBranchesUpstream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// TestCachedBranchesList_MissAbsorbHit covers the core flow: the first read
-// fetches + absorbs the whole trimmed page (miss), the second serves the
-// byte-identical stored doc (hit, zero upstream calls), and the rebuild
+// TestCachedBranchesList_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs the whole trimmed page (miss), the serves the
+// byte-identical stored doc (hit, upstream calls), and the rebuild
 // keeps exactly {name, commit.sha, protected} -- commit.url, the protection
 // object, protection_url, and _links all dropped.
 func TestCachedBranchesList_MissAbsorbHit(t *testing.T) {
@@ -93,7 +95,7 @@ func TestCachedBranchesList_PushFlush(t *testing.T) {
 }
 
 // TestCachedBranchesList_DefaultShapeSharesKey: the bare query and GitHub's
-// explicit defaults (per_page=30, page=1) resolve to the same snapshot key,
+// explicit defaults (per_page=, page=) resolve to the same snapshot key,
 // while a different per_page is its own snapshot.
 func TestCachedBranchesList_DefaultShapeSharesKey(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -155,7 +157,7 @@ func TestCachedBranchesList_EmptyArrayCacheable(t *testing.T) {
 }
 
 // A tip-move is APPLIED into the stored pages from the push's own `after`,
-// costing zero upstream calls: the payload states the branch's new sha, so
+// costing upstream calls: the payload states the branch's new sha, so
 // flushing here would re-list every branch of the repo to buy that same sha
 // back over HTTP (CLAUDE.md's apply-don't-invalidate rule).
 func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
@@ -178,7 +180,7 @@ func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "an applied tip must keep serving from cache")
 	assert.Equal(t, before, atomic.LoadInt32(&u.branchesHits),
 		"applying the payload's own tip must cost no upstream calls")
-	// Byte-identical but for the one sha: a field-order or escaping drift between storage and the route's render surfaces here.
+	// Byte-identical but for the sha: a field-order or escaping drift between storage and the route's render surfaces here.
 	assert.Equal(t, strings.Replace(fetched, shaTip, shaCommit, 1), w2.Body.String(),
 		"an applied tip must be byte-indistinguishable from a fetched page")
 	assert.Contains(t, w2.Body.String(), shaMid, "the unpushed branch's tip must be untouched")

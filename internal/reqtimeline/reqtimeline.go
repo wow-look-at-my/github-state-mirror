@@ -2,12 +2,12 @@
 // GitHub webhook deliveries and outgoing proxied GitHub requests — feeding the
 // dashboard's "Timeline" chart. Every event carries its REAL measured duration
 // (a webhook's receipt→dispatch-complete time, a proxied request's upstream
-// round-trip); nothing is faked to zero or inflated for display.
+// round-trip); nothing is faked to or inflated for display.
 //
 // Like the request log and the rate meter it is deliberately IN-MEMORY (a live
 // operational view, not an audit log — and a DB table would put sub-day-
 // ephemeral data behind a cache-nuking schema change): it resets on
-// restart. It is bounded two ways — events older than the retention window
+// restart. It is bounded ways — events older than the retention window
 // (24h) are evicted lazily on write and on read, and a hard count cap (100k)
 // drops the oldest as a memory backstop against a traffic flood. There is
 // deliberately NO background goroutine or timer; laziness is the whole
@@ -31,13 +31,13 @@ const (
 )
 
 // Defaults for New. Retention is the primary bound; the count cap is a coarse
-// memory backstop only (≈100k events × ~200 B ≈ 20 MB worst case).
+// memory backstop only (≈100k events × ~ B ≈ MB worst case).
 const (
 	DefaultRetention = 24 * time.Hour
 	DefaultMaxEvents = 100_000
 )
 
-// Event is one timed traffic event. Kind-specific fields are omitempty so a
+// Event is timed traffic event. Kind-specific fields are omitempty so a
 // webhook event carries no request noise and vice versa; Disposition is shared
 // (webhook: applied/invalidated/ignored/error — request: hit/miss/passthrough/
 // write/error).
@@ -89,7 +89,7 @@ func (e Event) end() time.Time {
 	return e.Start.Add(time.Duration(e.DurMs) * time.Millisecond)
 }
 
-// Recorder is the bounded in-memory event ring. The zero value is NOT ready;
+// Recorder is the bounded in-memory event ring. The value is NOT ready;
 // use New. All methods are safe on a nil receiver (no-ops / empty snapshots).
 type Recorder struct {
 	mu        sync.Mutex
@@ -108,7 +108,7 @@ func New() *Recorder {
 	return &Recorder{retention: DefaultRetention, maxEvents: DefaultMaxEvents, now: time.Now}
 }
 
-// RecordWebhook records one incoming webhook delivery with its real measured
+// RecordWebhook records incoming webhook delivery with its real measured
 // handling duration (receipt → dispatch complete).
 func (r *Recorder) RecordWebhook(start time.Time, dur time.Duration, eventType, action, deliveryID, repo, disposition string) {
 	if r == nil {
@@ -155,9 +155,9 @@ func (r *Recorder) RecordWebhookRejected(start time.Time, dur time.Duration, dis
 	})
 }
 
-// RecordNotify records one outbound subscriber-notification delivery attempt
+// RecordNotify records outbound subscriber-notification delivery attempt
 // with its real measured duration. Every attempt is a real request and gets
-// its own event; final marks the terminal one (success, or the last retry).
+// its own event; final marks the terminal (success, or the last retry).
 func (r *Recorder) RecordNotify(start time.Time, dur time.Duration, target string, status int, attempt int, final bool, disposition string) {
 	if r == nil {
 		return
@@ -189,7 +189,7 @@ func clampDisplay(s string) string {
 	return string(runes[:maxDisplay]) + "…"
 }
 
-// RecordRequest records one HTTP exchange on the GitHub data plane — an
+// RecordRequest records HTTP exchange on the GitHub data plane — an
 // inbound data-API request the mirror served, or an upstream call the mirror
 // made (cached-route fetch, reveal probe, ghclient exchange, login relay) —
 // with its real measured duration. route must already be a normalized route
@@ -222,9 +222,9 @@ func (r *Recorder) record(e Event) {
 }
 
 // evictLocked drops entries older than the retention window (by end time —
-// the ring is end-ordered) and then enforces the count cap, oldest first.
+// the ring is end-ordered) and then enforces the count cap, oldest.
 // Compaction is deferred until the dead prefix is large, so eviction stays
-// amortized O(1) per record instead of copying the ring on every write.
+// amortized O() per record instead of copying the ring on every write.
 func (r *Recorder) evictLocked(now time.Time) {
 	cutoff := now.Add(-r.retention)
 	for r.head < len(r.events) && r.events[r.head].end().Before(cutoff) {
@@ -233,7 +233,7 @@ func (r *Recorder) evictLocked(now time.Time) {
 	if over := (len(r.events) - r.head) - r.maxEvents; over > 0 {
 		r.head += over
 	}
-	// Compact once the dead prefix dominates, so the backing array is reused
+	// Compact the dead prefix dominates, so the backing array is reused
 	// and evicted entries become collectable.
 	if r.head > 1024 && r.head > len(r.events)/2 {
 		live := copy(r.events, r.events[r.head:])
@@ -246,7 +246,7 @@ func (r *Recorder) evictLocked(now time.Time) {
 	}
 }
 
-// Snapshot is one read of the ring: the events after the cursor, the current
+// Snapshot is read of the ring: the events after the cursor, the current
 // max ID (the client's next cursor), and the retention boundary.
 type Snapshot struct {
 	Events []Event
@@ -258,13 +258,13 @@ type Snapshot struct {
 }
 
 // SnapshotRange returns the live events overlapping [from, to) — the async
-// history read behind the chart's lazy backward loading. A zero `from` means
-// the retention floor and a zero `to` means now, so SnapshotRange(0,0) is the
+// history read behind the chart's lazy backward loading. A `from` means
+// the retention floor and a `to` means now, so SnapshotRange(,) is the
 // whole window.
 //
 // It exists because a full window is 100k events, and the client cannot turn
 // 100k events into chart rows without blowing its frame budget: the chart
-// paints one hour, asks for older ranges as the viewport reaches them, and
+// paints hour, asks for older ranges as the viewport reaches them, and
 // pays for each in a bounded chunk. MaxID is still the ring's newest id (the
 // live cursor is independent of which range was read).
 func (r *Recorder) SnapshotRange(from, to time.Time) Snapshot {
@@ -300,7 +300,7 @@ func (r *Recorder) SnapshotRange(from, to time.Time) Snapshot {
 }
 
 // Snapshot returns the live events with ID > sinceID (the full retained window
-// when sinceID == 0), evicting lazily first. The returned slice is a copy.
+// when sinceID ==), evicting lazily. The returned slice is a copy.
 func (r *Recorder) Snapshot(sinceID uint64) Snapshot {
 	if r == nil {
 		return Snapshot{Events: []Event{}}

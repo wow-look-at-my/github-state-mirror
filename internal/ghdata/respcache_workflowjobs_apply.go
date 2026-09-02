@@ -9,7 +9,7 @@ import (
 )
 
 // A `workflow_job` delivery carries the whole job object, so a moving job
-// rewrites one entry rather than dropping the page. See docs/cache/rest-routes.md.
+// rewrites entry rather than dropping the page. See docs/cache/rest-routes.md.
 
 // ApplyWorkflowJob writes a `workflow_job` delivery's own job object into every
 // cached answer that already lists it: the run's jobs pages, and the
@@ -37,7 +37,7 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 		}
 		patched, liveness, ok := patchWorkflowJobsDoc(row.Kind, row.Doc, job)
 		if !ok {
-			// A page that does not list the job means the run gained one; only a fetch can settle membership.
+			// A page that does not list the job means the run gained; only a fetch can settle membership.
 			if derr := s.q.DeleteWorkflowJobsCacheForRun(ctx, dbgen.DeleteWorkflowJobsCacheForRunParams{
 				Owner: ownerKey, Repo: repoKey, RunID: runID,
 			}); derr != nil {
@@ -54,7 +54,7 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 	return applied, nil
 }
 
-// patchWorkflowJobsDoc rewrites one stored answer, reporting what is still
+// patchWorkflowJobsDoc rewrites stored answer, reporting what is still
 // moving in the result (which decides the row's TTL) and whether the rewrite
 // was possible at all.
 func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, JobsLiveness, bool) {
@@ -87,7 +87,7 @@ func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, Jobs
 				// A re-run's membership is settled by a fetch, never by editing an entry from another attempt.
 				return "", JobsSettled, false
 			}
-			// Replaced, not merged: the delivery states this job whole, as one view of one moment.
+			// Replaced, not merged: the delivery states this job whole, as view of moment.
 			page.Jobs[i] = job
 			found = true
 		}

@@ -43,15 +43,15 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 	assert.Equal(t, 4321, resp.Resources["core"].Remaining)
 	assert.Equal(t, int64(9999999999), resp.Resources["core"].Reset)
 
-	// GitHub answers with core twice: once under resources, once as top-level `rate`.
+	// GitHub answers with core: under resources, as top-level `rate`.
 	require.NotNil(t, resp.Rate, "the deprecated top-level rate alias is still sent")
 	assert.Equal(t, resp.Resources["core"], *resp.Rate)
 }
 
 // TestRateLimit_NeverCallsUpstream: the route must be answered ENTIRELY from
 // memory. A fake GitHub that fails the test on any GET /rate_limit call
-// proves the route never fetches it, even on the very first request for a
-// credential the meter has never observed (still 200 with an empty
+// proves the route never fetches it, even on the very request for a
+// credential the meter has never observed (still with an empty
 // resources object — see TestRateLimit_EmptyWhenNoObservation — never a
 // fetch attempt).
 func TestRateLimit_NeverCallsUpstream(t *testing.T) {
@@ -88,7 +88,7 @@ func TestRateLimit_EmptyWhenNoObservation(t *testing.T) {
 }
 
 // TestRateLimit_UnmodeledShapePassesThrough: GET /rate_limit takes no query
-// parameters; an unexpected one is not this route's shape to answer, so it
+// parameters; an unexpected is not this route's shape to answer, so it
 // forwards uncached rather than silently ignoring the parameter.
 func TestRateLimit_UnmodeledShapePassesThrough(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)

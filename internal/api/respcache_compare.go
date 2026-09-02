@@ -12,13 +12,13 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// GET /repos/{owner}/{repo}/compare/{basehead}, tier 2 of the cache contract.
+// GET /repos/{owner}/{repo}/compare/{basehead}, tier of the cache contract.
 
 // compareCacheTTL is the backstop for a missed push delivery.
 const compareCacheTTL = 24 * time.Hour
 
 // compareBaseheadCacheable rejects a cross-fork owner:branch component (its
-// pushes never reach this repo's flush) and anything without a three-dot.
+// pushes never reach this repo's flush) and anything without a -dot.
 func compareBaseheadCacheable(basehead string) bool {
 	if strings.Contains(basehead, ":") {
 		return false
@@ -30,7 +30,7 @@ func compareBaseheadCacheable(basehead string) bool {
 	return basehead[:i] != "" && basehead[i+3:] != ""
 }
 
-// cachedCompare serves a three-dot comparison from absorbed state, fetching
+// cachedCompare serves a -dot comparison from absorbed state, fetching
 // and absorbing on a miss.
 func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
@@ -56,7 +56,7 @@ func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	if c, ok, err := h.store.GetCachedCompare(r.Context(), owner, repo, basehead, now); err != nil {
 		slog.Warn("compare cache read failed", "owner", owner, "repo", repo, "basehead", basehead, "error", err)
 	} else if ok {
-		// 200 (a real comparison) or 404 (an unknown-ref verdict).
+		//  (a real comparison) or (an unknown-ref verdict).
 		h.serveCompare(w, r, c.Status, c.Doc, true)
 		return
 	}
@@ -110,7 +110,7 @@ func (h *handlers) serveCompare(w http.ResponseWriter, r *http.Request, status i
 	writeRebuilt(w, status, []byte(doc), hit)
 }
 
-// compareFileJSON is one trimmed comparison file entry. see docs/cache/rest-routes.md
+// compareFileJSON is trimmed comparison file entry. see docs/cache/rest-routes.md
 type compareFileJSON struct {
 	Filename         string `json:"filename"`
 	Status           string `json:"status"`
@@ -132,11 +132,11 @@ type compareDocJSON struct {
 	Files           *[]compareFileJSON   `json:"files,omitempty"`
 }
 
-// absorbedCompare is what one comparison contributes to the cache.
+// absorbedCompare is what comparison contributes to the cache.
 type absorbedCompare struct {
 	Doc        string
 	Commits    []ghdata.CachedGitCommit
-	BaseTipSHA string // base_commit.sha, "" when the body did not state one
+	BaseTipSHA string // base_commit.sha, "" when the body did not state
 }
 
 // absorbCompare reports false for any shape the model cannot hold; the

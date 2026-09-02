@@ -14,7 +14,7 @@ import (
 )
 
 // ConsistencyChecker compares the GLOBAL truth store against GitHub's live
-// state and reports the drift -- one comparison for the one cache. It fetches
+// state and reports the drift -- comparison for the cache. It fetches
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
@@ -29,7 +29,7 @@ func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, fresh *fres
 // Available reports whether the checker can run. The consistency check needs the
 func (c *ConsistencyChecker) Available() bool { return c.app != nil }
 
-// InstallationRateLimit is the GitHub rate-limit status for one App installation
+// InstallationRateLimit is the GitHub rate-limit status for App installation
 // (the credential the background fetches and the consistency check actually use).
 type InstallationRateLimit struct {
 	Installation string                                `json:"installation"` // account login
@@ -95,7 +95,7 @@ type ConsistencyReport struct {
 	Notes         []string        `json:"notes,omitempty"` // caveats to keep in mind when reading the report
 }
 
-// ScopeFreshness is one owner's most-recent sync metadata.
+// ScopeFreshness is owner's most-recent sync metadata.
 type ScopeFreshness struct {
 	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown/never_synced
 	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
@@ -146,7 +146,7 @@ type AppliedSummary struct {
 	AutoMergeSet           int `json:"auto_merge_set"`
 }
 
-// Discrepancy is one difference between the cache and GitHub. cached/github are
+// Discrepancy is difference between the cache and GitHub. cached/github are
 // rendered as strings so the report stays flat and pasteable; an empty value
 // with issue=only_* means the resource is absent on that side.
 type Discrepancy struct {
@@ -212,7 +212,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 			"Apply mode: corrections were written AFTER the diff was taken -- discrepancies show the PRE-apply state, and 'applied' tallies the corrections.")
 	}
 
-	// Load the global truth once.
+	// Load the global truth.
 	repos, err := c.store.AllRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load cached repos: %w", err)
@@ -240,7 +240,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 	}
 	progress.emit(ProgressEvent{Phase: "start", Owners: len(owners)})
 
-	// Resolve App installations once so we know which owners are reachable.
+	// Resolve App installations so we know which owners are reachable.
 	installs, err := c.app.Installations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list GitHub App installations: %w", err)
@@ -250,7 +250,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		byLogin[strings.ToLower(in.Account.Login)] = in
 	}
 
-	// Principal display names for the freshness markers, loaded once per run.
+	// Principal display names for the freshness markers, loaded per run.
 	actorNames := c.actorNames(ctx)
 
 	for i, owner := range owners {
@@ -277,7 +277,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 		}
 		fetchCtx := ghclient.WithToken(ctx, token)
 		fetchStart := time.Now()
-		// Per fetched page (5 repos each), report how far along the owner's
+		// Per fetched page (repos each), report how far along the owner's
 		var onPage ghclient.OwnerPageFunc
 		if progress != nil {
 			onPage = func(fetched, total int) {
@@ -375,7 +375,9 @@ func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
 }
 
 // recordTruthFreshness copies the most recently fetched org-sync marker for
-// one owner into the report (read-only). An owner with NO marker rows is
+//
+//	owner into the report (read-only). An owner with NO marker rows is
+//
 // surfaced explicitly as "never_synced" -- silently omitting it hid "the fleet
 // refresher never completed a cycle" behind an absent map key. Any
 // principal's sync refreshes global truth, so the NEWEST marker is what

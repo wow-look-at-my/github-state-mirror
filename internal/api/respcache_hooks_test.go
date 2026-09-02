@@ -35,7 +35,7 @@ func defaultHooksUpstream(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// hookAPIURL is one of the hook object's API self-links, built here rather
+// hookAPIURL is of the hook object's API self-links, built here rather
 // than inside the JSON so the value is placed by %q and escaped.
 func hookAPIURL(path, suffix string) string {
 	return "https://api.github.com" + path + "/12345678" + suffix
@@ -130,12 +130,12 @@ func TestCachedHooks_WriteFlushesEveryCredential(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			router, _, _, _ := respCacheStack(t)
 
-			// Two different credentials each warm their own row.
+			//  different credentials each warm their own row.
 			require.Equal(t, "miss", do(t, router, hooksReq("GET", tc.get, "tok-a")).Header().Get(cacheHeader))
 			require.Equal(t, "miss", do(t, router, hooksReq("GET", tc.get, "tok-b")).Header().Get(cacheHeader))
 			require.Equal(t, "hit", do(t, router, hooksReq("GET", tc.get, "tok-a")).Header().Get(cacheHeader))
 
-			// One of them writes.
+			//  of them writes.
 			wr := do(t, router, hooksReq(tc.method, tc.write, "tok-a"))
 			require.Less(t, wr.Code, 400)
 			assert.Empty(t, wr.Header().Get(cacheHeader), "a write is forwarded, never rebuilt")
@@ -163,7 +163,7 @@ func TestCachedHooks_RepositoryEventFlushes(t *testing.T) {
 }
 
 // Shape guards: pages are separate rows, and anything unmodeled forwards with
-// a counted reason rather than minting one.
+// a counted reason rather than minting.
 func TestCachedHooks_ShapeGuards(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -191,7 +191,7 @@ func TestCachedHooks_ShapeGuards(t *testing.T) {
 	assert.Equal(t, int32(7), atomic.LoadInt32(&u.hooksHits))
 }
 
-// A 403 relays unstored: a permission grant changes with no event to catch it.
+// A relays unstored: a permission grant changes with no event to catch it.
 func TestCachedHooks_ForbiddenRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.hooks = func(w http.ResponseWriter, _ *http.Request) {
@@ -239,7 +239,7 @@ func TestCachedHooks_InsecureSSLKeepsItsJSONType(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"insecure_ssl":1`)
 	assert.NotContains(t, w.Body.String(), `"insecure_ssl":"1"`)
-	// A hook with no secret configured must not grow one.
+	// A hook with no secret configured must not grow.
 	assert.NotContains(t, w.Body.String(), "secret")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.hooksHits))
 }

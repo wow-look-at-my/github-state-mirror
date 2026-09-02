@@ -28,8 +28,8 @@ func orgData(repos []dbgen.Repo, prsByRepo map[string][]dbgen.PullRequest) OrgSy
 }
 
 // TestSyncOrgTruth_UpsertsNeverDeletesRepos locks the upsert-only repo
-// reconcile: a fetch is one principal's PARTIAL view of the org (private repos
-// they can't see, archived repos, ... are absent), so a repo missing from a
+// reconcile: a fetch is principal's PARTIAL view of the org (private repos
+// they can't see, archived repos,... are absent), so a repo missing from a
 // later sync must SURVIVE. Deletion authority belongs to repository webhooks.
 func TestSyncOrgTruth_UpsertsNeverDeletesRepos(t *testing.T) {
 	s := testStore(t)
@@ -76,9 +76,9 @@ func TestSyncOrgTruth_VisibilityPreserved(t *testing.T) {
 // TestSyncOrgTruth_StampsVisibility: a sync whose fetch DID carry visibility
 // (the owner-agnostic query the fleet refresher uses) stamps it into truth --
 // and a later visibility-less sync (the identity-locked org-query path) keeps
-// it. This is the 2026-07-20 fix: the refresher used to sync visibility-less
+// it. This is the -- fix: the refresher used to sync visibility-less
 // rows, leaving every fleet-synced owner's repo at '' = fail-closed unknown
-// (203 visibility_unknown entries in that day's consistency report).
+// (visibility_unknown entries in that day's consistency report).
 func TestSyncOrgTruth_StampsVisibility(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -128,14 +128,14 @@ func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 	}
 	repos := []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}}
 
-	// Truth holds PRs 1 (stale, closed upstream, webhook missed) and 2; backdate touched_at beyond the grace window.
+	// Truth holds PRs (stale, closed upstream, webhook missed) and; backdate touched_at beyond the grace window.
 	require.NoError(t, s.UpsertPR(ctx, mkPR(1, "stale"), now.Add(-time.Hour)))
 	require.NoError(t, s.UpsertPR(ctx, mkPR(2, "kept"), now.Add(-time.Hour)))
-	// PR 3 was JUST webhook-applied -- inside the grace window.
+	// PR was JUST webhook-applied -- inside the grace window.
 	require.NoError(t, s.UpsertPR(ctx, mkPR(3, "racing webhook"), now))
 
-	// The fetch snapshot (taken at fetchStart=now) contains only PR 2: GraphQL
-	// eventual consistency hasn't seen PR 3 yet, and PR 1 closed upstream.
+	// The fetch snapshot (taken at fetchStart=now) contains only PR: GraphQL
+	// eventual consistency hasn't seen PR yet, and PR closed upstream.
 	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos, map[string][]dbgen.PullRequest{
 		"org1/repo1": {mkPR(2, "kept")},
 	}), "user:1", now, now))
@@ -259,7 +259,7 @@ func TestPruneAccessControl(t *testing.T) {
 	counts, err := s.GlobalDataCounts(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), counts.Grants, "the expired grant row is gone")
-	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired one was actually deleted.
+	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired was actually deleted.
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-expired"})
 	assert.Equal(t, sql.ErrNoRows, err, "the expired deny row is gone")
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-live"})
@@ -268,7 +268,7 @@ func TestPruneAccessControl(t *testing.T) {
 
 // TestWritePathsPruneOpportunistically: RecordGrant and SyncOrgTruth sweep
 // expired access-control rows as a best-effort side effect, throttled to at
-// most once per pruneInterval — so expired rows never accumulate unboundedly
+// most per pruneInterval — so expired rows never accumulate unboundedly
 // yet the hot write path doesn't sweep on every call.
 func TestWritePathsPruneOpportunistically(t *testing.T) {
 	s := testStore(t)
@@ -291,7 +291,7 @@ func TestWritePathsPruneOpportunistically(t *testing.T) {
 		return true
 	}
 
-	// The first write-path call prunes (nothing has throttled yet).
+	// The write-path call prunes (nothing has throttled yet).
 	seedExpired("user:2", "stale1")
 	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "fresh1", GrantSourceProbe, now))
 	assert.False(t, rowExists("user:2", "stale1"), "RecordGrant sweeps the expired row")

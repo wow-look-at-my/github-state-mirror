@@ -56,7 +56,7 @@ func (h *handlers) cachedOrgRunners(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if overflow || resp.StatusCode != http.StatusOK || !json.Valid(body) {
-		// 403 (not an admin) is deliberately not a cached verdict: a permission grant can change silently.
+		//  (not an admin) is deliberately not a cached verdict: a permission grant can change silently.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}

@@ -20,7 +20,7 @@ import (
 // this route's miss fetches -- probeHits counts them together.
 
 // TestCachedRepo_SeededPublicRowHit: a complete public truth row (e.g.
-// webhook-maintained) serves the trimmed rebuild with ZERO upstream calls --
+// webhook-maintained) serves the trimmed rebuild with upstream calls --
 // no reveal probe (public fast path) and no fetch.
 func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 	router, store, _, u := respCacheStack(t)
@@ -48,8 +48,8 @@ func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 	assert.Len(t, body, 8, "the rebuild emits exactly the eight modeled keys (no url, no pushed_at, no fork/id)")
 }
 
-// TestCachedRepo_PrivateProbeAbsorbsThenHit: a private repo's first touch
-// pays exactly ONE upstream call -- the reveal probe, whose 200 body absorbs
+// TestCachedRepo_PrivateProbeAbsorbsThenHit: a private repo's touch
+// pays exactly upstream call -- the reveal probe, whose body absorbs
 // the repository object into truth -- and the handler then serves from that
 // just-absorbed row as a HIT. The grant is remembered, so later reads stay
 // probe-free.
@@ -77,7 +77,7 @@ func TestCachedRepo_PrivateProbeAbsorbsThenHit(t *testing.T) {
 
 // TestCachedRepo_IncompleteRowFetchesAndHeals: a row that cannot answer the
 // rebuild (here: public but no known default branch, the GraphQL-seeded
-// shape) falls to the fetch path, whose absorbed 200 heals the row -- the
+// shape) falls to the fetch path, whose absorbed heals the row -- the
 // next read hits with no further upstream calls.
 func TestCachedRepo_IncompleteRowFetchesAndHeals(t *testing.T) {
 	router, store, _, u := respCacheStack(t)
@@ -112,7 +112,7 @@ func TestCachedRepo_QueryPassthrough(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "html_url", "the passthrough is GitHub's verbatim body")
 }
 
-// TestCachedRepo_Upstream404Passthrough: a non-200 fetch answer (truth still
+// TestCachedRepo_Upstream404Passthrough: a non- fetch answer (truth still
 // says public but GitHub deleted the repo) is relayed verbatim -- GitHub's
 // own body, no cache marker -- and stores nothing, so every read re-asks.
 func TestCachedRepo_Upstream404Passthrough(t *testing.T) {

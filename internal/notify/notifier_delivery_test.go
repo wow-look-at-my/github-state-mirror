@@ -141,7 +141,7 @@ func TestNotifierRetryAndAutoDisable(t *testing.T) {
 	sub, err := st.Create(ctx, "user:1", NewSubscription{URL: srv.URL, Secret: testSecret()}, time.Now())
 	require.NoError(t, err)
 
-	// One delivery = 3 attempts = ONE terminal failure.
+	//  delivery = attempts = terminal failure.
 	n.NotifyIngest(prEvent("my-org", "repo1", 1, "s1"), applied(), time.Now())
 	require.True(t, n.Flush(10*time.Second))
 	assert.EqualValues(t, 3, rec.requests.Load(), "3 attempts per delivery")
@@ -151,7 +151,7 @@ func TestNotifierRetryAndAutoDisable(t *testing.T) {
 	assert.True(t, got.Active)
 	assert.Equal(t, "http 500", got.LastError)
 
-	// Nine more terminal failures reach the threshold and auto-disable.
+	//  more terminal failures reach the threshold and auto-disable.
 	for i := 0; i < 9; i++ {
 		n.NotifyIngest(prEvent("my-org", "repo1", i+2, "s2"), applied(), time.Now())
 		require.True(t, n.Flush(10*time.Second))
@@ -234,14 +234,14 @@ func TestNotifierNilSafe(t *testing.T) {
 
 // TestNotifierRecordsTimelineAttempts: every outbound delivery attempt lands
 // on the timeline ring with its real duration — a failed non-final attempt, a
-// failed FINAL attempt, and a delivered one — target host only (never the
+// failed FINAL attempt, and a delivered — target host only (never the
 // full URL).
 func TestNotifierRecordsTimelineAttempts(t *testing.T) {
 	access := newFakeAccess()
 	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)
 	tl := reqtimeline.New()
 
-	// This subscription answers 500 on every attempt (2 attempts, both failed, second final).
+	// This subscription answers on every attempt (attempts, both failed, final).
 	rec := &capture{respond: http.StatusInternalServerError}
 	srv := httptest.NewServer(rec.handler())
 	defer srv.Close()

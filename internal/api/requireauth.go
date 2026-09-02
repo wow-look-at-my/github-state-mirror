@@ -20,13 +20,13 @@ import (
 
 // requireAuth enforces that every data request carries a usable GitHub token.
 // It resolves the token's identity against GitHub (rejecting absent, malformed,
-// or revoked credentials with 401), injects the token into the request context,
+// or revoked credentials with), injects the token into the request context,
 // and scopes all cache operations to a per-USER partition.
 //
-// The cache partition (actor) is "user:<numeric GitHub user id>" — 1 GitHub
-// user == 1 cache scope (operator decision, 2026-07-03). All of a user's
+// The cache partition (actor) is "user:<numeric GitHub user id>" — GitHub
+// user == cache scope (operator decision, --). All of a user's
 // tokens (rotating sandbox PATs, OAuth logins, narrow and broad PATs alike)
-// share one warm, webhook-fed bucket, so a user is never isolated from
+// share warm, webhook-fed bucket, so a user is never isolated from
 // themselves just because their tokens rotate. The numeric id (not the login)
 // keys the bucket because ids survive login renames and are never recycled.
 // Accepted trade-off: ANY token of a user reads what any of that user's tokens
@@ -35,11 +35,11 @@ import (
 // never fall through to the service's own credentials (the GitHub App used for
 // background refreshes), which may have far broader access than the caller.
 //
-// A token that is definitively NOT a user — GET /user answers 403/404, e.g. a
+// A token that is definitively NOT a user — GET /user answers /, e.g. a
 // GitHub App installation token — keeps the old per-token fingerprint
 // partition (and the verdict is cached per token). When the identity cannot be
 // resolved at all (network error, 5xx, rate limit) and no verdict is cached,
-// the request FAILS with 503: mis-partitioning is worse than a failed request,
+// the request FAILS with: mis-partitioning is worse than a failed request,
 // so there is no silent fingerprint fallback for a token that might belong to
 // a user.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
@@ -56,8 +56,8 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			// GitHub App JWT in X-Mirror-Identity. We verify it against GitHub
 			// (GET /app — unforgeable, since only the app's private key produces
 			// a JWT GitHub accepts) and partition that caller by the app, NOT by
-			// the token fingerprint. This lets a first-party app whose
-			// installation tokens rotate hourly share one warm cache bucket,
+			// the token fingerprint. This lets a -party app whose
+			// installation tokens rotate hourly share warm cache bucket,
 			// while the Authorization token is still used for upstream fetches so
 			// per-repo authorization is preserved. Callers without this header
 			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
@@ -110,7 +110,7 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 type identityRecorder func(ctx context.Context, actorFP, login string)
 
 // newIdentityRecorder returns a recorder that upserts the actor->login mapping,
-// debounced to at most once per minute per actor so the hot request path does
+// debounced to at most per minute per actor so the hot request path does
 // not write on every call.
 func newIdentityRecorder(store *ghdata.Store) identityRecorder {
 	var lastWrite sync.Map // actorFP -> time.Time

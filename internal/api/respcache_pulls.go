@@ -15,7 +15,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Cached PR REST routes (tier 2 of the cache contract, like respcache.go): the open-PR list, the single PR,
+// Cached PR REST routes (tier of the cache contract, like respcache.go): the open-PR list, the single PR,
 // and the repo installation lookup. see docs/cache/rest-routes.md
 
 const (
@@ -40,8 +40,8 @@ type pullsListShape struct {
 
 // parsePullsListShape reports the shape of a /pulls query and whether the
 // cache models it. Unknown params, repeated params, state != open, a
-// malformed head, an out-of-range per_page, or any page other than the first
-// make it non-cacheable (page > 1 only ever follows a full page 1, which is
+// malformed head, an out-of-range per_page, or any page other than the
+// make it non-cacheable (page > only ever follows a full page, which is
 // itself never served from state).
 //
 // head and base are both pure FILTERS over the open set the completeness
@@ -124,7 +124,8 @@ func filterPullRows(rows []dbgen.PullRequest, head, base string) []dbgen.PullReq
 }
 
 // cachedPullsList serves a repo's open-PR list from webhook-maintained state
-// once a complete list has been absorbed, fetching and absorbing on a miss.
+//
+//	a complete list has been absorbed, fetching and absorbing on a miss.
 func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
@@ -195,7 +196,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 
 // servePullsList rebuilds and writes the trimmed list. Hit and miss serve the
 // same shape; a miss keeps GitHub's own response order, a hit serves
-// newest-created first (GitHub's default sort).
+// newest-created (GitHub's default sort).
 func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, hit bool) {
 	items := make([]pullListItemJSON, 0, len(rows))
 	now := time.Now()
@@ -251,7 +252,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !acceptsDefaultJSON(r) {
-		// The DIFF representation gets the 406-verdict flow (see the file
+		// The DIFF representation gets the -verdict flow (see the file
 		// comment); every other non-default Accept keeps today's passthrough.
 		if acceptsPullDiff(r) {
 			h.cachedPullDiff(w, r, owner, repo, number, numStr)
@@ -271,7 +272,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The hit gate: rest-complete, mergeable KNOWN, the stored test-merge sha
-	// not the push-invalidated one (belt and braces -- the guarded writes null
+	// not the push-invalidated (belt and braces -- the guarded writes null
 	// that sha instead of storing it), and recently touched.
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)

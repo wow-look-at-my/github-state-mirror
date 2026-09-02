@@ -14,7 +14,7 @@ import (
 )
 
 // Implements the cached GET /user/repos listing, distinct from the org-repos
-// GraphQL tier-1 query. See docs/cache/rest-routes.md.
+// GraphQL tier- query. See docs/cache/rest-routes.md.
 
 const (
 	userReposDefaultPerPage = 30
@@ -67,7 +67,7 @@ func (h *handlers) cachedUserRepos(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, body, false)
 }
 
-// parseUserReposShape reports the modeled shape: sort (one of GitHub's
+// parseUserReposShape reports the modeled shape: sort (of GitHub's
 // documented values, '' = default) + paging. Every other parameter
 // (affiliation, visibility, type, direction, since, before) is deliberately
 // unmodeled and passes through -- the surveyed caller (see the brief) sends

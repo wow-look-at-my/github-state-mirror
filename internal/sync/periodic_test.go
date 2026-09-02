@@ -36,10 +36,10 @@ func (f *recordingFetcher) calls() []string {
 
 // TestPeriodicRefresher_SyncsFreshInstallation is the fleet-sync regression
 // guard: a brand-new installation session -- NO pre-seeded cache_metadata row,
-// which was exactly the production state -- must be fetched on the first
+// which was exactly the production state -- must be fetched on the
 // cycle, and the fetch must create its freshness marker under the session's
 // actor. (The old RefreshAllOfKind shape only re-fetched rows that already
-// existed, and nothing ever created one: a permanent no-op.)
+// existed, and nothing ever created: a permanent no-op.)
 func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))
@@ -74,10 +74,10 @@ func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 	assert.Equal(t, freshness.StateFresh, meta.State)
 }
 
-// TestPeriodicRefresher_StartRunsImmediately: Start's FIRST fleet refresh runs
-// at startup, not one full interval in. The interval here is an hour, so any
+// TestPeriodicRefresher_StartRunsImmediately: Start's fleet refresh runs
+// at startup, not full interval in. The interval here is an hour, so any
 // fetch observed within the test window can only be the startup cycle -- the
-// production regression was exactly a bare ticker whose first fire sat 6h
+// production regression was exactly a bare ticker whose fire sat 6h
 // away while near-daily schema-change deploys (which also nuke the freshness
 // markers) restarted the clock, so no cycle ever completed.
 func TestPeriodicRefresher_StartRunsImmediately(t *testing.T) {
@@ -122,7 +122,7 @@ func TestPeriodicRefresher_StartRunsImmediately(t *testing.T) {
 	}
 }
 
-// failingFetcher records like recordingFetcher but errors for one key.
+// failingFetcher records like recordingFetcher but errors for key.
 type failingFetcher struct {
 	recordingFetcher
 	failKey string
@@ -136,7 +136,7 @@ func (f *failingFetcher) Fetch(ctx context.Context, key string, etag string) (fr
 	return freshness.RefreshResult{RecordsChanged: 1}, nil
 }
 
-// TestPeriodicRefresher_FailingOwnerStillMarksOthers: one owner's failed fetch
+// TestPeriodicRefresher_FailingOwnerStillMarksOthers: owner's failed fetch
 // must leave a visible error marker (state error + the message) and must not
 // stop the rest of the fleet from syncing fresh.
 func TestPeriodicRefresher_FailingOwnerStillMarksOthers(t *testing.T) {

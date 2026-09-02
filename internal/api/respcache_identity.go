@@ -72,7 +72,7 @@ func (h *handlers) cachedUserOrgs(w http.ResponseWriter, r *http.Request) {
 // identityAbsorber reports whether an upstream identity response is cacheable verbatim.
 type identityAbsorber func(status int, body []byte) (string, bool)
 
-// absorbVerbatimObject accepts a 200 JSON object with a positive numeric id; the stored bytes are the original body.
+// absorbVerbatimObject accepts a JSON object with a positive numeric id; the stored bytes are the original body.
 func absorbVerbatimObject(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -86,7 +86,7 @@ func absorbVerbatimObject(status int, body []byte) (string, bool) {
 	return string(body), true
 }
 
-// absorbVerbatimArray accepts a 200 JSON array; an empty array is a valid cacheable answer.
+// absorbVerbatimArray accepts a JSON array; an empty array is a valid cacheable answer.
 func absorbVerbatimArray(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -98,7 +98,7 @@ func absorbVerbatimArray(status int, body []byte) (string, bool) {
 	return string(body), true
 }
 
-// serveIdentity is the shared miss/absorb/hit flow for all three identity
+// serveIdentity is the shared miss/absorb/hit flow for all identity
 // routes: they differ only in their subject key, their cache kind, and their
 // absorb function.
 func (h *handlers) serveIdentity(w http.ResponseWriter, r *http.Request, subjectKey, kind string, absorb identityAbsorber) {

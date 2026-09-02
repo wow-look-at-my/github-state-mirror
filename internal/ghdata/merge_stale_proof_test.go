@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The two EXEMPTIONS that overrule the stale-sha presumption: the push-tip
+// The EXEMPTIONS that overrule the stale-sha presumption: the push-tip
 // proof (an answer whose reported tip equals the push after sha post-dates
 // the push) and the dirty-retained CONFLICTING pattern past replica lag.
 
@@ -56,7 +56,7 @@ func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 }
 
 // TestAbsorbSinglePull_WrongMarkHealsOnPushProof locks the wrong-mark race
-// fix. The race: GitHub recomputes mergeability within seconds of a push once
+// fix. The race: GitHub recomputes mergeability within seconds of a push
 // a read triggers it, and pr-minder polls the mirror right after pushing --
 // so a poll-driven absorb can land GitHub's POST-push answer (fresh sha, base
 // tip already at the push's after) BEFORE the push delivery reaches the
@@ -73,7 +73,7 @@ func TestAbsorbSinglePull_WrongMarkHealsOnPushProof(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// The poll-driven absorb lands GitHub's post-push answer first.
+	// The poll-driven absorb lands GitHub's post-push answer.
 	postPush := restPR(7, "MERGEABLE", staleShaB)
 	postPush.BaseRefOid = sql.NullString{String: pushedBaseTip, Valid: true}
 	stale, err := s.AbsorbSinglePull(ctx, postPush, nil, now)
@@ -195,8 +195,8 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 // conflicted (dirty) PR gets NO new test merge, so GitHub keeps returning the
 // RETAINED last-good merge_commit_sha with a fresh mergeable:false -- and its
 // reported base.sha stays FROZEN at the last clean evaluation, so the
-// push-tip proof cannot rescue it (live evidence 2026-07-17:
-// wow-look-at-my/webhooks#44 and #124, both dirty on GitHub with retained
+// push-tip proof cannot rescue it (live evidence --:
+// wow-look-at-my/webhooks# and #, both dirty on GitHub with retained
 // shas and frozen base.sha values while the mirror served mergeable:null on
 // consecutive miss-reads). Without the exemption, every base push over a
 // conflicted PR deterministically wedged it to null for the whole
@@ -204,7 +204,7 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 
 // TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow: (the
 // deterministic wedge fix) a CONFLICTING answer re-offering the marker sha is
-// accepted once the marker outlives MergeStaleConflictingWindow -- replica
+// accepted the marker outlives MergeStaleConflictingWindow -- replica
 // lag can no longer explain the match, so the dirty-retained pattern is the
 // only remaining explanation -- even when the push-tip proof is recorded but
 // does NOT match the doc (the frozen-base.sha live case).
@@ -288,9 +288,9 @@ func TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL(t *testing.T) {
 }
 
 // TestUpsertPRWithChecks_DirtyRetainedParity: the SQL stale guard shares the
-// '-30 seconds' CONFLICTING exemption with the Go check -- through the
+// '- seconds' CONFLICTING exemption with the Go check -- through the
 // webhook-shaped upsert path a MERGEABLE same-sha payload stays rejected past
-// the lag window, while a CONFLICTING one resolves the row and clears the
+// the lag window, while a CONFLICTING resolves the row and clears the
 // whole marker.
 func TestUpsertPRWithChecks_DirtyRetainedParity(t *testing.T) {
 	s := testStore(t)

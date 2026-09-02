@@ -94,7 +94,7 @@ func (s *subscriptionsAPI) begin(w http.ResponseWriter, r *http.Request) (*notif
 // maxSubscriptionBody bounds a create/patch request body.
 const maxSubscriptionBody = 64 << 10
 
-// decodeBody decodes a bounded JSON request body into v, answering 400 itself
+// decodeBody decodes a bounded JSON request body into v, answering itself
 // on failure.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	body := http.MaxBytesReader(w, r.Body, maxSubscriptionBody)
@@ -105,9 +105,9 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// writeSubscriptionError maps a store error onto the HTTP response: 400 for a
-// validation failure (with the message), 409 for the per-principal cap, 404
-// for a missing/foreign id, 500 otherwise.
+// writeSubscriptionError maps a store error onto the HTTP response: for a
+// validation failure (with the message), for the per-principal cap,
+// for a missing/foreign id, otherwise.
 func writeSubscriptionError(w http.ResponseWriter, err error) {
 	var ve *notify.ValidationError
 	switch {
@@ -132,7 +132,7 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 }
 
 // create registers a new subscription for the caller's principal.
-// POST /_mirror/subscriptions {url, secret, repos?, events?} -> 201.
+// POST /_mirror/subscriptions {url, secret, repos?, events?} ->.
 func (s *subscriptionsAPI) create(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {
@@ -169,8 +169,8 @@ func (s *subscriptionsAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"subscriptions": views})
 }
 
-// get returns one of the caller's subscriptions; a foreign principal's id
-// answers 404 (no existence leak).
+// get returns of the caller's subscriptions; a foreign principal's id
+// answers (no existence leak).
 func (s *subscriptionsAPI) get(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {
@@ -184,7 +184,7 @@ func (s *subscriptionsAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, subscriptionView(sub, false))
 }
 
-// patch partially updates one of the caller's subscriptions. Setting
+// patch partially updates of the caller's subscriptions. Setting
 // active=true resets consecutive_failures and clears disabled_reason (the
 // re-enable path after an auto-disable).
 func (s *subscriptionsAPI) patch(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +204,7 @@ func (s *subscriptionsAPI) patch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, subscriptionView(sub, false))
 }
 
-// remove deletes one of the caller's subscriptions -> 204; missing/foreign -> 404.
+// remove deletes of the caller's subscriptions ->; missing/foreign ->.
 func (s *subscriptionsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {

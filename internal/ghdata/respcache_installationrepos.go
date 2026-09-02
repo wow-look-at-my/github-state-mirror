@@ -13,13 +13,13 @@ import (
 //
 //	GET /installation/repositories
 //
-// One row per (credential fingerprint, per_page, page). The key is the
-// CREDENTIAL because the answer is one installation token's own view -- see
+//  row per (credential fingerprint, per_page, page). The key is the
+// CREDENTIAL because the answer is installation token's own view -- see
 // the schema comment for why the reveal-layer principal is the wrong key
 // here. Only the fingerprint is stored; the bearer never is.
 
 // GetCachedInstallationRepos returns the stored listing, or ("", false) on a
-// miss (no row, or an expired one). A hit refreshes the row's LRU stamp.
+// miss (no row, or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedInstallationRepos(ctx context.Context, tokenFP string, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetInstallationReposCache(ctx, dbgen.GetInstallationReposCacheParams{
 		TokenFp: tokenFP, PerPage: perPage, Page: page,
@@ -39,7 +39,7 @@ func (s *Store) GetCachedInstallationRepos(ctx context.Context, tokenFP string, 
 	return row.Doc, true, nil
 }
 
-// PutCachedInstallationRepos records one fetched listing page, then prunes the
+// PutCachedInstallationRepos records fetched listing page, then prunes the
 // table (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedInstallationRepos(ctx context.Context, tokenFP string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertInstallationReposCache(ctx, dbgen.UpsertInstallationReposCacheParams{

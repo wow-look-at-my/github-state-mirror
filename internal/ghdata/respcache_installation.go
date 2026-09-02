@@ -12,15 +12,15 @@ import (
 // Storage for the App-JWT-authed installation lookups, keyed by the verified app id.
 // see docs/cache/rest-routes.md
 
-// CachedRepoInstallation is the absorbed state of one repo-installation
-// response (App-JWT authed; keyed by the verified "app:<id>"). Status is 200
-// for a real installation and 404 for the "not installed here" verdict, whose
+// CachedRepoInstallation is the absorbed state of repo-installation
+// response (App-JWT authed; keyed by the verified "app:<id>"). Status is
+// for a real installation and for the "not installed here" verdict, whose
 // only other field is Message.
 type CachedRepoInstallation struct {
 	Owner               string // lowercased
 	Repo                string // lowercased
 	Status              int
-	Message             string // 404 verdicts only
+	Message             string //  verdicts only
 	InstallationID      int64
 	AccountLogin        string
 	AccountType         string
@@ -31,7 +31,7 @@ type CachedRepoInstallation struct {
 }
 
 // GetCachedRepoInstallation returns the cached installation for the given app
-// actor, or (zero, false) on a miss. An expired row is a miss.
+// actor, or (, false) on a miss. An expired row is a miss.
 func (s *Store) GetCachedRepoInstallation(ctx context.Context, appActor, owner, repo string, now time.Time) (CachedRepoInstallation, bool, error) {
 	row, err := s.q.GetRepoInstallationCache(ctx, dbgen.GetRepoInstallationCacheParams{
 		Actor: appActor, Owner: owner, Repo: repo,
@@ -58,7 +58,7 @@ func (s *Store) GetCachedRepoInstallation(ctx context.Context, appActor, owner, 
 	}, true, nil
 }
 
-// PutCachedRepoInstallation stores one repo-installation answer for the given
+// PutCachedRepoInstallation stores repo-installation answer for the given
 // app actor with the given TTL, then prunes expired + over-cap rows.
 func (s *Store) PutCachedRepoInstallation(ctx context.Context, appActor string, c CachedRepoInstallation, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertRepoInstallationCache(ctx, dbgen.UpsertRepoInstallationCacheParams{

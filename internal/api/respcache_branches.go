@@ -14,7 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Cached branches-list route (tier 2 of the cache contract, like respcache.go): GET /repos/{owner}/{repo}/branches
+// Cached branches-list route (tier of the cache contract, like respcache.go): GET /repos/{owner}/{repo}/branches
 // see docs/cache/rest-routes.md
 
 const (
@@ -56,7 +56,7 @@ func parseBranchesListShape(q url.Values) (perPage, page int, ok bool) {
 	return perPage, page, true
 }
 
-// cachedBranchesList serves one page of a repo's branch list from a stored
+// cachedBranchesList serves page of a repo's branch list from a stored
 // whole-doc snapshot, fetching and absorbing on a miss. Unknown query shapes
 // and non-default Accepts pass through.
 func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +101,7 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbBranchesList(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 and 5xx: relayed verbatim, never stored.
+		// Includes and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -113,15 +113,15 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// branchListItemJSON is one trimmed entry: name + commit.sha + the always-present protected bool.
+// branchListItemJSON is trimmed entry: name + commit.sha + the always-present protected bool.
 type branchListItemJSON struct {
 	Name      string     `json:"name"`
 	Commit    gitSHAJSON `json:"commit"`
 	Protected bool       `json:"protected"`
 }
 
-// absorbBranchesList parses a /branches 200 array into the trimmed document,
-// rendered once here (hits serve the stored bytes, so hit and miss are
+// absorbBranchesList parses a /branches array into the trimmed document,
+// rendered here (hits serve the stored bytes, so hit and miss are
 // byte-identical). Reports false -- serve verbatim, store nothing -- for any
 // other status or any item the model cannot hold (name and a full-hex tip
 // sha are required; protected defaults false). An empty array (a page past

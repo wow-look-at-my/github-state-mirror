@@ -17,7 +17,7 @@ import (
 // requestStartKey carries the instant the router received a request, stamped
 type requestStartKey struct{}
 
-// stampRequestStart is the first router middleware: it stamps the receipt
+// stampRequestStart is the router middleware: it stamps the receipt
 // time into the request context. observeStatus reads it back so every
 // inbound data-API event on the timeline carries the request's real
 // end-to-end duration.
@@ -75,9 +75,9 @@ func TimelineUpstreamObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 }
 
 // TimelineProxyObserver charts the mirror→GitHub leg of the passthrough
-// proxy, including the debounced batches that share one call between many
+// proxy, including the debounced batches that share call between many
 // waiters. Identity comes from the outbound request, which carries the
-// inbound one's context, so it lands under the same label the request log
+// inbound 's context, so it lands under the same label the request log
 // used for the inbound side.
 func TimelineProxyObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
@@ -90,7 +90,7 @@ func TimelineProxyObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	}
 }
 
-// Charts a sign-in's two GitHub calls; labeled "anonymous" (no principal yet).
+// Charts a sign-in's GitHub calls; labeled "anonymous" (no principal yet).
 func TimelineLoginObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
 		disp := dispLogin
@@ -167,14 +167,17 @@ type timelineResponse struct {
 
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. Three read shapes, all answering the same payload:
+// actor/tenant. read shapes, all answering the same payload:
 //
 //	(no params)          the whole retained window
 //	?since=<id>          only events newer than that cursor — the 5s live poll
 //	?from=&to=<unix ms>  the events overlapping a time window — the chart's
-//	                     async history loader, which is what keeps a first
-//	                     paint from having to decode 24h of traffic to draw
-//	                     one hour of it
+//
+// async history loader, which is what keeps a
+//
+//	paint from having to decode 24h of traffic to draw
+//
+// hour of it
 //
 // since and from/to are mutually exclusive: they answer different questions
 // (what is NEW vs what was HAPPENING), and silently ANDing them would let a

@@ -16,13 +16,13 @@ import (
 const (
 	// A route count near this cap means garbage paths, not real traffic.
 	requestGroupsCap = 1000
-	// requestGroupsSnapshotCap caps the groups in one /api/requests payload.
+	// requestGroupsSnapshotCap caps the groups in /api/requests payload.
 	requestGroupsSnapshotCap = 100
 	// routeMaxLen clamps a pathological route string so group keys stay small.
 	routeMaxLen = 200
 )
 
-// routeGroup is the cumulative tally for one (method, route shape).
+// routeGroup is the cumulative tally for (method, route shape).
 type routeGroup struct {
 	method string
 	route  string
@@ -30,7 +30,7 @@ type routeGroup struct {
 	byDisp map[string]int64
 	// byReason splits PASSTHROUGH count by why (see docs/dashboard/dashboard.md).
 	byReason map[string]int64
-	sample   string // one recent raw path, for identifying the shape
+	sample   string //  recent raw path, for identifying the shape
 	// passQuery: sorted parameter NAMES only, never values.
 	passQuery string
 	// debounced/upstreamSaved: passthrough coalescing counters.
@@ -39,7 +39,7 @@ type routeGroup struct {
 	lastSeen      time.Time
 }
 
-// requestGroupSnapshot is one group in the /api/requests payload.
+// requestGroupSnapshot is group in the /api/requests payload.
 type requestGroupSnapshot struct {
 	Key           string           `json:"key"` // method + " " + route
 	Method        string           `json:"method"`
@@ -79,7 +79,7 @@ func (l *requestLog) addDebounced(method, route string, served, saved int64) {
 	g.upstreamSaved += saved
 }
 
-// bumpGroupLocked records one request into its group. reason/queryShape are
+// bumpGroupLocked records request into its group. reason/queryShape are
 // set only for passthroughs. Caller holds l.mu.
 func (l *requestLog) bumpGroupLocked(method, route, rawPath, disposition, reason, queryShape string, now time.Time) {
 	key := method + " " + route
@@ -189,7 +189,7 @@ func normalizeRoute(path string) string {
 			out = normalizeTail(segs, 2)
 		}
 	default:
-		// Unknown path: group by the first two segments.
+		// Unknown path: group by the segments.
 		out = normalizeTail(segs, 2)
 	}
 	return clampRoute("/" + strings.Join(out, "/"))
@@ -271,7 +271,7 @@ func normalizeOwnerRoute(segs []string, placeholder string) []string {
 	return append([]string{segs[0], placeholder}, normalizeTail(segs[2:], 2)...)
 }
 
-// normalizeTail turns numbers into {number}, 40-hex into {sha}, and anything
+// normalizeTail turns numbers into {number}, -hex into {sha}, and anything
 // past max segments into a trailing "…".
 func normalizeTail(segs []string, max int) []string {
 	n := len(segs)
@@ -336,7 +336,7 @@ func isHexSHA(s string) bool {
 	return true
 }
 
-// clampRoute bounds a route string (rune-safe) so one giant segment can't
+// clampRoute bounds a route string (rune-safe) so giant segment can't
 // bloat a group key.
 func clampRoute(route string) string {
 	if len(route) <= routeMaxLen {

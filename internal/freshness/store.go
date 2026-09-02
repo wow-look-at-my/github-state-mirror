@@ -107,7 +107,7 @@ func (s *Store) ListByKind(ctx context.Context, actor, kind string) ([]Metadata,
 	return out, nil
 }
 
-// ListByKindKeyAllActors returns every actor's metadata row for one
+// ListByKindKeyAllActors returns every actor's metadata row for
 // (kind, key) resource -- e.g. all principals' org-sync markers for an owner.
 func (s *Store) ListByKindKeyAllActors(ctx context.Context, kind, key string) ([]Metadata, error) {
 	rows, err := s.q.ListByKindKey(ctx, dbgen.ListByKindKeyParams{

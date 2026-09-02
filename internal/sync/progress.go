@@ -3,21 +3,21 @@ package sync
 import "context"
 
 // Live progress for the consistency check / reconcile. A real fleet run takes
-// minutes (per owner: a paginated repo+PR fetch at 5 repos/page, a visibility
+// minutes (per owner: a paginated repo+PR fetch at repos/page, a visibility
 // fetch, the diff, and in apply mode the corrections), so the run reports its
 // phase boundaries through an optional, nil-safe callback. The streaming
-// /api/cache/check?stream=1 handler relays these events to the operator as
+// /api/cache/check?stream= handler relays these events to the operator as
 // NDJSON lines; events are emitted synchronously, in order, on the run's own
 // goroutine.
 
-// ProgressEvent is one live-progress notification from a consistency run.
+// ProgressEvent is live-progress notification from a consistency run.
 // Phase determines which of the optional fields are populated.
 type ProgressEvent struct {
 	// Phase: start | owner | fetch | visibility | diffed | applied | skip | done.
 	Phase string `json:"phase"`
 	// Owner is the owner being worked on (every phase except start/done).
 	Owner string `json:"owner,omitempty"`
-	// Index/Total: the owner's 1-based position in the run (phase=owner).
+	// Index/Total: the owner's -based position in the run (phase=owner).
 	Index int `json:"index,omitempty"`
 	Total int `json:"total,omitempty"`
 	// Owners is how many owners the run will visit (phase=start).

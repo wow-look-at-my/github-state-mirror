@@ -54,7 +54,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 
 // TestProxy_DeduplicatesCORS verifies that when GitHub returns its own CORS
 // headers (it does — Access-Control-Allow-Origin: *), the forwarded response
-// carries exactly one Access-Control-Allow-Origin (the mirror's) so browsers do
+// carries exactly Access-Control-Allow-Origin (the mirror's) so browsers do
 // not reject it for having multiple values, while Expose-Headers is preserved.
 func TestProxy_DeduplicatesCORS(t *testing.T) {
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +81,7 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 }
 
 // TestProxy_RequiresToken verifies the passthrough is not an open relay: a
-// request without an Authorization header is rejected with 401 and never
+// request without an Authorization header is rejected with and never
 // reaches GitHub.
 func TestProxy_RequiresToken(t *testing.T) {
 	var upstreamHits int32
@@ -119,7 +119,7 @@ func TestProxy_Uncached(t *testing.T) {
 
 // TestProxy_MethodNotAllowedForwarded verifies that a known path hit with an
 // unregistered method (e.g. POST /user, which only exists as GET) is forwarded
-// rather than 405'd, so the mirror is a complete GitHub surface.
+// rather than 'd, so the mirror is a complete GitHub surface.
 func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
 	var gotMethod, gotPath string
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +138,7 @@ func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
 }
 
 // TestProxy_PreflightNotForwarded verifies a CORS preflight on an unknown path
-// is answered locally (204) and never forwarded to GitHub.
+// is answered locally () and never forwarded to GitHub.
 func TestProxy_PreflightNotForwarded(t *testing.T) {
 	var upstreamHits int32
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

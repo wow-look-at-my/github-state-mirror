@@ -107,8 +107,8 @@ func mustReadAsset(name string) []byte {
 	return b
 }
 
-// hashedAssetName returns "<stem>.<hash>.<ext>" where hash is the first 10 hex
-// chars of the content's SHA-256 — enough to be collision-free for two files.
+// hashedAssetName returns "<stem>.<hash>.<ext>" where hash is the hex
+// chars of the content's SHA- — enough to be collision-free for files.
 func hashedAssetName(stem, ext string, content []byte) string {
 	sum := sha256.Sum256(content)
 	return stem + "." + hex.EncodeToString(sum[:])[:10] + "." + ext

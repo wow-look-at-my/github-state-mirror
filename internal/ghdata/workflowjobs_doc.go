@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// These three clocks live here since both writers (fetch-on-miss and the rewriting delivery) need the same clock for a fresh answer.
+// These clocks live here since both writers (fetch-on-miss and the rewriting delivery) need the same clock for a fresh answer.
 // see docs/cache/rest-routes.md
 const (
 	// WorkflowJobsCacheTTL backstops a missed re-run delivery on a settled (otherwise immutable) answer.
@@ -64,7 +64,7 @@ func LivenessOf(jobs ...StoredWorkflowJob) JobsLiveness {
 //	GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 //
 
-// StoredWorkflowStep is one step of a job.
+// StoredWorkflowStep is step of a job.
 type StoredWorkflowStep struct {
 	Name        string  `json:"name"`
 	Status      string  `json:"status"`
@@ -74,7 +74,7 @@ type StoredWorkflowStep struct {
 	CompletedAt *string `json:"completed_at"`
 }
 
-// StoredWorkflowJob is one trimmed job, as both readers serve it.
+// StoredWorkflowJob is trimmed job, as both readers serve it.
 type StoredWorkflowJob struct {
 	ID           int64                `json:"id"`
 	RunID        int64                `json:"run_id"`
@@ -93,7 +93,7 @@ type StoredWorkflowJob struct {
 	Steps        []StoredWorkflowStep `json:"steps,omitempty"`
 }
 
-// StoredRunJobsPage is one page of a run's jobs.
+// StoredRunJobsPage is page of a run's jobs.
 type StoredRunJobsPage struct {
 	TotalCount int64               `json:"total_count"`
 	Jobs       []StoredWorkflowJob `json:"jobs"`
@@ -101,7 +101,7 @@ type StoredRunJobsPage struct {
 
 // RawWorkflowJob mirrors the fields of GitHub's job object these routes model.
 // The same shape arrives in a REST body and inside a `workflow_job` delivery's
-// `workflow_job` key, which is what lets one delivery rewrite a stored page.
+// `workflow_job` key, which is what lets delivery rewrite a stored page.
 type RawWorkflowJob struct {
 	ID           int64    `json:"id"`
 	RunID        int64    `json:"run_id"`
@@ -128,15 +128,15 @@ type RawWorkflowJob struct {
 }
 
 const (
-	// JobStatusCompleted is the one status whose answer has stopped moving.
+	// JobStatusCompleted is the status whose answer has stopped moving.
 	JobStatusCompleted = "completed"
-	// JobStatusInProgress is the one whose unreported parts move: steps advance between deliveries.
+	// JobStatusInProgress is the whose unreported parts move: steps advance between deliveries.
 	JobStatusInProgress = "in_progress"
 )
 
-// TrimWorkflowJob converts one raw job, reporting false only when the model
+// TrimWorkflowJob converts raw job, reporting false only when the model
 // cannot hold it (no id, no status). A job that is still queued or running
-// trims exactly like a finished one -- what its LIVENESS decides is how long
+// trims exactly like a finished -- what its LIVENESS decides is how long
 // the row may be served without a delivery (WorkflowJobsLiveTTL), not whether
 // it can be represented.
 func TrimWorkflowJob(j RawWorkflowJob) (StoredWorkflowJob, bool) {

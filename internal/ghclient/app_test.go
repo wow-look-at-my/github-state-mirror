@@ -141,7 +141,7 @@ func TestNewAppAuthenticator_Errors(t *testing.T) {
 
 // SubscribedEvents asks GitHub what the App is actually configured for, over
 // the App's own JWT. This is the only sound answer to "is this event
-// subscribed" -- traffic can show an event arrived, never that a silent one is
+// subscribed" -- traffic can show an event arrived, never that a silent is
 // unconfigured rather than idle.
 func TestAppAuthenticator_SubscribedEvents(t *testing.T) {
 	key := testKey(t)

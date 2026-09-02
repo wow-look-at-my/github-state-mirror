@@ -29,7 +29,8 @@ func TestCachedPullCommits_MissAbsorbHit(t *testing.T) {
 }
 
 // The synthetic ref key must not collide with the repository commits list:
-// two different resources, two different rows.
+//
+//	different resources, different rows.
 func TestCachedPullCommits_DoesNotCollideWithRepoCommits(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 

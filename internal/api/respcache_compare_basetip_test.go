@@ -65,7 +65,7 @@ func TestCachedCompare_UnmovedBaseBranchStillServes(t *testing.T) {
 
 // No ref answer for the base branch means no information, which is not the
 // same as evidence of a move. Serving there is the pre-existing contract
-// (flush, then TTL); refusing would make every first comparison a permanent
+// (flush, then TTL); refusing would make every comparison a permanent
 // miss without making any of them fresher.
 func TestCachedCompare_UnknownBaseTipStillServes(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
@@ -93,7 +93,7 @@ func TestCachedCompare_ShaBaseIgnoresBranchMovement(t *testing.T) {
 }
 
 // The tip is read across every spelling the ref route keys, because the row
-// that carries it is whichever one the caller happened to ask for.
+// that carries it is whichever the caller happened to ask for.
 func TestCachedCompare_MovedBaseDetectedFromAnyRefSpelling(t *testing.T) {
 	for _, spelling := range []string{"main", "heads/main", "refs/heads/main"} {
 		t.Run(spelling, func(t *testing.T) {

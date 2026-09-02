@@ -49,7 +49,7 @@ func NewRouter(
 	// shapes captures uncached-traffic shapes for the admin brief; see docs/dashboard/implementation-brief.md.
 	shapes := newShapeStore()
 
-	// ghProxy: the passthrough proxy, debounced; see docs/cache/three-tier-contract.md.
+	// ghProxy: the passthrough proxy, debounced; see docs/cache/-tier-contract.md.
 	debouncer.attach(reqlog, timeline)
 	ghProxy := recordPassthrough(debouncer.Wrap(newGitHubProxy(gh.BaseURL(), meter, func(resp *http.Response) {
 		if resp.Request != nil {
@@ -92,14 +92,14 @@ func NewRouter(
 	r.Get("/app", h.cachedApp)
 	r.Get("/app/installations", h.cachedAppInstallations)
 
-	// Data endpoints: bearer-token required, three-tiered cache contract; see CLAUDE.md.
+	// Data endpoints: bearer-token required, -tiered cache contract; see CLAUDE.md.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth(gh, recordIdentity))
 
 		// Subscriber-notification CRUD, under the reserved /_mirror/* namespace; see docs/notifications.md.
 		(&subscriptionsAPI{notifier: notifier}).routes(r)
 
-		// GraphQL endpoint: only the org-repos query shape is cached; see docs/cache/three-tier-contract.md.
+		// GraphQL endpoint: only the org-repos query shape is cached; see docs/cache/-tier-contract.md.
 		r.Post("/graphql", h.graphql)
 
 		// Cached self routes: the token's own profile and org memberships; see docs/cache/rest-routes.md.
@@ -140,7 +140,7 @@ func NewRouter(
 		// The legacy statuses-list spelling, same handler and row space as above; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/statuses/*", h.statusesAlias)
 
-		// Cached compare, the three-dot base...head comparison; see docs/cache/rest-routes.md.
+		// Cached compare, the -dot base...head comparison; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/compare/*", h.cachedCompare)
 
 		// Cached workflow-runs listing, head_sha required; see docs/cache/rest-routes.md.

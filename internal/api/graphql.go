@@ -15,7 +15,7 @@ import (
 )
 
 // Caps buffered GraphQL body size.
-const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
+const maxGraphQLBodyBytes = 10 << 20 //  MiB
 
 // graphql handles the POST /graphql endpoint.
 //
@@ -94,7 +94,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If the refresh failed and there is no cached data to fall back on, surface
-	// the upstream error instead of returning an empty-but-"200 OK" success — a
+	// the upstream error instead of returning an empty-but-" OK" success — a
 	// silent empty result is indistinguishable from "this org has no repos" and
 	// hides real failures (bad token, GitHub 5xx, rate limit, ...). When cached
 	// repos DO exist we serve them (stale is better than an error). The body is a
@@ -238,7 +238,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]interface{}{
 			"organization": map[string]interface{}{
 				"repositories": map[string]interface{}{
-					// The mirror returns every repo in one response, so paging
+					// The mirror returns every repo in response, so paging
 					"pageInfo": map[string]interface{}{
 						"hasNextPage": false,
 						"endCursor":   nil,

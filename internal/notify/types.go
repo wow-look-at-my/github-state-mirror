@@ -19,7 +19,7 @@ import (
 
 // Limits enforced by validation.
 const (
-	// MaxPerPrincipal caps how many subscriptions one principal may hold.
+	// MaxPerPrincipal caps how many subscriptions principal may hold.
 	MaxPerPrincipal = 20
 	// maxFilters caps the repo and event filter lists.
 	maxFilters = 50
@@ -28,7 +28,7 @@ const (
 	maxSecretLen = 256
 )
 
-// Subscription is one registered notification endpoint. Secret is the HMAC
+// Subscription is registered notification endpoint. Secret is the HMAC
 // key used to sign every delivery — it is stored to sign with, never returned
 // by any API response and never logged.
 type Subscription struct {
@@ -111,7 +111,7 @@ func invalidf(format string, args ...any) error {
 // repoFilterRe admits "owner" or "owner/repo" entries (already lowercased):
 var repoFilterRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,99}(/[a-z0-9._-]{1,100})?$`)
 
-// eventFilterRe admits GitHub event names ("push", "pull_request", ...).
+// eventFilterRe admits GitHub event names ("push", "pull_request",...).
 var eventFilterRe = regexp.MustCompile(`^[a-z_]{1,64}$`)
 
 // NormalizeAndValidate checks every caller-controlled field, lowercasing the
@@ -179,7 +179,7 @@ func validateEndpointURL(raw string) error {
 		return invalidf("url scheme must be https (got %q)", u.Scheme)
 	}
 	if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
-		// 10/8, 172.16/12, 192.168/16, fc00::/7 (IsPrivate) and 169.254/16,
+		// /,./,./, fc00::/ (IsPrivate) and./,
 		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
 			return invalidf("url host must not be a private, link-local, or unspecified IP literal")
 		}
@@ -188,7 +188,7 @@ func validateEndpointURL(raw string) error {
 }
 
 // isLoopbackHost reports whether host names the local machine: "localhost" or
-// a loopback IP literal (127.0.0.0/8, ::1).
+// a loopback IP literal (.../,::).
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true

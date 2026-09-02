@@ -117,7 +117,7 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 	ctx := actor.WithActor(context.Background(), "user:900")
 	result, err := f.Fetch(ctx, "org1", "")
 	require.NoError(t, err)
-	assert.Equal(t, 2, result.RecordsChanged) // 1 repo + 1 PR
+	assert.Equal(t, 2, result.RecordsChanged) //  repo + PR
 
 	repos, err := store.ListReposByOwner(context.Background(), "org1")
 	require.NoError(t, err)

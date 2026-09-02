@@ -19,7 +19,7 @@ type WebhookDispatcher struct {
 	reorder  *reorderBuffer
 }
 
-// invalidator is the one freshness operation the dispatcher needs; narrow so tests can fake it.
+// invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
 type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
@@ -29,7 +29,7 @@ func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatch
 	return NewWebhookDispatcherWindowed(mgr, store, 0)
 }
 
-// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-first.
+// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-.
 // see docs/webhooks/ordering.md
 func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
 	stats := NewOrderingStats()
@@ -62,7 +62,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 	return d.dispatchNow(ctx, event)
 }
 
-// dispatchNow processes one delivery, past any reordering hold.
+// dispatchNow processes delivery, past any reordering hold.
 func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
@@ -93,7 +93,7 @@ func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event
 
 // handle routes an event to its handler, returning the outcome.
 func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) outcome {
-	// Order first: a superseded view must not apply or invalidate.
+	// Order: a superseded view must not apply or invalidate.
 	// see docs/webhooks/ordering.md
 	if superseded, out := d.checkOrder(ctx, event); superseded {
 		return out
@@ -102,7 +102,7 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 	// Response-cache invalidation is best-effort and disposition-neutral; it never changes what the delivery reports.
 	d.invalidateResponseCaches(ctx, event)
 
-	// Keeps the repos row current from the payload; global truth learns a repo from its first webhook, no fetch needed.
+	// Keeps the repos row current from the payload; global truth learns a repo from its webhook, no fetch needed.
 	d.absorbRepoFromPayload(ctx, event)
 
 	switch event.Type {
@@ -149,7 +149,7 @@ func (d *WebhookDispatcher) absorbRepoFromPayload(ctx context.Context, event web
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParsePushPayload(event.Raw)
 	if err != nil {
-		// An unparseable push still proves something moved, so un-resolve mergeable repo-wide first.
+		// An unparseable push still proves something moved, so un-resolve mergeable repo-wide.
 		if owner, name := event.RepoOwner(), event.RepoName(); owner != "" && name != "" {
 			if nerr := d.store.NullPRMergeableByRepo(ctx, owner, name); nerr != nil {
 				slog.Warn("webhook: repo-wide un-resolve PR mergeable failed", "repo", owner+"/"+name, "error", nerr)
@@ -164,7 +164,7 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	// pre-push -- plus the push's after tip, the proof by which an answer
 	// that already reflects this push is recognized and accepted) rather than
 	// let the single-PR cache keep serving the pre-push answer. This
-	// invalidation runs FIRST, before any other fallible step, so a transient
+	// invalidation runs, before any other fallible step, so a transient
 	// error elsewhere in the handler can never skip it -- each step logs its
 	// own failure and the handler carries on.
 	if branch := payload.Branch(); branch != "" {
@@ -226,7 +226,7 @@ func (d *WebhookDispatcher) absorbPushCommits(ctx context.Context, payload webho
 		}
 		commits = append(commits, ghdata.CachedGitCommit{
 			Owner: owner, Repo: repo, SHA: strings.ToLower(c.ID), Message: c.Message,
-			// One payload timestamp serves both dates: webhooks report author and committer as the same instant.
+			//  payload timestamp serves both dates: webhooks report author and committer as the same instant.
 			AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.Timestamp,
 			CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.Timestamp,
 			TreeSHA: c.TreeID,
@@ -261,7 +261,7 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
 	// A non-completed check_suite records nothing: GitHub auto-creates a permanent-ghost PENDING
-	// suite for every app with checks:write, even one that never runs a check on the sha.
+	// suite for every app with checks:write, even that never runs a check on the sha.
 	// see docs/webhooks/dispatch.md
 	if event.Type == "check_suite" && payload.State == "PENDING" {
 		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))

@@ -15,9 +15,9 @@ import (
 //
 //	GET /repos/{owner}/{repo}/actions/runs?head_sha=...
 //
-// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as one
+// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as
 // JSON blob, keyed by the exact request (owner, repo, head_sha, per_page,
-// page) -- one self-contained answer per page, like the PR-files pages.
+// page) -- self-contained answer per page, like the PR-files pages.
 // pr-minder's hasWorkflowRuns zombie probe reads this listing per bot PR and
 // the reconcile hook repeats it fleet-wide, so between CI events the answer
 // is stable. A sha's runs change when its CI moves: status/check_run/
@@ -26,9 +26,9 @@ import (
 // repo; expires_at is the 24h TTL backstop. WHO may read a cached page is
 // the reveal layer's job (internal/api).
 
-// GetCachedWorkflowRuns returns the cached trimmed runs document for one
+// GetCachedWorkflowRuns returns the cached trimmed runs document for
 // exact pagination shape, or ("", false) on a miss (no row, or an expired
-// one). A hit refreshes the row's LRU timestamp.
+// ). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA string, perPage, page int, now time.Time) (string, bool, error) {
 	ownerKey, repoKey, shaKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo), strings.ToLower(headSHA)
 	row, err := s.q.GetWorkflowRunsCache(ctx, dbgen.GetWorkflowRunsCacheParams{
@@ -51,7 +51,7 @@ func (s *Store) GetCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 	return row.Doc, true, nil
 }
 
-// PutCachedWorkflowRuns records one fetched runs page, then prunes the table
+// PutCachedWorkflowRuns records fetched runs page, then prunes the table
 // (expired rows + LRU beyond the cap). owner/repo/sha are normalized here so
 // callers can pass URL casing.
 func (s *Store) PutCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA string, perPage, page int, doc string, now time.Time, ttl time.Duration) error {
@@ -98,7 +98,7 @@ func (s *Store) ApplyWorkflowRunToPages(ctx context.Context, owner, repo string,
 	return applied, nil
 }
 
-// patchWorkflowRunsPage replaces one run's entry inside a stored page. The
+// patchWorkflowRunsPage replaces run's entry inside a stored page. The
 // page number does not matter: an in-place replacement changes neither the
 // membership nor the ordering, so whichever page lists the run is the page
 // that holds the new value.
@@ -135,7 +135,7 @@ func (s *Store) InvalidateWorkflowRunsCache(ctx context.Context, owner, repo str
 	})
 }
 
-// InvalidateWorkflowRunsForHeadSHA drops one sha's cached workflow-runs
+// InvalidateWorkflowRunsForHeadSHA drops sha's cached workflow-runs
 // pages -- the per-sha status/check_run/check_suite/workflow_job flush (a
 // new or finished run means the sha's listing may have changed). Other shas'
 // pages survive. owner/repo/sha are normalized here so callers can pass

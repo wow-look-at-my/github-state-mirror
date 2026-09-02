@@ -26,7 +26,7 @@ func restPRState(number int64, mergeable, state, sha string) dbgen.PullRequest {
 // predicate in UpsertPullRequest: a SET clause reads the PRE-update row, so
 // mergeable_state cannot be derived from what mergeable just became and each
 // facet carries its own copy of the condition. Edit both branches or neither
-// -- this test is what catches editing one.
+// -- this test is what catches editing.
 func TestUpsertKeepsMergeAndStateTogether(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -50,7 +50,7 @@ func TestUpsertKeepsMergeAndStateTogether(t *testing.T) {
 	assert.False(t, row.Mergeable.Valid, "the stale guard must refuse mergeable")
 	assert.False(t, row.MergeableState.Valid, "and must refuse mergeable_state on the same predicate")
 
-	// GitHub recomputes: the pair resolves together, from one payload.
+	// GitHub recomputes: the pair resolves together, from payload.
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPRState(7, "MERGEABLE", "behind", staleShaB), nil, now.Add(2*time.Minute)))
 	row = getPR(t, s, 7)
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
@@ -95,7 +95,9 @@ func TestAbsorbSinglePullKeepsMergeAndStateTogether(t *testing.T) {
 
 // TestNullPRMergeableStateByHeadSHA: a check/status result is the ONLY thing
 // that flips unstable/blocked <-> clean, and it moves no tip -- so this is the
-// one merge facet with no other invalidator. It must null exactly that facet:
+//
+//	merge facet with no other invalidator. It must null exactly that facet:
+//
 // nulling mergeable or the test-merge sha would make every check event
 // re-fetch every PR on the sha for an answer that did not move.
 func TestNullPRMergeableStateByHeadSHA(t *testing.T) {
@@ -106,7 +108,7 @@ func TestNullPRMergeableStateByHeadSHA(t *testing.T) {
 	head := "1111111111111111111111111111111111111111" // restPR's head tip
 	require.NoError(t, s.UpsertPRWithChecks(ctx, restPRState(7, "MERGEABLE", "unstable", staleShaA), nil, now))
 
-	// A PR on a different head sha, and a closed one, are unaffected.
+	// A PR on a different head sha, and a closed, are unaffected.
 	other := restPRState(8, "MERGEABLE", "clean", staleShaB)
 	other.HeadRefOid = sql.NullString{String: pushedHeadTip, Valid: true}
 	require.NoError(t, s.UpsertPRWithChecks(ctx, other, nil, now))

@@ -23,7 +23,7 @@ import (
 )
 
 // twoUserGH is a fake GitHub that resolves the standard test token and
-// "other-user-token" to two distinct users.
+// "other-user-token" to distinct users.
 func twoUserGH() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Header.Get("Authorization") {
@@ -102,7 +102,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.NotContains(t, w.Body.String(), testSubSecret)
 
-	// A second principal gets 404 for the first's id — and an empty list.
+	// A principal gets for the 's id — and an empty list.
 	w = subReq(stack.router, "other-user-token", http.MethodGet, "/_mirror/subscriptions/"+created.ID, "")
 	assert.Equal(t, http.StatusNotFound, w.Code, "a foreign principal's id answers 404")
 	w = subReq(stack.router, "other-user-token", http.MethodDelete, "/_mirror/subscriptions/"+created.ID, "")
@@ -128,7 +128,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	assert.False(t, patched.Active)
 	assert.Equal(t, created.Repos, patched.Repos, "unpatched fields survive")
 
-	// Validation failures answer 400 with the reason.
+	// Validation failures answer with the reason.
 	w = subReq(stack.router, testToken, http.MethodPatch, "/_mirror/subscriptions/"+created.ID,
 		`{"url":"http://not-loopback.example.com/x"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -242,7 +242,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	// A recorded identity for the subscription's principal: the operator view
 	require.NoError(t, stack.store.RecordActorIdentity(context.Background(), "user:42", "octocat"))
 
-	// Drive one delivery so the recent-attempts ring has an entry to decorate.
+	// Drive delivery so the recent-attempts ring has an entry to decorate.
 	require.NoError(t, stack.store.UpsertRepo(context.Background(), dbgen.Repo{
 		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
 		Visibility: ghdata.VisibilityPublic,
@@ -257,7 +257,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.Equal(t, http.StatusOK, whw.Code)
 	require.True(t, stack.notifier.Flush(5*time.Second), "delivery must complete")
 
-	// Anonymous: 401. Signed-in non-admin: 403.
+	// Anonymous:. Signed-in non-admin:.
 	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	w := httptest.NewRecorder()
 	stack.router.ServeHTTP(w, req)

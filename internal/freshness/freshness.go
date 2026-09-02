@@ -34,7 +34,7 @@ const (
 	StateError    FetchState = "error"
 )
 
-// Metadata holds the cache state for one resource.
+// Metadata holds the cache state for resource.
 type Metadata struct {
 	ResourceID
 	LastFetchedAt *time.Time

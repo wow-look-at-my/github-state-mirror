@@ -13,7 +13,7 @@ import (
 // see docs/cache/rest-routes.md
 
 // GetCachedClosedPull returns the cached trimmed closed-PR document, or
-// ("", false) on a miss (no row, or an expired one). A hit refreshes the
+// ("", false) on a miss (no row, or an expired). A hit refreshes the
 // row's LRU timestamp.
 func (s *Store) GetCachedClosedPull(ctx context.Context, owner, repo string, number int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
@@ -35,7 +35,7 @@ func (s *Store) GetCachedClosedPull(ctx context.Context, owner, repo string, num
 	return row.Doc, true, nil
 }
 
-// PutCachedClosedPull records one fetched closed-PR document, then prunes
+// PutCachedClosedPull records fetched closed-PR document, then prunes
 // the table (expired rows + LRU beyond the cap). owner/repo are normalized
 // here so callers can pass URL casing.
 func (s *Store) PutCachedClosedPull(ctx context.Context, owner, repo string, number int64, doc string, now time.Time, ttl time.Duration) error {
@@ -62,7 +62,7 @@ func (s *Store) InvalidateClosedPullCache(ctx context.Context, owner, repo strin
 	})
 }
 
-// InvalidateClosedPullForPR drops one PR's cached closed doc on a pull_request event.
+// InvalidateClosedPullForPR drops PR's cached closed doc on a pull_request event.
 func (s *Store) InvalidateClosedPullForPR(ctx context.Context, owner, repo string, number int64) error {
 	return s.q.DeleteClosedPullCacheByPR(ctx, dbgen.DeleteClosedPullCacheByPRParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Number: number,

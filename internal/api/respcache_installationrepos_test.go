@@ -72,7 +72,7 @@ func TestCachedInstallationRepos_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installReposHits), "a hit must not call upstream")
 }
 
-// The load-bearing property: rows key the CREDENTIAL. Two bearers must never
+// The load-bearing property: rows key the CREDENTIAL. bearers must never
 // read each other's listing, even though the answers differ only by token --
 // this is what makes a route with no reveal gate safe.
 func TestCachedInstallationRepos_KeyedByCredential(t *testing.T) {
@@ -108,7 +108,7 @@ func TestCachedInstallationRepos_KeyedByCredential(t *testing.T) {
 }
 
 // Pages are separate rows, and an unmodeled shape forwards with a counted
-// reason rather than minting one.
+// reason rather than minting.
 func TestCachedInstallationRepos_ShapeGuards(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -150,8 +150,8 @@ func TestCachedInstallationRepos_InstallationEventFlushes(t *testing.T) {
 	}
 }
 
-// A non-200 is relayed unstored: an expired installation token must not leave
-// a 401 answering for the next 15 minutes.
+// A non- is relayed unstored: an expired installation token must not leave
+// a answering for the next minutes.
 func TestCachedInstallationRepos_NonOKRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.installRepos = func(w http.ResponseWriter, _ *http.Request) {

@@ -14,7 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier 2).
+// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier).
 // See docs/cache/rest-routes.md for the key shape, hit gate, and invalidation.
 
 const (
@@ -68,7 +68,7 @@ func parseCommitsListShape(q url.Values) (commitsListShape, bool) {
 	return shape, true
 }
 
-// cachedCommitsList serves one page of a repo's commit list from absorbed
+// cachedCommitsList serves page of a repo's commit list from absorbed
 // state, fetching and absorbing on a miss.
 func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
@@ -111,7 +111,7 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 
 	commits, absorbed := absorbCommitsList(owner, repo, resp.StatusCode, body)
 	if overflow || !absorbed {
-		// 404 (unknown ref), 409 (empty repo), and 5xx relay unstored.
+		//  (unknown ref), (empty repo), and 5xx relay unstored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -150,7 +150,7 @@ type commitDetailJSON struct {
 	Tree      gitSHAJSON    `json:"tree"`
 }
 
-// commitListItemJSON is the trimmed rebuild of one commits-list item; see docs/cache/rest-routes.md for the dropped fields.
+// commitListItemJSON is the trimmed rebuild of commits-list item; see docs/cache/rest-routes.md for the dropped fields.
 type commitListItemJSON struct {
 	SHA     string           `json:"sha"`
 	Commit  commitDetailJSON `json:"commit"`
@@ -200,7 +200,7 @@ type upstreamCommitItem struct {
 	} `json:"parents"`
 }
 
-// toCachedGitCommit validates and converts one listed item into a git-commit
+// toCachedGitCommit validates and converts listed item into a git-commit
 // row (shas lowercased). false = a shape the model cannot hold; callers pass
 // the whole response through rather than store a hole.
 func (item upstreamCommitItem) toCachedGitCommit(owner, repo string) (ghdata.CachedGitCommit, bool) {
@@ -220,7 +220,7 @@ func (item upstreamCommitItem) toCachedGitCommit(owner, repo string) (ghdata.Cac
 	}, true
 }
 
-// absorbCommitsList parses a /commits 200 array into git-commit rows in
+// absorbCommitsList parses a /commits array into git-commit rows in
 // response order (an empty array -- a page past the end of history -- is a
 // valid, cacheable answer). Reports false -- serve verbatim, store nothing --
 // for any other status or any item the model cannot hold.

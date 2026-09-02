@@ -33,7 +33,7 @@ func (s *Store) GetCachedCheckRun(ctx context.Context, owner, repo string, check
 	return row.Doc, true, nil
 }
 
-// PutCachedCheckRun stores one check run's rendered document, then prunes
+// PutCachedCheckRun stores check run's rendered document, then prunes
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedCheckRun(ctx context.Context, owner, repo string, checkRunID int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertCheckRunCache(ctx, dbgen.UpsertCheckRunCacheParams{
@@ -51,7 +51,7 @@ func (s *Store) PutCachedCheckRun(ctx context.Context, owner, repo string, check
 // ApplyCheckRunByID rewrites (or creates) the single-check-run row for a
 // `check_run` delivery's own run object -- the whole point of keying this
 // table by id: the row IS the answer for that id, so there is no
-// "does the stored page still list it" question to solve first.
+// "does the stored page still list it" question to solve.
 func (s *Store) ApplyCheckRunByID(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) error {
 	if run.ID <= 0 {
 		return nil

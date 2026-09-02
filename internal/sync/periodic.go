@@ -20,7 +20,7 @@ func NewPeriodicRefresher(mgr *freshness.Manager, interval time.Duration, sessio
 	return &PeriodicRefresher{mgr: mgr, interval: interval, sessions: sessions}
 }
 
-// Start runs one fleet refresh immediately, then one per interval, until ctx
+// Start runs fleet refresh immediately, then per interval, until ctx
 // is canceled. The immediate run is load-bearing: see docs/reveal-layer.md
 func (p *PeriodicRefresher) Start(ctx context.Context) {
 	if ctx.Err() == nil {

@@ -46,7 +46,7 @@ func writeBody(w http.ResponseWriter, r *http.Request, contentType string, body 
 }
 
 // acceptsGzip reports whether the client accepts gzip, honoring an explicit
-// `gzip;q=0` refusal.
+// `gzip;q=` refusal.
 func acceptsGzip(r *http.Request) bool {
 	for _, part := range splitList(r.Header.Get("Accept-Encoding")) {
 		name, params, _ := strings.Cut(part, ";")

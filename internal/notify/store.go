@@ -84,7 +84,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// newID returns "sub_" + 16 random bytes hex.
+// newID returns "sub_" + random bytes hex.
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -93,7 +93,7 @@ func newID() string {
 	return "sub_" + hex.EncodeToString(b[:])
 }
 
-// NewDeliveryID returns "ntf_" + 16 random bytes hex — unique per
+// NewDeliveryID returns "ntf_" + random bytes hex — unique per
 // subscription x delivery.
 func NewDeliveryID() string {
 	var b [16]byte
@@ -106,7 +106,7 @@ func NewDeliveryID() string {
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 // Create validates and inserts a new subscription for principal, enforcing
-// the per-principal cap inside one transaction. Validation failures return a
+// the per-principal cap inside transaction. Validation failures return a
 // *ValidationError; the cap returns ErrLimitExceeded.
 func (s *Store) Create(ctx context.Context, principal string, in NewSubscription, now time.Time) (Subscription, error) {
 	sub := Subscription{
@@ -164,7 +164,7 @@ func (s *Store) Get(ctx context.Context, principal, id string) (Subscription, er
 		selectCols+` FROM subscriptions WHERE id = ? AND principal = ?`, id, principal))
 }
 
-// List returns all of the principal's subscriptions, oldest first.
+// List returns all of the principal's subscriptions, oldest.
 func (s *Store) List(ctx context.Context, principal string) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx,
 		selectCols+` FROM subscriptions WHERE principal = ? ORDER BY created_at, id`, principal)
@@ -174,7 +174,7 @@ func (s *Store) List(ctx context.Context, principal string) ([]Subscription, err
 	return scanAll(rows)
 }
 
-// ListAll returns every subscription (operator view), oldest first.
+// ListAll returns every subscription (operator view), oldest.
 func (s *Store) ListAll(ctx context.Context) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, selectCols+` FROM subscriptions ORDER BY created_at, id`)
 	if err != nil {
@@ -279,7 +279,7 @@ func (s *Store) RecordSuccess(ctx context.Context, id string, now time.Time) err
 
 // RecordFailure increments the failure counter and stamps last_failure_at and
 // last_error after a terminal delivery failure. When the counter reaches
-// disableAfter the subscription is auto-disabled (active=0, disabled_reason
+// disableAfter the subscription is auto-disabled (active=, disabled_reason
 // set); disabled reports whether THIS call flipped it.
 func (s *Store) RecordFailure(ctx context.Context, id, errMsg string, disableAfter int, now time.Time) (failures int64, disabled bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)

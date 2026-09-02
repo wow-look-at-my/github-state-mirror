@@ -13,7 +13,7 @@ import (
 )
 
 // Single-PR route tests for the non-JSON reads and the closed-PR doc: the
-// diff Accept and its cached 406 verdict, the shape guards, and the
+// diff Accept and its cached verdict, the shape guards, and the
 // closed-then-reopened lifecycle.
 
 func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
@@ -44,16 +44,18 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 }
 
 // TestCachedPullDiff_406VerdictCached: an oversized PR's diff read earns a
-// 406 "diff too large" from GitHub, and pr-minder re-earns it around every
+//
+//	"diff too large" from GitHub, and pr-minder re-earns it around every
+//
 // describe hand-off before falling back to the files API -- so the VERDICT is
-// cached per PR: absorbed on the first read (rebuilt {"message": ...}, 406,
-// X-GSM-Cache: miss), served from state on the second (zero upstream calls),
+// cached per PR: absorbed on the read (rebuilt {"message":...},,
+// X-GSM-Cache: miss), served from state on the (upstream calls),
 // flushed by the PR's own pull_request event (a head push can shrink the diff
 // back under the boundary).
 func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	u.single = func(w http.ResponseWriter, r *http.Request) {
-		// 406 any diff-bearing Accept (single- or multi-range), like GitHub
+		//  any diff-bearing Accept (single- or multi-range), like GitHub
 		// answering an oversized PR's diff read.
 		if strings.Contains(r.Header.Get("Accept"), ".diff") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -70,7 +72,7 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 		return req
 	}
 
-	// Miss: the 406 is absorbed and served rebuilt.
+	// Miss: the is absorbed and served rebuilt.
 	w1 := do(t, router, diffReq())
 	require.Equal(t, http.StatusNotAcceptable, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
@@ -79,7 +81,7 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 	assert.JSONEq(t, `{"message":"Sorry, the diff exceeded the maximum number of lines (20000)"}`, w1.Body.String())
 	assert.Equal(t, "application/json; charset=utf-8", w1.Header().Get("Content-Type"))
 
-	// Hit: the cached verdict answers, zero upstream calls.
+	// Hit: the cached verdict answers, upstream calls.
 	w2 := do(t, router, diffReq())
 	require.Equal(t, http.StatusNotAcceptable, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -111,8 +113,8 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 	assert.Contains(t, w5.Body.String(), "documentation_url", "the passthrough is GitHub's verbatim body")
 }
 
-// TestCachedPullDiff_PushFlushesRepoWide: a push flushes every PR's 406
-// verdict for the repo -- a BASE push can move any PR's three-dot diff across
+// TestCachedPullDiff_PushFlushesRepoWide: a push flushes every PR's
+// verdict for the repo -- a BASE push can move any PR's -dot diff across
 // the size boundary in either direction, with no per-PR signal.
 func TestCachedPullDiff_PushFlushesRepoWide(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -159,13 +161,13 @@ func TestCachedPull_NonNumericAndQueryPassthrough(t *testing.T) {
 // TestCachedPull_ClosedAbsorbedAsDoc: a fetched closed PR evicts any stale
 // open row (the truth table retains open PRs only) and is absorbed as a
 // rendered whole-doc snapshot -- served trimmed on the miss, then replayed
-// byte-identically from closed_pull_cache with zero upstream calls (every
+// byte-identically from closed_pull_cache with upstream calls (every
 // drain re-reads settled PRs; each read used to be a fresh passthrough).
 func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
 
-	// Absorb PR #7 while open.
+	// Absorb PR # while open.
 	do(t, router, authedReq("GET", target, nil))
 	_, _, ok, err := store.RestSinglePull(seedCtx(), "org1", "repo1", 7)
 	require.NoError(t, err)
@@ -198,7 +200,7 @@ func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "absorbing a closed PR must delete the cached open row")
 
-	// The next read serves the identical doc from state, zero upstream.
+	// The next read serves the identical doc from state, upstream.
 	fetched := atomic.LoadInt32(&u.singleHits)
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
@@ -217,7 +219,7 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
 
-	// A merged-closed PR: absorbed as a rendered doc on the first read.
+	// A merged-closed PR: absorbed as a rendered doc on the read.
 	u.single = func(w http.ResponseWriter, r *http.Request) {
 		pr := upstreamSinglePR(7, "closed", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z")
 		pr["mergeable"] = nil

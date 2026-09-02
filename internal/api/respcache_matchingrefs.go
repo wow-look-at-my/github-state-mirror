@@ -21,7 +21,7 @@ const (
 	matchingRefsMaxCachedPage = 10
 )
 
-// cachedMatchingRefs serves one page of a ref-prefix search.
+// cachedMatchingRefs serves page of a ref-prefix search.
 func (h *handlers) cachedMatchingRefs(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
@@ -105,7 +105,7 @@ func parseMatchingRefsShape(q url.Values) (perPage, page int64, ok bool) {
 	return perPage, page, true
 }
 
-// matchingRefJSON is one trimmed matching-ref entry: url/node_id dropped.
+// matchingRefJSON is trimmed matching-ref entry: url/node_id dropped.
 type matchingRefJSON struct {
 	Ref    string             `json:"ref"`
 	Object matchingRefSHAJSON `json:"object"`
@@ -115,7 +115,7 @@ type matchingRefSHAJSON struct {
 	SHA string `json:"sha"`
 }
 
-// absorbMatchingRefs parses a 200 matching-refs listing into the trimmed
+// absorbMatchingRefs parses a matching-refs listing into the trimmed
 // document. The body must be an ARRAY; an empty array (no ref matches the
 // prefix) is a valid cacheable answer.
 func absorbMatchingRefs(status int, body []byte) (string, bool) {

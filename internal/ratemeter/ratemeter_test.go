@@ -81,7 +81,8 @@ func TestObserve_UsedDerivedWhenAbsent(t *testing.T) {
 
 // TestObserve_IgnoresResponsesWithoutRateHeaders: 304s and non-API hosts carry
 // no X-RateLimit-* headers; nothing is recorded, and a partial reading (only
-// one of Limit/Remaining) is discarded too.
+//
+//	of Limit/Remaining) is discarded too.
 func TestObserve_IgnoresResponsesWithoutRateHeaders(t *testing.T) {
 	s := New()
 	s.Observe("user:42", "", respWith(nil))
@@ -95,7 +96,7 @@ func TestObserve_IgnoresResponsesWithoutRateHeaders(t *testing.T) {
 }
 
 // TestObserve_LastWriteWins: a later reading for the same (identity, resource)
-// replaces the earlier one.
+// replaces the earlier.
 func TestObserve_LastWriteWins(t *testing.T) {
 	s := New()
 	s.Observe("user:42", "", respWith(map[string]string{
@@ -200,7 +201,7 @@ func TestObservationsFor_FiltersByIdentity(t *testing.T) {
 // TestObservationsFor_PrunesDead: a dead entry (its window rolled over) never
 // comes back, exactly like Snapshot -- so a caller polling GET /rate_limit
 // long after its last real request sees an empty answer rather than an hour
-// stale one.
+// stale.
 func TestObservationsFor_PrunesDead(t *testing.T) {
 	s := New()
 	now := time.Unix(1_800_000_000, 0)
@@ -243,7 +244,7 @@ func TestPrune_PastResetDies(t *testing.T) {
 	}))
 	require.Len(t, s.Snapshot(), 2)
 
-	// At the exact reset second the entry still stands; prune is strictly after.
+	// At the exact reset the entry still stands; prune is strictly after.
 	advance(now.Add(60 * time.Second))
 	require.Len(t, s.Snapshot(), 2)
 	advance(now.Add(61 * time.Second))
@@ -252,7 +253,7 @@ func TestPrune_PastResetDies(t *testing.T) {
 	assert.Equal(t, "user:later", snap[0].Identity)
 }
 
-// TestPrune_ZeroResetAgesOutAfterAnHour: a zero Reset (header absent) has no
+// TestPrune_ZeroResetAgesOutAfterAnHour: a Reset (header absent) has no
 // window to judge by — the entry is neither immortal nor instantly dead: it
 // survives while ObservedAt is within staleTTL and is pruned past it.
 func TestPrune_ZeroResetAgesOutAfterAnHour(t *testing.T) {

@@ -19,7 +19,7 @@ const (
 )
 
 // GetCachedWorkflowJobs returns the stored trimmed document, or ("", false)
-// on a miss (no row, or an expired one). A hit refreshes the row's LRU stamp.
+// on a miss (no row, or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedWorkflowJobs(ctx context.Context, owner, repo, kind string, refID, perPage, page int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetWorkflowJobsCache(ctx, dbgen.GetWorkflowJobsCacheParams{
@@ -41,7 +41,7 @@ func (s *Store) GetCachedWorkflowJobs(ctx context.Context, owner, repo, kind str
 	return row.Doc, true, nil
 }
 
-// PutCachedWorkflowJobs records one fetched answer, then prunes the table
+// PutCachedWorkflowJobs records fetched answer, then prunes the table
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedWorkflowJobs(ctx context.Context, owner, repo, kind string, refID, runID, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertWorkflowJobsCache(ctx, dbgen.UpsertWorkflowJobsCacheParams{

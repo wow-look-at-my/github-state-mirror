@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// OrgReposFetcher runs one principal's owner LIST-SYNC: fetches repos + open
+// OrgReposFetcher runs principal's owner LIST-SYNC: fetches repos + open
 type OrgReposFetcher struct {
 	gh    *ghclient.Client
 	store *ghdata.Store

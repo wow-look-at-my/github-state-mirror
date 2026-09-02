@@ -15,7 +15,7 @@ import (
 
 const testRunID, testJobID = 9001, 55501
 
-// jobDoc is one GitHub-shaped job object with the given status, full of URL
+// jobDoc is GitHub-shaped job object with the given status, full of URL
 // fields so the tests can prove the rebuild drops them. An empty conclusion
 // means the job has not settled, which the encoder writes as null.
 func jobDoc(status, conclusion string) map[string]any {
@@ -100,7 +100,7 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 // A RUNNING run is served, and its own deliveries are what keep the answer
 // true. This is the load-bearing behavior of the whole route: the fetch
 // settles which jobs belong to the run, the workflow_job delivery states the
-// new value of one of them, and the stored page is rewritten rather than
+// new value of of them, and the stored page is rewritten rather than
 // dropped — so the runner coordinator reads current job state without the
 // fleet re-asking GitHub for what it was already told.
 func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
@@ -142,9 +142,9 @@ func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 // The live TTL is the LOST-DELIVERY bound, and only that. A page whose
 // movement is a job WAITING to start carries it (the deliveries keep such a
 // page exactly right, since a queued job has no steps yet); a running job's
-// steps advance unreported and earn the shorter one; a settled page keeps the
-// long one. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all
-// three.
+// steps advance unreported and earn the shorter; a settled page keeps the
+// long. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all
+// .
 func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {

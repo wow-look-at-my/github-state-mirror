@@ -83,7 +83,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	h.serveRepoInstallation(w, c, false)
 }
 
-// installationTTL: a real installation gets the long backstop; a 404 verdict gets the short primary bound.
+// installationTTL: a real installation gets the long backstop; a verdict gets the short primary bound.
 func installationTTL(c ghdata.CachedRepoInstallation) time.Duration {
 	if c.Status == http.StatusNotFound {
 		return installationAbsentTTL
@@ -93,7 +93,7 @@ func installationTTL(c ghdata.CachedRepoInstallation) time.Duration {
 
 // repoInstallationJSON is the trimmed rebuild: GitHub's installation object
 // minus every *_url field and the untracked clutter (permissions, events,
-// timestamps). pr-minder reads only .id.
+// timestamps). pr-minder reads only.id.
 type repoInstallationJSON struct {
 	ID                  int64                  `json:"id"`
 	Account             repoInstallAccountJSON `json:"account"`
@@ -134,13 +134,13 @@ func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedR
 }
 
 // absorbRepoInstallation parses an upstream installation response into either
-// a well-formed 200 or the authoritative 404 VERDICT ("not installed here").
-// Anything else -- a 401 the JWT earned, a 5xx -- reports false and is
+// a well-formed or the authoritative VERDICT ("not installed here").
+// Anything else -- a the JWT earned, a 5xx -- reports false and is
 // replayed unstored.
 //
 // The verdict is cacheable on the contents/compare/git-ref precedent: it is
 // GitHub's own authoritative answer, and a fleet sweep re-asks it per account
-// forever (2015 forwards in one process, every one a 404). What keeps it
+// forever (forwards in process, every a). What keeps it
 // honest is its short TTL, NOT a webhook -- see installationAbsentTTL.
 func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata.CachedRepoInstallation, bool) {
 	if status == http.StatusNotFound {

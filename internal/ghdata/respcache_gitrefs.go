@@ -18,8 +18,8 @@ import (
 //
 // see docs/cache/rest-routes.md
 
-// IsFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex object id.
-// It lives in storage: a truncated id is rejected once here, not at every caller.
+// IsFullHexSHA reports whether s is a full-length (or) lowercase hex object id.
+// It lives in storage: a truncated id is rejected here, not at every caller.
 func IsFullHexSHA(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
@@ -46,7 +46,7 @@ type CachedGitRef struct {
 }
 
 // GetCachedGitRef returns the cached ref answer, or ok=false on a miss (no
-// row, or an expired one). A hit refreshes the row's LRU timestamp.
+// row, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedGitRef(ctx context.Context, owner, repo, ref string, now time.Time) (CachedGitRef, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
@@ -77,7 +77,7 @@ func (s *Store) GetCachedGitRefChecked(ctx context.Context, owner, repo, ref str
 	if err != nil || !ok {
 		return c, ok, "", err
 	}
-	// Only a real ref answer names a tip; a ref creation arrives as a push and drops the 404 verdict instead.
+	// Only a real ref answer names a tip; a ref creation arrives as a push and drops the verdict instead.
 	if c.Status != http.StatusOK {
 		return c, true, "", nil
 	}
@@ -121,7 +121,7 @@ func branchNameFromRefPath(ref string) string {
 	return name
 }
 
-// PutCachedGitRef records one fetched ref answer, then prunes the table
+// PutCachedGitRef records fetched ref answer, then prunes the table
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedGitRef(ctx context.Context, c CachedGitRef, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertGitRefCache(ctx, dbgen.UpsertGitRefCacheParams{
@@ -151,13 +151,13 @@ type storedGitRefDoc struct {
 // ApplyPushedRefTip writes a push's OWN answer into the cached ref rows: the
 // payload states the ref's exact new tip (`after`), so there is nothing to go
 // ask GitHub for. This is the apply-don't-invalidate rule (CLAUDE.md,
-// docs/webhooks/dispatch.md) on the one route whose whole answer a push
+// docs/webhooks/dispatch.md) on the route whose whole answer a push
 // carries -- deleting the row instead spends a needless GET on the next
 // reader and leaves the tip unknown until someone pays for it.
 //
-// Applies only to an existing 200 row, per spelling. A 404 verdict row is
+// Applies only to an existing row, per spelling. A verdict row is
 // LEFT for the caller to delete: promoting it to a real answer would need the
-// ref's node_id, which no push payload carries, and inventing one would put a
+// ref's node_id, which no push payload carries, and inventing would put a
 // fabricated field on the wire. A missing row stays missing -- there is no
 // stale answer to correct, and caching a ref nobody asked for is not this
 // function's job.
@@ -196,7 +196,7 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 
 // ApplyMergedBaseTip writes a merged PR's own base.sha into that branch's
 // cached ref row: a merge that postdates the row's established time applies,
-// an earlier one is dropped, so no fetch is needed to decide the order.
+// an earlier is dropped, so no fetch is needed to decide the order.
 // see docs/cache/stale-tip-repair.md
 func (s *Store) ApplyMergedBaseTip(ctx context.Context, owner, repo, ref, mergeCommitSHA string, mergedAt, now time.Time, ttl time.Duration) (bool, error) {
 	if !IsFullHexSHA(mergeCommitSHA) || strings.Trim(mergeCommitSHA, "0") == "" || mergedAt.IsZero() {
@@ -262,7 +262,7 @@ func (s *Store) KnownBranchTip(ctx context.Context, owner, repo, name string, no
 	return "", false, nil
 }
 
-// InvalidateGitRefForRef drops one spelling of a ref -- the last resort here, for a deletion or a creation clearing a 404 verdict.
+// InvalidateGitRefForRef drops spelling of a ref -- the last resort here, for a deletion or a creation clearing a verdict.
 func (s *Store) InvalidateGitRefForRef(ctx context.Context, owner, repo, ref string) error {
 	return s.q.DeleteGitRefCacheForRef(ctx, dbgen.DeleteGitRefCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,

@@ -1,4 +1,4 @@
-// Package httpobs makes an outbound HTTP client observable at the one place
+// Package httpobs makes an outbound HTTP client observable at the place
 // that cannot be bypassed: its transport.
 //
 // Every request this service sends has to be visible on the dashboard. A

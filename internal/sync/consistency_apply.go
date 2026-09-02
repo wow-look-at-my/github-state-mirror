@@ -18,7 +18,7 @@ import (
 // corrections written from the already-fetched snapshot, plus the per-class
 // remediation hints the report attaches.
 
-// applyOwner corrects the drift for one owner from the already-fetched
+// applyOwner corrects the drift for owner from the already-fetched
 // snapshot, under the installation's stable principal. The diff has already
 // run against the pre-apply cache, so the report reads as before/after.
 func (c *ConsistencyChecker) applyOwner(
@@ -35,7 +35,7 @@ func (c *ConsistencyChecker) applyOwner(
 	now := time.Now()
 	principal := AppInstallationActor(inst.ID)
 
-	// 1. Absorb the snapshot; tally intent against the pre-apply cache the diff used.
+	// . Absorb the snapshot; tally intent against the pre-apply cache the diff used.
 	sync := ghdata.OrgSyncData{Repos: data.Repos, PRsByRepo: data.PRsByRepo, LabelsByPR: data.LabelsByPR}
 	if err := c.store.SyncOrgTruth(ctx, owner, sync, principal, fetchStart, now); err != nil {
 		return fmt.Errorf("sync truth: %w", err)
@@ -61,7 +61,7 @@ func (c *ConsistencyChecker) applyOwner(
 		}
 	}
 
-	// 2. Visibility, from the checker-private map: fixes fail-closed '' rows
+	// . Visibility, from the checker-private map: fixes fail-closed '' rows
 	// AND drift in both directions (a leak -- cached public, GitHub private --
 	// and the reverse). Only rows that exist are written (a repo neither
 	// cached nor fetched, e.g. archived and never absorbed, has no row).
@@ -83,7 +83,7 @@ func (c *ConsistencyChecker) applyOwner(
 	}
 
 	for _, r := range data.Repos {
-		// 3. default_branch_status: explicit set INCLUDING NULL where
+		// . default_branch_status: explicit set INCLUDING NULL where
 		// mismatched -- the COALESCE upsert can never null a stale rollup
 		// (the gcc/.github drift class: the tip advanced to a commit with no
 		// CI and the old rollup stuck forever).
@@ -106,7 +106,7 @@ func (c *ConsistencyChecker) applyOwner(
 						return err
 					}
 					// Only ROWS that contradict the terminal verdict need the
-					// correction: with zero rows there is nothing to poison the
+					// correction: with rows there is nothing to poison the
 					// next recompute, and the sync's COALESCE upsert already
 					// stamped the non-null verdict on the column -- correcting
 					// anyway would tally every checks-less PR as "corrected" on
@@ -153,7 +153,7 @@ func (c *ConsistencyChecker) applyOwner(
 		}
 	}
 
-	// 6. Stamp the app-installation freshness marker so truth_freshness (and
+	// . Stamp the app-installation freshness marker so truth_freshness (and
 	// the dashboard) reflect that this owner's truth was just refreshed.
 	// Best-effort: the corrections above already landed.
 	if c.fresh != nil {

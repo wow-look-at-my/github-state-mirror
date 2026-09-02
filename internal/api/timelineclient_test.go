@@ -14,7 +14,7 @@ import (
 
 // THE CLIENT MUST NOT FALL BACK.
 //
-// /api/timeline serves two encodings: the columnar payload to a caller that
+// /api/timeline serves encodings: the columnar payload to a caller that
 // names its media type, readable JSON to everyone else. The JSON is only safe
 // because the CHART REFUSES IT — an earlier version took whatever came back, so
 // an Accept that drifted silently cost ~10x the frames with nothing logged.

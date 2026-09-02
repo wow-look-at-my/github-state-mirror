@@ -110,7 +110,7 @@ func TestCachedCheckRun_ShapeGuards(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.checkRunHits), "every unmodeled shape forwards to GitHub uncached")
 }
 
-// A 404/403 relays unstored, never a cached verdict -- GitHub authorization
+// A / relays unstored, never a cached verdict -- GitHub authorization
 // on a check run can change with no event reaching the mirror.
 func TestCachedCheckRun_NotFoundRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

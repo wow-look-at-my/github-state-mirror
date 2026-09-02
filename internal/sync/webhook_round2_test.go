@@ -16,7 +16,7 @@ const (
 	r2OtherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// r2Seeder seeds and probes the four ref-keyed caches for org1/repo1.
+// r2Seeder seeds and probes the ref-keyed caches for org1/repo1.
 type r2Seeder struct {
 	t     *testing.T
 	store *ghdata.Store
@@ -54,9 +54,9 @@ func (s r2Seeder) commitsListServe(ref string) bool {
 	return ok
 }
 
-// seedCommitCI seeds one ref's snapshot of EVERY kind: a push moves them all
+// seedCommitCI seeds ref's snapshot of EVERY kind: a push moves them all
 // (the branch points somewhere else afterwards), while the CI deliveries move
-// only the kind they can have changed, so a test asserting on one kind alone
+// only the kind they can have changed, so a test asserting on kind alone
 // could not tell those apart.
 func (s r2Seeder) seedCommitCI(ref string) {
 	s.t.Helper()
@@ -175,7 +175,7 @@ func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 }
 
 // TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows: a default-branch push
-// owns TWO spellings of the same rows -- the branch name and the empty ref
+// owns spellings of the same rows -- the branch name and the empty ref
 // (the default-branch-relative key contents/commits-list use) -- so both
 // flush, while an unrelated branch's rows survive.
 func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
@@ -312,7 +312,7 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 
 // TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA: a workflow_job delivery
 // flushes the job sha's workflow-runs pages -- for EVERY action, including
-// the queued one the disposition logic drops as ignored, because the
+// the queued the disposition logic drops as ignored, because the
 // invalidation pass runs before it (a queued job is exactly a run the cached
 // listing may not have shown yet).
 func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
@@ -333,7 +333,7 @@ func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
 }
 
 // TestDispatch_PullRequest_ClearsPullDiff406: a pull_request event clears
-// that one PR's cached 406 diff verdict (its head just moved, so the diff
+// that PR's cached diff verdict (its head just moved, so the diff
 // may have shrunk back under the boundary) and leaves another PR's verdict.
 func TestDispatch_PullRequest_ClearsPullDiff406(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)

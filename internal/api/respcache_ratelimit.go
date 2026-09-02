@@ -21,7 +21,7 @@ func (h *handlers) cachedRateLimit(w http.ResponseWriter, r *http.Request) {
 
 	identity := actor.FromContext(r.Context())
 	if identity == "" {
-		// requireAuth always sets one; this guards a route wired without it.
+		// requireAuth always sets; this guards a route wired without it.
 		identity = callerLabel(r).Key
 	}
 

@@ -13,12 +13,12 @@ import (
 //
 //	GET /repos/{owner}/{repo}/code-quality/setup
 //
-// One row per repo -- the endpoint takes no query parameters, so the repo is
+//  row per repo -- the endpoint takes no query parameters, so the repo is
 // the whole key. The stored document is already trimmed and rendered. WHO may
 // read it is the reveal layer's job (internal/api).
 
 // GetCachedCodeQualitySetup returns the stored document, or ("", false) on a
-// miss (no row, or an expired one). A hit refreshes the row's LRU stamp.
+// miss (no row, or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedCodeQualitySetup(ctx context.Context, owner, repo string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetCodeQualitySetupCache(ctx, dbgen.GetCodeQualitySetupCacheParams{Owner: ownerKey, Repo: repoKey})
@@ -37,7 +37,7 @@ func (s *Store) GetCachedCodeQualitySetup(ctx context.Context, owner, repo strin
 	return row.Doc, true, nil
 }
 
-// PutCachedCodeQualitySetup records one fetched configuration, then prunes the
+// PutCachedCodeQualitySetup records fetched configuration, then prunes the
 // table (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedCodeQualitySetup(ctx context.Context, owner, repo, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertCodeQualitySetupCache(ctx, dbgen.UpsertCodeQualitySetupCacheParams{

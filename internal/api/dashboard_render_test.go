@@ -55,7 +55,7 @@ func TestShortAndTime(t *testing.T) {
 }
 
 // TestToRecent_SurfacesError verifies a failed refresh carries its captured
-// error_message through to the dashboard response, while a successful one does
+// error_message through to the dashboard response, while a successful does
 // not — so the UI can show *why* a refresh errored, not just that it did.
 func TestToRecent_SurfacesError(t *testing.T) {
 	logs := []dbgen.CacheRefreshLog{
@@ -83,7 +83,7 @@ func TestToRecent_SurfacesError(t *testing.T) {
 	assert.Empty(t, out[1].Error, "successful refresh has no error detail")
 }
 
-// seedJob writes one workflow job row (global — no actor scoping).
+// seedJob writes workflow job row (global — no actor scoping).
 func seedJob(t *testing.T, store *ghdata.Store, id int64, name, status, conclusion, startedAt, completedAt string) {
 	t.Helper()
 	require.NoError(t, store.RecordWorkflowJob(context.Background(), ghdata.WorkflowJob{
@@ -115,7 +115,7 @@ func TestDashboard_Jobs_Admin(t *testing.T) {
 	var resp jobsResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Len(t, resp.Jobs, 3)
-	// Running first, then completed newest-completed first.
+	// Running, then completed newest-completed.
 	assert.Equal(t, "running", resp.Jobs[0].Name)
 	assert.Equal(t, "done-new", resp.Jobs[1].Name)
 	assert.Equal(t, "done-old", resp.Jobs[2].Name)
@@ -143,7 +143,7 @@ func TestDashboard_Jobs_Limit(t *testing.T) {
 	require.Len(t, resp.Jobs, 1)
 	assert.Equal(t, "c", resp.Jobs[0].Name)
 
-	// A limit beyond the cap is clamped (still 200; returns what exists).
+	// A limit beyond the cap is clamped (still; returns what exists).
 	req = httptest.NewRequest("GET", "/api/jobs?limit=99999", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()
@@ -153,7 +153,7 @@ func TestDashboard_Jobs_Limit(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Len(t, resp.Jobs, 3)
 
-	// Garbage limit is a 400.
+	// Garbage limit is a.
 	req = httptest.NewRequest("GET", "/api/jobs?limit=zero", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()

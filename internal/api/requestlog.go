@@ -50,7 +50,7 @@ const (
 	PassIdentity = "unverified-identity"
 	// PassResponse: the request was modeled but the response was not (unexpected status, oversized body, ...) — costs an upstream round trip.
 	PassResponse = "unmodeled-response"
-	// PassGraphQL: a GraphQL query other than the locked org-repos one.
+	// PassGraphQL: a GraphQL query other than the locked org-repos.
 	PassGraphQL = "graphql-forward"
 )
 
@@ -80,7 +80,7 @@ func taggedProxy(next http.Handler, reason string) http.HandlerFunc {
 	}
 }
 
-// shapeReason checks Accept, then path, then query, in a fixed order, so a request violating several reports one stable reason.
+// shapeReason checks Accept, then path, then query, in a fixed order, so a request violating several reports stable reason.
 func shapeReason(r *http.Request, modeledPath bool) string {
 	switch {
 	case !acceptsDefaultJSON(r):
@@ -121,7 +121,7 @@ func passthroughDisposition(r *http.Request) string {
 	}
 }
 
-// requestEvent is one recorded data-API request.
+// requestEvent is recorded data-API request.
 type requestEvent struct {
 	Actor string `json:"actor"`
 	// ActorName is the principal's verified display name; empty for an unverified X-Mirror-Identity "app:<iss>" label.
@@ -129,9 +129,9 @@ type requestEvent struct {
 	Method      string `json:"method"`
 	Path        string `json:"path"`
 	Disposition string `json:"disposition"`
-	// Status is the upstream HTTP status for a passthrough; 0 when no upstream call was made (e.g. a cache hit).
+	// Status is the upstream HTTP status for a passthrough; when no upstream call was made (e.g. a cache hit).
 	Status int `json:"status,omitempty"`
-	// Reason is why a passthrough was forwarded uncached (one of the Pass* vocabulary above); empty for every other disposition.
+	// Reason is why a passthrough was forwarded uncached (of the Pass* vocabulary above); empty for every other disposition.
 	Reason string `json:"reason,omitempty"`
 	At     string `json:"at"` // RFC3339
 }
@@ -213,7 +213,7 @@ func (l *requestLog) recordFull(who callerIdent, method, path, disposition strin
 }
 
 // requestLogSnapshot is the dashboard payload: totals + route-shape groups
-// (total desc, capped) + recent requests (newest first).
+// (total desc, capped) + recent requests (newest).
 type requestLogSnapshot struct {
 	Total         int64                  `json:"total"`
 	ByDisposition map[string]int64       `json:"by_disposition"`
@@ -251,13 +251,13 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 // recorded as a passthrough — with the upstream HTTP status GitHub returned, so
 // the dashboard shows whether the forwarded call actually succeeded. Used both as
 // the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
-// forward target, so each proxied request is counted exactly once regardless of
+// forward target, so each proxied request is counted exactly regardless of
 // entry path. observeStatus also times it end-to-end (upstream round-trip plus
 // response streaming) into the timeline ring.
 func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		// Sample the response shape for the brief, at most once per route shape per shapeResampleAfter.
+		// Sample the response shape for the brief, at most per route shape per shapeResampleAfter.
 		route := normalizeRoute(r.URL.Path)
 		if shapes.wantsBody(r.Method, route) {
 			sw.capture = make([]byte, 0, 8<<10)
@@ -268,7 +268,7 @@ func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) h
 	})
 }
 
-// observeRequest records one passthrough's shape. body is nil unless this
+// observeRequest records passthrough's shape. body is nil unless this
 // request was selected for sampling; it is reduced to a skeleton and dropped.
 // contentEncoding is the upstream response's own Content-Encoding (e.g.
 // "gzip") — body is the WIRE bytes, not decoded, since the passthrough proxy
@@ -321,7 +321,7 @@ func (s *statusRecorder) WriteHeader(code int) {
 }
 
 func (s *statusRecorder) Write(b []byte) (int, error) {
-	s.written = true // an implicit 200 when WriteHeader was never called
+	s.written = true // an implicit when WriteHeader was never called
 	if s.capture != nil && !s.overflow {
 		if len(s.capture)+len(b) > shapeMaxSampleBytes {
 			s.capture, s.overflow = nil, true

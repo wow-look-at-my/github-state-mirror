@@ -50,7 +50,7 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 // low-frequency required event (repository, label) is reported missing
 // forever while correctly subscribed. That guard cried wolf on every page
 // load, which is strictly worse than no guard: it trains the operator to skim
-// past the one time a subscription really is gone.
+// past the time a subscription really is gone.
 func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 	// excludes "label"
 	subscribed := []string{}

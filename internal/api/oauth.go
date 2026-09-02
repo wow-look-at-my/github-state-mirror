@@ -18,7 +18,7 @@ var githubDeviceCodeURL = "https://github.com/login/device/code"
 var oauthRelayClient = &http.Client{Timeout: 15 * time.Second}
 
 // caps the login relay request/response bodies.
-const maxOAuthBytes = 64 << 10 // 64 KiB
+const maxOAuthBytes = 64 << 10 //  KiB
 
 // oauthAccessToken relays the OAuth code-for-token exchange to github.com,
 // which sends no CORS headers of its own.
@@ -26,7 +26,7 @@ func (h *handlers) oauthAccessToken(w http.ResponseWriter, r *http.Request) {
 	h.relayGitHubLogin(w, r, githubOAuthTokenURL)
 }
 
-// oauthDeviceCode relays the RFC 8628 device-authorization start, same story
+// oauthDeviceCode relays the RFC device-authorization start, same story
 // as oauthAccessToken.
 func (h *handlers) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
 	h.relayGitHubLogin(w, r, githubDeviceCodeURL)

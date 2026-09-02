@@ -34,7 +34,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// schemaTemplate is a blank cache DB built ONCE per test binary and copied for
+// schemaTemplate is a blank cache DB built per test binary and copied for
 var schemaTemplate struct {
 	once sync.Once
 	dir  string
@@ -145,7 +145,7 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 }
 
 // newFullTestStackDebounced builds the stack with the passthrough debouncer
-// holding eligible reads for window (0 = disabled, the default everywhere
+// holding eligible reads for window (= disabled, the default everywhere
 // else).
 func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler http.Handler, window time.Duration) testStack {
 	t.Helper()
@@ -235,7 +235,7 @@ func authedReq(method, target string, body io.Reader) *http.Request {
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
 // with no Authorization header. Non-cached REST paths fall through to the
 // passthrough proxy, which itself enforces the token; the GraphQL route is
-// gated by requireAuth. Either way a tokenless request is 401.
+// gated by requireAuth. Either way a tokenless request is.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -260,7 +260,7 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestRevealIsolation verifies the reveal layer: global truth absorbed via one
+// TestRevealIsolation verifies the reveal layer: global truth absorbed via
 // principal's sync (a PRIVATE-by-default repo, since the GraphQL sync cannot
 // learn visibility) is NOT revealed to a different user with no grant, while
 // the syncing user sees it via their list_sync grant.
@@ -342,7 +342,7 @@ func TestRevealPublicFastPath(t *testing.T) {
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
 // a bearer token (it is authenticated by HMAC signature instead). A ping is an
-// untracked event, so it is accepted as a no-op (202), not rejected (401/403).
+// untracked event, so it is accepted as a no-op (), not rejected (/).
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 

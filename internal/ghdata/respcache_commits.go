@@ -25,12 +25,12 @@ import (
 // serving a hole. WHO may read a rebuilt list is the reveal layer's job
 // (internal/api).
 
-// GetCachedCommitsList returns the commits of one cached list page in
+// GetCachedCommitsList returns the commits of cached list page in
 // response order, or (nil, false) on a miss: no snapshot, an expired
 // snapshot, an unreadable sha array, or any listed sha no longer resolving in
 // git_commits_cache. A hit refreshes the snapshot's LRU timestamp and each
 // commit row's (via GetCachedGitCommit), so a list-served commit earns LRU
-// lifetime like a single-read one and the pair stays resident together.
+// lifetime like a single-read and the pair stays resident together.
 func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam string, perPage, page int, now time.Time) ([]CachedGitCommit, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetCommitsListCache(ctx, dbgen.GetCommitsListCacheParams{
@@ -68,9 +68,9 @@ func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam 
 	return commits, true, nil
 }
 
-// PutCachedCommitsList absorbs one fetched list page: every listed commit is
+// PutCachedCommitsList absorbs fetched list page: every listed commit is
 // upserted into the global git_commits_cache and the page's ordered sha
-// snapshot is recorded, all in one transaction, then both tables are pruned
+// snapshot is recorded, all in transaction, then both tables are pruned
 // (expired snapshots + LRU beyond the cap). commits must carry normalized
 // owner/repo and lowercased shas (the API layer's absorb does).
 func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam string, perPage, page int, commits []CachedGitCommit, now time.Time, ttl time.Duration) error {

@@ -16,14 +16,14 @@ import (
 )
 
 // Passthrough debouncing coalesces identical in-flight, unmodeled reads
-// behind a caller-credential key. See docs/cache/three-tier-contract.md.
+// behind a caller-credential key. See docs/cache/-tier-contract.md.
 
 const (
 	// debounceMaxBatches is the runaway backstop; past it requests forward uncoalesced.
 	debounceMaxBatches = 1024
 
 	// debounceMaxBodyBytes caps the buffered response; past it every waiter falls back to its own passthrough.
-	debounceMaxBodyBytes = 8 << 20 // 8 MiB
+	debounceMaxBodyBytes = 8 << 20 //  MiB
 
 	// debounceFetchTimeout bounds the batch's call on a context detached from every waiter.
 	debounceFetchTimeout = 60 * time.Second
@@ -36,7 +36,7 @@ const (
 // DebounceMaxWindow caps PASSTHROUGH_DEBOUNCE; exported so config validation matches this cap.
 const DebounceMaxWindow = 30 * time.Second
 
-// Debouncer coalesces identical in-flight passthrough reads. The zero value is
+// Debouncer coalesces identical in-flight passthrough reads. The value is
 // not usable; construct with NewDebouncer. A nil *Debouncer is inert (Wrap
 // returns the handler unchanged), so tests and disabled deployments need no
 // special casing.
@@ -58,7 +58,7 @@ type Debouncer struct {
 }
 
 // NewDebouncer returns a Debouncer holding eligible passthrough reads for
-// window. A window <= 0 disables coalescing entirely (nil is returned, which
+// window. A window <= disables coalescing entirely (nil is returned, which
 // Wrap treats as a no-op passthrough).
 func NewDebouncer(window time.Duration) *Debouncer {
 	if window <= 0 {
@@ -80,7 +80,7 @@ func (d *Debouncer) attach(reqlog *requestLog, timeline *reqtimeline.Recorder) {
 	d.timeline = timeline
 }
 
-// Window reports the configured hold, or 0 when debouncing is off.
+// Window reports the configured hold, or when debouncing is off.
 func (d *Debouncer) Window() time.Duration {
 	if d == nil {
 		return 0
@@ -88,7 +88,7 @@ func (d *Debouncer) Window() time.Duration {
 	return d.window
 }
 
-// debounceBatch is one held request: the waiters share whatever res the fetch
+// debounceBatch is held request: the waiters share whatever res the fetch
 // produces. res is written before done is closed, so a waiter that has
 // received from done reads it safely.
 type debounceBatch struct {
@@ -98,7 +98,7 @@ type debounceBatch struct {
 	batchSz int // joined at close time, for the served headers
 }
 
-// bufferedResponse is one upstream answer captured whole so it can be replayed
+// bufferedResponse is upstream answer captured whole so it can be replayed
 // to every member of a batch.
 type bufferedResponse struct {
 	status int
@@ -134,7 +134,7 @@ func (d *Debouncer) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		if b.res == nil {
-			// Nothing replayable (oversized body): pay for our own call instead of serving a truncated one.
+			// Nothing replayable (oversized body): pay for our own call instead of serving a truncated.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -143,7 +143,7 @@ func (d *Debouncer) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// join attaches r to the batch for key, starting one (and its fetch goroutine)
+// join attaches r to the batch for key, starting (and its fetch goroutine)
 // if none is open. Returns nil when the request must be forwarded directly.
 func (d *Debouncer) join(key string, r *http.Request, next http.Handler) *debounceBatch {
 	d.mu.Lock()
@@ -158,7 +158,7 @@ func (d *Debouncer) join(key string, r *http.Request, next http.Handler) *deboun
 		}
 		b = &debounceBatch{done: make(chan struct{})}
 		d.batches[key] = b
-		// Detached clone: one shared credential backs every waiter, so no single disconnect cancels it.
+		// Detached clone: shared credential backs every waiter, so no single disconnect cancels it.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), debounceFetchTimeout)
 		d.inflight.Add(1)
 		go d.run(key, b, r.Clone(ctx), cancel, next)
@@ -182,7 +182,7 @@ func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel 
 	case <-req.Context().Done(): // the detached fetch budget expired
 	}
 
-	// Close the batch: a later arrival opens a fresh one rather than reusing this answer.
+	// Close the batch: a later arrival opens a fresh rather than reusing this answer.
 	d.mu.Lock()
 	if d.batches[key] == b {
 		delete(d.batches, key)
@@ -228,12 +228,12 @@ func (d *Debouncer) Drain(timeout time.Duration) {
 	}
 }
 
-// recordServed counts one inbound request answered from a shared batch.
+// recordServed counts inbound request answered from a shared batch.
 func (d *Debouncer) recordServed(r *http.Request) {
 	d.reqlog.addDebounced(r.Method, normalizeRoute(r.URL.Path), 1, 0)
 }
 
-// recordSaved counts calls avoided: n requests served by one call save n-1; a batch of one saves nothing.
+// recordSaved counts calls avoided: n requests served by call save n-; a batch of saves nothing.
 func (d *Debouncer) recordSaved(r *http.Request, batchSz int) {
 	if batchSz > 1 {
 		d.reqlog.addDebounced(r.Method, normalizeRoute(r.URL.Path), 0, int64(batchSz-1))
@@ -241,7 +241,7 @@ func (d *Debouncer) recordSaved(r *http.Request, batchSz int) {
 }
 
 // debounceKey derives the coalescing key, reporting false when the request must not be debounced.
-// see docs/cache/three-tier-contract.md
+// see docs/cache/-tier-contract.md
 func debounceKey(r *http.Request) (string, bool) {
 	if r.Method != http.MethodGet {
 		return "", false
@@ -273,7 +273,7 @@ func debounceKey(r *http.Request) (string, bool) {
 	return hex.EncodeToString(sum.Sum(nil)), true
 }
 
-// writeDebounced replays a batch's captured response to one waiter. Upstream
+// writeDebounced replays a batch's captured response to waiter. Upstream
 // headers are ADDED (not assigned) exactly as httputil.ReverseProxy copies
 // them, so a debounced response carries the same headers the streaming
 // passthrough would have — including the CORS headers corsMiddleware already

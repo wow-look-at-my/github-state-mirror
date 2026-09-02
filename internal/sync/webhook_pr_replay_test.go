@@ -15,7 +15,7 @@ import (
 
 // The incident, end to end. A PR's synchronize delivery failed; the PR then
 // merged and its closed delivery applied; the replayer asked GitHub to re-send
-// the failed one, and GitHub re-sent the payload it built at the time -- a
+// the failed, and GitHub re-sent the payload it built at the time -- a
 // pre-merge view. Applying it put a merged PR back in the cache as open, where
 
 // prPayloadAt is makePRPayload with the delivery's own updated_at, the field
@@ -56,7 +56,7 @@ func TestDispatch_ReplayedPreCloseDeliveryDoesNotReopenAMergedPR(t *testing.T) {
 // why: the gate only sees deliveries. A PR row written by a FETCH absorb -- the
 // single-PR route, a list page, the consistency reconcile -- passes no
 // watermark, so the write itself has to refuse a view that cannot prove it
-// postdates a recorded close. Two independent guards, one shared failure.
+// postdates a recorded close. independent guards, shared failure.
 func TestDispatch_ClosureRecordStillRefusesAPreCloseViewWithoutTheGate(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

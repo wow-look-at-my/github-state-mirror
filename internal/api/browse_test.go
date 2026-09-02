@@ -17,7 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// seedBrowseTruth fills global truth with one row in each table (plus a grant
+// seedBrowseTruth fills global truth with row in each table (plus a grant
 // for a principal) so the browse endpoints exercise every converter.
 func seedBrowseTruth(t *testing.T, store *ghdata.Store, principal, login string) {
 	t.Helper()
@@ -169,7 +169,7 @@ func TestCacheCheckApply_UnavailableWithoutApp(t *testing.T) {
 }
 
 // TestRateLimit_NoAppStillServesObserved: without a GitHub App the endpoint no
-// longer 503s — it answers 200 with an empty live half, an explanatory note,
+// longer 503s — it answers with an empty live half, an explanatory note,
 // and whatever the passive meter observed (nothing yet, here).
 func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
 	svc := configuredAuth(t)

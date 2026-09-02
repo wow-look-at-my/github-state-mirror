@@ -20,7 +20,7 @@ import (
 
 // Consistency-checker tests for the states a check can report other than
 // drift: never-synced, transient-retry, served-now, filtering, rate limits,
-// and the two unavailable paths.
+// and the unavailable paths.
 
 func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {
 	srv := driftFake(t)
@@ -40,7 +40,7 @@ func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {
 	assert.Empty(t, sf.Error)
 }
 
-// TestConsistencyChecker_TransientFetchRetried: a single 502 on an owner's
+// TestConsistencyChecker_TransientFetchRetried: a single on an owner's
 // GraphQL fetch is retried by the client, so the owner is CHECKED -- not holed
 // out of the report under orgs_skipped (the pre-retry behavior).
 func TestConsistencyChecker_TransientFetchRetried(t *testing.T) {
@@ -73,7 +73,7 @@ func TestConsistencyChecker_ServedNow(t *testing.T) {
 		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
 		PushedAt: sql.NullString{String: "2024-01-01T00:00:00Z", Valid: true},
 	}))
-	// PR #1 exists on GitHub but not in cache, and the repo has a LIVE list marker.
+	// PR # exists on GitHub but not in cache, and the repo has a LIVE list marker.
 	seedPullsListMarker(t, store, "org1", "repo1")
 
 	rep, err := checker.Check(ctx, "org1")
@@ -93,7 +93,7 @@ func TestConsistencyChecker_OrgFilter(t *testing.T) {
 	checker, store, _ := newCheckerTest(t, srv.URL)
 	ctx := context.Background()
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
-	// A second owner exists in truth but is excluded by the filter.
+	// A owner exists in truth but is excluded by the filter.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "someuser", Name: "y", NameWithOwner: "someuser/y", Url: "u"}))
 
 	rep, err := checker.Check(ctx, "org1")

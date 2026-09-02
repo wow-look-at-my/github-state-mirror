@@ -12,15 +12,15 @@ import (
 // WatermarkRetention bounds how long a subject's watermark is kept; past it every cache it could corrupt has already expired or refreshed.
 const WatermarkRetention = 7 * 24 * time.Hour
 
-// OrderVerdict is what the watermark said about one delivery.
+// OrderVerdict is what the watermark said about delivery.
 type OrderVerdict struct {
 	// Superseded is true when a strictly newer view of this subject already applied; the delivery must not write.
 	Superseded bool
-	// Previous is the watermark this delivery was measured against (zero when the subject was unknown).
+	// Previous is the watermark this delivery was measured against (when the subject was unknown).
 	Previous time.Time
 	// PreviousDelivery is the X-GitHub-Delivery that set Previous, so an out-of-order report can name both sides.
 	PreviousDelivery string
-	// Lateness is how far behind the watermark this view is (zero unless Superseded).
+	// Lateness is how far behind the watermark this view is (unless Superseded).
 	Lateness time.Duration
 }
 

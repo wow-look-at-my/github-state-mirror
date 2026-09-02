@@ -12,7 +12,7 @@ import (
 
 // GitHub Actions deliveries applied to global truth: per-JOB state into the
 // workflow_jobs table, and per-RUN state into workflow_runs -- the rows the
-// repo-wide runs listing is rebuilt from. Both MAINTAIN their rows one
+// repo-wide runs listing is rebuilt from. Both MAINTAIN their rows
 // resource at a time; neither clears a cache (see webhook_invalidate.go for
 // why the listing has no flush at all).
 
@@ -75,10 +75,10 @@ func (d *WebhookDispatcher) onWorkflowJob(ctx context.Context, event webhook.Eve
 
 // onWorkflowRun applies an Actions RUN's own state to global truth. This is
 // the authoritative per-run signal -- the whole object, including the
-// run-level status and conclusion no job payload carries -- and the only one
-// for a run that creates no jobs at all (a startup_failure, or one held by a
+// run-level status and conclusion no job payload carries -- and the only
+// for a run that creates no jobs at all (a startup_failure, or held by a
 // concurrency group). The repo-wide runs listing is rebuilt from these rows,
-// so this delivery UPDATES the one run it names and leaves every other run
+// so this delivery UPDATES the run it names and leaves every other run
 // served.
 //
 // Every action applies, including `requested`: that is a run entering the

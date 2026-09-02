@@ -74,10 +74,12 @@ query($owner: String!, $repoCursor: String) {
 }
 `
 
-// ownerRepoPRsQuery paginates a single repository's open PRs past the first
-// 100 for GetOwnerData -- same shape as repoPRsQuery (repository(owner:,name:)
+// ownerRepoPRsQuery paginates a single repository's open PRs past the
+//
+//	for GetOwnerData -- same shape as repoPRsQuery (repository(owner:,name:)
+//
 // already resolves user-owned repos) but with the ownerPRFields selection so
-// follow-up pages carry the same fields as page one.
+// follow-up pages carry the same fields as page.
 const ownerRepoPRsQuery = `
 query($owner: String!, $name: String!, $prCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -107,7 +109,7 @@ type gqlOwnerResponse struct {
 	} `json:"errors"`
 }
 
-// OwnerPageFunc reports cumulative repos fetched and the connection's total (0 if unreported).
+// OwnerPageFunc reports cumulative repos fetched and the connection's total (if unreported).
 type OwnerPageFunc func(reposFetched, reposTotal int)
 
 // GetOwnerData fetches all non-archived repos and open PRs for any owner (org or user).
@@ -118,7 +120,7 @@ func (c *Client) GetOwnerData(ctx context.Context, ownerLogin string) (*OrgData,
 // GetOwnerDataWithProgress is GetOwnerData with an optional per-page progress
 // hook (nil = no reporting, identical to GetOwnerData). The consistency
 // checker uses it to stream "N of M repos fetched" while a large owner pages
-// through at 5 repos per page.
+// through at repos per page.
 func (c *Client) GetOwnerDataWithProgress(ctx context.Context, ownerLogin string, onPage OwnerPageFunc) (*OrgData, error) {
 	result := &OrgData{
 		PRsByRepo:  make(map[string][]dbgen.PullRequest),
@@ -167,7 +169,7 @@ func (c *Client) GetOwnerDataWithProgress(ctx context.Context, ownerLogin string
 				addPR(result, ownerLogin, gr.Name, repoKey, gpr)
 			}
 
-			// Repos with more than 100 open PRs need follow-up pages.
+			// Repos with more than open PRs need follow-up pages.
 			if gr.PullRequests.PageInfo.HasNextPage {
 				if err := c.fetchRemainingOwnerPRs(ctx, result, ownerLogin, gr.Name, repoKey, gr.PullRequests.PageInfo.EndCursor); err != nil {
 					return nil, err

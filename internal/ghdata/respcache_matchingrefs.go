@@ -14,7 +14,7 @@ import (
 // MatchingRefsCacheTTL bounds a missed-delivery staleness window.
 const MatchingRefsCacheTTL = 24 * time.Hour
 
-// GetCachedMatchingRefs returns one page's cached document, or (empty, false)
+// GetCachedMatchingRefs returns page's cached document, or (empty, false)
 // on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedMatchingRefs(ctx context.Context, owner, repo, prefix string, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetMatchingRefsCache(ctx, dbgen.GetMatchingRefsCacheParams{
@@ -35,7 +35,7 @@ func (s *Store) GetCachedMatchingRefs(ctx context.Context, owner, repo, prefix s
 	return row.Doc, true, nil
 }
 
-// PutCachedMatchingRefs stores one page, then prunes (expired rows + LRU
+// PutCachedMatchingRefs stores page, then prunes (expired rows + LRU
 // beyond the cap).
 func (s *Store) PutCachedMatchingRefs(ctx context.Context, owner, repo, prefix string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertMatchingRefsCache(ctx, dbgen.UpsertMatchingRefsCacheParams{

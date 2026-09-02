@@ -32,7 +32,7 @@ func defaultGitRefUpstream(w http.ResponseWriter, r *http.Request) {
 }
 
 // The core flow: fetch + absorb (miss), then serve the byte-identical stored
-// doc (hit, zero upstream calls), with every URL field dropped.
+// doc (hit, upstream calls), with every URL field dropped.
 func TestCachedGitRef_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"
@@ -70,7 +70,7 @@ func TestCachedGitRef_SlashedBranchName(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 }
 
-// A push APPLIES its own tip to every spelling of the ref, at zero upstream cost.
+// A push APPLIES its own tip to every spelling of the ref, at upstream cost.
 func TestCachedGitRef_PushAppliesTipToEverySpelling(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	spellings := []string{
@@ -122,7 +122,7 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 }
 
-// A push to a DIFFERENT branch must not flush this one: the whole point of
+// A push to a DIFFERENT branch must not flush this: the whole point of
 // keying per ref rather than per repo.
 func TestCachedGitRef_OtherBranchPushKeepsHit(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
@@ -137,7 +137,7 @@ func TestCachedGitRef_OtherBranchPushKeepsHit(t *testing.T) {
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "an unrelated branch's push must not flush this ref")
 }
 
-// The 404 absent-ref VERDICT is absorbed (deleted heads are re-polled
+// The absent-ref VERDICT is absorbed (deleted heads are re-polled
 // forever) and cleared by the push that recreates the ref.
 func TestCachedGitRef_AbsentVerdictCachedThenClearedByCreate(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -219,7 +219,7 @@ func TestGitRefCacheable(t *testing.T) {
 // ---- stale-tip repair (docs/cache/stale-tip-repair.md) ----
 
 // openPRWithBase delivers an OPEN PR whose base names `branch` at `baseSHA` --
-// the second, independently-absorbed answer about where that branch is.
+// the, independently-absorbed answer about where that branch is.
 func openPRWithBase(t *testing.T, router http.Handler, number int, branch, baseSHA, headSHA string) {
 	t.Helper()
 	postWebhookJSON(t, router, "pull_request", map[string]any{
@@ -232,7 +232,7 @@ func openPRWithBase(t *testing.T, router http.Handler, number int, branch, baseS
 	})
 }
 
-// seedRefRow stores a ref answer as if fetched `ago`, avoiding a same-second sleep to order evidence.
+// seedRefRow stores a ref answer as if fetched `ago`, avoiding a same- sleep to order evidence.
 func seedRefRow(t *testing.T, store *ghdata.Store, ref, sha string, ago time.Duration) {
 	t.Helper()
 	doc, err := marshalTrimmed(gitRefJSON{
@@ -277,7 +277,7 @@ func TestCachedGitRef_ContradictingPRBaseIsRefetchedNotServed(t *testing.T) {
 	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 }
 
-// A lagging PR base.sha costs exactly one refetch; re-absorbing the same lag is not new evidence.
+// A lagging PR base.sha costs exactly refetch; re-absorbing the same lag is not new evidence.
 func TestCachedGitRef_LaggingPRBaseCostsOneRefetchNotEvery(t *testing.T) {
 	router, store, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"
@@ -350,7 +350,7 @@ func TestCachedGitRef_MergedPullRequestAppliesBaseTip(t *testing.T) {
 	assert.Equal(t, before, atomic.LoadInt32(&u.gitRefHits), "applying the payload must cost no upstream call")
 }
 
-// Two ways a pull_request delivery states NOTHING about the base tip: unmerged, or predating the row.
+// ways a pull_request delivery states NOTHING about the base tip: unmerged, or predating the row.
 func TestCachedGitRef_UnmergedAndLatePullRequestsLeaveTheTip(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

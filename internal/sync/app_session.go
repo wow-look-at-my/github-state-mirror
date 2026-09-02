@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Session is one authenticated refresh identity: a context carrying a GitHub token and cache partition, plus the installation account it belongs to.
+// Session is authenticated refresh identity: a context carrying a GitHub token and cache partition, plus the installation account it belongs to.
 // see docs/reveal-layer.md
 type Session struct {
 	Ctx            context.Context
@@ -24,7 +24,7 @@ type SessionFunc func(ctx context.Context) ([]Session, error)
 
 type IdentityRecorder func(ctx context.Context, principal, name string)
 
-// AppSessions returns a SessionFunc that signs in as a GitHub App, one stable "app-installation:<id>" session per installation.
+// AppSessions returns a SessionFunc that signs in as a GitHub App, stable "app-installation:<id>" session per installation.
 // see docs/reveal-layer.md
 func AppSessions(app *ghclient.AppAuthenticator, record IdentityRecorder) SessionFunc {
 	return func(ctx context.Context) ([]Session, error) {

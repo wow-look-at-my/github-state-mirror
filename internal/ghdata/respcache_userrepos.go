@@ -14,7 +14,7 @@ import (
 // UserReposCacheTTL alone bounds staleness: this listing has no invalidation signal.
 const UserReposCacheTTL = 5 * time.Minute
 
-// GetCachedUserRepos returns one page's cached document, or (empty, false)
+// GetCachedUserRepos returns page's cached document, or (empty, false)
 // on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedUserRepos(ctx context.Context, tokenFP, sort string, perPage, page int64, now time.Time) (string, bool, error) {
 	row, err := s.q.GetUserReposCache(ctx, dbgen.GetUserReposCacheParams{
@@ -35,7 +35,7 @@ func (s *Store) GetCachedUserRepos(ctx context.Context, tokenFP, sort string, pe
 	return row.Doc, true, nil
 }
 
-// PutCachedUserRepos stores one page, then prunes (expired rows + LRU beyond
+// PutCachedUserRepos stores page, then prunes (expired rows + LRU beyond
 // the cap).
 func (s *Store) PutCachedUserRepos(ctx context.Context, tokenFP, sort string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertUserReposCache(ctx, dbgen.UpsertUserReposCacheParams{

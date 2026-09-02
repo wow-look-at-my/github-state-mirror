@@ -26,13 +26,13 @@ var commitCIKinds = []string{
 // TestDispatch_CIEventsFlushCommitCICache: status, check_run, and check_suite
 // events flush the commit-CI snapshots for exactly the ref spellings the
 // payload names -- the head branch(es) plus the sha itself -- while a ref the
-// payload does NOT name, and another repo's snapshots, survive (round 2's
+// payload does NOT name, and another repo's snapshots, survive (round 's
 // per-ref grain). A push with no usable ref and a repository event keep the
 // conservative repo-wide flush.
 //
-// Within a named ref the grain is the KIND. The two surfaces are disjoint
+// Within a named ref the grain is the KIND. The surfaces are disjoint
 // upstream -- a status never appears in a check-runs listing and a check run
-// never appears in a commit's statuses -- so a delivery that flushed all three
+// never appears in a commit's statuses -- so a delivery that flushed all
 // was re-fetching answers it could not have changed.
 func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -187,7 +187,7 @@ func TestDispatch_CheckRunCreated_JoinsThePageInsteadOfFlushingIt(t *testing.T) 
 // suite queued forever -- the PENDING row such a delivery used to mint was a
 // permanent ghost no event ever cleared, pinning the low-water-mark rollup at
 // PENDING and re-poisoning last_commit_status on every PR upsert (the
-// 2026-07-20 report's live-minting rollup cluster). The delivery reports
+// -- report's live-minting rollup cluster). The delivery reports
 // ignored while the response-cache flush still runs (invalidation precedes
 // the disposition logic -- the queued-workflow_job precedent). Completed
 // suites, and PENDING check_run/status events (which DO carry real pending

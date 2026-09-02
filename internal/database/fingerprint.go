@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// currentFingerprint is schemaFingerprint(schemaSQL), computed once. The input
+// currentFingerprint is schemaFingerprint(schemaSQL), computed. The input
 var currentFingerprint = sync.OnceValue(func() string { return schemaFingerprint(schemaSQL) })
 
 // schemaFingerprint reduces schema.sql to the tables it actually builds --
@@ -17,7 +17,7 @@ func schemaFingerprint(schema string) string {
 }
 
 // scrubSQL strips SQL comments and normalizes formatting: a run of whitespace
-// or comments between two tokens becomes a single space, dropped entirely when
+// or comments between tokens becomes a single space, dropped entirely when
 // either side is self-delimiting punctuation, so re-wrapping a CREATE TABLE
 // reads as the same schema.
 func scrubSQL(sql string) string {
@@ -91,7 +91,7 @@ func selfDelimiting(c byte) bool {
 }
 
 // endOfQuoted returns the index just past the quoted run opening at sql[start].
-// A doubled closing quote is an escaped one and does not end the run; an
+// A doubled closing quote is an escaped and does not end the run; an
 func endOfQuoted(sql string, start int, closer byte) int {
 	for i := start + 1; i < len(sql); i++ {
 		if sql[i] != closer {
