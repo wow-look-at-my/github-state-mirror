@@ -16,9 +16,12 @@ import (
 // The collaborator-repo bleed guard: see docs/ghclient.md ("ownerAffiliations: OWNER, and the foreign-node drop").
 
 // captureSlog routes the default slog output into a buffer for the duration
-// of the test, so drop logging is assertable.
+// of the test, so drop logging is assertable. The default logger is
+// process-wide, so the test takes the process to itself: a parallel test
+// restores its own logger and empties this buffer.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
+	t.Serial()
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
