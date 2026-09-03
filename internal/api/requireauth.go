@@ -19,29 +19,24 @@ import (
 // route table that mounts it.
 
 // requireAuth enforces that every data request carries a usable GitHub token.
-// It resolves the token's identity against GitHub (rejecting absent, malformed,
-// or revoked credentials with), injects the token into the request context,
-// and scopes all cache operations to a per-USER partition.
+// It resolves the token's identity against GitHub, rejects an absent, malformed
+// or revoked credential, injects the token into the request context, and
+// records the caller's PRINCIPAL.
 //
-// The cache partition (actor) is "user:<numeric GitHub user id>" — GitHub
-// user == cache scope (operator decision, --). All of a user's
-// tokens (rotating sandbox PATs, OAuth logins, narrow and broad PATs alike)
-// share warm, webhook-fed bucket, so a user is never isolated from
-// themselves just because their tokens rotate. The numeric id (not the login)
-// keys the bucket because ids survive login renames and are never recycled.
-// Accepted trade-off: ANY token of a user reads what any of that user's tokens
-// cached, including private-repo data cached by a broader-scoped token.
-// DISTINCT users remain fully isolated from each other, and requests must
-// never fall through to the service's own credentials (the GitHub App used for
-// background refreshes), which may have far broader access than the caller.
+// The principal is "user:<numeric GitHub user id>". It says who is asking, so
+// it gates what reveal.go REVEALS; it never partitions what the cache STORES.
+// The numeric id keys it because an id survives a login rename and is never
+// recycled, so a user keeps the grants they earned across rotating tokens.
+// A request must never fall through to the service's own App credential, which
+// can read far more than the caller.
 //
-// A token that is definitively NOT a user — GET /user answers /, e.g. a
-// GitHub App installation token — keeps the old per-token fingerprint
-// partition (and the verdict is cached per token). When the identity cannot be
-// resolved at all (network error, 5xx, rate limit) and no verdict is cached,
-// the request FAILS with: mis-partitioning is worse than a failed request,
-// so there is no silent fingerprint fallback for a token that might belong to
-// a user.
+// A token that is definitively not a user — GET /user answers 404, or a 403
+// that is not rate limiting (ghclient.ResolveTokenIdentity), for example
+// a GitHub App installation token — gets a per-token fingerprint principal, and
+// that verdict is cached per token. When the identity cannot be resolved at all
+// (network error, 5xx, rate limit) and no verdict is cached, the request fails:
+// a wrong principal reveals another caller's repos, so there is no silent
+// fingerprint fallback for a token that might belong to a user.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
