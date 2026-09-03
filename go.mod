@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/stretchr/testify v1.11.1
-	github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260810095912-05d7e2f99130 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260902084628-bce3e828330e // go-toolchain:auto-branch
 	modernc.org/sqlite v1.48.0
 )
 
