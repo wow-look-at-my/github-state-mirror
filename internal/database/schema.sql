@@ -1092,15 +1092,22 @@ CREATE TABLE hooks_cache (
     scope        TEXT NOT NULL,              -- 'repo' | 'org'
     owner        TEXT NOT NULL,              -- lowercased owner, or the org login
     repo         TEXT NOT NULL,              -- lowercased repo; '' for scope 'org'
-    per_page     INTEGER NOT NULL,
-    page         INTEGER NOT NULL,
+    -- A SINGLE hook read (GET .../hooks/{hook_id}) stores its id here and the
+    -- listing stores 0. Both answers describe the same subject, so they share
+    -- a table and one flush drops the listing and the single reads together.
+    hook_id      INTEGER NOT NULL DEFAULT 0,
+    per_page     INTEGER NOT NULL,           -- 0 on a single-hook row: it does not page
+    page         INTEGER NOT NULL,           -- 0 on a single-hook row
+    -- 200, or 404 for a single hook GitHub says is not there. That verdict is
+    -- authoritative and worth storing: a deleted hook is asked for repeatedly.
+    status       INTEGER NOT NULL DEFAULT 200,
     doc          TEXT NOT NULL,              -- trimmed hooks document as JSON
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
 );
 
-CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, per_page, page);
+CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page);
 CREATE INDEX idx_hooks_cache_target ON hooks_cache (scope, owner, repo);
 CREATE INDEX idx_hooks_cache_lru ON hooks_cache (last_used_at);
 

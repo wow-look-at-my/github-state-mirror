@@ -73,22 +73,27 @@ func TestCachedCodeQualitySetup_NotConfiguredIsCacheable(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.codeQualityHits))
 }
 
-// The PATCH is the ONLY change signal the mirror can see, so proxying must
-// drop the row — otherwise a caller reads its own stale config for the TTL.
+// A write is the ONLY change signal the mirror can see, so proxying must drop
+// the row — otherwise a caller reads its own stale config for the TTL. Every
+// write spelling counts: a method that only proxies is a silent staleness hole.
 func TestCachedCodeQualitySetup_ProxiedWriteFlushes(t *testing.T) {
-	router, _, _, u := respCacheStack(t)
+	for _, method := range []string{"PATCH", "PUT", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			router, _, _, u := respCacheStack(t)
 
-	do(t, router, authedReq("GET", codeQualityTarget, nil))
-	require.Equal(t, "hit", do(t, router, authedReq("GET", codeQualityTarget, nil)).Header().Get(cacheHeader))
-	require.Equal(t, int32(1), atomic.LoadInt32(&u.codeQualityHits))
+			do(t, router, authedReq("GET", codeQualityTarget, nil))
+			require.Equal(t, "hit", do(t, router, authedReq("GET", codeQualityTarget, nil)).Header().Get(cacheHeader))
+			require.Equal(t, int32(1), atomic.LoadInt32(&u.codeQualityHits))
 
-	req := authedReq("PATCH", codeQualityTarget, strings.NewReader(`{"state":"not-configured"}`))
-	wp := do(t, router, req)
-	require.Less(t, wp.Code, 500)
-	assert.Empty(t, wp.Header().Get(cacheHeader), "a write is proxied, never served from cache")
+			req := authedReq(method, codeQualityTarget, strings.NewReader(`{"state":"not-configured"}`))
+			wp := do(t, router, req)
+			require.Less(t, wp.Code, 500)
+			assert.Empty(t, wp.Header().Get(cacheHeader), "a write is proxied, never served from cache")
 
-	assert.Equal(t, "miss", do(t, router, authedReq("GET", codeQualityTarget, nil)).Header().Get(cacheHeader),
-		"a proxied PATCH must flush the row")
+			assert.Equal(t, "miss", do(t, router, authedReq("GET", codeQualityTarget, nil)).Header().Get(cacheHeader),
+				"a proxied write must flush the row")
+		})
+	}
 }
 
 // A repository event (rename/visibility/delete) flushes it repo-wide.

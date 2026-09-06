@@ -122,6 +122,41 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
 }
 
+// GitHub sends `delete` for a vanished ref, and a push does not always come
+// with it. On its own the delete must still stop the ref being served, or a
+// branch that no longer exists answers from cache for the rest of its TTL.
+func TestCachedGitRef_DeleteEventFlushesWithoutAPush(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+	before := atomic.LoadInt32(&u.gitRefHits)
+
+	// The short ref name and ref_type are how a delete states its subject.
+	postWebhookJSON(t, router, "delete", map[string]any{
+		"ref": "main", "ref_type": "branch", "repository": fixtureRepo(),
+	})
+
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+		"a delete carries no tip, so every answer naming the ref must be dropped")
+	assert.Equal(t, before+1, atomic.LoadInt32(&u.gitRefHits))
+}
+
+// A tag's lifecycle must not disturb a branch of the same name: different
+// refs, keyed differently.
+func TestCachedGitRef_TagDeleteLeavesTheBranch(t *testing.T) {
+	router, _, _, _ := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/heads/main"
+
+	do(t, router, authedReq("GET", target, nil))
+	postWebhookJSON(t, router, "delete", map[string]any{
+		"ref": "main", "ref_type": "tag", "repository": fixtureRepo(),
+	})
+
+	assert.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+		"deleting tag main must not flush branch main")
+}
+
 // A push to a DIFFERENT branch must not flush this: the whole point of
 // keying per ref rather than per repo.
 func TestCachedGitRef_OtherBranchPushKeepsHit(t *testing.T) {

@@ -49,6 +49,79 @@ const (
 // hooksAllowedURLKeys: the hook config's own url, not a GitHub API link.
 var hooksAllowedURLKeys = []string{"url"}
 
+// singleHookUpstream answers a single-hook path with an object and a listing
+// path with an array, so the same fake serves both routes.
+func singleHookUpstream(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.URL.Path, "/hooks") {
+		writeGitHubJSON(w, map[string]any{
+			"type": "Repository", "id": 12345678, "name": "web", "active": true,
+			"events":     []any{"push"},
+			"config":     map[string]any{"content_type": "json", "url": "https://hooks.example.com/ingest"},
+			"updated_at": "2026-08-01T00:00:00Z", "created_at": "2026-07-01T00:00:00Z",
+			"url": hookAPIURL("/repos/org1/repo1/hooks", ""),
+		})
+		return
+	}
+	defaultHooksUpstream(w, r)
+}
+
+// A reconciler holding a hook id reads the hook, not the listing. Both routes
+// answer from the cache, and both are the same subject as the listing.
+func TestCachedHook_MissAbsorbHit(t *testing.T) {
+	for _, target := range []string{"/repos/org1/repo1/hooks/12345678", "/orgs/org1/hooks/12345678"} {
+		t.Run(target, func(t *testing.T) {
+			router, _, _, u := respCacheStack(t)
+			u.hooks = singleHookUpstream
+
+			w1 := do(t, router, authedReq("GET", target, nil))
+			require.Equal(t, http.StatusOK, w1.Code)
+			assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+			before := atomic.LoadInt32(&u.hooksHits)
+
+			w2 := do(t, router, authedReq("GET", target, nil))
+			assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+			assert.JSONEq(t, w1.Body.String(), w2.Body.String(), "hit and miss serve identical bytes")
+			assert.Equal(t, before, atomic.LoadInt32(&u.hooksHits), "a hit costs no upstream call")
+			assertNoURLKeys(t, w2.Body.Bytes(), hooksAllowedURLKeys...)
+		})
+	}
+}
+
+// GitHub's not-found verdict for a hook id is authoritative, so it is stored
+// and replayed rather than re-asked on every read.
+func TestCachedHook_NotFoundIsCacheable(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.hooks = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}`))
+	}
+	target := "/repos/org1/repo1/hooks/999"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	before := atomic.LoadInt32(&u.hooksHits)
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, http.StatusNotFound, w2.Code, "the stored verdict replays with its own status")
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, before, atomic.LoadInt32(&u.hooksHits))
+}
+
+// A write changes what every caller sees, listing and single read alike.
+func TestCachedHook_WriteFlushesTheSingleRead(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.hooks = singleHookUpstream
+	target := "/repos/org1/repo1/hooks/12345678"
+
+	do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
+
+	do(t, router, authedReq("PATCH", target, strings.NewReader(`{"active":false}`)))
+
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
+		"a proxied write must drop the single-hook row too")
+}
+
 func TestCachedHooks_MissAbsorbHit(t *testing.T) {
 	for _, tc := range []struct {
 		name, target string
