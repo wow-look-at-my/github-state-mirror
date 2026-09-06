@@ -18,15 +18,20 @@ import (
 func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 
+	// sort=created and sort=updated are MODELED now, and their coverage lives
+	// in respcache_pulls_sort_test.go. popularity and long-running still rank
+	// by a value the row does not carry, so they stand for an unmodeled order
+	// here.
 	for i, target := range []string{
-		"/repos/org1/repo1/pulls?sort=updated",          // unknown param
+		"/repos/org1/repo1/pulls?sort=popularity",       // unmodeled ordering
 		"/repos/org1/repo1/pulls?state=closed",          // non-open state
 		"/repos/org1/repo1/pulls?state=all",             // non-open state
 		"/repos/org1/repo1/pulls?page=2",                // beyond page
 		"/repos/org1/repo1/pulls?per_page=200",          // out of range
 		"/repos/org1/repo1/pulls?head=justabranch",      // head without owner:
 		"/repos/org1/repo1/pulls?state=open&state=open", // repeated param
-		"/repos/org1/repo1/pulls?sort=updated",          // unmodeled ordering
+		"/repos/org1/repo1/pulls?sort=long-running",     // unmodeled ordering
+		"/repos/org1/repo1/pulls?direction=sideways",    // unknown direction
 		"/repos/org1/repo1/pulls?base=",                 // empty base filter
 	} {
 		w := do(t, router, authedReq("GET", target, nil))
