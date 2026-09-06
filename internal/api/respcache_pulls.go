@@ -1,11 +1,13 @@
 package api
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,9 +35,11 @@ const (
 
 // pullsListShape is a parsed, cacheable /pulls query: the shapes pr-minder
 type pullsListShape struct {
-	perPage int
-	head    string // "" = unfiltered; else "owner:branch"
-	base    string // "" = unfiltered; else a base branch name
+	perPage   int
+	head      string // "" = unfiltered; else "owner:branch"
+	base      string // "" = unfiltered; else a base branch name
+	sortBy    string // "created" or "updated"; both are columns on the row
+	ascending bool
 }
 
 // parsePullsListShape reports the shape of a /pulls query and whether the
@@ -50,7 +54,7 @@ type pullsListShape struct {
 // answered from state and, like any filtered response, never used to SET the
 // marker.
 func parsePullsListShape(q url.Values) (pullsListShape, bool) {
-	shape := pullsListShape{perPage: pullsDefaultPerPage}
+	shape := pullsListShape{perPage: pullsDefaultPerPage, sortBy: "created"}
 	for key, vals := range q {
 		if len(vals) != 1 {
 			return shape, false
@@ -82,11 +86,54 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 				return shape, false
 			}
 			shape.base = v
+		case "sort":
+			// popularity and long-running rank by comment count and by age
+			// against an open-state clock. The row carries neither, so those
+			// two keep forwarding.
+			if v != "created" && v != "updated" {
+				return shape, false
+			}
+			shape.sortBy = v
+		case "direction":
+			if v != "asc" && v != "desc" {
+				return shape, false
+			}
+			shape.ascending = v == "asc"
 		default:
 			return shape, false
 		}
 	}
 	return shape, true
+}
+
+// sortPullRows orders a COMPLETE open set the way GitHub's sort and direction
+// ask for. It is safe only there: the caller serves from state only when the
+// whole set fits in one page, so ordering never decides which rows the caller
+// sees, and a full page continues upstream. The read already emits
+// created-descending, which is GitHub's own default, so an unstated sort and
+// direction reorder nothing. Number descending breaks a tie, matching that
+// read.
+func sortPullRows(rows []dbgen.PullRequest, shape pullsListShape) []dbgen.PullRequest {
+	key := func(pr dbgen.PullRequest) string {
+		if shape.sortBy == "updated" {
+			return pr.UpdatedAt
+		}
+		return pr.CreatedAt
+	}
+	out := slices.Clone(rows)
+	slices.SortStableFunc(out, func(a, b dbgen.PullRequest) int {
+		if c := cmp.Compare(key(a), key(b)); c != 0 {
+			if shape.ascending {
+				return c
+			}
+			return -c
+		}
+		if shape.ascending {
+			return cmp.Compare(a.Number, b.Number)
+		}
+		return cmp.Compare(b.Number, a.Number)
+	})
+	return out
 }
 
 // filterPullRows applies the head=owner:branch filter the way GitHub does:
@@ -157,7 +204,7 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("pulls list cache read failed", "owner", owner, "repo", repo, "error", err)
 		} else if allRestComplete(rows) {
-			filtered := filterPullRows(rows, shape.head, shape.base)
+			filtered := sortPullRows(filterPullRows(rows, shape.head, shape.base), shape)
 			// Only a provably-single-page answer is served from state; a full page may continue upstream.
 			if len(filtered) < shape.perPage {
 				h.servePullsList(w, r, filtered, labelsByPR, true)
