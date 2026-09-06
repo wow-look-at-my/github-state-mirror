@@ -87,9 +87,8 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 			}
 			shape.base = v
 		case "sort":
-			// popularity and long-running rank by comment count and by age
-			// against an open-state clock. The row carries neither, so those
-			// two keep forwarding.
+			// popularity and long-running rank by a value the row does not
+			// carry, so each keeps forwarding.
 			if v != "created" && v != "updated" {
 				return shape, false
 			}
@@ -108,7 +107,7 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 
 // sortPullRows orders a COMPLETE open set the way GitHub's sort and direction
 // ask for. It is safe only there: the caller serves from state only when the
-// whole set fits in one page, so ordering never decides which rows the caller
+// whole set fits in a single page, so ordering never decides which rows the caller
 // sees, and a full page continues upstream. The read already emits
 // created-descending, which is GitHub's own default, so an unstated sort and
 // direction reorder nothing. Number descending breaks a tie, matching that

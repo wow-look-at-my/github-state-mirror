@@ -11,8 +11,8 @@ import (
 )
 
 // repo-nightmare asks every repo for its open PRs with GitHub's own default
-// order spelled out. Before this, the parser rejected both params, so all 118
-// per-repo calls forwarded on every graph refresh.
+// order spelled out. Before this, the parser rejected both params, so every
+// per-repo call forwarded on every graph refresh.
 func TestPullsListShapeAcceptsSortAndDirection(t *testing.T) {
 	q, err := url.ParseQuery("state=open&sort=created&direction=desc&per_page=20")
 	require.NoError(t, err)
@@ -76,8 +76,8 @@ func TestSortPullRowsOrdersByTheRequestedKey(t *testing.T) {
 	assert.Equal(t, []int64{1, 2, 3}, numbers(rows), "sorting must not reorder the caller's slice")
 }
 
-// Two PRs created in the same second must not come back in an order that
-// depends on the map or scan order behind them.
+// PRs created in the same second must not come back in an order that depends
+// on the map or scan order behind them.
 func TestSortPullRowsBreaksATieByNumber(t *testing.T) {
 	same := "2026-01-01T00:00:00Z"
 	rows := []dbgen.PullRequest{
