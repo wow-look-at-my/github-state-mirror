@@ -5,11 +5,8 @@ import (
 	"strings"
 )
 
-// gh treats any host that is not github.com as GitHub Enterprise Server: REST
-// goes to /api/v3/..., GraphQL to /api/graphql. This file canonicalises those
-// spellings BEFORE the router, so the cached routes, the reveal layer and the
-// proxy keep seeing api.github.com paths. Without it every gh call misses the
-// cache and reaches GitHub with the prefix still attached, where it is a miss.
+// gh reads a host that is not github.com as GitHub Enterprise Server. See
+// docs/gh-cli.md for the path grammar and why this runs ahead of the router.
 
 const (
 	gheRESTPrefix  = "/api/v3"
@@ -27,8 +24,7 @@ func gheCompat(next http.Handler) http.Handler {
 		// Copy: the request log and the timeline read the caller's request too.
 		r2, u := *r, *r.URL
 		if u.RawPath != "" {
-			// RawPath is the escaped form. The prefix is ASCII, so it appears
-			// there unchanged; if not, net/url derives it from Path again.
+			// The escaped form, where an ASCII prefix appears unchanged.
 			u.RawPath, _ = gheCanonicalPath(u.RawPath)
 		}
 		u.Path = canon

@@ -62,11 +62,11 @@ func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghd
 
 	fp := ghclient.Fingerprint(token)
 	now := time.Now()
-	if doc, ok, err := h.store.GetCachedHooks(r.Context(), fp, target, perPage, page, now); err != nil {
+	if doc, status, ok, err := h.store.GetCachedHooks(r.Context(), fp, target, perPage, page, now); err != nil {
 		slog.Warn("hooks cache read failed", "scope", target.Scope, "owner", target.Owner, "repo", target.Repo, "error", err)
 	} else if ok {
 		h.reqlog.observe(r, DispHit)
-		writeRebuilt(w, http.StatusOK, []byte(doc), true)
+		writeRebuilt(w, int(status), []byte(doc), true)
 		return
 	}
 
@@ -83,11 +83,72 @@ func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghd
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedHooks(r.Context(), fp, target, perPage, page, doc, now, hooksCacheTTL); err != nil {
+	if err := h.store.PutCachedHooks(r.Context(), fp, target, perPage, page, http.StatusOK, doc, now, hooksCacheTTL); err != nil {
 		slog.Warn("hooks cache write failed", "scope", target.Scope, "owner", target.Owner, "repo", target.Repo, "error", err)
 	}
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
+}
+
+// A single hook's configuration. Same subject as the listing, so a write
+// flushes both.
+func (h *handlers) cachedRepoHook(w http.ResponseWriter, r *http.Request) {
+	h.serveHook(w, r, ghdata.RepoHooksTarget(chi.URLParam(r, "owner"), chi.URLParam(r, "repo")))
+}
+
+func (h *handlers) cachedOrgHook(w http.ResponseWriter, r *http.Request) {
+	h.serveHook(w, r, ghdata.OrgHooksTarget(chi.URLParam(r, "org")))
+}
+
+func (h *handlers) serveHook(w http.ResponseWriter, r *http.Request, target ghdata.HooksTarget) {
+	token := bearerToken(r)
+	if token == "" {
+		h.passthrough(w, r, PassIdentity)
+		return
+	}
+	if !acceptsDefaultJSON(r) {
+		h.passthrough(w, r, PassAccept)
+		return
+	}
+	if len(r.URL.Query()) > 0 {
+		// No query parameter changes this answer, so any is unmodeled.
+		h.passthrough(w, r, PassQuery)
+		return
+	}
+	hookID, err := strconv.ParseInt(chi.URLParam(r, "hook_id"), 10, 64)
+	if err != nil || hookID <= 0 {
+		h.passthrough(w, r, PassPath)
+		return
+	}
+	target = target.Hook(hookID)
+
+	fp := ghclient.Fingerprint(token)
+	now := time.Now()
+	if doc, status, ok, err := h.store.GetCachedHooks(r.Context(), fp, target, 0, 0, now); err != nil {
+		slog.Warn("hook cache read failed", "scope", target.Scope, "owner", target.Owner, "repo", target.Repo, "error", err)
+	} else if ok {
+		h.reqlog.observe(r, DispHit)
+		writeRebuilt(w, int(status), []byte(doc), true)
+		return
+	}
+
+	resp, body, overflow, err := h.fetchUpstream(r, nil)
+	if err != nil {
+		h.upstreamError(w, r, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	doc, status, absorbed := absorbHook(resp.StatusCode, body)
+	if overflow || !absorbed {
+		h.replayUnstored(w, r, resp, body)
+		return
+	}
+	if err := h.store.PutCachedHooks(r.Context(), fp, target, 0, 0, int64(status), doc, now, hooksCacheTTL); err != nil {
+		slog.Warn("hook cache write failed", "scope", target.Scope, "owner", target.Owner, "repo", target.Repo, "error", err)
+	}
+	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
+	writeRebuilt(w, status, []byte(doc), false)
 }
 
 // writeRepoHooks / writeOrgHooks flush hooks across every credential, before forwarding the write.
@@ -166,6 +227,57 @@ type hookLastResponseJSON struct {
 	Message *string `json:"message"`
 }
 
+// rawHook is GitHub's hook object as it arrives, in a listing or alone. Both
+// answers trim through this, so neither can describe a hook differently.
+type rawHook struct {
+	ID     int64    `json:"id"`
+	Type   string   `json:"type"`
+	Name   string   `json:"name"`
+	Active bool     `json:"active"`
+	Events []string `json:"events"`
+	Config *struct {
+		URL         string          `json:"url"`
+		ContentType string          `json:"content_type"`
+		InsecureSSL json.RawMessage `json:"insecure_ssl"`
+		Secret      *string         `json:"secret"`
+	} `json:"config"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	LastResponse *struct {
+		Code    *int64  `json:"code"`
+		Status  string  `json:"status"`
+		Message *string `json:"message"`
+	} `json:"last_response"`
+}
+
+// trim renders the stored shape, reporting false for a hook missing the
+// identity fields every answer carries.
+func (raw rawHook) trim() (hookJSON, bool) {
+	if raw.ID <= 0 || raw.Name == "" {
+		return hookJSON{}, false
+	}
+	item := hookJSON{
+		ID: raw.ID, Type: raw.Type, Name: raw.Name, Active: raw.Active,
+		Events: raw.Events, CreatedAt: raw.CreatedAt, UpdatedAt: raw.UpdatedAt,
+	}
+	if item.Events == nil {
+		item.Events = []string{}
+	}
+	if raw.Config != nil {
+		item.Config = hookConfigJSON{
+			URL: raw.Config.URL, ContentType: raw.Config.ContentType,
+			InsecureSSL: raw.Config.InsecureSSL, Secret: raw.Config.Secret,
+		}
+	}
+	if raw.LastResponse != nil {
+		item.LastResponse = &hookLastResponseJSON{
+			Code: raw.LastResponse.Code, Status: raw.LastResponse.Status,
+			Message: raw.LastResponse.Message,
+		}
+	}
+	return item, true
+}
+
 // absorbHooks parses a hooks listing into the trimmed document, rendered
 //
 //	here so hit and miss serve identical bytes. The body must be an ARRAY
@@ -181,52 +293,15 @@ func absorbHooks(status int, body []byte) (string, bool) {
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return "", false
 	}
-	var raw []struct {
-		ID     int64    `json:"id"`
-		Type   string   `json:"type"`
-		Name   string   `json:"name"`
-		Active bool     `json:"active"`
-		Events []string `json:"events"`
-		Config *struct {
-			URL         string          `json:"url"`
-			ContentType string          `json:"content_type"`
-			InsecureSSL json.RawMessage `json:"insecure_ssl"`
-			Secret      *string         `json:"secret"`
-		} `json:"config"`
-		CreatedAt    string `json:"created_at"`
-		UpdatedAt    string `json:"updated_at"`
-		LastResponse *struct {
-			Code    *int64  `json:"code"`
-			Status  string  `json:"status"`
-			Message *string `json:"message"`
-		} `json:"last_response"`
-	}
+	var raw []rawHook
 	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return "", false
 	}
 	out := make([]hookJSON, 0, len(raw))
 	for _, hook := range raw {
-		if hook.ID <= 0 || hook.Name == "" {
+		item, ok := hook.trim()
+		if !ok {
 			return "", false
-		}
-		item := hookJSON{
-			ID: hook.ID, Type: hook.Type, Name: hook.Name, Active: hook.Active,
-			Events: hook.Events, CreatedAt: hook.CreatedAt, UpdatedAt: hook.UpdatedAt,
-		}
-		if item.Events == nil {
-			item.Events = []string{}
-		}
-		if hook.Config != nil {
-			item.Config = hookConfigJSON{
-				URL: hook.Config.URL, ContentType: hook.Config.ContentType,
-				InsecureSSL: hook.Config.InsecureSSL, Secret: hook.Config.Secret,
-			}
-		}
-		if hook.LastResponse != nil {
-			item.LastResponse = &hookLastResponseJSON{
-				Code: hook.LastResponse.Code, Status: hook.LastResponse.Status,
-				Message: hook.LastResponse.Message,
-			}
 		}
 		out = append(out, item)
 	}
@@ -235,4 +310,39 @@ func absorbHooks(status int, body []byte) (string, bool) {
 		return "", false
 	}
 	return string(rendered), true
+}
+
+// absorbHook parses a single hook answer into the document and the status to
+// store it under. A not-found verdict is authoritative, so it is stored. A
+// forbidden one is not, because a permission changes with no event.
+func absorbHook(status int, body []byte) (string, int, bool) {
+	switch status {
+	case http.StatusNotFound:
+		doc, err := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: "404"})
+		if err != nil {
+			return "", 0, false
+		}
+		return string(doc), http.StatusNotFound, true
+	case http.StatusOK:
+	default:
+		return "", 0, false
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return "", 0, false
+	}
+	var raw rawHook
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return "", 0, false
+	}
+	item, ok := raw.trim()
+	if !ok {
+		return "", 0, false
+	}
+	rendered, err := marshalTrimmed(item)
+	if err != nil {
+		return "", 0, false
+	}
+	return string(rendered), http.StatusOK, true
 }
