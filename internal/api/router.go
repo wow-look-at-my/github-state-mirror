@@ -158,7 +158,10 @@ func NewRouter(
 
 		// Cached Code Quality setup; the PATCH flushes before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
+		// Every write spelling flushes; a proxy-only method leaves a stale GET.
 		r.Patch("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
+		r.Put("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
+		r.Delete("/repos/{owner}/{repo}/code-quality/setup", h.patchCodeQualitySetup)
 
 		// Cached single-label read; the PATCH/DELETE flush before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/labels/{name}", h.cachedLabel)
@@ -176,6 +179,8 @@ func NewRouter(
 
 		// Cached webhook CONFIGURATION listings, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/hooks", h.cachedRepoHooks)
+		r.Get("/repos/{owner}/{repo}/hooks/{hook_id}", h.cachedRepoHook)
+		r.Get("/orgs/{org}/hooks/{hook_id}", h.cachedOrgHook)
 		r.Post("/repos/{owner}/{repo}/hooks", h.writeRepoHooks)
 		r.Patch("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)
 		r.Delete("/repos/{owner}/{repo}/hooks/{hook_id}", h.writeRepoHooks)

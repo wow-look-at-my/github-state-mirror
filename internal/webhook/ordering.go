@@ -33,6 +33,7 @@ type orderPayload struct {
 		UpdatedAt string          `json:"updated_at"`
 	} `json:"repository"`
 	Ref         string `json:"ref"`
+	RefType     string `json:"ref_type"`
 	PullRequest *struct {
 		Number    int64  `json:"number"`
 		UpdatedAt string `json:"updated_at"`
@@ -131,6 +132,18 @@ func OrderOf(e Event) (EventOrder, bool) {
 			return EventOrder{}, false
 		}
 		return EventOrder{Subject: fmt.Sprintf("comment:%s:%d", repo, p.Comment.ID), At: at, Field: "comment.updated_at"}, true
+
+	case "create", "delete":
+		// The subject carries the REF TYPE too: a tag and a branch sharing a
+		// name are different refs, and neither supersedes the other.
+		if repo == "" || p.Ref == "" {
+			return EventOrder{}, false
+		}
+		at, ok := p.pushedAt()
+		if !ok {
+			return EventOrder{}, false
+		}
+		return EventOrder{Subject: "ref:" + repo + ":" + p.RefType + ":" + p.Ref, At: at, Field: "repository.pushed_at"}, true
 
 	case "status":
 		// sha + CONTEXT, never the sha alone, or context's result would discard another's.

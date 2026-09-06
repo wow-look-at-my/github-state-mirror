@@ -108,6 +108,8 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 	switch event.Type {
 	case "push":
 		return d.onPush(ctx, event)
+	case "create", "delete":
+		return d.onRefLifecycle(ctx, event)
 	case "pull_request":
 		return d.onPullRequest(ctx, event)
 	case "pull_request_review":

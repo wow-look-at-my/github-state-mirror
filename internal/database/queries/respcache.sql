@@ -892,14 +892,17 @@ DELETE FROM installation_repos_cache WHERE id IN (
 
 -- ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
 
+-- A listing row carries hook_id 0; a single-hook row carries its id and pages
+-- at 0. The key covers both, so neither can answer the other's question.
 -- name: GetHooksCache :one
 SELECT * FROM hooks_cache
-WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?;
 
 -- name: UpsertHooksCache :exec
-INSERT INTO hooks_cache (token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, hook_id, per_page, page) DO UPDATE SET
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -907,7 +910,7 @@ ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
 
 -- name: TouchHooksCache :exec
 UPDATE hooks_cache SET last_used_at = ?
-WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?;
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?;
 
 -- DeleteHooksCacheForTarget drops one target's listings across EVERY
 -- credential. A hook created, edited or deleted through the mirror changes

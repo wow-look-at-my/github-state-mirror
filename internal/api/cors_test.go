@@ -80,8 +80,15 @@ func TestCORS_ExposeHeaders(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	exposed := w.Header().Get("Access-Control-Expose-Headers")
-	for _, name := range []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", cacheHeader} {
+	// Link is pagination: a browser client that cannot read it cannot page a list.
+	for _, name := range []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", "Link", cacheHeader} {
 		assert.Contains(t, exposed, name)
+	}
+
+	// The cached label, hook and code-quality writes are PATCH and DELETE.
+	allowed := w.Header().Get("Access-Control-Allow-Methods")
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+		assert.Contains(t, allowed, method)
 	}
 
 	// Preflight carries it too, and never reaches the wrapped handler.

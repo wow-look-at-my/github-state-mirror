@@ -1444,8 +1444,8 @@ func (q *Queries) GetGitTreeCache(ctx context.Context, arg GetGitTreeCacheParams
 
 const getHooksCache = `-- name: GetHooksCache :one
 
-SELECT id, token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at FROM hooks_cache
-WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?
+SELECT id, token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?
 `
 
 type GetHooksCacheParams struct {
@@ -1453,17 +1453,21 @@ type GetHooksCacheParams struct {
 	Scope   string
 	Owner   string
 	Repo    string
+	HookID  int64
 	PerPage int64
 	Page    int64
 }
 
 // ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+// A listing row carries hook_id 0; a single-hook row carries its id and pages
+// at 0. The key covers both, so neither can answer the other's question.
 func (q *Queries) GetHooksCache(ctx context.Context, arg GetHooksCacheParams) (HooksCache, error) {
 	row := q.db.QueryRowContext(ctx, getHooksCache,
 		arg.TokenFp,
 		arg.Scope,
 		arg.Owner,
 		arg.Repo,
+		arg.HookID,
 		arg.PerPage,
 		arg.Page,
 	)
@@ -1474,8 +1478,10 @@ func (q *Queries) GetHooksCache(ctx context.Context, arg GetHooksCacheParams) (H
 		&i.Scope,
 		&i.Owner,
 		&i.Repo,
+		&i.HookID,
 		&i.PerPage,
 		&i.Page,
+		&i.Status,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
@@ -2866,7 +2872,7 @@ func (q *Queries) TouchGitTreeCache(ctx context.Context, arg TouchGitTreeCachePa
 
 const touchHooksCache = `-- name: TouchHooksCache :exec
 UPDATE hooks_cache SET last_used_at = ?
-WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND per_page = ? AND page = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?
 `
 
 type TouchHooksCacheParams struct {
@@ -2875,6 +2881,7 @@ type TouchHooksCacheParams struct {
 	Scope      string
 	Owner      string
 	Repo       string
+	HookID     int64
 	PerPage    int64
 	Page       int64
 }
@@ -2886,6 +2893,7 @@ func (q *Queries) TouchHooksCache(ctx context.Context, arg TouchHooksCacheParams
 		arg.Scope,
 		arg.Owner,
 		arg.Repo,
+		arg.HookID,
 		arg.PerPage,
 		arg.Page,
 	)
@@ -3687,9 +3695,10 @@ func (q *Queries) UpsertGitTreeCache(ctx context.Context, arg UpsertGitTreeCache
 }
 
 const upsertHooksCache = `-- name: UpsertHooksCache :exec
-INSERT INTO hooks_cache (token_fp, scope, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (token_fp, scope, owner, repo, per_page, page) DO UPDATE SET
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, hook_id, per_page, page) DO UPDATE SET
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -3701,8 +3710,10 @@ type UpsertHooksCacheParams struct {
 	Scope      string
 	Owner      string
 	Repo       string
+	HookID     int64
 	PerPage    int64
 	Page       int64
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -3715,8 +3726,10 @@ func (q *Queries) UpsertHooksCache(ctx context.Context, arg UpsertHooksCachePara
 		arg.Scope,
 		arg.Owner,
 		arg.Repo,
+		arg.HookID,
 		arg.PerPage,
 		arg.Page,
+		arg.Status,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,

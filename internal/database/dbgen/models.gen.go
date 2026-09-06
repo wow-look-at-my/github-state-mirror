@@ -246,8 +246,10 @@ type HooksCache struct {
 	Scope      string
 	Owner      string
 	Repo       string
+	HookID     int64
 	PerPage    int64
 	Page       int64
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
