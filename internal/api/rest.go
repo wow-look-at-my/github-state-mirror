@@ -31,6 +31,8 @@ type handlers struct {
 	timeline *reqtimeline.Recorder
 	// shapes captures uncached traffic's key/type shape for /api/brief. Nil-safe.
 	shapes *shapeStore
+	// oauthRelaySecrets: client id -> the secret the login relay adds for it.
+	oauthRelaySecrets map[string]string
 }
 
 // Cached REST routes rebuild the response without any URL field, under an
