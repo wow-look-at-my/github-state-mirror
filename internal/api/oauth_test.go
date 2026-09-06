@@ -5,11 +5,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var relayURLMu sync.Mutex
+
+// swapRelayURL repoints a relay target for the length of the test. A relay
+// target is a package-level var and the runner overlaps tests, so an
+// unserialised restore sends another test's request to the real github.com.
+func swapRelayURL(t *testing.T, target *string, url string) {
+	t.Helper()
+	relayURLMu.Lock()
+	old := *target
+	*target = url
+	t.Cleanup(func() {
+		*target = old
+		relayURLMu.Unlock()
+	})
+}
 
 // TestOAuthAccessToken_RelaysToGitHubWithCORS verifies the OAuth token-exchange
 // relay: it forwards the form body to github.com's token endpoint with no bearer
@@ -29,9 +46,7 @@ func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	old := githubOAuthTokenURL
-	githubOAuthTokenURL = upstream.URL + "/login/oauth/access_token"
-	t.Cleanup(func() { githubOAuthTokenURL = old })
+	swapRelayURL(t, &githubOAuthTokenURL, upstream.URL+"/login/oauth/access_token")
 
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
@@ -94,9 +109,7 @@ func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	old := githubDeviceCodeURL
-	githubDeviceCodeURL = upstream.URL + "/login/device/code"
-	t.Cleanup(func() { githubDeviceCodeURL = old })
+	swapRelayURL(t, &githubDeviceCodeURL, upstream.URL+"/login/device/code")
 
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
@@ -162,9 +175,7 @@ func TestOAuthAccessToken_DeviceGrantPassthrough(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	old := githubOAuthTokenURL
-	githubOAuthTokenURL = upstream.URL + "/login/oauth/access_token"
-	t.Cleanup(func() { githubOAuthTokenURL = old })
+	swapRelayURL(t, &githubOAuthTokenURL, upstream.URL+"/login/oauth/access_token")
 
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
