@@ -41,6 +41,8 @@ func NewRouter(
 	r.Use(middleware.Recoverer)
 	// CORS is mounted before the auth group, so preflight is answered without a token.
 	r.Use(corsMiddleware(allowedOrigins))
+	// gh calls a non-github.com host with Enterprise paths; see ghecompat.go.
+	r.Use(gheCompat)
 
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
