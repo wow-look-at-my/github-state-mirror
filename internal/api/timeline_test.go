@@ -236,9 +236,7 @@ func TestTimeline_OAuthRelayRecorded(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"gho_x"}`))
 	}))
 	defer relay.Close()
-	oldURL := githubOAuthTokenURL
-	githubOAuthTokenURL = relay.URL
-	defer func() { githubOAuthTokenURL = oldURL }()
+	swapRelayURL(t, &githubOAuthTokenURL, relay.URL)
 
 	s := newFullTestStack(t, testAuth(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
