@@ -543,6 +543,15 @@ func (q *Queries) DeleteExpiredOrgRunnersCache(ctx context.Context, expiresAt st
 	return err
 }
 
+const deleteExpiredOwnerReposCache = `-- name: DeleteExpiredOwnerReposCache :exec
+DELETE FROM owner_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredOwnerReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredOwnerReposCache, expiresAt)
+	return err
+}
+
 const deleteExpiredPullDiff406Cache = `-- name: DeleteExpiredPullDiff406Cache :exec
 DELETE FROM pull_diff406_cache WHERE expires_at <= ?
 `
@@ -567,6 +576,15 @@ DELETE FROM pulls_list_cache WHERE expires_at <= ?
 
 func (q *Queries) DeleteExpiredPullsListMarkers(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredPullsListMarkers, expiresAt)
+	return err
+}
+
+const deleteExpiredReadmeCache = `-- name: DeleteExpiredReadmeCache :exec
+DELETE FROM readme_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredReadmeCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredReadmeCache, expiresAt)
 	return err
 }
 
@@ -621,6 +639,15 @@ DELETE FROM workflow_runs_list_cache WHERE expires_at <= ?
 
 func (q *Queries) DeleteExpiredWorkflowRunsListMarkers(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowRunsListMarkers, expiresAt)
+	return err
+}
+
+const deleteExpiredWorkflowsCache = `-- name: DeleteExpiredWorkflowsCache :exec
+DELETE FROM workflows_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowsCache, expiresAt)
 	return err
 }
 
@@ -759,6 +786,17 @@ func (q *Queries) DeleteMatchingRefsCacheByRepo(ctx context.Context, arg DeleteM
 	return err
 }
 
+const deleteOwnerReposCacheByOwner = `-- name: DeleteOwnerReposCacheByOwner :exec
+DELETE FROM owner_repos_cache WHERE owner = ?
+`
+
+// DeleteOwnerReposCacheByOwner spans every credential, because a created,
+// deleted or renamed repo moves the owner's listing for all of them.
+func (q *Queries) DeleteOwnerReposCacheByOwner(ctx context.Context, owner string) error {
+	_, err := q.db.ExecContext(ctx, deleteOwnerReposCacheByOwner, owner)
+	return err
+}
+
 const deletePullDiff406CacheByRepo = `-- name: DeletePullDiff406CacheByRepo :exec
 DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ?
 `
@@ -843,6 +881,38 @@ type DeletePullsListMarkersByRepoParams struct {
 // maintain rows and leave the marker).
 func (q *Queries) DeletePullsListMarkersByRepo(ctx context.Context, arg DeletePullsListMarkersByRepoParams) error {
 	_, err := q.db.ExecContext(ctx, deletePullsListMarkersByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteReadmeCacheByRepo = `-- name: DeleteReadmeCacheByRepo :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteReadmeCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteReadmeCacheByRepo(ctx context.Context, arg DeleteReadmeCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteReadmeCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteReadmeCacheForRef = `-- name: DeleteReadmeCacheForRef :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ? AND ref = ?
+`
+
+type DeleteReadmeCacheForRefParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+}
+
+// DeleteReadmeCacheForRef is the per-ref grain a push names, matching the
+// contents_cache flush: rows key the ref the CALLER asked for, so a
+// default-branch push flushes the ” spelling too.
+func (q *Queries) DeleteReadmeCacheForRef(ctx context.Context, arg DeleteReadmeCacheForRefParams) error {
+	_, err := q.db.ExecContext(ctx, deleteReadmeCacheForRef, arg.Owner, arg.Repo, arg.Ref)
 	return err
 }
 
@@ -989,6 +1059,23 @@ func (q *Queries) DeleteWorkflowRunsNotIn(ctx context.Context, arg DeleteWorkflo
 		query = strings.Replace(query, "/*SLICE:kept*/?", "NULL", 1)
 	}
 	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
+
+const deleteWorkflowsCacheByRepo = `-- name: DeleteWorkflowsCacheByRepo :exec
+DELETE FROM workflows_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowsCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteWorkflowsCacheByRepo is the only flush grain a push supports: the
+// delivery names changed FILES, and a file maps to a workflow id only through
+// an answer this table is the cache of. A repo holds few workflows.
+func (q *Queries) DeleteWorkflowsCacheByRepo(ctx context.Context, arg DeleteWorkflowsCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowsCacheByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1681,6 +1768,52 @@ func (q *Queries) GetOrgRunnersCache(ctx context.Context, arg GetOrgRunnersCache
 	return i, err
 }
 
+const getOwnerReposCache = `-- name: GetOwnerReposCache :one
+
+SELECT id, token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM owner_repos_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?
+`
+
+type GetOwnerReposCacheParams struct {
+	TokenFp   string
+	Scope     string
+	Owner     string
+	Sort      string
+	Direction string
+	PerPage   int64
+	Page      int64
+}
+
+// ---- owner_repos_cache (GET /orgs/{org}/repos, GET /users/{username}/repos) ----
+func (q *Queries) GetOwnerReposCache(ctx context.Context, arg GetOwnerReposCacheParams) (OwnerReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getOwnerReposCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i OwnerReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Scope,
+		&i.Owner,
+		&i.Sort,
+		&i.Direction,
+		&i.PerPage,
+		&i.Page,
+		&i.Status,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getPullDiff406Cache = `-- name: GetPullDiff406Cache :one
 
 SELECT id, owner, repo, number, doc, fetched_at, expires_at, last_used_at FROM pull_diff406_cache
@@ -1768,6 +1901,42 @@ func (q *Queries) GetPullsListMarker(ctx context.Context, arg GetPullsListMarker
 		&i.ID,
 		&i.Owner,
 		&i.Repo,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getReadmeCache = `-- name: GetReadmeCache :one
+
+SELECT id, owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at FROM readme_cache WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?
+`
+
+type GetReadmeCacheParams struct {
+	Owner string
+	Repo  string
+	Dir   string
+	Ref   string
+}
+
+// ---- readme_cache (GET /repos/{owner}/{repo}/readme[/{dir}]) ----
+func (q *Queries) GetReadmeCache(ctx context.Context, arg GetReadmeCacheParams) (ReadmeCache, error) {
+	row := q.db.QueryRowContext(ctx, getReadmeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+	)
+	var i ReadmeCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Dir,
+		&i.Ref,
+		&i.Status,
+		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
@@ -1975,6 +2144,48 @@ func (q *Queries) GetWorkflowRunsListMarker(ctx context.Context, arg GetWorkflow
 		&i.Filters,
 		&i.FetchedAt,
 		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getWorkflowsCache = `-- name: GetWorkflowsCache :one
+
+SELECT id, owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflows_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type GetWorkflowsCacheParams struct {
+	Owner   string
+	Repo    string
+	Kind    string
+	RefID   string
+	PerPage int64
+	Page    int64
+}
+
+// ---- workflows_cache (GET /repos/{owner}/{repo}/actions/workflows[/{id}]) ----
+func (q *Queries) GetWorkflowsCache(ctx context.Context, arg GetWorkflowsCacheParams) (WorkflowsCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i WorkflowsCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Kind,
+		&i.RefID,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
 	)
 	return i, err
 }
@@ -2475,6 +2686,17 @@ func (q *Queries) PruneOrgRunnersCacheLRU(ctx context.Context, offset int64) err
 	return err
 }
 
+const pruneOwnerReposCacheLRU = `-- name: PruneOwnerReposCacheLRU :exec
+DELETE FROM owner_repos_cache WHERE id IN (
+    SELECT id FROM owner_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneOwnerReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneOwnerReposCacheLRU, offset)
+	return err
+}
+
 const prunePullDiff406CacheLRU = `-- name: PrunePullDiff406CacheLRU :exec
 DELETE FROM pull_diff406_cache WHERE id IN (
     SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -2505,6 +2727,17 @@ DELETE FROM pulls_list_cache WHERE id IN (
 
 func (q *Queries) PrunePullsListMarkersLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, prunePullsListMarkersLRU, offset)
+	return err
+}
+
+const pruneReadmeCacheLRU = `-- name: PruneReadmeCacheLRU :exec
+DELETE FROM readme_cache WHERE id IN (
+    SELECT id FROM readme_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneReadmeCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneReadmeCacheLRU, offset)
 	return err
 }
 
@@ -2572,6 +2805,17 @@ DELETE FROM workflow_runs_cache WHERE id IN (
 
 func (q *Queries) PruneWorkflowRunsCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneWorkflowRunsCacheLRU, offset)
+	return err
+}
+
+const pruneWorkflowsCacheLRU = `-- name: PruneWorkflowsCacheLRU :exec
+DELETE FROM workflows_cache WHERE id IN (
+    SELECT id FROM workflows_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneWorkflowsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneWorkflowsCacheLRU, offset)
 	return err
 }
 
@@ -3009,6 +3253,36 @@ func (q *Queries) TouchOrgRunnersCache(ctx context.Context, arg TouchOrgRunnersC
 	return err
 }
 
+const touchOwnerReposCache = `-- name: TouchOwnerReposCache :exec
+UPDATE owner_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?
+`
+
+type TouchOwnerReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchOwnerReposCache(ctx context.Context, arg TouchOwnerReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchOwnerReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
 const touchPullDiff406Cache = `-- name: TouchPullDiff406Cache :exec
 UPDATE pull_diff406_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND number = ?
@@ -3070,6 +3344,30 @@ type TouchPullsListMarkerParams struct {
 
 func (q *Queries) TouchPullsListMarker(ctx context.Context, arg TouchPullsListMarkerParams) error {
 	_, err := q.db.ExecContext(ctx, touchPullsListMarker, arg.LastUsedAt, arg.Owner, arg.Repo)
+	return err
+}
+
+const touchReadmeCache = `-- name: TouchReadmeCache :exec
+UPDATE readme_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?
+`
+
+type TouchReadmeCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+}
+
+func (q *Queries) TouchReadmeCache(ctx context.Context, arg TouchReadmeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchReadmeCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+	)
 	return err
 }
 
@@ -3182,6 +3480,34 @@ func (q *Queries) TouchWorkflowRunsCache(ctx context.Context, arg TouchWorkflowR
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchWorkflowsCache = `-- name: TouchWorkflowsCache :exec
+UPDATE workflows_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type TouchWorkflowsCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchWorkflowsCache(ctx context.Context, arg TouchWorkflowsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchWorkflowsCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
 		arg.PerPage,
 		arg.Page,
 	)
@@ -3949,6 +4275,50 @@ func (q *Queries) UpsertOrgRunnersCache(ctx context.Context, arg UpsertOrgRunner
 	return err
 }
 
+const upsertOwnerReposCache = `-- name: UpsertOwnerReposCache :exec
+INSERT INTO owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, sort, direction, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertOwnerReposCacheParams struct {
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertOwnerReposCache(ctx context.Context, arg UpsertOwnerReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertOwnerReposCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+		arg.Status,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
 const upsertPullDiff406Cache = `-- name: UpsertPullDiff406Cache :exec
 INSERT INTO pull_diff406_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -4040,6 +4410,44 @@ func (q *Queries) UpsertPullsListMarker(ctx context.Context, arg UpsertPullsList
 	_, err := q.db.ExecContext(ctx, upsertPullsListMarker,
 		arg.Owner,
 		arg.Repo,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertReadmeCache = `-- name: UpsertReadmeCache :exec
+INSERT INTO readme_cache (owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, dir, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertReadmeCacheParams struct {
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertReadmeCache(ctx context.Context, arg UpsertReadmeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertReadmeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+		arg.Status,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
@@ -4385,6 +4793,45 @@ func (q *Queries) UpsertWorkflowRunsListMarker(ctx context.Context, arg UpsertWo
 		arg.Filters,
 		arg.FetchedAt,
 		arg.ExpiresAt,
+	)
+	return err
+}
+
+const upsertWorkflowsCache = `-- name: UpsertWorkflowsCache :exec
+INSERT INTO workflows_cache (owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertWorkflowsCacheParams struct {
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertWorkflowsCache(ctx context.Context, arg UpsertWorkflowsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
 	)
 	return err
 }

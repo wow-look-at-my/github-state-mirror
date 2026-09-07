@@ -327,6 +327,22 @@ type OrgRunnersCache struct {
 	LastUsedAt string
 }
 
+type OwnerReposCache struct {
+	ID         int64
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type PrClosure struct {
 	Owner      string
 	Repo       string
@@ -407,6 +423,19 @@ type PullsListCache struct {
 	ID         int64
 	Owner      string
 	Repo       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type ReadmeCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+	Status     int64
+	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
 	LastUsedAt string
@@ -570,4 +599,18 @@ type WorkflowRunsListCache struct {
 	Filters   string
 	FetchedAt string
 	ExpiresAt string
+}
+
+type WorkflowsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }

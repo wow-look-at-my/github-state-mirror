@@ -123,6 +123,11 @@ func NewRouter(
 
 		// Repo contents, then immutable git commits; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/contents/*", h.cachedContents)
+
+		// Cached README read; the subtree spelling shares the handler and row space.
+		r.Get("/repos/{owner}/{repo}/readme", h.cachedReadme)
+		r.Get("/repos/{owner}/{repo}/readme/*", h.cachedReadme)
+
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
 		// Cached git tree read, content-addressed and immutable; see docs/cache/rest-routes.md.
@@ -148,6 +153,14 @@ func NewRouter(
 
 		// Cached workflow-runs listing, head_sha required; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
+
+		// Cached Actions WORKFLOW definitions, listing and single; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/actions/workflows", h.cachedWorkflowsList)
+		r.Get("/repos/{owner}/{repo}/actions/workflows/{id}", h.cachedWorkflow)
+
+		// Cached owner repo listings, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
+		r.Get("/orgs/{org}/repos", h.cachedOwnerRepos(ghdata.OwnerReposScopeOrg, "org"))
+		r.Get("/users/{username}/repos", h.cachedOwnerRepos(ghdata.OwnerReposScopeUser, "username"))
 
 		// Cached Actions JOB reads, a run's jobs page and a single job; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
