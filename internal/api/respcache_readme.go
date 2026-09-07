@@ -12,15 +12,15 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached README read (tier 2 of the cache contract):
+// The cached README read:
 //
 //	GET /repos/{owner}/{repo}/readme[/{dir}][?ref=]
 //
-// GitHub answers one content object, the same shape the contents route holds,
-// so the rebuild reuses contentsFileJSON. The 404 "this repo has no README" is
-// stored as well: it is an authoritative answer about the repo, and a fleet
-// that polls every repo's README spends a seventh of those calls on repos that
-// have none. see docs/cache/rest-routes.md
+// GitHub answers the content object the contents route holds, so the rebuild
+// reuses contentsFileJSON. The absent-README verdict is stored too: it is an
+// authoritative answer about the repo, and a fleet polling every repo's README
+// spends a large minority of those calls on repos that have none.
+// see docs/cache/rest-routes.md
 
 // cachedReadme serves a repo's README from a stored snapshot, fetching and
 // absorbing on a miss.
@@ -34,7 +34,7 @@ func (h *handlers) cachedReadme(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
-	// The endpoint takes exactly one query parameter, ref; anything else is unmodeled.
+	// The endpoint takes the ref parameter and nothing else; anything else is unmodeled.
 	q := r.URL.Query()
 	ref := q.Get("ref")
 	delete(q, "ref")
@@ -70,29 +70,26 @@ func (h *handlers) cachedReadme(w http.ResponseWriter, r *http.Request) {
 
 	c, absorbed := absorbReadme(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Anything unmodeled -- a symlink or submodule object, a 5xx, an
-		// oversized body -- relays verbatim and is never stored.
+		// A symlink object, a transient failure, an oversized body: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
 	if err := h.store.PutCachedReadme(r.Context(), owner, repo, dir, ref, c, now, ghdata.ReadmeCacheTTL); err != nil {
 		slog.Warn("readme cache write failed", "owner", owner, "repo", repo, "dir", dir, "error", err)
 	}
-	// A 2xx is fresh proof of access. A 404 here says the README is absent, never that the repo is: it is not proof either way.
+	// A 2xx is fresh proof of access. The absent verdict is about the README, never the repo, so it proves nothing either way.
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, c.Status, []byte(c.Doc), false)
 }
 
-// readmeResourceKey names the resource for the deny cache: the repo, the
-// subtree and the ref a caller asked about.
+// readmeResourceKey names the resource for the deny cache.
 func readmeResourceKey(owner, repo, dir, ref string) string {
 	return owner + "/" + repo + "/readme/" + dir + "@" + ref
 }
 
-// absorbReadme parses an upstream README response into the stored answer. The
-// 200 body is GitHub's content object for the resolved file, so path and name
-// come from the PAYLOAD -- the request names a directory, never the file.
+// absorbReadme parses an upstream README response into the stored answer. path
+// and name come from the PAYLOAD: the request names a directory, never a file.
 func absorbReadme(status int, body []byte) (ghdata.CachedReadme, bool) {
 	switch status {
 	case http.StatusOK:
@@ -112,7 +109,7 @@ func absorbReadme(status int, body []byte) (ghdata.CachedReadme, bool) {
 		if err := json.Unmarshal(trimmed, &f); err != nil {
 			return ghdata.CachedReadme{}, false
 		}
-		// The >1 MiB "encoding":"none" form carries no content and is not modeled.
+		// The oversized "encoding":"none" form carries no content and is not modeled.
 		if f.Type != "file" || f.Encoding != "base64" || f.Content == nil || f.SHA == "" {
 			return ghdata.CachedReadme{}, false
 		}

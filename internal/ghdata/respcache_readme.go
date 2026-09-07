@@ -9,27 +9,19 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the cached README read:
-//
-//	GET /repos/{owner}/{repo}/readme[/{dir}][?ref=]
-//
-// One row per (owner, repo, requested subtree, VERBATIM requested ref). The
-// row holds the rendered document and the status it answers with, so a repo
-// that has no README costs one upstream call rather than one per poll. WHO may
-// read a row is the reveal layer's job (internal/api).
+// Storage for the README read: a row per (owner, repo, subtree, VERBATIM ref).
 
-// ReadmeCacheTTL backstops a lost push delivery. A README changes only with a
-// push, and every push flushes these rows, so the TTL is a safety net.
+// ReadmeCacheTTL backstops a lost push; a push flushes these rows.
 const ReadmeCacheTTL = 6 * time.Hour
 
-// CachedReadme is one stored README answer.
+// CachedReadme is a stored README answer.
 type CachedReadme struct {
-	Status int    // 200 or 404
-	Doc    string // rendered trimmed document
+	Status int
+	Doc    string
 }
 
-// GetCachedReadme returns the stored README answer, or false on a miss (no
-// row, or an expired one). A hit refreshes the row's LRU stamp.
+// GetCachedReadme returns the stored answer, or false on a miss. A hit
+// refreshes the row's LRU stamp.
 func (s *Store) GetCachedReadme(ctx context.Context, owner, repo, dir, ref string, now time.Time) (CachedReadme, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetReadmeCache(ctx, dbgen.GetReadmeCacheParams{
@@ -50,8 +42,8 @@ func (s *Store) GetCachedReadme(ctx context.Context, owner, repo, dir, ref strin
 	return CachedReadme{Status: int(row.Status), Doc: row.Doc}, true, nil
 }
 
-// PutCachedReadme records one fetched README answer, then prunes the table
-// (expired rows + LRU beyond the cap).
+// PutCachedReadme records a fetched answer, then prunes expired rows and the
+// LRU tail beyond the cap.
 func (s *Store) PutCachedReadme(ctx context.Context, owner, repo, dir, ref string, c CachedReadme, now time.Time, ttl time.Duration) error {
 	if err := s.q.UpsertReadmeCache(ctx, dbgen.UpsertReadmeCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Dir: dir, Ref: ref,
@@ -73,8 +65,8 @@ func (s *Store) InvalidateReadmeCache(ctx context.Context, owner, repo string) e
 	})
 }
 
-// InvalidateReadmeForRef drops the rows a caller asked for under one ref
-// spelling. A push names its ref, so this is the grain it flushes at.
+// InvalidateReadmeForRef drops the rows asked for under a ref spelling, the
+// grain a push names.
 func (s *Store) InvalidateReadmeForRef(ctx context.Context, owner, repo, ref string) error {
 	return s.q.DeleteReadmeCacheForRef(ctx, dbgen.DeleteReadmeCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,

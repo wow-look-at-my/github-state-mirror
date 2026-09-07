@@ -17,20 +17,8 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// The cached owner repo listings (tier 2 of the cache contract):
-//
-//	GET /orgs/{org}/repos
-//	GET /users/{username}/repos
-//
-// Both answer "the repos of this owner that THIS token can see", so rows key
-// the bearer's fingerprint: a shared row would reveal one token's private
-// repos to another, which is the one thing the reveal layer exists to stop.
-// That per-credential keying is self-gating, the installation_repos_cache
-// precedent, so these routes take no reveal check of their own.
-//
-// Every listed repo is absorbed into the `repos` truth table on the way past,
-// so a listing warms the bare-repo route and the reveal layer's public fast
-// path for free. see docs/cache/rest-routes.md
+// The cached owner repo listings. Per-credential keying is self-gating, so
+// neither takes a reveal check. see docs/cache/rest-routes.md
 
 const (
 	// GitHub's default per_page for both listings.
@@ -46,10 +34,10 @@ var (
 	ownerReposAllowedDirections = set.Of("", "asc", "desc")
 )
 
-// cachedOwnerRepos serves one owner's repo listing, at the path spelling the
-// scope names. The two spellings answer differently for the same name -- the
-// user listing of an organization omits the organization's own repos -- so
-// scope is part of the row key, never a synonym.
+// cachedOwnerRepos serves an owner's repo listing, at the path spelling the
+// scope names. The spellings answer differently for the same name, since the
+// user listing of an organization omits the organization's own repos, so scope
+// is part of the row key and never a synonym.
 func (h *handlers) cachedOwnerRepos(scope, param string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
@@ -94,7 +82,7 @@ func (h *handlers) cachedOwnerRepos(scope, param string) http.HandlerFunc {
 
 		rows, c, absorbed := absorbOwnerRepos(resp.StatusCode, body)
 		if overflow || !absorbed {
-			// A 403 (rate limiting or a blocked org), a 5xx, and any unmodeled shape relay verbatim and are never stored.
+			// A refusal, a transient failure, any unmodeled shape: relayed verbatim, never stored.
 			h.replayUnstored(w, r, resp, body)
 			return
 		}
@@ -114,9 +102,9 @@ func (h *handlers) cachedOwnerRepos(scope, param string) http.HandlerFunc {
 }
 
 // parseOwnerReposShape reports the modeled shape: sort, direction and paging,
-// of GitHub's documented values. type and its org-only spellings are
-// deliberately unmodeled and pass through -- the surveyed callers (see the
-// implementation brief) send only page, per_page, sort and direction.
+// of GitHub's documented values. The type filter is deliberately unmodeled and
+// passes through; the surveyed callers (see the implementation brief) send
+// page, per_page, sort and direction.
 func parseOwnerReposShape(q url.Values) (sort, direction string, perPage, page int64, ok bool) {
 	perPage, page = ownerReposDefaultPerPage, 1
 	for key, vals := range q {
@@ -155,10 +143,10 @@ func parseOwnerReposShape(q url.Values) (sort, direction string, perPage, page i
 
 // absorbOwnerRepos parses an owner-repos response into the truth rows it
 // states and the rendered answer. The rebuild reuses the bare-repo route's
-// trimmed object, so one repo reads the same whether a caller asked for it
-// alone or in a listing. A 404 (the name is not an owner of this kind) is a
-// stable answer and is stored; a partial entry is not, and the whole page then
-// relays rather than rendering a hole.
+// trimmed object, so a repo reads the same whether a caller asked for it alone
+// or in a listing. The absent verdict, meaning the name is not an owner of
+// this kind, is stable and is stored; a partial entry is not, and the page
+// then relays rather than rendering a hole.
 func absorbOwnerRepos(status int, body []byte) ([]dbgen.Repo, ghdata.CachedOwnerRepos, bool) {
 	switch status {
 	case http.StatusOK:

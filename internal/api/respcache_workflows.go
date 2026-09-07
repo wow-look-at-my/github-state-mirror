@@ -14,13 +14,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached Actions WORKFLOW definitions (tier 2 of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/actions/workflows[?page=&per_page=]
-//	GET /repos/{owner}/{repo}/actions/workflows/{id}
-//
-// A workflow definition is not a run. It changes only when a push edits
-// .github/workflows, so both grains share one table and one repo-wide flush.
+// The cached Actions WORKFLOW definitions, listing and single. A definition is
+// not a run: it changes only when a push edits .github/workflows.
 // see docs/cache/rest-routes.md
 
 const (
@@ -55,9 +50,9 @@ func (h *handlers) cachedWorkflowsList(w http.ResponseWriter, r *http.Request) {
 	h.serveWorkflows(w, r, key, absorbWorkflowsList)
 }
 
-// cachedWorkflow serves one workflow definition. The id is whatever the caller
-// asked with -- a numeric id or a file name -- and each spelling keys its own
-// row, since resolving one to the other needs the very answer this caches.
+// cachedWorkflow serves a single workflow definition. The id is whatever the
+// caller asked with, a numeric id or a file name, and each spelling keys its
+// own row: resolving between them needs the very answer this caches.
 func (h *handlers) cachedWorkflow(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
@@ -82,7 +77,7 @@ func (h *handlers) cachedWorkflow(w http.ResponseWriter, r *http.Request) {
 	h.serveWorkflows(w, r, key, absorbWorkflow)
 }
 
-// serveWorkflows is the shared read path for both grains: reveal, hit, fetch,
+// serveWorkflows is the read path both grains share: reveal, hit, fetch,
 // absorb, rebuild. absorb renders the document, so a hit and a miss serve
 // identical bytes.
 func (h *handlers) serveWorkflows(w http.ResponseWriter, r *http.Request, key ghdata.WorkflowsKey, absorb func(int, []byte) (string, bool)) {
@@ -113,7 +108,7 @@ func (h *handlers) serveWorkflows(w http.ResponseWriter, r *http.Request, key gh
 
 	doc, absorbed := absorb(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404 (deleted workflow), a 5xx, and any unmodeled shape relay verbatim and are never stored.
+		// A deleted workflow, a transient failure, any unmodeled shape: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -125,8 +120,8 @@ func (h *handlers) serveWorkflows(w http.ResponseWriter, r *http.Request, key gh
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// workflowsResourceKey names the resource for the deny cache, at the grain the
-// request asked at.
+// workflowsResourceKey names the resource for the deny cache, at the grain
+// asked for.
 func workflowsResourceKey(key ghdata.WorkflowsKey) string {
 	k := key.Owner + "/" + key.Repo + "/actions/workflows"
 	if key.Kind == ghdata.WorkflowsKindSingle {
@@ -135,7 +130,7 @@ func workflowsResourceKey(key ghdata.WorkflowsKey) string {
 	return k + "?per_page=" + strconv.FormatInt(key.PerPage, 10) + "&page=" + strconv.FormatInt(key.Page, 10)
 }
 
-// parseWorkflowsShape reports the modeled listing shape: paging only, which is
+// parseWorkflowsShape reports the modeled listing shape: paging, which is
 // every parameter this endpoint documents.
 func parseWorkflowsShape(q url.Values) (perPage, page int64, ok bool) {
 	perPage, page = workflowsDefaultPerPage, 1
@@ -164,8 +159,8 @@ func parseWorkflowsShape(q url.Values) (perPage, page int64, ok bool) {
 
 // workflowJSON is the trimmed rebuild of a workflow definition. url and
 // badge_url are dropped as the no-URL-keys invariant requires; html_url stays,
-// the workflow-runs precedent, because it is the only handle a consumer has
-// for linking a workflow back to GitHub.
+// the workflow-runs precedent, as the only handle a consumer has for linking a
+// workflow back to GitHub.
 type workflowJSON struct {
 	ID        int64  `json:"id"`
 	NodeID    string `json:"node_id"`
@@ -196,7 +191,7 @@ type rawWorkflow struct {
 }
 
 // trim reports the rebuild, and false when the answer is not the workflow
-// object this route holds: an id and a path are what identify one.
+// object this route holds: the id and the path are what identify it.
 func (raw rawWorkflow) trim() (workflowJSON, bool) {
 	if raw.ID <= 0 || raw.Path == "" {
 		return workflowJSON{}, false
@@ -204,7 +199,7 @@ func (raw rawWorkflow) trim() (workflowJSON, bool) {
 	return workflowJSON(raw), true
 }
 
-// absorbWorkflow parses a single-workflow 200 into the rendered document.
+// absorbWorkflow renders a single-workflow answer.
 func absorbWorkflow(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
@@ -228,9 +223,9 @@ func absorbWorkflow(status int, body []byte) (string, bool) {
 	return string(rendered), true
 }
 
-// absorbWorkflowsList parses a listing 200 into the rendered document.
-// total_count and the workflows array must both be PRESENT; an empty array
-// with a zero count is a valid, cacheable "this repo has no workflows".
+// absorbWorkflowsList renders a listing answer. total_count and the workflows
+// array must both be PRESENT; an empty array is the valid, cacheable "this
+// repo has no workflows".
 func absorbWorkflowsList(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false
