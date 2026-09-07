@@ -30,6 +30,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		scope := owner + "/" + repo
 		flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
+		flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
+		flush("owner repos cache", scope, d.store.InvalidateOwnerReposCache(ctx, owner))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
@@ -161,6 +164,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	case refName == "":
 		// Unparseable payload, or a ref that is neither a branch nor a tag: no per-ref signal, so every ref-relative cache flushes repo-wide.
 		flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
@@ -177,6 +181,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		// stay per-ref below.
 		if defaultBranch == "" {
 			flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+			flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 			flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		} else {
 			refs := spellings
@@ -185,6 +190,8 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			}
 			for _, ref := range refs {
 				flush("contents cache", scope, d.store.InvalidateContentsForRef(ctx, owner, repo, ref))
+				// readme rows key the requested ref exactly as contents rows do, so they share the grain.
+				flush("readme cache", scope, d.store.InvalidateReadmeForRef(ctx, owner, repo, ref))
 				flush("commits list cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, ref))
 			}
 		}
@@ -202,6 +209,12 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			}
 		}
 	}
+
+	// A push is the only thing that edits .github/workflows. The delivery
+	// names changed FILES, but a file maps to a workflow id only through the
+	// listing this table is the cache of, so repo-wide is the finest grain
+	// available and a repo holds few workflows.
+	flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
 
 	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
 	// matching_refs_cache has no narrower per-ref target than the branches listing does, so it rides the same repo-wide flush.
