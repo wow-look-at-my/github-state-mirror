@@ -1145,3 +1145,105 @@ DELETE FROM user_repos_cache WHERE expires_at <= ?;
 DELETE FROM user_repos_cache WHERE id IN (
     SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
 );
+
+-- ---- readme_cache (GET /repos/{owner}/{repo}/readme[/{dir}]) ----
+
+-- name: GetReadmeCache :one
+SELECT * FROM readme_cache WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?;
+
+-- name: UpsertReadmeCache :exec
+INSERT INTO readme_cache (owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, dir, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchReadmeCache :exec
+UPDATE readme_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?;
+
+-- name: DeleteReadmeCacheByRepo :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteReadmeCacheForRef is the per-ref grain a push names, matching the
+-- contents_cache flush: rows key the ref the CALLER asked for, so a
+-- default-branch push flushes the '' spelling too.
+-- name: DeleteReadmeCacheForRef :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteExpiredReadmeCache :exec
+DELETE FROM readme_cache WHERE expires_at <= ?;
+
+-- name: PruneReadmeCacheLRU :exec
+DELETE FROM readme_cache WHERE id IN (
+    SELECT id FROM readme_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflows_cache (GET /repos/{owner}/{repo}/actions/workflows[/{id}]) ----
+
+-- name: GetWorkflowsCache :one
+SELECT * FROM workflows_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowsCache :exec
+INSERT INTO workflows_cache (owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowsCache :exec
+UPDATE workflows_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowsCacheByRepo is the only flush grain a push supports: the
+-- delivery names changed FILES, and a file maps to a workflow id only through
+-- an answer this table is the cache of. A repo holds few workflows.
+-- name: DeleteWorkflowsCacheByRepo :exec
+DELETE FROM workflows_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowsCache :exec
+DELETE FROM workflows_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowsCacheLRU :exec
+DELETE FROM workflows_cache WHERE id IN (
+    SELECT id FROM workflows_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- owner_repos_cache (GET /orgs/{org}/repos, GET /users/{username}/repos) ----
+
+-- name: GetOwnerReposCache :one
+SELECT * FROM owner_repos_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertOwnerReposCache :exec
+INSERT INTO owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, sort, direction, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchOwnerReposCache :exec
+UPDATE owner_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?;
+
+-- DeleteOwnerReposCacheByOwner spans every credential, because a created,
+-- deleted or renamed repo moves the owner's listing for all of them.
+-- name: DeleteOwnerReposCacheByOwner :exec
+DELETE FROM owner_repos_cache WHERE owner = ?;
+
+-- name: DeleteExpiredOwnerReposCache :exec
+DELETE FROM owner_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneOwnerReposCacheLRU :exec
+DELETE FROM owner_repos_cache WHERE id IN (
+    SELECT id FROM owner_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

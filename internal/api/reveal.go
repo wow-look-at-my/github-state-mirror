@@ -41,6 +41,8 @@ const (
 	denyKindGitTree        = "git_tree"      // GET /repos/{owner}/{repo}/git/trees/{sha}
 	denyKindSingleCheckRun = "check_run"     // GET /repos/{owner}/{repo}/check-runs/{check_run_id}
 	denyKindMatchingRefs   = "matching_refs" // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
+	denyKindReadme         = "readme"        // GET /repos/{owner}/{repo}/readme[/{dir}]
+	denyKindWorkflows      = "workflows"     // GET /repos/{owner}/{repo}/actions/workflows[/{id}]
 )
 
 // revealOutcome is the reveal decision for request.
