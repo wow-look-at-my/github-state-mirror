@@ -124,7 +124,7 @@ func main() {
 	}
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, cfg.OAuthRelaySecrets)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

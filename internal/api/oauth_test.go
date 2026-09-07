@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,65 @@ func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
 	require.Len(t, acao, 1, "must not duplicate Access-Control-Allow-Origin")
 	assert.Equal(t, "*", acao[0])
 	assert.Equal(t, "application/x-www-form-urlencoded; charset=utf-8", w.Header().Get("Content-Type"))
+}
+
+// postRelay runs a login body through the relay with the given configured
+// secrets, and returns what a fake github.com received. It names its own
+// upstream, so it leaves githubOAuthTokenURL alone and can run beside a test
+// that points that variable somewhere else.
+func postRelay(t *testing.T, secrets map[string]string, body, contentType string) string {
+	t.Helper()
+	var got string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+
+	h := &handlers{oauthRelaySecrets: secrets}
+	req := httptest.NewRequest(http.MethodPost, "/login/oauth/access_token", strings.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	w := httptest.NewRecorder()
+	h.relayGitHubLogin(w, req, upstream.URL)
+	require.Equal(t, http.StatusOK, w.Code)
+	return got
+}
+
+// TestOAuthAccessToken_AddsConfiguredClientSecret: a browser-only app cannot
+// hold a client secret, so the relay supplies it. What the browser sent under
+// that name is replaced, not trusted: the configured secret is the app's.
+func TestOAuthAccessToken_AddsConfiguredClientSecret(t *testing.T) {
+	got := postRelay(t, map[string]string{"Iv23li8HyDkChFa2ND0B": "real-secret"},
+		"client_id=Iv23li8HyDkChFa2ND0B&code=xyz&client_secret=browser-guess",
+		"application/x-www-form-urlencoded")
+
+	form, err := url.ParseQuery(got)
+	require.NoError(t, err)
+	assert.Equal(t, "real-secret", form.Get("client_secret"))
+	assert.Equal(t, "xyz", form.Get("code"), "the code still reaches GitHub")
+	assert.Equal(t, "Iv23li8HyDkChFa2ND0B", form.Get("client_id"))
+}
+
+// TestOAuthAccessToken_LeavesUnconfiguredClientAlone: an app the relay holds no
+// secret for is forwarded as it arrived. GitHub then answers
+// incorrect_client_credentials, which is the honest result.
+func TestOAuthAccessToken_LeavesUnconfiguredClientAlone(t *testing.T) {
+	body := "client_id=someone-else&code=xyz"
+	got := postRelay(t, map[string]string{"Iv23li8HyDkChFa2ND0B": "real-secret"}, body, "application/x-www-form-urlencoded")
+
+	assert.Equal(t, body, got)
+}
+
+// TestOAuthAccessToken_DeviceGrantKeepsNoSecret: the device flow authenticates
+// on the public client id alone, and its bodies are JSON. Adding a secret would
+// change a body GitHub is happy with, so nothing is added.
+func TestOAuthAccessToken_DeviceGrantKeepsNoSecret(t *testing.T) {
+	poll := `{"client_id":"Iv23li8HyDkChFa2ND0B","device_code":"d1","grant_type":"urn:ietf:params:oauth:grant-type:device_code"}`
+	got := postRelay(t, map[string]string{"Iv23li8HyDkChFa2ND0B": "real-secret"}, poll, "application/json")
+
+	assert.Equal(t, poll, got)
 }
 
 // TestOAuthAccessToken_Preflight verifies a CORS preflight to the relay is

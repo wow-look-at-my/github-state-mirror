@@ -57,6 +57,9 @@ type Config struct {
 	GitHubAppPrivateKey     string // inline PEM (literal or \n-escaped)
 	GitHubAppPrivateKeyPath string // path to a PEM file (takes precedence)
 
+	// OAuthRelaySecrets: client id -> the secret the login relay adds for it.
+	OAuthRelaySecrets map[string]string
+
 	// Dashboard / OAuth login.
 	OAuthClientID     string
 	OAuthClientSecret string
@@ -90,6 +93,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	relaySecrets, err := parseRelaySecrets(os.Getenv("OAUTH_RELAY_SECRETS"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		ListenAddr:           envOr("LISTEN_ADDR", ":8080"),
 		DBPath:               envOr("DB_PATH", "github-mirror.db"),
@@ -106,6 +113,7 @@ func Load() (Config, error) {
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),
 		GitHubAppPrivateKeyPath: os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"),
 
+		OAuthRelaySecrets: relaySecrets,
 		OAuthClientID:     os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
 		OAuthClientSecret: os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
 		SessionSecret:     sessionSecret(os.Getenv("SESSION_SECRET")),
@@ -243,6 +251,31 @@ func parseOrigins(s string) []string {
 		return []string{"*"}
 	}
 	return out
+}
+
+// parseRelaySecrets parses OAUTH_RELAY_SECRETS, a comma-separated list of
+// "<client_id>=<client_secret>" pairs. A malformed entry fails startup: a
+// dropped pair is a sign-in that fails for every visitor of that app, and the
+// failure would otherwise land on GitHub as incorrect_client_credentials with
+// nothing here to name it.
+func parseRelaySecrets(s string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, secret, ok := strings.Cut(p, "=")
+		id, secret = strings.TrimSpace(id), strings.TrimSpace(secret)
+		if !ok || id == "" || secret == "" {
+			return nil, fmt.Errorf("invalid OAUTH_RELAY_SECRETS entry: want <client_id>=<client_secret>")
+		}
+		if _, dup := out[id]; dup {
+			return nil, fmt.Errorf("invalid OAUTH_RELAY_SECRETS: client id %q appears twice", id)
+		}
+		out[id] = secret
+	}
+	return out, nil
 }
 
 // parseAdmins builds the set of admin logins (lowercased for case-insensitive
