@@ -1294,3 +1294,78 @@ CREATE TABLE user_repos_cache (
 
 CREATE UNIQUE INDEX idx_user_repos_cache_key ON user_repos_cache (token_fp, sort, per_page, page);
 CREATE INDEX idx_user_repos_cache_lru ON user_repos_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/readme[/{dir}]. The answer is one
+-- content object, the same shape contents_cache holds, so the row stores the
+-- RENDERED trimmed document and the status it belongs to. A repo with no
+-- README answers 404, and that verdict is an answer this route holds: a fleet
+-- polling every repo's readme spends one seventh of its calls on repos that
+-- have none. Rows key the requested subtree and ref, and a push flushes them
+-- exactly where it flushes contents_cache.
+CREATE TABLE readme_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    dir          TEXT NOT NULL DEFAULT '',   -- the /readme/{dir} subtree ('' = repo root)
+    ref          TEXT NOT NULL DEFAULT '',   -- ?ref= query value ('' = default branch)
+    status       INTEGER NOT NULL,           -- 200 or 404
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes invalidate sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_readme_cache_key ON readme_cache (owner, repo, dir, ref);
+CREATE INDEX idx_readme_cache_lru ON readme_cache (last_used_at);
+
+-- State for the Actions WORKFLOW definitions: the repo's workflow listing
+-- (GET /repos/{owner}/{repo}/actions/workflows) and one workflow
+-- (.../workflows/{id}, by numeric id or by file name). Both are the same
+-- resource seen at two grains, so one table holds both under kind, the
+-- workflow_jobs_cache precedent. A workflow definition changes only when a
+-- push edits .github/workflows, so a push flushes the repo's rows and the TTL
+-- backstops a lost delivery.
+CREATE TABLE workflows_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- list | single
+    ref_id       TEXT NOT NULL DEFAULT '',   -- single: the requested id or file name; list: ''
+    per_page     INTEGER NOT NULL DEFAULT 0, -- list paging; single: 0
+    page         INTEGER NOT NULL DEFAULT 0,
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflows_cache_key ON workflows_cache (owner, repo, kind, ref_id, per_page, page);
+CREATE INDEX idx_workflows_cache_lru ON workflows_cache (last_used_at);
+
+-- State for the owner repo listings: GET /orgs/{org}/repos and
+-- GET /users/{username}/repos. Both answer "the repos of this owner that THIS
+-- token can see", so rows key the bearer's fingerprint alongside the owner,
+-- the user_repos_cache precedent -- a shared row would reveal one token's
+-- private repos to another. scope separates the two spellings, which answer
+-- differently for the same name (an org's user listing omits its repos). A
+-- 404 verdict is stored too: a listing asked for a name that is not an org is
+-- a stable answer, and this fleet spends a quarter of these calls on it.
+CREATE TABLE owner_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- org | user
+    owner        TEXT NOT NULL,              -- lowercased
+    sort         TEXT NOT NULL DEFAULT '',   -- verbatim ?sort= value ('' = default)
+    direction    TEXT NOT NULL DEFAULT '',   -- verbatim ?direction= value ('' = default)
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    status       INTEGER NOT NULL,           -- 200 or 404
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_owner_repos_cache_key ON owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page);
+CREATE INDEX idx_owner_repos_cache_owner ON owner_repos_cache (owner);
+CREATE INDEX idx_owner_repos_cache_lru ON owner_repos_cache (last_used_at);

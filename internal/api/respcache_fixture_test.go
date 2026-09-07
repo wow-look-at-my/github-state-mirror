@@ -66,6 +66,9 @@ type respCacheUpstream struct {
 	appInstallationsHits int32
 	userReposHits        int32
 	searchIssuesHits     int32
+	readmeHits           int32
+	workflowsHits        int32
+	ownerReposHits       int32
 	// contents answers GET /repos/... contents paths; settable per test.
 	contents func(w http.ResponseWriter, r *http.Request)
 	// pullFiles answers GET /repos/{o}/{r}/pulls/{n}/files; settable per test.
@@ -103,6 +106,12 @@ type respCacheUpstream struct {
 	userRepos func(w http.ResponseWriter, r *http.Request)
 	// searchIssues answers GET /search/issues; settable per test.
 	searchIssues func(w http.ResponseWriter, r *http.Request)
+	// readme answers GET /repos/{o}/{r}/readme; settable per test.
+	readme func(w http.ResponseWriter, r *http.Request)
+	// workflows answers the Actions workflow listing and single reads.
+	workflows func(w http.ResponseWriter, r *http.Request)
+	// ownerRepos answers GET /orgs/{org}/repos and GET /users/{u}/repos.
+	ownerRepos func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	probe func(w http.ResponseWriter, r *http.Request)
 	// tokenExpiry is the expires_at minted tokens carry.
@@ -168,8 +177,14 @@ func newRespCacheUpstream() *respCacheUpstream {
 	u.appInstallations = defaultAppInstallationsUpstream
 	u.userRepos = defaultUserReposUpstream
 	u.searchIssues = defaultSearchIssuesUpstream
+	u.readme = defaultReadmeUpstream
+	u.workflows = defaultWorkflowsUpstream
+	u.ownerRepos = defaultOwnerReposUpstream
 	return u
 }
+
+// ownerReposPath matches both owner-listing spellings and nothing else.
+var ownerReposPath = regexp.MustCompile(`^/(orgs|users)/[^/]+/repos$`)
 
 func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +258,15 @@ func (u *respCacheUpstream) handler() http.Handler {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"id":12345678}`))
+		case ownerReposPath.MatchString(r.URL.Path):
+			atomic.AddInt32(&u.ownerReposHits, 1)
+			u.ownerRepos(w, r)
+		case strings.Contains(r.URL.Path, "/readme"):
+			atomic.AddInt32(&u.readmeHits, 1)
+			u.readme(w, r)
+		case strings.Contains(r.URL.Path, "/actions/workflows"):
+			atomic.AddInt32(&u.workflowsHits, 1)
+			u.workflows(w, r)
 		case strings.Contains(r.URL.Path, "/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
 			atomic.AddInt32(&u.runJobsHits, 1)
 			u.runJobs(w, r)
