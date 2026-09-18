@@ -5,10 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 )
 
 const defaultBaseURL = "https://api.github.com"
@@ -32,12 +37,7 @@ func tokenFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Fingerprint returns a stable, non-reversible identifier for a token, suitable
-// for use as a per-credential cache partition key. Cached data is keyed by this
-// fingerprint (not the GitHub login) so that two distinct tokens never share a
-// cache bucket — a narrow-scoped token can never read data a broader token
-// fetched, even when both belong to the same GitHub user. The raw token is
-// never stored or logged.
+// Fingerprint is a stable, non-reversible identifier for a token (hex SHA-); the raw token is never stored or logged.
 func Fingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -46,14 +46,82 @@ func Fingerprint(token string) string {
 type Client struct {
 	httpClient       *http.Client
 	baseURL          string
-	actorCache       sync.Map // token -> GitHub login
+	identityCache    sync.Map // token -> TokenIdentity (incl. the definitive not-a-user verdict)
 	appIdentityCache sync.Map // app JWT -> AppIdentity
+	rateObserver     RateObserver
+	// retryBackoff overrides the transient-retry backoff; nil uses the defaults.
+	retryBackoff []time.Duration
 }
 
-// New creates a Client targeting the public GitHub API. The client carries no
-// token of its own: every request authenticates with the token in its context
-// (see WithToken), set per-request from the caller's Authorization header or,
-// for background refreshes, from a GitHub App installation token.
+// RateObserver receives every GitHub API response this client sees; see docs/ghclient.md's Observers section.
+type RateObserver func(identity, name string, resp *http.Response)
+
+// SetRateObserver must be called during startup wiring: the field is read unsynchronized.
+func (c *Client) SetRateObserver(obs RateObserver) { c.rateObserver = obs }
+
+// ExchangeObserver receives every real HTTP exchange this client performs, with its measured duration.
+type ExchangeObserver func(identity, name, method, path string, status int, start time.Time, duration time.Duration)
+
+// SetExchangeObserver wraps the transport so every request is timed at choke point.
+func (c *Client) SetExchangeObserver(obs ExchangeObserver) {
+	if obs == nil {
+		return
+	}
+	base := c.httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.httpClient.Transport = &timingTransport{base: base, observe: obs}
+}
+
+// timingTransport times each RoundTrip and reports it to the exchange
+// observer. It never alters the request or response.
+type timingTransport struct {
+	base    http.RoundTripper
+	observe ExchangeObserver
+}
+
+func (t *timingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.base.RoundTrip(req)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	credential := strings.TrimSpace(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer"))
+	identity, name := exchangeIdentity(req.Context(), credential)
+	t.observe(identity, name, req.Method, req.URL.Path, status, start, time.Since(start))
+	return resp, err
+}
+
+// exchangeIdentity labels a call: the ctx principal when set, else a credential-shape label.
+func exchangeIdentity(ctx context.Context, credential string) (identity, name string) {
+	identity = actor.FromContext(ctx)
+	if identity != "" {
+		// A credential-shape fallback identity must never borrow this name.
+		return identity, actor.NameFromContext(ctx)
+	}
+	switch {
+	case credential == "":
+		return "anonymous", ""
+	case strings.Count(credential, ".") == 2:
+		// GitHub tokens never contain dots; a JWT is the app's own credential.
+		return "app-jwt", ""
+	default:
+		return "token:" + Fingerprint(credential)[:12], ""
+	}
+}
+
+// observeRate reports a response to the rate observer (if any), labeled per exchangeIdentity.
+func (c *Client) observeRate(ctx context.Context, credential string, resp *http.Response) {
+	if c.rateObserver == nil || resp == nil {
+		return
+	}
+	identity, name := exchangeIdentity(ctx, credential)
+	c.rateObserver(identity, name, resp)
+}
+
+// New creates a Client with no token of its own; every request authenticates via WithToken's context value.
 func New() *Client {
 	return &Client{
 		httpClient: &http.Client{},
@@ -69,34 +137,105 @@ func NewWithBaseURL(baseURL string) *Client {
 	}
 }
 
-// BaseURL returns the GitHub API base URL this client targets (normally
-// "https://api.github.com"). The HTTP passthrough proxy uses it so that
-// forwarded requests reach the same upstream the cache fetchers do, including a
-// fake server in tests.
+// BaseURL is the passthrough proxy's upstream target, matching the cache fetchers (a fake server in tests).
 func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// ResolveActor resolves the GitHub login for the token in the given context.
-// Results are cached in memory so /user is only called once per unique token.
-// With no token in context it returns ("", nil).
-func (c *Client) ResolveActor(ctx context.Context) (string, error) {
+// ErrBadCredential marks a on GET /user, distinct from a transient resolution failure.
+var ErrBadCredential = errors.New("github rejected the credential")
+
+// TokenIdentity is the resolved identity of a bearer token, learned from
+// GET /user with that token.
+type TokenIdentity struct {
+	// IsUser is a DEFINITIVE verdict (a non-rate-limit / on /user), not a failure.
+	IsUser bool
+	// ID is the user's numeric id, stable across login renames. when !IsUser.
+	ID int64
+	// Login is the user's current login. Empty when !IsUser.
+	Login string
+}
+
+// ResolveTokenIdentity resolves the token in ctx to its GitHub user via
+// GET /user, caching the answer — including the definitive "not a user"
+// verdict — per token, so GitHub is asked per unique token.
+//
+// Outcomes:
+//   - user token: TokenIdentity{IsUser: true, ID, Login}, cached
+//   - definitively not a user (/ — installation tokens and the like):
+//     TokenIdentity{IsUser: false}, cached
+//   - invalid credential (): an error wrapping ErrBadCredential, uncached
+//   - anything transient (network error, 5xx,, a rate-limited): an
+//     error, and NOTHING is cached — the next call retries
+//
+// A counts as transient (not a verdict) when it looks like rate limiting
+// (Retry-After, or X-RateLimit-Remaining:): caching "not a user" for a
+// rate-limited USER token would silently mis-partition that user for the
+// process lifetime.
+func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error) {
 	token := tokenFromContext(ctx)
 	if token == "" {
-		return "", nil
+		return TokenIdentity{}, errors.New("resolve token identity: no token in context")
+	}
+	if v, ok := c.identityCache.Load(token); ok {
+		return v.(TokenIdentity), nil
 	}
 
-	if login, ok := c.actorCache.Load(token); ok {
-		return login.(string), nil
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/user", nil)
+	if err != nil {
+		return TokenIdentity{}, err
 	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
 
-	var resp userResp
-	if err := c.doJSON(ctx, "GET", "/user", nil, &resp); err != nil {
-		return "", err
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return TokenIdentity{}, fmt.Errorf("resolve token identity: %w", err)
 	}
+	defer resp.Body.Close()
+	c.observeRate(ctx, token, resp)
 
-	c.actorCache.Store(token, resp.Login)
-	return resp.Login, nil
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		var u struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+			return TokenIdentity{}, fmt.Errorf("resolve token identity: decode /user: %w", err)
+		}
+		if u.ID == 0 || u.Login == "" {
+			// Failing beats partitioning on garbage.
+			return TokenIdentity{}, errors.New("resolve token identity: /user response missing id or login")
+		}
+		ident := TokenIdentity{IsUser: true, ID: u.ID, Login: u.Login}
+		c.identityCache.Store(token, ident)
+		return ident, nil
+
+	case resp.StatusCode == http.StatusUnauthorized:
+		data, _ := io.ReadAll(resp.Body)
+		return TokenIdentity{}, fmt.Errorf("%w: 401 %s", ErrBadCredential, string(data))
+
+	case resp.StatusCode == http.StatusNotFound,
+		resp.StatusCode == http.StatusForbidden && !looksRateLimited(resp):
+		// Definitive: a valid credential with no user identity behind it.
+		ident := TokenIdentity{IsUser: false}
+		c.identityCache.Store(token, ident)
+		return ident, nil
+
+	default:
+		// Transient: cache nothing so the next request retries.
+		data, _ := io.ReadAll(resp.Body)
+		return TokenIdentity{}, fmt.Errorf("resolve token identity: GET /user: %d %s", resp.StatusCode, string(data))
+	}
+}
+
+// looksRateLimited reports whether a 4xx response is rate limiting rather than a permissions answer.
+func looksRateLimited(resp *http.Response) bool {
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return resp.Header.Get("X-RateLimit-Remaining") == "0"
 }
 
 // AppIdentity is a GitHub App identity proven by a valid App JWT.
@@ -111,17 +250,17 @@ type appResp struct {
 }
 
 // VerifyAppIdentity validates a GitHub App JWT by calling GET /app with it. The
-// App JWT is signed with the app's private key (RS256); GitHub only returns 200
+// App JWT is signed with the app's private key (RS256); GitHub only returns
 // if that signature checks out against the public key it holds for the app, so a
 // successful response is unforgeable proof that the caller holds the app's
 // private key — exactly the "GitHub agrees you are app X" assertion. The result
-// is cached per JWT (a caller reuses one JWT for its ~9-minute validity), so this
-// costs one upstream call per JWT, not per request.
+// is cached per JWT (a caller reuses JWT for its ~-minute validity), so this
+// costs upstream call per JWT, not per request.
 //
 // The returned identity is meant to be used as a stable cache partition for a
-// trusted first-party app caller (e.g. a webhook handler) whose underlying
-// installation tokens rotate hourly: every one of those tokens proves the same
-// app identity, so they all share one bucket.
+// trusted -party app caller (e.g. a webhook handler) whose underlying
+// installation tokens rotate hourly: every of those tokens proves the same
+// app identity, so they all share bucket.
 func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity, error) {
 	if v, ok := c.appIdentityCache.Load(jwt); ok {
 		return v.(AppIdentity), nil
@@ -138,6 +277,7 @@ func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity
 		return AppIdentity{}, err
 	}
 	defer resp.Body.Close()
+	c.observeRate(ctx, jwt, resp)
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)
 		return AppIdentity{}, fmt.Errorf("verify app identity: %d %s", resp.StatusCode, string(data))
@@ -152,39 +292,4 @@ func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity
 	id := AppIdentity{ID: a.ID, Slug: a.Slug}
 	c.appIdentityCache.Store(jwt, id)
 	return id, nil
-}
-
-func (c *Client) doJSON(ctx context.Context, method, path string, body io.Reader, out interface{}) error {
-	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	// Authenticate with the token carried in the context (caller's bearer token
-	// or a GitHub App installation token). Requests without one are sent
-	// unauthenticated and will be rejected by GitHub.
-	if token := tokenFromContext(ctx); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("github api %s %s: %d %s", method, path, resp.StatusCode, string(data))
-	}
-
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
 }

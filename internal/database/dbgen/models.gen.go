@@ -8,6 +8,15 @@ import (
 	"database/sql"
 )
 
+type AccessGrant struct {
+	Principal string
+	Owner     string
+	Repo      string
+	GrantedAt string
+	ExpiresAt string
+	Source    string
+}
+
 type ActorIdentity struct {
 	Actor     string
 	Login     string
@@ -15,14 +24,27 @@ type ActorIdentity struct {
 	LastSeen  string
 }
 
-type BranchComparison struct {
-	Actor    string
-	Owner    string
-	Repo     string
-	BaseRef  string
-	HeadRef  string
-	AheadBy  int64
-	BehindBy int64
+type AppInstallationsCache struct {
+	ID         int64
+	AppKey     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type BranchesListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type CacheMetadatum struct {
@@ -51,8 +73,39 @@ type CacheRefreshLog struct {
 	ErrorMessage   sql.NullString
 }
 
+type CheckRunCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	CheckRunID int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type ClosedPullCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type CodeQualitySetupCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type CommitCheck struct {
-	Actor   string
 	Owner   string
 	Repo    string
 	Sha     string
@@ -60,25 +113,245 @@ type CommitCheck struct {
 	State   string
 }
 
-type Org struct {
-	Actor     string
-	Login     string
-	AvatarUrl sql.NullString
-	Url       sql.NullString
+type CommitCiCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Ref        string
+	Kind       string
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
-type PrFile struct {
-	Actor     string
-	Owner     string
-	Repo      string
-	PrNumber  int64
-	Path      string
-	Additions int64
-	Deletions int64
+type CommitsListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	RefParam   string
+	PerPage    int64
+	Page       int64
+	Shas       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type CompareCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Basehead   string
+	BaseRef    string
+	HeadRef    string
+	BaseTipSha string
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type ContentsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Path       string
+	Ref        string
+	Kind       string
+	Name       string
+	Sha        string
+	Size       int64
+	Encoding   string
+	Content    string
+	Entries    string
+	Message    string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type DenyCache struct {
+	Principal    string
+	ResourceKind string
+	ResourceKey  string
+	Owner        string
+	Repo         string
+	Status       int64
+	Message      string
+	DeniedAt     string
+	ExpiresAt    string
+}
+
+type GitCommitMissCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Sha        string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type GitCommitsCache struct {
+	ID             int64
+	Owner          string
+	Repo           string
+	Sha            string
+	Message        string
+	AuthorName     string
+	AuthorEmail    string
+	AuthorDate     string
+	CommitterName  string
+	CommitterEmail string
+	CommitterDate  string
+	TreeSha        string
+	Parents        string
+	FetchedAt      string
+	LastUsedAt     string
+}
+
+type GitRefCache struct {
+	ID                int64
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int64
+	Doc               string
+	FetchedAt         string
+	ExpiresAt         string
+	LastUsedAt        string
+	ReconciledAgainst string
+}
+
+type GitTreesCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Sha        string
+	Recursive  string
+	Doc        string
+	FetchedAt  string
+	LastUsedAt string
+}
+
+type HooksCache struct {
+	ID         int64
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	HookID     int64
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type IdentityCache struct {
+	ID         int64
+	SubjectKey string
+	Kind       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type InstallTokenCache struct {
+	ID                  int64
+	Actor               string
+	InstallationID      string
+	BodyHash            string
+	Token               string
+	TokenExpiresAt      string
+	Permissions         string
+	RepositorySelection string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
+}
+
+type InstallationReposCache struct {
+	ID         int64
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type LabelCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type MatchingRefsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Prefix     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type OrgRunnersCache struct {
+	ID         int64
+	TokenFp    string
+	Org        string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type OwnerReposCache struct {
+	ID         int64
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type PrClosure struct {
+	Owner      string
+	Repo       string
+	Number     int64
+	UpdatedAt  string
+	RecordedAt string
 }
 
 type PrLabel struct {
-	Actor    string
 	Owner    string
 	Repo     string
 	PrNumber int64
@@ -86,8 +359,31 @@ type PrLabel struct {
 	Color    string
 }
 
+type PullDiff406Cache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type PullFilesCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Number     int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
 type PullRequest struct {
-	Actor              string
 	Owner              string
 	Repo               string
 	Number             int64
@@ -100,6 +396,7 @@ type PullRequest struct {
 	Additions          sql.NullInt64
 	Deletions          sql.NullInt64
 	Mergeable          sql.NullString
+	MergeableState     sql.NullString
 	AuthorLogin        sql.NullString
 	AuthorAvatar       sql.NullString
 	AuthorUrl          sql.NullString
@@ -108,16 +405,50 @@ type PullRequest struct {
 	HeadRefOid         sql.NullString
 	ReviewRequestCount sql.NullInt64
 	LastCommitStatus   sql.NullString
+	NodeID             sql.NullString
+	Body               sql.NullString
+	AuthorType         sql.NullString
+	BaseRefOid         sql.NullString
+	HeadRepoFullName   sql.NullString
+	AutoMergeMethod    sql.NullString
+	MergeCommitSha     sql.NullString
+	MergeStaleSha      sql.NullString
+	MergeStaleAt       sql.NullString
+	MergeStaleRef      sql.NullString
+	MergeStaleAfter    sql.NullString
+	TouchedAt          string
+}
+
+type PullsListCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type ReadmeCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type Repo struct {
-	Actor               string
 	Owner               string
 	Name                string
 	NameWithOwner       string
 	Url                 string
 	IsDisabled          int64
 	IsArchived          int64
+	Visibility          string
 	PushedAt            sql.NullString
 	DefaultBranch       sql.NullString
 	DefaultBranchStatus sql.NullString
@@ -126,21 +457,49 @@ type Repo struct {
 	OwnerUrl            sql.NullString
 }
 
+type RepoInstallationCache struct {
+	ID                  int64
+	Actor               string
+	Owner               string
+	Repo                string
+	Status              int64
+	Message             string
+	InstallationID      int64
+	AccountLogin        string
+	AccountType         string
+	RepositorySelection string
+	AppID               int64
+	AppSlug             string
+	TargetType          string
+	FetchedAt           string
+	ExpiresAt           string
+	LastUsedAt          string
+}
+
 type SchemaVersion struct {
-	Version int64
+	Fingerprint string
 }
 
-type User struct {
-	Actor     string
-	Login     string
-	AvatarUrl string
-	Url       string
+type SearchIssuesCache struct {
+	ID         int64
+	TokenFp    string
+	QueryKey   string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
-type UserOrgMembership struct {
-	Actor     string
-	UserLogin string
-	OrgLogin  string
+type UserReposCache struct {
+	ID         int64
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }
 
 type WebhookDelivery struct {
@@ -152,5 +511,106 @@ type WebhookDelivery struct {
 	ReceivedAt  string
 	Disposition string
 	Detail      string
-	Actors      int64
+}
+
+type WebhookReplay struct {
+	DeliveryID  int64
+	Guid        string
+	EventType   string
+	DeliveredAt string
+	RequestedAt string
+}
+
+type WebhookWatermark struct {
+	Subject    string
+	EventTime  string
+	DeliveryID string
+	EventType  string
+	UpdatedAt  string
+}
+
+type WorkflowJob struct {
+	Owner        string
+	Repo         string
+	JobID        int64
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	WorkflowName string
+	Status       string
+	Conclusion   string
+	HeadSha      string
+	HeadBranch   string
+	HtmlUrl      string
+	StartedAt    string
+	CompletedAt  string
+	RunnerName   string
+	UpdatedAt    string
+}
+
+type WorkflowJobsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	RunID      int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type WorkflowRun struct {
+	Owner        string
+	Repo         string
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	HeadSha      string
+	HeadBranch   string
+	Status       string
+	Conclusion   string
+	HtmlUrl      string
+	CreatedAt    string
+	UpdatedAt    string
+	RunStartedAt string
+	TouchedAt    string
+}
+
+type WorkflowRunsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	HeadSha    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+type WorkflowRunsListCache struct {
+	Owner     string
+	Repo      string
+	Filters   string
+	FetchedAt string
+	ExpiresAt string
+}
+
+type WorkflowsCache struct {
+	ID         int64
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
 }

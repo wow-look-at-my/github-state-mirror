@@ -76,7 +76,7 @@ func TestParseEvent_InvalidJSON(t *testing.T) {
 	event := ParseEvent("push", []byte("not json"))
 	assert.Equal(t, "push", event.Type)
 
-	// Should not panic, fields should be zero.
+	// Should not panic, fields should be.
 	assert.Equal(t, "", event.RepoOwner())
 
 }

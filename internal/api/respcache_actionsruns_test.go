@@ -1,0 +1,375 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+)
+
+// upstreamWorkflowRun builds GitHub-shaped workflow_runs entry: the full
+// actor/repository/head_commit objects and every *_url the rebuild must drop
+// around the fields the model keeps. name/conclusion/runStartedAt may be nil.
+func upstreamWorkflowRun(id int, name any, headSHA, status string, conclusion, runStartedAt any) map[string]any {
+	return map[string]any{
+		"id":                   id,
+		"name":                 name,
+		"node_id":              "WFR_xyz",
+		"head_branch":          "main",
+		"head_sha":             headSHA,
+		"path":                 ".github/workflows/ci.yml",
+		"run_number":           7,
+		"event":                "push",
+		"status":               status,
+		"conclusion":           conclusion,
+		"workflow_id":          42,
+		"check_suite_id":       5,
+		"url":                  fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d", id),
+		"html_url":             fmt.Sprintf("https://github.com/org1/repo1/actions/runs/%d", id),
+		"jobs_url":             fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d/jobs", id),
+		"logs_url":             fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d/logs", id),
+		"cancel_url":           fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d/cancel", id),
+		"rerun_url":            fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d/rerun", id),
+		"artifacts_url":        fmt.Sprintf("https://api.github.com/repos/org1/repo1/actions/runs/%d/artifacts", id),
+		"workflow_url":         "https://api.github.com/repos/org1/repo1/actions/workflows/42",
+		"created_at":           "2026-07-01T10:00:00Z",
+		"updated_at":           "2026-07-01T10:05:00Z",
+		"run_started_at":       runStartedAt,
+		"pull_requests":        []any{},
+		"referenced_workflows": []any{},
+		"actor": map[string]any{
+			"login": "octocat", "id": 1, "type": "User",
+			"avatar_url": "https://avatars.githubusercontent.com/u/1",
+			"url":        "https://api.github.com/users/octocat",
+		},
+		"repository": map[string]any{
+			"id": 1, "name": "repo1", "full_name": "org1/repo1",
+			"url": "https://api.github.com/repos/org1/repo1",
+		},
+		"head_commit": map[string]any{"id": headSHA, "message": "tip"},
+	}
+}
+
+// workflowRunsUpstream is the fake GitHub for the workflow-runs cache tests.
+type workflowRunsUpstream struct {
+	runsHits  int32
+	otherHits int32
+	probeHits int32
+	runs      func(w http.ResponseWriter, r *http.Request)
+	probe     func(w http.ResponseWriter, r *http.Request)
+}
+
+func newWorkflowRunsUpstream() *workflowRunsUpstream {
+	u := &workflowRunsUpstream{}
+	u.runs = func(w http.ResponseWriter, r *http.Request) {
+		// total_count deliberately EXCEEDS the page (GitHub's total matching
+		sha := strings.ToLower(r.URL.Query().Get("head_sha"))
+		if sha == "" {
+			sha = shaTip
+		}
+		// GitHub applies ?status= server-side, matching a run's status OR its
+		// conclusion -- so the fake must too, or the absorbed set would not be
+		// the set the filter describes.
+		runs := []any{
+			upstreamWorkflowRun(9001, "CI", sha, "completed", "success", "2026-07-01T10:00:30Z"),
+			upstreamWorkflowRun(9002, nil, sha, "queued", nil, nil),
+		}
+		total := int64(3)
+		if want := r.URL.Query().Get("status"); want != "" {
+			kept := []any{}
+			for _, run := range runs {
+				m := run.(map[string]any)
+				if m["status"] == want || m["conclusion"] == want {
+					kept = append(kept, run)
+				}
+			}
+			runs, total = kept, int64(len(kept))
+		}
+		servePRJSON(w, map[string]any{
+			"total_count":   total,
+			"workflow_runs": runs,
+		})
+	}
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		// Report a private repo so callers earn grants (like the other fakes).
+		servePRJSON(w, map[string]any{
+			"name": "repo1", "full_name": "org1/repo1", "private": true, "visibility": "private",
+			"html_url": "https://github.com/org1/repo1", "default_branch": "main",
+			"owner": map[string]any{"login": "org1"},
+		})
+	}
+	return u
+}
+
+func (u *workflowRunsUpstream) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		switch {
+		case r.URL.Path == "/user":
+			servePRJSON(w, map[string]any{"login": testUserLogin, "id": testUserID})
+		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			atomic.AddInt32(&u.runsHits, 1)
+			u.runs(w, r)
+		case strings.Contains(r.URL.Path, "/actions/runs/"):
+			// Deeper run-scoped paths (/actions/runs/{id}/jobs,...): answer
+			atomic.AddInt32(&u.otherHits, 1)
+			servePRJSON(w, map[string]any{"forwarded": true})
+		case len(parts) == 3 && parts[0] == "repos":
+			atomic.AddInt32(&u.probeHits, 1)
+			u.probe(w, r)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
+		}
+	})
+}
+
+func workflowRunsStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *workflowRunsUpstream) {
+	t.Helper()
+	u := newWorkflowRunsUpstream()
+	router, store, db, _ := newTestStackWithGitHub(t, testAuth(), u.handler())
+	return router, store, db, u
+}
+
+// TestCachedWorkflowRuns_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs the whole trimmed page (miss), the serves the
+// byte-identical stored doc (hit, upstream calls). total_count is copied
+// VERBATIM -- GitHub's total matching count, not the page length (here over
+// a -run page: pr-minder's per_page= probe reads exactly this) -- the
+// nullable name/conclusion/run_started_at keys survive as null, html_url is
+// the pinned consumer-read exception, and the actor/repository/head_commit
+// objects plus every other URL field are dropped.
+func TestCachedWorkflowRuns_MissAbsorbHit(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
+	assertNoURLKeys(t, w1.Body.Bytes(), "html_url")
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"total_count": 3,
+		"workflow_runs": []any{
+			map[string]any{
+				"id": 9001, "name": "CI", "head_sha": shaTip, "status": "completed",
+				"conclusion": "success", "html_url": "https://github.com/org1/repo1/actions/runs/9001",
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+				"run_started_at": "2026-07-01T10:00:30Z",
+			},
+			map[string]any{
+				"id": 9002, "name": nil, "head_sha": shaTip, "status": "queued",
+				"conclusion": nil, "html_url": "https://github.com/org1/repo1/actions/runs/9002",
+				"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
+				"run_started_at": nil,
+			},
+		},
+	}), w1.Body.String())
+	assert.NotContains(t, w1.Body.String(), "octocat", "the actor object must be dropped")
+	assert.NotContains(t, w1.Body.String(), "full_name", "the repository object must be dropped")
+	assert.NotContains(t, w1.Body.String(), "jobs_url", "run-scoped API URLs must be dropped")
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
+	assertNoURLKeys(t, w2.Body.Bytes(), "html_url")
+}
+
+// TestCachedWorkflowRuns_KeyedPerShaAndPage: the sha and the pagination shape
+// are both part of the key -- the consumers' shapes (pr-minder's
+// per_page= and required-builds' per_page=&page=N) are independent
+// snapshots of sha, another sha is another row, and a differently-CASED
+// sha spelling folds onto the same row (the key is lowercase-normalized).
+func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+
+	targets := []string{
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=1",
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=100",
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=100&page=2",
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaMid + "&per_page=1",
+	}
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code, target)
+		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each (sha, page shape) is its own key: %s", target)
+	}
+	assert.Equal(t, int32(4), atomic.LoadInt32(&u.runsHits))
+
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+	}
+	assert.Equal(t, int32(4), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
+
+	// An uppercased spelling of a cached sha folds onto the same row.
+	w := do(t, router, authedReq("GET",
+		"/repos/org1/repo1/actions/runs?head_sha="+strings.ToUpper(shaTip)+"&per_page=1", nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "sha casings must fold onto one cache row")
+	assert.Equal(t, int32(4), atomic.LoadInt32(&u.runsHits))
+}
+
+// TestCachedWorkflowRuns_ListingFromTruth: the repo-wide listing -- the GHA
+// runner coordinator's `?status=queued&per_page=` backlog poll, the
+// largest single slice of forwarded traffic there has ever been -- is served
+// from the workflow_runs TRUTH rows behind the completeness proof, NOT from a
+// snapshot. The short page- answer is what sets that proof.
+func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
+	router, _, db, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assertNoURLKeys(t, w1.Body.Bytes(), "html_url")
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "hit must not call upstream")
+
+	// The listing is state, not a stored document: run rows plus
+	var runs, markers, snapshots int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs`).Scan(&runs))
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_list_cache`).Scan(&markers))
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_cache`).Scan(&snapshots))
+	assert.Equal(t, 1, runs, "the one run the filter matched entered truth")
+	assert.Equal(t, 1, markers, "the short page-1 answer proved the filter's set complete")
+	assert.Zero(t, snapshots, "the listing must not store a response snapshot")
+}
+
+// TestCachedWorkflowRuns_ListingTracksAppliedRunState is the whole point of
+// the redesign: after a run's state is APPLIED (as a webhook does), the
+// backlog answer changes by that run -- served from rows, with no
+// re-fetch and with every other run's answer intact.
+func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
+	router, store, _, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
+
+	// Prime: the fake upstream lists run completed and queued.
+	require.Equal(t, http.StatusOK, do(t, router, authedReq("GET", target, nil)).Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
+
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w.Header().Get(cacheHeader))
+	assert.Contains(t, w.Body.String(), `"total_count":1`, "one run is queued")
+	assert.Contains(t, w.Body.String(), `9002`)
+
+	// The queued run starts, exactly as a workflow_run delivery would apply.
+	require.NoError(t, store.ApplyWorkflowRun(context.Background(), ghdata.WorkflowRun{
+		Owner: "org1", Repo: "repo1", RunID: 9002, HeadSHA: shaTip, HeadBranch: "main",
+		Status: "in_progress", CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:09:00Z",
+	}, time.Now()))
+
+	w = do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w.Header().Get(cacheHeader), "an applied state change must not force a re-fetch")
+	assert.Contains(t, w.Body.String(), `"total_count":0`, "the started run left the backlog")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits), "no upstream call: the row moved, the cache did not")
+}
+
+// TestCachedWorkflowRuns_ListingKeyedPerFilter: the completeness proof is per
+// filter set, and its key is CANONICAL -- the same filters sent in a
+// different query-string order are the same request, not a proof.
+func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+
+	targets := []string{
+		"/repos/org1/repo1/actions/runs?status=queued&per_page=100",
+		"/repos/org1/repo1/actions/runs?status=in_progress&per_page=100",
+		"/repos/org1/repo1/actions/runs?status=queued&per_page=100&branch=main",
+		"/repos/org1/repo1/actions/runs?per_page=100", // no filter at all
+	}
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code, target)
+		require.Equal(t, "miss", w.Header().Get(cacheHeader), "each filter needs its own proof: %s", target)
+	}
+	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits))
+
+	for _, target := range targets {
+		w := do(t, router, authedReq("GET", target, nil))
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+	}
+	// Reordered filters are the same request, so they hit the proof above.
+	w := do(t, router, authedReq("GET",
+		"/repos/org1/repo1/actions/runs?branch=main&per_page=100&status=queued", nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "filter order must not mint a second proof")
+	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
+}
+
+// TestCachedWorkflowRuns_ShapePassthroughs: shapes the cache does not model
+// pass through verbatim, uncached -- an unmodeled filter param, a status
+// value outside GitHub's documented set, a branch that would smuggle a
+// control character into a cache key, a malformed/short sha, out-of-range
+// paging, a non-default Accept, and the deeper /actions/runs/{id}/... paths
+// the exact-literal registration never sees.
+func TestCachedWorkflowRuns_ShapePassthroughs(t *testing.T) {
+	router, _, db, u := workflowRunsStack(t)
+
+	for i, target := range []string{
+		"/repos/org1/repo1/actions/runs?event=push",                                 // unmodeled filter param
+		"/repos/org1/repo1/actions/runs?actor=octocat",                              // unmodeled filter param
+		"/repos/org1/repo1/actions/runs?status=bogus",                               // not a documented status
+		"/repos/org1/repo1/actions/runs?branch=main%0Ainjected",                     // control char in a key
+		"/repos/org1/repo1/actions/runs?head_sha=abc123",                            // short sha
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=101",       // out of range
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&page=11",            // beyond the modeled cap
+		"/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&head_sha=" + shaMid, // repeated
+		"/repos/org1/repo1/actions/runs?status=queued&status=completed",             // repeated
+	} {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code, target)
+		assert.Empty(t, w.Header().Get(cacheHeader), "unmodeled shape must pass through: %s", target)
+		assert.Equal(t, int32(i+1), atomic.LoadInt32(&u.runsHits), target)
+	}
+
+	// A non-default Accept passes through.
+	req := authedReq("GET", "/repos/org1/repo1/actions/runs?head_sha="+shaTip, nil)
+	req.Header.Set("Accept", "application/vnd.github.raw")
+	w := do(t, router, req)
+	assert.Empty(t, w.Header().Get(cacheHeader), "non-default Accept must pass through")
+
+	// Deeper run-scoped paths never reach the route.
+	w = do(t, router, authedReq("GET", "/repos/org1/repo1/actions/runs/9001/jobs", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get(cacheHeader), "run-scoped paths must pass through")
+	assert.Contains(t, w.Body.String(), "forwarded")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.otherHits))
+
+	// Passthroughs stored nothing.
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_cache`).Scan(&count))
+	assert.Zero(t, count, "passthrough shapes must store no row")
+}
+
+// TestCachedWorkflowRuns_EmptyListingCacheable: total_count with an empty
+// workflow_runs array -- the "no runs yet" verdict pr-minder's zombie probe
+// is after -- is a valid, cacheable answer.
+func TestCachedWorkflowRuns_EmptyListingCacheable(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+	u.runs = func(w http.ResponseWriter, r *http.Request) {
+		servePRJSON(w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	}
+	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip + "&per_page=1"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.JSONEq(t, `{"total_count": 0, "workflow_runs": []}`, w1.Body.String())
+
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "the zero-runs verdict is a valid cacheable answer")
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
+}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/api"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
@@ -15,22 +16,42 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.WebhookSecret == "" {
 		slog.Warn("WEBHOOK_SECRET not set; the /webhook endpoint will reject all deliveries")
 	}
+
+	// Set before any store write.
+	ghdata.CacheMaxRows = cfg.CacheMaxRows
 
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+
+	// Config, not cache: a separate file outside the schema-nuke lifecycle.
+	subsPath := cfg.SubscriptionsDBPath
+	if subsPath == "" {
+		subsPath = notify.DeriveDBPath(cfg.DBPath)
+	}
+	subsStore, err := notify.Open(subsPath)
+	if err != nil {
+		slog.Error("open subscriptions database", "error", err, "path", subsPath)
+		os.Exit(1)
+	}
 
 	// Create components.
 	fStore := freshness.NewStore(db)
@@ -38,31 +59,49 @@ func main() {
 	store := ghdata.NewStore(db)
 	gh := ghclient.New()
 
+	// In-memory rate-limit observations for the dashboard's Rate limit tab.
+	meter := ratemeter.New()
+	gh.SetRateObserver(meter.Observe)
+
+	// see docs/dashboard/timeline-ring.md
+	timeline := reqtimeline.New()
+	gh.SetExchangeObserver(api.TimelineExchangeObserver(timeline))
+
 	// Register all fetchers.
 	syncpkg.RegisterAll(mgr, gh, store)
 
-	// The service's only credential: a GitHub App (there is no static service
-	// token). nil when no app is configured. It signs in for the periodic
-	// background refreshes, lets the webhook dispatcher pull an as-yet-uncached
-	// repo on demand, and is the source-of-truth fetcher for the admin
-	// consistency check. Requests never use it — they carry the caller's own token.
+	// nil when no app is configured; requests always carry their own token.
 	app := buildAppAuthenticator(cfg, gh)
 
-	// Webhook dispatcher.
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store, app)
+	// see docs/webhooks/ordering.md
+	dispatcher := syncpkg.NewWebhookDispatcherWindowed(mgr, store, cfg.WebhookReorderWindow)
 
-	// Periodic refresher. Without an app configured, sessions is nil and periodic
-	// refreshes are disabled; per-request data still works via each caller's
-	// Authorization header.
+	// see docs/notifications.md
+	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})
+
+	// nil disables periodic refreshes.
 	var sessions syncpkg.SessionFunc
 	if app != nil {
-		sessions = syncpkg.AppSessions(app)
+		recordIdentity := func(ctx context.Context, principal, name string) {
+			if err := store.RecordActorIdentity(ctx, principal, name); err != nil {
+				slog.Warn("record app-installation identity failed", "principal", principal, "error", err)
+			}
+		}
+		sessions = syncpkg.AppSessions(app, recordIdentity)
 	}
 	refresher := syncpkg.NewPeriodicRefresher(mgr, cfg.RefreshInterval, sessions)
 
-	// Consistency checker for the admin dashboard (re-fetches from GitHub via the
-	// App and diffs against the cache). Degrades to "unavailable" when app == nil.
-	checker := syncpkg.NewConsistencyChecker(gh, store, app)
+	// see docs/webhooks/delivery-gaps.md
+	replayer := syncpkg.NewDeliveryReplayer(app, store, cfg.ReplayInterval)
+	switch {
+	case app == nil:
+		slog.Warn("GITHUB_APP_ID not set; deliveries GitHub fails to hand over cannot be recovered and will stay missed")
+	case cfg.ReplayInterval == 0:
+		slog.Warn("WEBHOOK_REPLAY_INTERVAL=0; deliveries GitHub fails to hand over will stay missed")
+	}
+
+	// Degrades to "unavailable" when app == nil.
+	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, app)
 
 	// Auth service for the web dashboard (GitHub OAuth + signed sessions).
 	authSvc := auth.New(auth.Config{
@@ -70,19 +109,31 @@ func main() {
 		ClientSecret: cfg.OAuthClientSecret,
 		SessionKey:   cfg.SessionSecret,
 		AdminLogins:  cfg.AdminLogins,
+		Observer:     api.TimelineLoginObserver(timeline),
 	})
 	if !authSvc.Configured() {
 		slog.Warn("GITHUB_OAUTH_CLIENT_ID/SECRET not set; the dashboard renders but sign-in is disabled")
 	}
 
-	// Build router.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker)
+	// Built here, not in the router, because shutdown has to Drain it.
+	debouncer := api.NewDebouncer(cfg.PassthroughDebounce)
+	if w := debouncer.Window(); w > 0 {
+		slog.Info("passthrough debouncing enabled", "window", w)
+	} else {
+		slog.Info("passthrough debouncing disabled; uncacheable reads forward immediately")
+	}
+
+	// cfg.DBPath is only statted; data access uses the already-open db handle.
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Start periodic refresher.
 	go refresher.Start(ctx)
+
+	// A restart is itself a gap window, so the cycle runs immediately.
+	go replayer.Start(ctx)
 
 	// Start HTTP server.
 	srv := &http.Server{
@@ -101,18 +152,32 @@ func main() {
 	}()
 
 	slog.Info("starting server", "addr", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	err = srv.ListenAndServe()
+
+	// Drain fetches before closing the DB.
+	debouncer.Drain(30 * time.Second)
+	if !mgr.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
+	}
+	// Same rule for detached subscriber-notification deliveries.
+	if !notifier.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight notifications did not drain in time; closing DBs anyway")
+	}
+	if cerr := db.Close(); cerr != nil {
+		slog.Warn("close database", "error", cerr)
+	}
+	if cerr := subsStore.Close(); cerr != nil {
+		slog.Warn("close subscriptions database", "error", cerr)
+	}
+
+	if err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
 }
 
-// buildAppAuthenticator constructs the GitHub App authenticator that signs the
-// service's background work (periodic refreshes, the webhook dispatcher's
-// on-demand repo pulls, and the admin consistency check), or nil when no app is
-// configured. Misconfiguration (app id set but the key missing or unparseable)
-// is logged and disables that work rather than taking down the request-serving
-// path, which needs no service credential.
+// buildAppAuthenticator returns nil when unconfigured or misconfigured; the
+// request-serving path needs no service credential, so it never fails startup.
 func buildAppAuthenticator(cfg config.Config, gh *ghclient.Client) *ghclient.AppAuthenticator {
 	if !cfg.GitHubAppConfigured() {
 		slog.Warn("no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY[_PATH]); periodic background refreshes, on-demand webhook pulls, and the admin consistency check are disabled (per-request data still works via the caller's Authorization header)")
@@ -136,7 +201,7 @@ func buildAppAuthenticator(cfg config.Config, gh *ghclient.Client) *ghclient.App
 	}
 
 	// Validate credentials up front so misconfiguration surfaces at startup
-	// rather than at the first refresh tick / webhook delivery.
+	// rather than at the refresh tick / webhook delivery.
 	if installs, err := app.Installations(context.Background()); err != nil {
 		slog.Warn("could not validate GitHub App credentials", "error", err)
 	} else {

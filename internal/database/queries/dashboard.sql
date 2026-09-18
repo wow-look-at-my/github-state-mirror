@@ -1,5 +1,5 @@
 -- ============================================================================
--- Actor Identities (dashboard only)
+-- Principal Identities (dashboard only)
 -- ============================================================================
 
 -- name: UpsertActorIdentity :exec
@@ -13,41 +13,40 @@ ON CONFLICT (actor) DO UPDATE SET
 SELECT * FROM actor_identities ORDER BY login, actor;
 
 -- ============================================================================
--- Cross-actor cache statistics (dashboard only)
+-- Global cache statistics (dashboard only)
 -- ============================================================================
 
--- ListCachedActors returns every distinct actor that has any cache metadata,
--- so the admin view can attribute even scopes with no identity row (e.g. the
--- background service token before it is recorded).
--- name: ListCachedActors :many
-SELECT DISTINCT actor FROM cache_metadata ORDER BY actor;
+-- ListKnownPrincipals returns every principal that holds freshness metadata,
+-- so the admin view can attribute even principals with no identity row (e.g.
+-- the background app-installation sessions). 'global' rows are truth
+-- freshness, not a principal.
+-- name: ListKnownPrincipals :many
+SELECT DISTINCT actor FROM cache_metadata WHERE actor != 'global' ORDER BY actor;
 
--- Per-table cached-row counts for one actor. Kept as separate single-table
--- queries (rather than one multi-table statement) because sqlc's SQLite analyzer
--- treats the shared `actor` column name across tables as ambiguous otherwise.
--- name: CountReposByActor :one
-SELECT COUNT(*) FROM repos WHERE actor = ?;
+-- Global (whole-truth-store) row counts. Kept as separate single-table
+-- queries: sqlc's SQLite analyzer handles them more reliably than one
+-- multi-table statement.
+-- name: CountRepos :one
+SELECT COUNT(*) FROM repos;
 
--- name: CountPullRequestsByActor :one
-SELECT COUNT(*) FROM pull_requests WHERE actor = ?;
+-- name: CountPullRequests :one
+SELECT COUNT(*) FROM pull_requests;
 
--- name: CountOrgsByActor :one
-SELECT COUNT(*) FROM orgs WHERE actor = ?;
+-- name: CountCommitChecks :one
+SELECT COUNT(*) FROM commit_checks;
 
--- name: CountUsersByActor :one
-SELECT COUNT(*) FROM users WHERE actor = ?;
+-- name: CountContentsCache :one
+SELECT COUNT(*) FROM contents_cache;
 
--- name: CountCommitChecksByActor :one
-SELECT COUNT(*) FROM commit_checks WHERE actor = ?;
+-- name: CountGitCommitsCache :one
+SELECT COUNT(*) FROM git_commits_cache;
 
--- name: CountPRFilesByActor :one
-SELECT COUNT(*) FROM pr_files WHERE actor = ?;
+-- name: CountAccessGrants :one
+SELECT COUNT(*) FROM access_grants;
 
--- name: CountBranchComparisonsByActor :one
-SELECT COUNT(*) FROM branch_comparisons WHERE actor = ?;
-
--- ActorFreshnessByKind summarizes cache_metadata for one actor, grouped by
--- resource kind and fetch state, with the most recent fetch time per group.
+-- ActorFreshnessByKind summarizes cache_metadata for one actor (a principal's
+-- grant-sync markers, or 'global' truth markers), grouped by resource kind and
+-- fetch state, with the most recent fetch time per group.
 -- name: ActorFreshnessByKind :many
 SELECT
     resource_kind,
@@ -58,6 +57,16 @@ FROM cache_metadata
 WHERE actor = ?
 GROUP BY resource_kind, fetch_state
 ORDER BY resource_kind, fetch_state;
+
+-- ActorErrorMessagesByKind returns the captured failure reason for every
+-- resource currently in the 'error' state for one actor, so the dashboard can
+-- show *why* a kind is erroring (not just that it is). One row per errored
+-- resource key.
+-- name: ActorErrorMessagesByKind :many
+SELECT resource_kind, resource_key, error_message
+FROM cache_metadata
+WHERE actor = ? AND fetch_state = 'error' AND error_message IS NOT NULL AND error_message <> ''
+ORDER BY resource_kind, resource_key;
 
 -- ActorRecentRefreshes returns the most recent refresh-log entries for one actor.
 -- name: ActorRecentRefreshes :many
@@ -70,54 +79,26 @@ LIMIT ?;
 -- Admin cache browse (dashboard, admin only)
 -- ============================================================================
 --
--- These dump the actual cached rows for ONE explicit actor (cache scope). Unlike
--- the per-context reads in store.go (which take the actor from the request
--- context), these take the actor as a parameter so an admin can inspect any
--- scope. They are gated to admins in the API layer; the data tables remain keyed
--- by the opaque fingerprint, so this does not change the storage model -- it only
--- lets the operator read what is already there.
+-- These dump the actual global-truth rows for the operator. Admin-gated in the
+-- API layer; the consistency check compares them against GitHub.
 
--- name: ListReposByActor :many
-SELECT * FROM repos WHERE actor = ? ORDER BY owner, name;
+-- name: ListAllRepos :many
+SELECT * FROM repos ORDER BY owner, name;
 
--- name: ListPullRequestsByActor :many
-SELECT * FROM pull_requests WHERE actor = ? ORDER BY owner, repo, number;
+-- name: ListAllPullRequests :many
+SELECT * FROM pull_requests ORDER BY owner, repo, number;
 
--- ListOpenPullRequestsByActor returns only OPEN PRs for an actor. The
--- consistency check compares these against GitHub's live open-PR set (the cache
--- only retains open PRs; closed ones are deleted by the webhook dispatcher).
--- name: ListOpenPullRequestsByActor :many
-SELECT * FROM pull_requests WHERE actor = ? AND state = 'OPEN' ORDER BY owner, repo, number;
+-- ListAllOpenPullRequests returns only OPEN PRs. The consistency check compares
+-- these against GitHub's live open-PR set (the cache only retains open PRs;
+-- closed ones are deleted by the webhook dispatcher).
+-- name: ListAllOpenPullRequests :many
+SELECT * FROM pull_requests WHERE state = 'OPEN' ORDER BY owner, repo, number;
 
--- name: ListPRLabelsByActor :many
-SELECT * FROM pr_labels WHERE actor = ? ORDER BY owner, repo, pr_number, name;
+-- name: ListAllPRLabels :many
+SELECT * FROM pr_labels ORDER BY owner, repo, pr_number, name;
 
--- name: ListUsersByActor :many
-SELECT * FROM users WHERE actor = ? ORDER BY login;
+-- name: ListAllCommitChecks :many
+SELECT * FROM commit_checks ORDER BY owner, repo, sha, context;
 
--- name: ListOrgsByActor :many
-SELECT * FROM orgs WHERE actor = ? ORDER BY login;
-
--- name: ListPRFilesByActor :many
-SELECT * FROM pr_files WHERE actor = ? ORDER BY owner, repo, pr_number, path;
-
--- name: ListBranchComparisonsByActor :many
-SELECT * FROM branch_comparisons WHERE actor = ? ORDER BY owner, repo, base_ref, head_ref;
-
--- name: ListCommitChecksByActor :many
-SELECT * FROM commit_checks WHERE actor = ? ORDER BY owner, repo, sha, context;
-
--- ListDistinctOwnersByActor returns the distinct repo owners cached for an actor,
--- so the consistency check knows which orgs to re-fetch from GitHub.
--- name: ListDistinctOwnersByActor :many
-SELECT DISTINCT owner FROM repos WHERE actor = ? ORDER BY owner;
-
--- ActorErrorMessagesByKind returns the captured failure reason for every
--- resource currently in the 'error' state for one actor, so the dashboard can
--- show *why* a kind is erroring (not just that it is). One row per errored
--- resource key.
--- name: ActorErrorMessagesByKind :many
-SELECT resource_kind, resource_key, error_message
-FROM cache_metadata
-WHERE actor = ? AND fetch_state = 'error' AND error_message IS NOT NULL AND error_message <> ''
-ORDER BY resource_kind, resource_key;
+-- name: ListDistinctRepoOwners :many
+SELECT DISTINCT owner FROM repos ORDER BY owner;

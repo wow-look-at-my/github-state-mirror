@@ -1,3 +1,9 @@
 
 /build/
 /node_modules/
+
+# The dashboard JS is a BUILD OUTPUT, not a source file: `npm run build` (tsc)
+# emits it from internal/api/web/src/*.ts, and CI runs that build before the Go
+# build embeds it. TypeScript is the only source, so the .js is never committed.
+# assets/style.css is hand-written and stays tracked.
+/internal/api/web/assets/*.js

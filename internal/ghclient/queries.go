@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
 // prFields is the GraphQL selection set for a pull request node, shared between
-// the org-level query and the per-repo PR pagination query so the two stay in
+// the org-level query and the per-repo PR pagination query so the stay in
 // sync and both unmarshal into gqlPR.
 const prFields = `
   number
@@ -38,16 +40,8 @@ const prFields = `
   }
 `
 
-// orgDataQuery fetches a page of non-archived repos and the first page of each
-// repo's open PRs for an organization. Repos with more than 100 open PRs are
-// completed by repoPRsQuery (see fetchRemainingPRs).
-//
-// repositories is paged small (first: 5) on purpose: requesting all repos at
-// once — each with statusCheckRollup on the default branch AND on every open
-// PR's last commit — produces a response large/expensive enough that an
-// intermediary (or GitHub itself) returns "502 Bad Gateway" for active orgs.
-// Small pages keep each response well within those limits; pagination (the
-// repoCursor loop in GetOrgData) stitches them back together.
+// orgDataQuery fetches a page of non-archived repos and their open PRs; paged small to avoid upstream 502s.
+// see docs/ghclient.md
 const orgDataQuery = `
 query($org: String!, $repoCursor: String) {
   organization(login: $org) {
@@ -79,7 +73,7 @@ query($org: String!, $repoCursor: String) {
 `
 
 // repoPRsQuery paginates the open PRs of a single repository, used to fetch any
-// PRs beyond the first 100 returned by orgDataQuery.
+// PRs beyond the returned by orgDataQuery.
 const repoPRsQuery = `
 query($owner: String!, $name: String!, $prCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -113,12 +107,16 @@ type gqlPageInfo struct {
 }
 
 type gqlRepo struct {
-	Name          string  `json:"name"`
-	NameWithOwner string  `json:"nameWithOwner"`
-	URL           string  `json:"url"`
-	IsDisabled    bool    `json:"isDisabled"`
-	PushedAt      *string `json:"pushedAt"`
-	Owner         struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
+	URL           string `json:"url"`
+	IsDisabled    bool   `json:"isDisabled"`
+	// IsArchived is owner-agnostic-only; the identity-locked orgDataQuery leaves it false. see docs/ghclient.md
+	IsArchived bool `json:"isArchived"`
+	// Visibility is owner-agnostic-only, left "" by the identity-locked orgDataQuery. see docs/ghclient.md
+	Visibility string  `json:"visibility"`
+	PushedAt   *string `json:"pushedAt"`
+	Owner      struct {
 		Login     string `json:"login"`
 		AvatarURL string `json:"avatarUrl"`
 		URL       string `json:"url"`
@@ -164,6 +162,10 @@ type gqlPR struct {
 	ReviewRequests struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"reviewRequests"`
+	// AutoMergeRequest is owner-agnostic-only; the identity-locked prFields leaves it nil. see docs/ghclient.md
+	AutoMergeRequest *struct {
+		MergeMethod string `json:"mergeMethod"`
+	} `json:"autoMergeRequest"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -232,6 +234,9 @@ func (c *Client) GetOrgData(ctx context.Context, orgLogin string) (*OrgData, err
 
 		repos := resp.Data.Organization.Repositories
 		for _, gr := range repos.Nodes {
+			if dropForeignRepoNode(orgLogin, gr.NameWithOwner, gr.Owner.Login) {
+				continue
+			}
 			repo := convertRepo(orgLogin, gr)
 			result.Repos = append(result.Repos, repo)
 
@@ -240,7 +245,7 @@ func (c *Client) GetOrgData(ctx context.Context, orgLogin string) (*OrgData, err
 				addPR(result, orgLogin, gr.Name, repoKey, gpr)
 			}
 
-			// Repos with more than 100 open PRs need follow-up pages.
+			// Repos with more than open PRs need follow-up pages.
 			if gr.PullRequests.PageInfo.HasNextPage {
 				if err := c.fetchRemainingPRs(ctx, result, orgLogin, gr.Name, repoKey, gr.PullRequests.PageInfo.EndCursor); err != nil {
 					return nil, err
@@ -319,6 +324,26 @@ func addPR(result *OrgData, orgLogin, repoName, repoKey string, gpr gqlPR) {
 	}
 }
 
+// realNodeOwner extracts a fetched repo node's real owner login. see docs/ghclient.md
+func realNodeOwner(nameWithOwner, ownerLogin string) string {
+	if prefix, _, ok := strings.Cut(nameWithOwner, "/"); ok && prefix != "" {
+		return prefix
+	}
+	return ownerLogin
+}
+
+// dropForeignRepoNode reports whether a node really belongs to a different owner than queried, and logs the drop.
+// see docs/ghclient.md ("ownerAffiliations: OWNER, and the foreign-node drop")
+func dropForeignRepoNode(queriedOwner, nameWithOwner, ownerLogin string) bool {
+	real := realNodeOwner(nameWithOwner, ownerLogin)
+	if real == "" || strings.EqualFold(real, queriedOwner) {
+		return false
+	}
+	slog.Warn("dropping foreign-owner repo node from owner listing",
+		"name_with_owner", nameWithOwner, "queried_owner", queriedOwner)
+	return true
+}
+
 func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 	r := dbgen.Repo{
 		Owner:         owner,
@@ -326,9 +351,12 @@ func convertRepo(owner string, gr gqlRepo) dbgen.Repo {
 		NameWithOwner: gr.NameWithOwner,
 		Url:           gr.URL,
 		IsDisabled:    boolToInt(gr.IsDisabled),
-		OwnerLogin:    sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
-		OwnerAvatar:   sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
-		OwnerUrl:      sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
+		IsArchived:    boolToInt(gr.IsArchived),
+		// Lowercased to the stored/REST form; empty stays empty and never overwrites a known value (UpsertRepo's guard).
+		Visibility:  strings.ToLower(gr.Visibility),
+		OwnerLogin:  sql.NullString{String: gr.Owner.Login, Valid: gr.Owner.Login != ""},
+		OwnerAvatar: sql.NullString{String: gr.Owner.AvatarURL, Valid: gr.Owner.AvatarURL != ""},
+		OwnerUrl:    sql.NullString{String: gr.Owner.URL, Valid: gr.Owner.URL != ""},
 	}
 	if gr.PushedAt != nil {
 		r.PushedAt = sql.NullString{String: *gr.PushedAt, Valid: true}
@@ -368,6 +396,10 @@ func convertPR(owner, repoName string, gpr gqlPR) dbgen.PullRequest {
 		pr.AuthorLogin = sql.NullString{String: gpr.Author.Login, Valid: true}
 		pr.AuthorAvatar = sql.NullString{String: gpr.Author.AvatarURL, Valid: true}
 		pr.AuthorUrl = sql.NullString{String: gpr.Author.URL, Valid: true}
+	}
+	if gpr.AutoMergeRequest != nil && gpr.AutoMergeRequest.MergeMethod != "" {
+		// Lowercased to match the REST auto_merge.merge_method form. see docs/ghclient.md
+		pr.AutoMergeMethod = sql.NullString{String: strings.ToLower(gpr.AutoMergeRequest.MergeMethod), Valid: true}
 	}
 	if len(gpr.Commits.Nodes) > 0 {
 		commit := gpr.Commits.Nodes[0]

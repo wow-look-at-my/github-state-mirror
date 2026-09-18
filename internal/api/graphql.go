@@ -7,15 +7,15 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// maxGraphQLBodyBytes caps how much of a GraphQL request body we buffer. Real
-// GraphQL payloads are tiny; this only guards memory when forwarding arbitrary
-// queries to GitHub.
-const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
+// Caps buffered GraphQL body size.
+const maxGraphQLBodyBytes = 10 << 20 //  MiB
 
 // graphql handles the POST /graphql endpoint.
 //
@@ -27,8 +27,7 @@ const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
 func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Buffer the body so we can both inspect the query and, if we cannot serve
-	// it from cache, replay it to GitHub.
+	// Buffer body to inspect and possibly replay to GitHub.
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -56,19 +55,27 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 	// Only the org-repos query shape is served from cache (it names an org and
 	// asks for repositories). Forward anything else straight to GitHub, uncached,
-	// restoring the body we consumed above.
+	// restoring the body we consumed above. A forwarded MUTATION is recorded as
+	// a write (it was proxied because it mutates, not because caching failed);
+	// a forwarded query keeps the passthrough label.
 	if orgLogin == "" || !strings.Contains(req.Query, "repositories") {
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
+		if strings.HasPrefix(strings.TrimSpace(req.Query), "mutation") {
+			r = r.WithContext(withDispositionHint(r.Context(), DispWrite))
+		} else {
+			r = r.WithContext(withDispositionHint(r.Context(), DispPassthrough))
+			r = r.WithContext(withPassthroughReason(r.Context(), PassGraphQL))
+		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
 
-	// Ensure org repos data is fresh, recording whether this was a cache hit
-	// (served fresh) or a miss (triggered a fetch) for the dashboard.
+	// Ensure org repos are fresh; record hit vs miss for the dashboard.
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
-		slog.Warn("ensure fresh org repos failed", "org", orgLogin, "error", ensureErr)
+		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
+			"org", orgLogin, "actor", actor.Short(actor.FromContext(ctx)), "error", ensureErr, principalNameAttr(ctx))
 	}
 	disp := DispHit
 	switch {
@@ -77,17 +84,17 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	case outcome == freshness.OutcomeMiss:
 		disp = DispMiss
 	}
-	h.reqlog.record(callerLabel(r), r.Method, r.URL.Path, disp)
+	h.reqlog.observe(r, disp)
 
-	// Read repos from store.
-	repos, err := h.store.ListReposByOwner(ctx, orgLogin)
+	// Repos visible to this caller: public plus granted repos.
+	repos, err := h.store.ListVisibleReposByOwner(ctx, orgLogin, actor.FromContext(ctx), time.Now())
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	// If the refresh failed and there is no cached data to fall back on, surface
-	// the upstream error instead of returning an empty-but-"200 OK" success — a
+	// the upstream error instead of returning an empty-but-" OK" success — a
 	// silent empty result is indistinguishable from "this org has no repos" and
 	// hides real failures (bad token, GitHub 5xx, rate limit, ...). When cached
 	// repos DO exist we serve them (stale is better than an error). The body is a
@@ -105,9 +112,24 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serving stale-on-error: flag it in response HEADERS so clients can tell
+	// (and see how old the data is). Headers only — the body must stay
+	// byte-identical to GitHub's shape (the identity-test contract).
+	if ensureErr != nil {
+		w.Header().Set("X-GSM-Stale", "true")
+		if meta, merr := h.mgr.Metadata(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin}); merr == nil && meta != nil && meta.LastFetchedAt != nil {
+			w.Header().Set("X-GSM-Last-Fetched", meta.LastFetchedAt.UTC().Format(time.RFC3339))
+		}
+	}
+
 	// Build response matching GraphQL shape.
 	repoNodes := make([]map[string]interface{}, 0, len(repos))
 	for _, repo := range repos {
+		// The locked query selects repositories(isArchived: false), so GitHub
+		if repo.IsArchived != 0 {
+			continue
+		}
+
 		// Get open PRs for this repo.
 		prs, err := h.store.ListOpenPRsByRepo(ctx, repo.Owner, repo.Name)
 		if err != nil {
@@ -128,8 +150,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// statusCheckRollup is null when no CI status is recorded, mirroring
-			// real GitHub. The commits object itself is always a well-formed node
-			// list so clients can safely read commits.nodes[0].commit.statusCheckRollup.
 			var rollup interface{}
 			if pr.LastCommitStatus.Valid {
 				rollup = map[string]interface{}{
@@ -204,8 +224,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			"defaultBranchRef": defaultBranchRef,
 			"pullRequests": map[string]interface{}{
 				// The canonical query selects pullRequests.pageInfo (queries.go),
-				// so GitHub returns it; include it to stay shape-identical. The
-				// mirror returns every open PR in one page, so it never advances.
 				"pageInfo": map[string]interface{}{
 					"hasNextPage": false,
 					"endCursor":   nil,
@@ -220,9 +238,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]interface{}{
 			"organization": map[string]interface{}{
 				"repositories": map[string]interface{}{
-					// The mirror returns every repo in one response, so paging
-					// always terminates after the first page. pageInfo must be
-					// present: clients read pageInfo.hasNextPage unconditionally.
+					// The mirror returns every repo in response, so paging
 					"pageInfo": map[string]interface{}{
 						"hasNextPage": false,
 						"endCursor":   nil,

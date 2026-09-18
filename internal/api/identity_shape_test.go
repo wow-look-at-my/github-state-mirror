@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
 // jsonType returns the JSON kind of a decoded value, for structural comparison.
@@ -67,8 +70,8 @@ func assertSameShape(t *testing.T, path string, want, got interface{}) {
 		if !assert.Truef(t, ok, "%s: want array, got %s", path, jsonType(got)) {
 			return
 		}
-		// Compare element [0] shape when both have one (GraphQL arrays are
-		// homogeneous, so one element pins the shape).
+		// Compare element [] shape when both have (GraphQL arrays are
+		// homogeneous, so element pins the shape).
 		if len(w) > 0 && len(g) > 0 {
 			assertSameShape(t, path+"[0]", w[0], g[0])
 		}
@@ -83,9 +86,8 @@ func assertSameShape(t *testing.T, path string, want, got interface{}) {
 // assembler drops or adds a field relative to GitHub, this fails.
 func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 	router, store := setupTestRouter(t)
-	ctx := seedCtx()
 
-	store.SetOrgRepos(ctx, "my-org", []dbgen.Repo{{
+	repos := []dbgen.Repo{{
 		Owner:               "my-org",
 		Name:                "repo1",
 		NameWithOwner:       "my-org/repo1",
@@ -97,8 +99,8 @@ func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 		OwnerLogin:          sql.NullString{String: "my-org", Valid: true},
 		OwnerAvatar:         sql.NullString{String: "https://avatars/u", Valid: true},
 		OwnerUrl:            sql.NullString{String: "https://github.com/my-org", Valid: true},
-	}})
-	store.SetRepoPRs(ctx, "my-org", "repo1", []dbgen.PullRequest{{
+	}}
+	prs := []dbgen.PullRequest{{
 		Owner:              "my-org",
 		Repo:               "repo1",
 		Number:             1,
@@ -118,9 +120,15 @@ func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 		HeadRefOid:         sql.NullString{String: "abc123", Valid: true},
 		ReviewRequestCount: sql.NullInt64{Int64: 1, Valid: true},
 		LastCommitStatus:   sql.NullString{String: "SUCCESS", Valid: true},
-	}}, map[int64][]dbgen.PrLabel{
-		1: {{Owner: "my-org", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "d73a4a"}},
-	})
+	}}
+	now := time.Now()
+	require.NoError(t, store.SyncOrgTruth(context.Background(), "my-org", ghdata.OrgSyncData{
+		Repos:     repos,
+		PRsByRepo: map[string][]dbgen.PullRequest{"my-org/repo1": prs},
+		LabelsByPR: map[string]map[int64][]dbgen.PrLabel{
+			"my-org/repo1": {1: {{Owner: "my-org", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "d73a4a"}}},
+		},
+	}, testUserActor, now, now))
 
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -139,8 +147,7 @@ func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 
 	assertSameShape(t, "$", want, got)
 
-	// Enum vocabulary is structural in GraphQL: assert the cache emits values from
-	// GitHub's enums, not e.g. a lowercased REST value.
+	// Enum vocabulary is structural in GraphQL: assert real enum values, not a lowercased REST value.
 	pr := firstPR(t, got)
 	assert.Contains(t, []string{"MERGEABLE", "CONFLICTING", "UNKNOWN"}, pr["mergeable"], "mergeable must be a GraphQL enum value")
 	rollup := pr["commits"].(map[string]interface{})["nodes"].([]interface{})[0].(map[string]interface{})["commit"].(map[string]interface{})["statusCheckRollup"].(map[string]interface{})

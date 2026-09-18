@@ -8,16 +8,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 )
 
-// SessionFunc yields the authenticated contexts to refresh on each cycle. Every
-// returned context must carry a GitHub token (ghclient.WithToken) and a cache
-// partition (actor.WithActor). It is called fresh each cycle so short-lived
-// credentials (e.g. GitHub App installation tokens) can be re-minted. A nil
-// SessionFunc, or one returning no contexts, disables periodic refreshing —
-// per-request data still works via the caller's own token.
-type SessionFunc func(ctx context.Context) ([]context.Context, error)
-
-// PeriodicRefresher runs a background loop that refreshes all known resources
-// for each session credential.
+// PeriodicRefresher runs the fleet sync: each installation session's owner.
+// see docs/reveal-layer.md
 type PeriodicRefresher struct {
 	mgr      *freshness.Manager
 	interval time.Duration
@@ -28,8 +20,13 @@ func NewPeriodicRefresher(mgr *freshness.Manager, interval time.Duration, sessio
 	return &PeriodicRefresher{mgr: mgr, interval: interval, sessions: sessions}
 }
 
-// Start launches the periodic refresh loop. It blocks until ctx is canceled.
+// Start runs fleet refresh immediately, then per interval, until ctx
+// is canceled. The immediate run is load-bearing: see docs/reveal-layer.md
 func (p *PeriodicRefresher) Start(ctx context.Context) {
+	if ctx.Err() == nil {
+		p.refreshAll(ctx)
+	}
+
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
@@ -57,12 +54,20 @@ func (p *PeriodicRefresher) refreshAll(ctx context.Context) {
 	}
 
 	slog.Info("periodic refresh starting", "sessions", len(sessions))
-	kinds := []string{KindUser, KindUserOrgs, KindOrgRepos}
-	for _, sctx := range sessions {
-		for _, kind := range kinds {
-			if err := p.mgr.RefreshAllOfKind(sctx, kind, freshness.TriggerPeriodic); err != nil {
-				slog.Warn("periodic refresh failed", "kind", kind, "error", err)
-			}
+	for i, s := range sessions {
+		// A shutdown mid-cycle must be visible, not a silently truncated
+		// fleet: stop starting new fetches and say how much was left undone.
+		if ctx.Err() != nil {
+			slog.Warn("periodic refresh interrupted by shutdown", "owners_remaining", len(sessions)-i)
+			return
+		}
+		if s.Owner == "" {
+			continue
+		}
+		// Seeds the freshness row itself and bypasses the lazy error-backoff.
+		id := freshness.ResourceID{Kind: KindOrgRepos, Key: s.Owner}
+		if err := p.mgr.InvalidateAndRefresh(s.Ctx, id, freshness.TriggerPeriodic); err != nil {
+			slog.Warn("periodic refresh failed", "owner", s.Owner, "installation", s.InstallationID, "error", err)
 		}
 	}
 	slog.Info("periodic refresh complete")

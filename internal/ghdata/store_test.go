@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,218 +23,319 @@ func testStore(t *testing.T) *Store {
 	return NewStore(db)
 }
 
-func TestUpsertAndGetUser(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	user := dbgen.User{Login: "octocat", AvatarUrl: "http://avatar", Url: "http://url"}
-	require.NoError(t, s.UpsertUser(ctx, user))
-
-	got, err := s.GetFirstUser(ctx)
-	require.Nil(t, err)
-
-	assert.Equal(t, "octocat", got.Login)
-
-	assert.Equal(t, "http://avatar", got.AvatarUrl)
-
+func orgData(repos []dbgen.Repo, prsByRepo map[string][]dbgen.PullRequest) OrgSyncData {
+	return OrgSyncData{Repos: repos, PRsByRepo: prsByRepo, LabelsByPR: map[string]map[int64][]dbgen.PrLabel{}}
 }
 
-func TestSetUserOrgs(t *testing.T) {
+// TestSyncOrgTruth_UpsertsNeverDeletesRepos locks the upsert-only repo
+// reconcile: a fetch is principal's PARTIAL view of the org (private repos
+// they can't see, archived repos,... are absent), so a repo missing from a
+// later sync must SURVIVE. Deletion authority belongs to repository webhooks.
+func TestSyncOrgTruth_UpsertsNeverDeletesRepos(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-
-	require.NoError(t, s.UpsertUser(ctx, dbgen.User{Login: "octocat", AvatarUrl: "a", Url: "u"}))
-
-	orgs := []dbgen.Org{
-		{Login: "org1", AvatarUrl: sql.NullString{String: "a1", Valid: true}, Url: sql.NullString{String: "u1", Valid: true}},
-		{Login: "org2", AvatarUrl: sql.NullString{String: "a2", Valid: true}, Url: sql.NullString{String: "u2", Valid: true}},
-	}
-	require.NoError(t, s.SetUserOrgs(ctx, "octocat", orgs))
-
-	got, err := s.ListUserOrgs(ctx, "octocat")
-	require.Nil(t, err)
-
-	require.Equal(t, 2, len(got))
-
-	// Replace with different orgs.
-	newOrgs := []dbgen.Org{
-		{Login: "org3", AvatarUrl: sql.NullString{String: "a3", Valid: true}, Url: sql.NullString{String: "u3", Valid: true}},
-	}
-	require.NoError(t, s.SetUserOrgs(ctx, "octocat", newOrgs))
-
-	got, err = s.ListUserOrgs(ctx, "octocat")
-	require.Nil(t, err)
-
-	require.Equal(t, 1, len(got))
-
-	assert.Equal(t, "org3", got[0].Login)
-
-}
-
-func TestSetOrgRepos(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
+	now := time.Now()
 
 	repos := []dbgen.Repo{
 		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u1"},
 		{Owner: "org1", Name: "repo2", NameWithOwner: "org1/repo2", Url: "u2"},
 	}
-	require.NoError(t, s.SetOrgRepos(ctx, "org1", repos))
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos, nil), "user:1", now, now))
 
 	got, err := s.ListReposByOwner(ctx, "org1")
 	require.Nil(t, err)
-
 	require.Equal(t, 2, len(got))
 
-	// Replace — one fewer repo.
-	require.NoError(t, s.SetOrgRepos(ctx, "org1", repos[:1]))
-
+	// A later sync (a narrower principal) returning only repo1: repo2 survives.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos[:1], nil), "user:2", now, now))
 	got, _ = s.ListReposByOwner(ctx, "org1")
-	assert.Equal(t, 1, len(got))
-
+	assert.Equal(t, 2, len(got), "a partial fetch must never delete repos from global truth")
 }
 
-func TestSetRepoPRs(t *testing.T) {
+// TestSyncOrgTruth_VisibilityPreserved: the GraphQL org fetch cannot carry
+// visibility, so a sync's empty visibility must not clobber webhook-learned
+// truth (in either direction).
+func TestSyncOrgTruth_VisibilityPreserved(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	now := time.Now()
 
-	prs := []dbgen.PullRequest{
-		{Owner: "org1", Repo: "repo1", Number: 1, Title: "PR 1", Url: "u1", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
-		{Owner: "org1", Repo: "repo1", Number: 2, Title: "PR 2", Url: "u2", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
-	}
-	labels := map[int64][]dbgen.PrLabel{
-		1: {{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "red"}},
-	}
-	require.NoError(t, s.SetRepoPRs(ctx, "org1", "repo1", prs, labels))
-
-	got, err := s.ListOpenPRsByRepo(ctx, "org1", "repo1")
-	require.Nil(t, err)
-
-	require.Equal(t, 2, len(got))
-
-	gotLabels, err := s.ListPRLabels(ctx, "org1", "repo1", 1)
-	require.Nil(t, err)
-
-	require.Equal(t, 1, len(gotLabels))
-
-	assert.Equal(t, "bug", gotLabels[0].Name)
-
-}
-
-func TestSetPRFiles(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	files := []dbgen.PrFile{
-		{Owner: "org1", Repo: "repo1", PrNumber: 1, Path: "main.go", Additions: 10, Deletions: 5},
-		{Owner: "org1", Repo: "repo1", PrNumber: 1, Path: "test.go", Additions: 20, Deletions: 0},
-	}
-	require.NoError(t, s.SetPRFiles(ctx, "org1", "repo1", 1, files))
-
-	got, err := s.ListPRFiles(ctx, "org1", "repo1", 1)
-	require.Nil(t, err)
-
-	require.Equal(t, 2, len(got))
-
-	// Replace with fewer files.
-	require.NoError(t, s.SetPRFiles(ctx, "org1", "repo1", 1, files[:1]))
-
-	got, _ = s.ListPRFiles(ctx, "org1", "repo1", 1)
-	assert.Equal(t, 1, len(got))
-
-}
-
-func TestSetPRLabels(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	// Set initial labels.
-	labels := []dbgen.PrLabel{
-		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "bug", Color: "red"},
-		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "urgent", Color: "orange"},
-	}
-	require.NoError(t, s.SetPRLabels(ctx, "org1", "repo1", 1, labels))
-
-	got, err := s.ListPRLabels(ctx, "org1", "repo1", 1)
-	require.Nil(t, err)
-	require.Equal(t, 2, len(got))
-
-	// Replace with different labels.
-	newLabels := []dbgen.PrLabel{
-		{Owner: "org1", Repo: "repo1", PrNumber: 1, Name: "enhancement", Color: "blue"},
-	}
-	require.NoError(t, s.SetPRLabels(ctx, "org1", "repo1", 1, newLabels))
-
-	got, err = s.ListPRLabels(ctx, "org1", "repo1", 1)
-	require.Nil(t, err)
-	require.Equal(t, 1, len(got))
-	assert.Equal(t, "enhancement", got[0].Name)
-}
-
-func TestListOrgs(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	require.NoError(t, s.UpsertOrg(ctx, dbgen.Org{Login: "org1", AvatarUrl: sql.NullString{String: "a1", Valid: true}, Url: sql.NullString{String: "u1", Valid: true}}))
-	require.NoError(t, s.UpsertOrg(ctx, dbgen.Org{Login: "org2", AvatarUrl: sql.NullString{String: "a2", Valid: true}, Url: sql.NullString{String: "u2", Valid: true}}))
-
-	got, err := s.ListOrgs(ctx)
-	require.Nil(t, err)
-	assert.Equal(t, 2, len(got))
-}
-
-func TestGetRepo(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	require.NoError(t, s.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u1"}))
+	require.NoError(t, s.UpsertRepo(ctx, dbgen.Repo{
+		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u",
+		Visibility: VisibilityPublic,
+	}))
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"},
+	}, nil), "user:1", now, now))
 
 	got, err := s.GetRepo(ctx, "org1", "repo1")
-	require.Nil(t, err)
-	assert.Equal(t, "org1/repo1", got.NameWithOwner)
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPublic, got.Visibility, "an unknowing sync must not erase known visibility")
 }
 
-func TestGetPullRequest(t *testing.T) {
+// TestSyncOrgTruth_StampsVisibility: a sync whose fetch DID carry visibility
+// (the owner-agnostic query the fleet refresher uses) stamps it into truth --
+// and a later visibility-less sync (the identity-locked org-query path) keeps
+// it. This is the -- fix: the refresher used to sync visibility-less
+// rows, leaving every fleet-synced owner's repo at '' = fail-closed unknown
+// (visibility_unknown entries in that day's consistency report).
+func TestSyncOrgTruth_StampsVisibility(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	now := time.Now()
 
-	pr := dbgen.PullRequest{Owner: "org1", Repo: "repo1", Number: 1, Title: "PR 1", Url: "u1", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"}
-	require.NoError(t, s.UpsertPR(ctx, pr))
+	// The owner-sync shape: the repo row carries the fetched visibility.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u", Visibility: VisibilityPrivate},
+	}, nil), "app-installation:1", now, now))
 
-	got, err := s.GetPullRequest(ctx, "org1", "repo1", 1)
-	require.Nil(t, err)
-	assert.Equal(t, "PR 1", got.Title)
+	got, err := s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPrivate, got.Visibility, "an owner sync must stamp the visibility its fetch carried")
+
+	// A later org-query-shaped sync (no visibility) must not blank it.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"},
+	}, nil), "user:1", now, now))
+	got, err = s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPrivate, got.Visibility, "a visibility-less sync must preserve the stamped value")
+
+	// And a fresh owner sync reflecting a real change (privatized -> public)
+	// still overwrites: the guard only blocks EMPTY values.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData([]dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u", Visibility: VisibilityPublic},
+	}, nil), "app-installation:1", now, now))
+	got, err = s.GetRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	assert.Equal(t, VisibilityPublic, got.Visibility, "a knowing sync must apply a changed visibility")
 }
 
-func TestListOpenPRsByOwner(t *testing.T) {
+// TestSyncOrgTruth_ReconcilesOpenPRsWithGrace: for repos the fetch RETURNED,
+// its open-PR list is authoritative -- stale open rows are deleted -- except
+// rows touched inside the grace window (a webhook racing the fetch's eventual
+// consistency must never be clobbered; this exact race was hit in prototyping).
+func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	now := time.Now()
 
-	prs := []dbgen.PullRequest{
-		{Owner: "org1", Repo: "repo1", Number: 1, Title: "PR 1", Url: "u1", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
-		{Owner: "org1", Repo: "repo2", Number: 2, Title: "PR 2", Url: "u2", State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01"},
+	mkPR := func(n int64, title string) dbgen.PullRequest {
+		return dbgen.PullRequest{
+			Owner: "org1", Repo: "repo1", Number: n, Title: title, Url: "u",
+			State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-01",
+		}
 	}
+	repos := []dbgen.Repo{{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}}
+
+	// Truth holds PRs (stale, closed upstream, webhook missed) and; backdate touched_at beyond the grace window.
+	require.NoError(t, s.UpsertPR(ctx, mkPR(1, "stale"), now.Add(-time.Hour)))
+	require.NoError(t, s.UpsertPR(ctx, mkPR(2, "kept"), now.Add(-time.Hour)))
+	// PR was JUST webhook-applied -- inside the grace window.
+	require.NoError(t, s.UpsertPR(ctx, mkPR(3, "racing webhook"), now))
+
+	// The fetch snapshot (taken at fetchStart=now) contains only PR: GraphQL
+	// eventual consistency hasn't seen PR yet, and PR closed upstream.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos, map[string][]dbgen.PullRequest{
+		"org1/repo1": {mkPR(2, "kept")},
+	}), "user:1", now, now))
+
+	prs, err := s.ListOpenPRsByRepo(ctx, "org1", "repo1")
+	require.NoError(t, err)
+	numbers := make([]int64, 0, len(prs))
 	for _, pr := range prs {
-		require.NoError(t, s.UpsertPR(ctx, pr))
+		numbers = append(numbers, pr.Number)
 	}
-
-	got, err := s.ListOpenPRsByOwner(ctx, "org1")
-	require.Nil(t, err)
-	assert.Equal(t, 2, len(got))
+	assert.Equal(t, []int64{2, 3}, numbers,
+		"the stale row is reconciled away; the webhook-touched row survives the racing fetch")
 }
 
-func TestUpsertAndGetComparison(t *testing.T) {
+// TestSyncOrgTruth_GrantsReplaceSynced: every repo a principal's fetch returned
+// earns them a list_sync grant; absence from the next sync revokes it; probe
+// grants survive a list replace (an archived repo is absent from org fetches
+// but still probe-accessible).
+func TestSyncOrgTruth_GrantsReplaceSynced(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	now := time.Now()
 
-	comp := dbgen.BranchComparison{
-		Owner: "org1", Repo: "repo1", BaseRef: "main", HeadRef: "feature", AheadBy: 3, BehindBy: 1,
+	repos := []dbgen.Repo{
+		{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u1"},
+		{Owner: "org1", Name: "repo2", NameWithOwner: "org1/repo2", Url: "u2"},
 	}
-	require.NoError(t, s.UpsertComparison(ctx, comp))
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos, nil), "user:1", now, now))
+	// A probe grant for an archived repo the org list never returns.
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "old-archive", GrantSourceProbe, now))
 
-	got, err := s.GetComparison(ctx, "org1", "repo1", "main", "feature")
-	require.Nil(t, err)
+	for _, repo := range []string{"repo1", "repo2", "old-archive"} {
+		ok, err := s.HasGrant(ctx, "user:1", "org1", repo, now)
+		require.NoError(t, err)
+		assert.True(t, ok, repo)
+	}
 
-	assert.False(t, got.AheadBy != 3 || got.BehindBy != 1)
-
+	// Access to repo2 was revoked upstream: the next sync omits it.
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(repos[:1], nil), "user:1", now, now))
+	ok, err := s.HasGrant(ctx, "user:1", "org1", "repo2", now)
+	require.NoError(t, err)
+	assert.False(t, ok, "absence from the principal's own sync revokes the list_sync grant")
+	ok, _ = s.HasGrant(ctx, "user:1", "org1", "repo1", now)
+	assert.True(t, ok)
+	ok, _ = s.HasGrant(ctx, "user:1", "org1", "old-archive", now)
+	assert.True(t, ok, "probe grants survive a list replace-sync")
 }
+
+// TestGrants_TTLExpiry: a grant past its expiry no longer reveals; re-earning
+// it (a probe 2xx) renews the TTL.
+func TestGrants_TTLExpiry(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "Org1", "Repo1", GrantSourceProbe, now.Add(-GrantTTL-time.Minute)))
+	ok, err := s.HasGrant(ctx, "user:1", "org1", "repo1", now)
+	require.NoError(t, err)
+	assert.False(t, ok, "an expired grant must not reveal")
+
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "repo1", GrantSourceProbe, now))
+	ok, _ = s.HasGrant(ctx, "user:1", "ORG1", "REPO1", now)
+	assert.True(t, ok, "grants match case-insensitively via normalized keys")
+
+	require.NoError(t, s.RevokeGrant(ctx, "user:1", "org1", "repo1"))
+	ok, _ = s.HasGrant(ctx, "user:1", "org1", "repo1", now)
+	assert.False(t, ok)
+}
+
+// TestDenyVerdicts: recorded per (principal, resource), expire on their short
+// TTL, and are cleared when the principal earns a grant for the repo.
+func TestDenyVerdicts(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "org1/repo1/x?ref=", "org1", "repo1", 404, "Not Found", now))
+	v, ok, err := s.GetDenyVerdict(ctx, "user:1", "contents", "org1/repo1/x?ref=", now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 404, v.Status)
+	assert.Equal(t, "Not Found", v.Message)
+
+	// Another principal is unaffected.
+	_, ok, err = s.GetDenyVerdict(ctx, "user:2", "contents", "org1/repo1/x?ref=", now)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	// Expiry.
+	_, ok, _ = s.GetDenyVerdict(ctx, "user:1", "contents", "org1/repo1/x?ref=", now.Add(DenyTTL+time.Minute))
+	assert.False(t, ok, "deny verdicts expire on their short TTL")
+
+	// Earning a grant clears the principal's verdicts for the repo.
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "org1/repo1/x?ref=", "org1", "repo1", 404, "Not Found", now))
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "repo1", GrantSourceProbe, now))
+	_, ok, _ = s.GetDenyVerdict(ctx, "user:1", "contents", "org1/repo1/x?ref=", now)
+	assert.False(t, ok, "a fresh grant supersedes stale denials")
+}
+
+// TestPruneAccessControl: expired grant and deny rows are deleted, live ones
+// survive.
+func TestPruneAccessControl(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedGrant := func(repo string, expires time.Time) {
+		require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+			Principal: "user:1", Owner: "org1", Repo: repo,
+			GrantedAt: rfc3339(now.Add(-48 * time.Hour)), ExpiresAt: rfc3339(expires),
+			Source: GrantSourceProbe,
+		}))
+	}
+	seedGrant("expired", now.Add(-time.Minute))
+	seedGrant("live", now.Add(time.Hour))
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "k-expired", "org1", "r", 404, "nf", now.Add(-DenyTTL-time.Minute)))
+	require.NoError(t, s.RecordDenyVerdict(ctx, "user:1", "contents", "k-live", "org1", "r", 404, "nf", now))
+
+	require.NoError(t, s.PruneAccessControl(ctx, now))
+
+	counts, err := s.GlobalDataCounts(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), counts.Grants, "the expired grant row is gone")
+	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired was actually deleted.
+	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-expired"})
+	assert.Equal(t, sql.ErrNoRows, err, "the expired deny row is gone")
+	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-live"})
+	assert.NoError(t, err, "the live deny row survives")
+}
+
+// TestWritePathsPruneOpportunistically: RecordGrant and SyncOrgTruth sweep
+// expired access-control rows as a best-effort side effect, throttled to at
+// most per pruneInterval — so expired rows never accumulate unboundedly
+// yet the hot write path doesn't sweep on every call.
+func TestWritePathsPruneOpportunistically(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedExpired := func(principal, repo string) {
+		require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+			Principal: principal, Owner: "org1", Repo: repo,
+			GrantedAt: rfc3339(now.Add(-2 * GrantTTL)), ExpiresAt: rfc3339(now.Add(-GrantTTL)),
+			Source: GrantSourceProbe,
+		}))
+	}
+	rowExists := func(principal, repo string) bool {
+		_, err := s.q.GetAccessGrant(ctx, dbgen.GetAccessGrantParams{Principal: principal, Owner: "org1", Repo: repo})
+		if err == sql.ErrNoRows {
+			return false
+		}
+		require.NoError(t, err)
+		return true
+	}
+
+	// The write-path call prunes (nothing has throttled yet).
+	seedExpired("user:2", "stale1")
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "fresh1", GrantSourceProbe, now))
+	assert.False(t, rowExists("user:2", "stale1"), "RecordGrant sweeps the expired row")
+	assert.True(t, rowExists("user:1", "fresh1"))
+
+	// Inside the throttle window a later write does NOT sweep again.
+	seedExpired("user:2", "stale2")
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "fresh2", GrantSourceProbe, now.Add(time.Minute)))
+	assert.True(t, rowExists("user:2", "stale2"), "inside the throttle window the expired row stays")
+
+	// Past the throttle window, SyncOrgTruth's write path sweeps it.
+	later := now.Add(pruneInterval + time.Minute)
+	require.NoError(t, s.SyncOrgTruth(ctx, "org1",
+		orgData([]dbgen.Repo{{Owner: "org1", Name: "r1", NameWithOwner: "org1/r1", Url: "u"}}, nil),
+		"user:1", later, later))
+	assert.False(t, rowExists("user:2", "stale2"), "past the throttle window SyncOrgTruth sweeps the expired row")
+	assert.True(t, rowExists("user:1", "fresh1"), "live rows survive the sweep")
+}
+
+// TestGrantsByPrincipal_OnlyUnexpired: the grants view lists LIVE access only,
+// agreeing with CountLiveGrants (an expired row awaiting the opportunistic
+// prune is not access).
+func TestGrantsByPrincipal_OnlyUnexpired(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, s.RecordGrant(ctx, "user:1", "org1", "live", GrantSourceProbe, now))
+	// Seeded raw (not via RecordGrant) so the write-path prune can't race the
+	// expired row out before the assertion.
+	require.NoError(t, s.q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
+		Principal: "user:1", Owner: "org1", Repo: "expired",
+		GrantedAt: rfc3339(now.Add(-2 * GrantTTL)), ExpiresAt: rfc3339(now.Add(-time.Minute)),
+		Source: GrantSourceProbe,
+	}))
+
+	rows, err := s.GrantsByPrincipal(ctx, "user:1", now)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "live", rows[0].Repo)
+
+	n, err := s.CountLiveGrants(ctx, "user:1", now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "list and count agree on live grants")
+}
+
+// TestDeleteRepoCascade removes the repo and everything hanging off it.

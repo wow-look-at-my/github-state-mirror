@@ -6,11 +6,14 @@ import (
 	"time"
 )
 
+// GlobalActor must be set explicitly; an empty Actor fills from the caller's principal.
+const GlobalActor = "global"
+
 // ResourceID uniquely identifies any cacheable resource.
 type ResourceID struct {
-	Kind  string // e.g. "org_repos", "pr_files", "compare"
-	Key   string // e.g. "my-org/my-repo/42"
-	Actor string // per-credential cache partition (fingerprint of the caller's token)
+	Kind  string // e.g. "org_repos", "repo_pulls"
+	Key   string // e.g. "my-org" or "my-org/my-repo"
+	Actor string // a principal's marker, or GlobalActor for shared truth
 }
 
 func (r ResourceID) String() string {
@@ -31,7 +34,7 @@ const (
 	StateError    FetchState = "error"
 )
 
-// Metadata holds the cache state for one resource.
+// Metadata holds the cache state for resource.
 type Metadata struct {
 	ResourceID
 	LastFetchedAt *time.Time
@@ -43,11 +46,10 @@ type Metadata struct {
 	RetryAfter    *time.Time
 }
 
-// TriggerSource describes what caused a refresh.
+// TriggerSource is what caused a refresh. Webhooks never fetch; they apply
 type TriggerSource string
 
 const (
-	TriggerWebhook  TriggerSource = "webhook"
 	TriggerPeriodic TriggerSource = "periodic"
 	TriggerLazy     TriggerSource = "lazy"
 	TriggerManual   TriggerSource = "manual"

@@ -2,14 +2,20 @@ name: CI
 
 on:
   push:
+    branches: ['**']
 
+# See docs/ci.md for why each grant below is required.
 permissions:
   id-token: write
-  contents: read
+
+  contents: write
   actions: read
-  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
-  # A reusable workflow cannot exceed the caller's permissions, so it must be
-  # declared here.
+  checks: read
+
+  artifact-metadata: write
+  deployments: write
+  pull-requests: write
+
   packages: write
 
 jobs:
@@ -30,10 +36,7 @@ jobs:
             exit 1
           fi
 
-  # The dashboard front-end is authored in TypeScript (internal/api/web/src/*.ts)
-  # and compiled to internal/api/web/assets/*.js, which is committed (a generated
-  # artifact) and embedded into the Go binary. This job fails if the committed JS
-  # is out of date with the TypeScript source.
+  # See docs/ci.md for why this job exists and what it enforces.
   web-check:
     runs-on: ubuntu-latest
     steps:
@@ -43,36 +46,65 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
-      - name: Verify compiled dashboard JS is committed and up to date
+
+      - run: npm run check:harness
+      - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            const res = await exec.getExecOutput("git", ["status", "--porcelain", "--", "internal/api/web/assets"], { silent: true });
-            if (res.stdout.trim() !== "") {
-              await exec.exec("git", ["--no-pager", "diff", "--", "internal/api/web/assets"]);
-              core.setFailed("Compiled dashboard JS is out of date. Run `npm run build` and commit internal/api/web/assets/.");
+            // Ask git what is TRACKED (not what is on disk) — the build step above just wrote the ignored .js files into the working tree.
+            const res = await exec.getExecOutput(
+              "git", ["ls-files", "--", "internal/api/web/assets/*.js"], { silent: true });
+            const tracked = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+            if (tracked.length > 0) {
+              core.info(tracked.join("\n"));
+              core.setFailed(
+                "Generated dashboard JS is committed. The TypeScript in " +
+                "internal/api/web/src/ is the only source; CI builds the JS. " +
+                "Run `git rm --cached internal/api/web/assets/*.js` and commit.");
             } else {
-              core.info("Dashboard JS is in sync with the TypeScript source.");
+              core.info("No generated JS is tracked — TypeScript is the only committed source.");
             }
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: wow-look-at-my/go-toolchain@v1
+      # See docs/ci.md: the dashboard JS must compile before the Go build.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      # See docs/ci.md: do not add an explicit cache-upload step here.
+      - uses: wow-look-at-my/go-toolchain@master
+        with:
+          # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
+          cosmo-platforms: linux/amd64,windows/amd64
 
-  # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Downloads the go-build artifact (server_linux_amd64) the build job
-  # uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
-  publish-ghcr:
+  # See docs/ci.md: this job starts the image and requires it to serve.
+  image-smoke:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # See docs/ci.md: path must match what publish-ghcr passes.
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      - run: npm ci
+      - run: npm run test:image
+
+  # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
+  publish-ghcr:
+    needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
-  # Deploy a standalone, backend-free styling preview of the dashboard to
-  # buildhost as a per-branch static site, served at
-  # https://sites.pazer.build/github-state-mirror/branch/<branch>/. The preview
-  # injects demo-data.js so the page renders canned data (login/user/admin views)
-  # without a real server. OIDC handles auth; no static token is needed.
+  # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
     needs: web-check
     runs-on: ubuntu-latest
@@ -92,20 +124,18 @@ jobs:
             const dist = "dist";
             fs.mkdirSync(`${dist}/assets`, { recursive: true });
 
-            // Inject the preview-only demo-data.js before app.js so the page
-            // renders canned data instead of calling the (absent) backend.
+            // Inject the preview-only demo-data.js before app.js so the page renders canned data instead of calling the (absent) backend.
             const appTag = '<script type="module" src="assets/app.js"></script>';
             const demoTag = '<script type="module" src="assets/demo-data.js"></script>';
             let html = fs.readFileSync(`${webDir}/index.html`, "utf8");
             html = html.replace(appTag, `${demoTag}\n    ${appTag}`);
             fs.writeFileSync(`${dist}/index.html`, html);
 
-            for (const f of ["app.js", "style.css", "demo-data.js"]) {
+            for (const f of ["app.js", "rate-meter.js", "timeline.js", "style.css", "demo-data.js"]) {
               fs.copyFileSync(`${webDir}/assets/${f}`, `${dist}/assets/${f}`);
             }
 
-            // buildhost serves sites under a single path segment, so the branch
-            // name must not contain '/'. Flatten anything outside [A-Za-z0-9._-].
+            // buildhost serves sites under a single path segment, so the branch name must not contain '/': flatten anything outside [A-Za-z0-9._-].
             const raw = github.ref_name || "preview";
             const branch = raw.replace(/[^A-Za-z0-9._-]/g, "-");
             core.setOutput("branch", branch);

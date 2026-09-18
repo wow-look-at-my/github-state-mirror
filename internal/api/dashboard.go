@@ -9,39 +9,28 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// Embedded dashboard assets. Only the files the production page references are
-// embedded; src/*.ts and the preview-only demo-data.js are deliberately left
-// out. assets/app.js is generated from src/app.ts by `npm run build` (tsc).
-//
-//go:embed web/index.html web/assets/app.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
 var webFS embed.FS
 
-// dashboard serves the login flow, the static page, and the cache-stats API.
-// Its authorization model is by GitHub login (via OAuth session), distinct from
-// the bearer-token + fingerprint model that guards the data API. It never serves
-// one credential's cached rows to another — it only reports counts and freshness
-// metadata, grouped by login for convenience.
-// contentAsset is an embedded asset served at a content-addressed URL — the
-// filename embeds a hash of the content. A new deploy with changed JS/CSS yields
-// a new URL, so browsers and the CDN/proxy fetch the new file immediately
-// instead of serving a stale copy until a cache TTL expires. Because the URL is
-// unique per content, it is served with a long-lived, immutable cache header.
+// contentAsset is an embedded asset served at a content-addressed URL.
 type contentAsset struct {
 	url         string // e.g. "/assets/app.1a2b3c4d5e.js"
 	content     []byte
 	contentType string
 }
 
+// dashboard authorizes by GitHub login, never by the bearer-token/reveal model. See docs/dashboard/dashboard.md.
 type dashboard struct {
 	auth    *auth.Service
 	store   *ghdata.Store
@@ -50,24 +39,41 @@ type dashboard struct {
 	assets  []contentAsset
 	reqlog  *requestLog
 	checker *syncpkg.ConsistencyChecker
+	// meter is the passively observed rate-limit store behind the "Rate limit" tab.
+	meter *ratemeter.Store
+	// notifier backs the admin-only GET /api/notifications JSON view. Nil-safe.
+	notifier *notify.Notifier
+	// dbPath (DB_PATH) is statted per request to report the cache's on-disk footprint.
+	dbPath string
+	// timeline is the in-memory timed-traffic ring behind GET /api/timeline. Nil-safe.
+	timeline *reqtimeline.Recorder
+	// shapes captures uncached traffic's request/response shape for GET /api/brief. Nil-safe.
+	shapes *shapeStore
+	// appEvents reports the App's subscribed events; nil skips the missing-subscription check.
+	appEvents func(context.Context) ([]string, error)
+	// ordering reports the out-of-order delivery gate's stats; nil omits the Webhooks tab panel.
+	ordering func() syncpkg.OrderingSnapshot
 }
 
-func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker) *dashboard {
+func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		// Embedded at compile time; a read failure is a programmer error.
 		panic("read embedded index.html: " + err.Error())
 	}
 	appJS := mustReadAsset("web/assets/app.js")
+	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
+	timelineJS := mustReadAsset("web/assets/timeline.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
+	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
+	timelineName := hashedAssetName("timeline", "js", timelineJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
-	// Rewrite the served HTML to point at the content-addressed URLs. The
-	// committed index.html keeps the stable names (assets/app.js) so the
-	// backend-free CI styling preview still resolves them; only the HTML the Go
-	// server hands out references the hashed URLs.
+	// The committed index.html keeps the stable names so the CI preview still resolves them.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
+	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
+	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -77,10 +83,19 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 		index:   []byte(served),
 		assets: []contentAsset{
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
-		reqlog:  reqlog,
-		checker: checker,
+		reqlog:    reqlog,
+		checker:   checker,
+		meter:     meter,
+		notifier:  notifier,
+		dbPath:    dbPath,
+		timeline:  timeline,
+		shapes:    shapes,
+		appEvents: appEvents,
+		ordering:  ordering,
 	}
 }
 
@@ -92,16 +107,14 @@ func mustReadAsset(name string) []byte {
 	return b
 }
 
-// hashedAssetName returns "<stem>.<hash>.<ext>" where hash is the first 10 hex
-// chars of the content's SHA-256 — enough to be collision-free for two files.
+// hashedAssetName returns "<stem>.<hash>.<ext>" where hash is the hex
+// chars of the content's SHA- — enough to be collision-free for files.
 func hashedAssetName(stem, ext string, content []byte) string {
 	sum := sha256.Sum256(content)
 	return stem + "." + hex.EncodeToString(sum[:])[:10] + "." + ext
 }
 
-// routes registers the dashboard's routes on r. These sit outside requireAuth:
-// they authenticate via the session cookie (or nothing, for the public page),
-// never a bearer token.
+// routes sit outside requireAuth: they authenticate via the session cookie, never a bearer token.
 func (d *dashboard) routes(r chi.Router) {
 	r.Get("/", d.serveIndex)
 
@@ -109,8 +122,7 @@ func (d *dashboard) routes(r chi.Router) {
 	if err != nil {
 		panic("sub embedded assets: " + err.Error())
 	}
-	// Serve the content-addressed asset URLs with an immutable, long-lived cache;
-	// fall back to the stable filenames (assets/app.js) via the file server.
+	// Falls back to the stable filenames (assets/app.js) for anything not content-addressed.
 	fileServer := http.StripPrefix("/assets/", http.FileServer(http.FS(assetsSub)))
 	r.Handle("/assets/*", d.serveAssets(fileServer))
 
@@ -121,19 +133,20 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/me", d.handleMe)
 	r.Get("/api/cache", d.handleCacheStats)
 	r.Get("/api/webhooks", d.handleWebhooks)
+	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
+	r.Get("/api/timeline", d.handleTimeline)
 
-	// Admin-only: browse the actual cached rows for one scope, run a consistency
-	// check that re-fetches the source of truth from GitHub, and read the GitHub
-	// App's rate-limit status.
+	// Admin-only truth browse and consistency check/reconcile; see docs/dashboard/operator-tooling.md.
 	r.Get("/api/cache/data", d.handleCacheData)
 	r.Get("/api/cache/check", d.handleCacheCheck)
+	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
+	r.Get("/api/notifications", d.handleNotifications)
+	r.Get("/api/brief", d.handleBrief)
 }
 
-// serveAssets serves the content-addressed asset URLs (immutable cache) and
-// delegates everything else under /assets/ to the embedded file server (the
-// stable filenames, e.g. assets/app.js).
+// serveAssets serves content-addressed URLs directly, else delegates to fileServer.
 func (d *dashboard) serveAssets(fileServer http.Handler) http.HandlerFunc {
 	byURL := make(map[string]contentAsset, len(d.assets))
 	for _, a := range d.assets {
@@ -199,6 +212,30 @@ func (d *dashboard) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.auth.AuthCodeURL(d.redirectURI(r), state), http.StatusFound)
 }
 
+// signinFailedHTML is the page every callback failure renders. Fixed content
+// only — no user-controlled text ever lands in it (details belong in the logs),
+// so it is injection-proof by construction. The retry link points at /login,
+// which mints a fresh state cookie and restarts the flow cleanly.
+const signinFailedHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
+<h1>Sign-in failed</h1>
+<p>Sign-in could not be completed.</p>
+<p><a href="/login">Try signing in again</a></p>
+</body>
+</html>
+`
+
+// signinFailed answers a callback failure with the retry page at 4xx, NEVER 5xx.
+// See docs/dashboard/dashboard.md for why.
+func signinFailed(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(signinFailedHTML))
+}
+
 func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if !d.auth.Configured() {
 		http.Error(w, "login is not configured on this server", http.StatusServiceUnavailable)
@@ -215,7 +252,16 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	c, err := r.Cookie(auth.StateCookie)
 	if err != nil || c.Value == "" || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
+		// Name which precondition failed — never the state values themselves.
+		switch {
+		case state == "":
+			slog.Warn("oauth callback rejected: state query param missing")
+		case err != nil || c.Value == "":
+			slog.Warn("oauth callback rejected: state cookie missing or empty")
+		default:
+			slog.Warn("oauth callback rejected: state mismatch")
+		}
+		signinFailed(w)
 		return
 	}
 	// Consume the state cookie.
@@ -223,7 +269,8 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := q.Get("code")
 	if code == "" {
-		http.Error(w, "missing oauth code", http.StatusBadRequest)
+		slog.Warn("oauth callback rejected: code query param missing")
+		signinFailed(w)
 		return
 	}
 
@@ -231,13 +278,13 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := d.auth.Exchange(ctx, code, d.redirectURI(r))
 	if err != nil {
 		slog.Warn("oauth token exchange failed", "error", err)
-		http.Error(w, "could not complete sign-in", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 	login, _, err := d.auth.FetchLogin(ctx, token)
 	if err != nil {
 		slog.Warn("oauth fetch login failed", "error", err)
-		http.Error(w, "could not read GitHub identity", http.StatusBadGateway)
+		signinFailed(w)
 		return
 	}
 
@@ -248,334 +295,4 @@ func (d *dashboard) handleCallback(w http.ResponseWriter, r *http.Request) {
 func (d *dashboard) handleLogout(w http.ResponseWriter, r *http.Request) {
 	d.auth.ClearSession(w, d.secure(r))
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// ---- dashboard API ----
-
-type meResponse struct {
-	Authenticated   bool   `json:"authenticated"`
-	LoginConfigured bool   `json:"login_configured"`
-	Login           string `json:"login,omitempty"`
-	IsAdmin         bool   `json:"is_admin"`
-}
-
-func (d *dashboard) handleMe(w http.ResponseWriter, r *http.Request) {
-	resp := meResponse{LoginConfigured: d.auth.Configured()}
-	if login, ok := d.auth.Session(r); ok {
-		resp.Authenticated = true
-		resp.Login = login
-		resp.IsAdmin = d.auth.IsAdmin(login)
-	}
-	writeJSON(w, resp)
-}
-
-type webhooksResponse struct {
-	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`
-}
-
-// handleWebhooks returns the recent webhook deliveries and their dispositions.
-// The delivery log is global (it spans every repo/tenant), so — unlike the
-// per-scope cache stats — it is restricted to admins, consistent with the
-// admin-only "all scopes" view.
-func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
-	if _, ok := d.requireAdmin(w, r); !ok {
-		return
-	}
-	deliveries, err := d.store.RecentWebhookDeliveries(r.Context(), 100)
-	if err != nil {
-		slog.Warn("list webhook deliveries failed", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if deliveries == nil {
-		deliveries = []ghdata.WebhookDelivery{}
-	}
-	writeJSON(w, webhooksResponse{Deliveries: deliveries})
-}
-
-// handleRequests returns recent data-API requests and their cache disposition
-// (hit / miss / passthrough). Like the webhook log it spans every actor/tenant,
-// so — consistent with the admin-only "all scopes" view — it is admin-only.
-func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
-	login, ok := d.auth.Session(r)
-	if !ok {
-		http.Error(w, "unauthorized: sign in first", http.StatusUnauthorized)
-		return
-	}
-	if !d.auth.IsAdmin(login) {
-		http.Error(w, "forbidden: admin only", http.StatusForbidden)
-		return
-	}
-	writeJSON(w, d.reqlog.snapshot(200))
-}
-
-type kindFreshness struct {
-	Kind        string           `json:"kind"`
-	States      map[string]int64 `json:"states"`
-	LastFetched string           `json:"last_fetched,omitempty"`
-	// Error is the captured failure reason for a resource of this kind currently
-	// in the error state (ErrorKey identifies which one), so the dashboard can
-	// show *why* a kind is erroring, not just the count.
-	Error    string `json:"error,omitempty"`
-	ErrorKey string `json:"error_key,omitempty"`
-}
-
-type recentRefresh struct {
-	Kind      string `json:"kind"`
-	Key       string `json:"key"`
-	Trigger   string `json:"trigger"`
-	StartedAt string `json:"started_at"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-}
-
-type scopeStats struct {
-	Actor    string            `json:"actor"`              // short fingerprint (display)
-	ActorID  string            `json:"actor_id,omitempty"` // full partition key (for admin browse/check)
-	Login    string            `json:"login"`
-	IsSelf   bool              `json:"is_self"`
-	LastSeen string            `json:"last_seen,omitempty"`
-	Counts   ghdata.DataCounts `json:"counts"`
-	Total    int64             `json:"total"`
-	Kinds    []kindFreshness   `json:"kinds"`
-	Recent   []recentRefresh   `json:"recent,omitempty"`
-}
-
-type cacheResponse struct {
-	Login      string            `json:"login"`
-	IsAdmin    bool              `json:"is_admin"`
-	Scope      string            `json:"scope"`
-	ScopeCount int               `json:"scope_count"`
-	Totals     ghdata.DataCounts `json:"totals"`
-	Scopes     []scopeStats      `json:"scopes"`
-}
-
-const unknownLogin = "(unknown)"
-
-// scopeInput is one actor to summarize, with its (possibly unknown) identity.
-type scopeInput struct {
-	actor    string
-	login    string
-	lastSeen string
-}
-
-func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
-	login, ok := d.auth.Session(r)
-	if !ok {
-		http.Error(w, "unauthorized: sign in first", http.StatusUnauthorized)
-		return
-	}
-	isAdmin := d.auth.IsAdmin(login)
-
-	scope := r.URL.Query().Get("scope")
-	if scope == "" {
-		scope = "mine"
-	}
-	if scope == "all" && !isAdmin {
-		http.Error(w, "forbidden: admin only", http.StatusForbidden)
-		return
-	}
-
-	ctx := r.Context()
-	identities, err := d.store.ListActorIdentities(ctx)
-	if err != nil {
-		slog.Warn("list actor identities failed", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	inputs := d.collectInputs(ctx, scope, login, identities)
-
-	resp := cacheResponse{Login: login, IsAdmin: isAdmin, Scope: scope, ScopeCount: len(inputs)}
-	detailed := scope != "all" // recent activity only on the focused (mine) view
-	for _, in := range inputs {
-		s, err := d.buildScope(ctx, in, login, detailed)
-		if err != nil {
-			slog.Warn("build scope failed", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		resp.Totals = addCounts(resp.Totals, s.Counts)
-		resp.Scopes = append(resp.Scopes, s)
-	}
-	if resp.Scopes == nil {
-		resp.Scopes = []scopeStats{}
-	}
-	writeJSON(w, resp)
-}
-
-// collectInputs returns the actors to summarize for the requested scope, sorted
-// for stable display.
-func (d *dashboard) collectInputs(ctx context.Context, scope, login string, identities []dbgen.ActorIdentity) []scopeInput {
-	if scope != "all" {
-		var inputs []scopeInput
-		for _, id := range identities {
-			if id.Login == login {
-				inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
-			}
-		}
-		return inputs
-	}
-
-	// Admin "all": every identity, plus any cached actor that lacks an identity
-	// row (e.g. the background token before it is recorded).
-	seen := make(map[string]bool, len(identities))
-	inputs := make([]scopeInput, 0, len(identities))
-	for _, id := range identities {
-		inputs = append(inputs, scopeInput{actor: id.Actor, login: id.Login, lastSeen: id.LastSeen})
-		seen[id.Actor] = true
-	}
-	if cached, err := d.store.CachedActors(ctx); err != nil {
-		slog.Warn("list cached actors failed", "error", err)
-	} else {
-		for _, a := range cached {
-			if !seen[a] {
-				inputs = append(inputs, scopeInput{actor: a, login: unknownLogin})
-			}
-		}
-	}
-	// Known logins first (case-insensitive), unknowns last, then by actor.
-	sort.SliceStable(inputs, func(i, j int) bool {
-		ui, uj := inputs[i].login == unknownLogin, inputs[j].login == unknownLogin
-		if ui != uj {
-			return uj // a known login sorts before an unknown one
-		}
-		li, lj := strings.ToLower(inputs[i].login), strings.ToLower(inputs[j].login)
-		if li != lj {
-			return li < lj
-		}
-		return inputs[i].actor < inputs[j].actor
-	})
-	return inputs
-}
-
-func (d *dashboard) buildScope(ctx context.Context, in scopeInput, selfLogin string, detailed bool) (scopeStats, error) {
-	counts, err := d.store.DataCounts(ctx, in.actor)
-	if err != nil {
-		return scopeStats{}, err
-	}
-	fresh, err := d.store.FreshnessByKind(ctx, in.actor)
-	if err != nil {
-		return scopeStats{}, err
-	}
-	errs, err := d.store.ErrorMessagesByKind(ctx, in.actor)
-	if err != nil {
-		return scopeStats{}, err
-	}
-
-	s := scopeStats{
-		Actor:    shortFingerprint(in.actor),
-		ActorID:  in.actor,
-		Login:    in.login,
-		IsSelf:   in.login == selfLogin && in.login != unknownLogin,
-		LastSeen: in.lastSeen,
-		Counts:   counts,
-		Total:    sumCounts(counts),
-		Kinds:    groupKinds(fresh, errs),
-	}
-	if detailed {
-		logs, err := d.store.RecentRefreshes(ctx, in.actor, 12)
-		if err != nil {
-			return scopeStats{}, err
-		}
-		s.Recent = toRecent(logs)
-	}
-	return s, nil
-}
-
-// groupKinds folds per-(kind,state) rows into one entry per resource kind, with
-// a map of state -> count and the most recent fetch time across that kind. When
-// a kind has an errored resource, the first captured error message (and its key)
-// is attached so the dashboard can show why it failed.
-func groupKinds(rows []dbgen.ActorFreshnessByKindRow, errRows []dbgen.ActorErrorMessagesByKindRow) []kindFreshness {
-	order := make([]string, 0)
-	byKind := make(map[string]*kindFreshness)
-	for _, row := range rows {
-		kf, ok := byKind[row.ResourceKind]
-		if !ok {
-			kf = &kindFreshness{Kind: row.ResourceKind, States: map[string]int64{}}
-			byKind[row.ResourceKind] = kf
-			order = append(order, row.ResourceKind)
-		}
-		kf.States[row.FetchState] += row.Count
-		// last_fetched_at is stored as RFC3339 UTC, so lexical max == latest.
-		if lf := asTimeString(row.LastFetched); lf > kf.LastFetched {
-			kf.LastFetched = lf
-		}
-	}
-	// Attach the first error message per kind (rows are ordered by kind, key).
-	for _, e := range errRows {
-		kf, ok := byKind[e.ResourceKind]
-		if !ok || kf.Error != "" {
-			continue
-		}
-		kf.Error = e.ErrorMessage.String
-		kf.ErrorKey = e.ResourceKey
-	}
-	out := make([]kindFreshness, 0, len(order))
-	for _, k := range order {
-		out = append(out, *byKind[k])
-	}
-	return out
-}
-
-func toRecent(logs []dbgen.CacheRefreshLog) []recentRefresh {
-	out := make([]recentRefresh, 0, len(logs))
-	for _, l := range logs {
-		status := "running"
-		if l.CompletedAt.Valid {
-			if l.Success.Valid && l.Success.Int64 == 1 {
-				status = "success"
-			} else {
-				status = "error"
-			}
-		}
-		out = append(out, recentRefresh{
-			Kind:      l.ResourceKind,
-			Key:       l.ResourceKey,
-			Trigger:   l.TriggeredBy,
-			StartedAt: l.StartedAt,
-			Status:    status,
-			// Surface the captured failure reason (cache_refresh_log.error_message)
-			// so the dashboard can show *why* a refresh errored, not just that it did.
-			Error: l.ErrorMessage.String,
-		})
-	}
-	return out
-}
-
-// asTimeString coerces sqlc's interface{} MAX() result (string, []byte, or nil)
-// into a string.
-func asTimeString(v interface{}) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	case []byte:
-		return string(t)
-	default:
-		return ""
-	}
-}
-
-func shortFingerprint(fp string) string {
-	if len(fp) > 12 {
-		return fp[:12]
-	}
-	return fp
-}
-
-func sumCounts(c ghdata.DataCounts) int64 {
-	return c.Repos + c.PullRequests + c.Orgs + c.Users + c.CommitChecks + c.PRFiles + c.BranchComparisons
-}
-
-func addCounts(a, b ghdata.DataCounts) ghdata.DataCounts {
-	return ghdata.DataCounts{
-		Repos:             a.Repos + b.Repos,
-		PullRequests:      a.PullRequests + b.PullRequests,
-		Orgs:              a.Orgs + b.Orgs,
-		Users:             a.Users + b.Users,
-		CommitChecks:      a.CommitChecks + b.CommitChecks,
-		PRFiles:           a.PRFiles + b.PRFiles,
-		BranchComparisons: a.BranchComparisons + b.BranchComparisons,
-	}
 }

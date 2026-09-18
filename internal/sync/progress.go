@@ -1,0 +1,55 @@
+package sync
+
+import "context"
+
+// Live progress for the consistency check / reconcile. A real fleet run takes
+// minutes (per owner: a paginated repo+PR fetch at repos/page, a visibility
+// fetch, the diff, and in apply mode the corrections), so the run reports its
+// phase boundaries through an optional, nil-safe callback. The streaming
+// /api/cache/check?stream= handler relays these events to the operator as
+// NDJSON lines; events are emitted synchronously, in order, on the run's own
+// goroutine.
+
+// ProgressEvent is live-progress notification from a consistency run.
+// Phase determines which of the optional fields are populated.
+type ProgressEvent struct {
+	// Phase: start | owner | fetch | visibility | diffed | applied | skip | done.
+	Phase string `json:"phase"`
+	// Owner is the owner being worked on (every phase except start/done).
+	Owner string `json:"owner,omitempty"`
+	// Index/Total: the owner's -based position in the run (phase=owner).
+	Index int `json:"index,omitempty"`
+	Total int `json:"total,omitempty"`
+	// Owners is how many owners the run will visit (phase=start).
+	Owners int `json:"owners,omitempty"`
+	// ReposFetched/ReposTotal: cumulative count and connection totalCount (phase=fetch).
+	ReposFetched int `json:"repos_fetched,omitempty"`
+	ReposTotal   int `json:"repos_total,omitempty"`
+	// Discrepancies is the running total across all owners diffed so far (phase=diffed).
+	Discrepancies int `json:"discrepancies,omitempty"`
+	// Applied is a snapshot of the corrections tally so far (phase=applied).
+	Applied *AppliedSummary `json:"applied,omitempty"`
+	// Reason says why the owner was skipped (phase=skip).
+	Reason string `json:"reason,omitempty"`
+}
+
+// ProgressFunc receives progress events. A nil ProgressFunc is always safe.
+type ProgressFunc func(ProgressEvent)
+
+func (p ProgressFunc) emit(ev ProgressEvent) {
+	if p != nil {
+		p(ev)
+	}
+}
+
+// CheckWithProgress is Check with a live progress callback (nil is allowed and
+// behaves exactly like Check).
+func (c *ConsistencyChecker) CheckWithProgress(ctx context.Context, orgFilter string, progress ProgressFunc) (*ConsistencyReport, error) {
+	return c.run(ctx, orgFilter, false, progress)
+}
+
+// CheckAndApplyWithProgress is CheckAndApply with a live progress callback
+// (nil is allowed and behaves exactly like CheckAndApply).
+func (c *ConsistencyChecker) CheckAndApplyWithProgress(ctx context.Context, orgFilter string, progress ProgressFunc) (*ConsistencyReport, error) {
+	return c.run(ctx, orgFilter, true, progress)
+}

@@ -12,7 +12,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const SchemaVersion = 5
+// What each schema change was and why: docs/schema-history.md.
 
 var pragmas = []string{
 	"PRAGMA journal_mode=WAL",
@@ -21,9 +21,13 @@ var pragmas = []string{
 	"PRAGMA foreign_keys=ON",
 }
 
-// Open opens (or creates) the SQLite database at path.
-// If the schema version doesn't match or the DB is corrupt, the file is
-// deleted and recreated. This is a cache — data loss is acceptable.
+// Open opens (or creates) the SQLite database at path. A file whose schema is
+// not the this binary was built against, or that cannot be read at all, is
+// deleted and rebuilt. This is a cache — data loss is acceptable.
+//
+// A schema change is the ONLY thing that rebuilds it, and it always does: the
+// comparison is against schema.sql's own scrubbed fingerprint, so there is no
+// declaration to keep in step with the file and no lever to pull without.
 func Open(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return createFresh(path)
@@ -39,9 +43,9 @@ func Open(path string) (*sql.DB, error) {
 		return createFresh(path)
 	}
 
-	var version int64
-	if err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil || version != SchemaVersion {
-		// Version mismatch or schema missing — nuke and recreate.
+	var fingerprint string
+	if err := db.QueryRow("SELECT fingerprint FROM schema_version LIMIT 1").Scan(&fingerprint); err != nil || fingerprint != currentFingerprint() {
+		// Different schema, or a file too old to state which — nuke and recreate.
 		db.Close()
 		os.Remove(path)
 		return createFresh(path)
@@ -59,9 +63,9 @@ func createFresh(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", SchemaVersion); err != nil {
+	if _, err := db.Exec("INSERT INTO schema_version (fingerprint) VALUES (?)", currentFingerprint()); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("set schema version: %w", err)
+		return nil, fmt.Errorf("set schema fingerprint: %w", err)
 	}
 	return db, nil
 }

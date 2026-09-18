@@ -1,7 +1,6 @@
 package api
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +32,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("GET", "/rate_limit?foo=bar", nil)
+	req := authedReq("GET", "/meta?foo=bar", nil)
 	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -44,7 +43,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 
 	// Upstream received the forwarded request unchanged.
 	assert.Equal(t, "GET", gotMethod)
-	assert.Equal(t, "/rate_limit", gotPath)
+	assert.Equal(t, "/meta", gotPath)
 	assert.Equal(t, "foo=bar", gotQuery)
 	assert.Equal(t, "Bearer "+testToken, gotAuth, "caller's token must be forwarded")
 
@@ -55,7 +54,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 
 // TestProxy_DeduplicatesCORS verifies that when GitHub returns its own CORS
 // headers (it does — Access-Control-Allow-Origin: *), the forwarded response
-// carries exactly one Access-Control-Allow-Origin (the mirror's) so browsers do
+// carries exactly Access-Control-Allow-Origin (the mirror's) so browsers do
 // not reject it for having multiple values, while Expose-Headers is preserved.
 func TestProxy_DeduplicatesCORS(t *testing.T) {
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +65,7 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
-	req := authedReq("GET", "/rate_limit", nil)
+	req := authedReq("GET", "/meta", nil)
 	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -75,12 +74,14 @@ func TestProxy_DeduplicatesCORS(t *testing.T) {
 	acao := w.Header().Values("Access-Control-Allow-Origin")
 	require.Len(t, acao, 1, "exactly one Access-Control-Allow-Origin (the mirror's)")
 	assert.Equal(t, "*", acao[0])
-	// GitHub's Expose-Headers must survive so clients can read X-RateLimit-* etc.
-	assert.Equal(t, "X-RateLimit-Remaining, Link", w.Header().Get("Access-Control-Expose-Headers"))
+	// Expose-Headers is not stripped and exposes the union; see docs/testing/test-harness.md.
+	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ", ")
+	assert.Contains(t, exposed, "Link", "GitHub's own Expose-Headers must survive")
+	assert.Contains(t, exposed, cacheHeader, "the mirror's own headers must be exposed too")
 }
 
 // TestProxy_RequiresToken verifies the passthrough is not an open relay: a
-// request without an Authorization header is rejected with 401 and never
+// request without an Authorization header is rejected with and never
 // reaches GitHub.
 func TestProxy_RequiresToken(t *testing.T) {
 	var upstreamHits int32
@@ -118,7 +119,7 @@ func TestProxy_Uncached(t *testing.T) {
 
 // TestProxy_MethodNotAllowedForwarded verifies that a known path hit with an
 // unregistered method (e.g. POST /user, which only exists as GET) is forwarded
-// rather than 405'd, so the mirror is a complete GitHub surface.
+// rather than 'd, so the mirror is a complete GitHub surface.
 func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
 	var gotMethod, gotPath string
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +138,7 @@ func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
 }
 
 // TestProxy_PreflightNotForwarded verifies a CORS preflight on an unknown path
-// is answered locally (204) and never forwarded to GitHub.
+// is answered locally () and never forwarded to GitHub.
 func TestProxy_PreflightNotForwarded(t *testing.T) {
 	var upstreamHits int32
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -156,35 +157,4 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
 }
 
-// TestProxy_FormerlyCachedNowForwarded verifies the endpoints the mirror used to
-// cache with TRIMMED shapes (/user, /compare, /pulls/{n}/files) now pass through
-// to GitHub verbatim, so callers get GitHub's full response — not a subset. This
-// is the "identical-or-passthrough" rule: not served from cache => served as-is.
-func TestProxy_FormerlyCachedNowForwarded(t *testing.T) {
-	cases := []struct{ name, path, body string }{
-		{"user", "/user", `{"login":"octocat","id":1,"node_id":"MDQ6VXNlcjE=","type":"User","site_admin":false}`},
-		{"compare", "/repos/o/r/compare/main...feat", `{"ahead_by":2,"behind_by":0,"total_commits":2,"files":[{"filename":"a.go","patch":"@@ -1 +1 @@"}]}`},
-		{"pr-files", "/repos/o/r/pulls/5/files", `[{"filename":"a.go","status":"modified","additions":1,"deletions":0,"patch":"@@ -1 +1 @@"}]`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var hits int32
-			gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				atomic.AddInt32(&hits, 1)
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, tc.body)
-			})
-			router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
-
-			req := authedReq("GET", tc.path, nil)
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-
-			require.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, tc.body, strings.TrimSpace(w.Body.String()),
-				"passthrough must return GitHub's body verbatim, not a trimmed cache shape")
-			assert.Equal(t, int32(1), atomic.LoadInt32(&hits),
-				"request must reach GitHub (no longer served from a trimmed cache)")
-		})
-	}
-}
+// The identical-or-passthrough rule this package follows: see docs/cache/rest-routes.md.

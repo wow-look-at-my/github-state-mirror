@@ -2,8 +2,10 @@ package freshness
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
@@ -15,6 +17,11 @@ type Manager struct {
 	policies map[string]Policy
 	fetchers map[string]Fetcher
 	locks    sync.Map // map[string]*sync.Mutex — per-resource lock
+
+	// inflight tracks detached fetches so shutdown can drain them before the DB closes.
+	inflight sync.WaitGroup
+	// inflightCount mirrors the WaitGroup for a non-blocking read: Busy() must answer now.
+	inflightCount atomic.Int64
 }
 
 func NewManager(store *Store) *Manager {
@@ -25,15 +32,38 @@ func NewManager(store *Store) *Manager {
 	}
 }
 
+// Busy reports whether a detached fetch is running right now, without waiting (Drain blocks).
+func (m *Manager) Busy() bool {
+	if m == nil {
+		return false
+	}
+	return m.inflightCount.Load() > 0
+}
+
+// Drain blocks until every in-flight fetch (and its metadata writes) has
+// finished, or the timeout elapses. Call it during shutdown BEFORE closing the
+// database. Returns true when fully drained.
+func (m *Manager) Drain(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		m.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // RegisterFetcher registers a Fetcher for a resource kind with its policy.
 func (m *Manager) RegisterFetcher(policy Policy, f Fetcher) {
 	m.policies[policy.Kind] = policy
 	m.fetchers[policy.Kind] = f
 }
 
-// Outcome reports whether a freshness check served the resource from cache
-// (Hit), triggered an upstream fetch (Miss), or failed (Error). It lets the API
-// layer record per-request cache dispositions for the dashboard.
+// Outcome is a freshness check's result: served from cache (Hit), fetched (Miss), or failed (Error).
 type Outcome int
 
 const (
@@ -42,9 +72,7 @@ const (
 	OutcomeError
 )
 
-// EnsureFresh checks if the resource is fresh. If stale or unknown, triggers a
-// synchronous fetch. It is a thin wrapper over EnsureFreshOutcome for callers
-// that don't need the hit/miss outcome.
+// EnsureFresh fetches synchronously if stale or unknown; a thin wrapper over EnsureFreshOutcome.
 func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
 	_, err := m.EnsureFreshOutcome(ctx, id)
 	return err
@@ -67,8 +95,33 @@ func (m *Manager) EnsureFreshOutcome(ctx context.Context, id ResourceID) (Outcom
 		}
 	}
 
+	// An error row still inside its retry-after window is reported, not re-fetched.
+	if err := backoffError(meta); err != nil {
+		return OutcomeError, err
+	}
+
 	// Stale, unknown, expired, or error — need to fetch.
 	return m.doFetch(ctx, id, TriggerLazy)
+}
+
+// Metadata returns stored freshness metadata for a resource (nil if never seen), read-only.
+func (m *Manager) Metadata(ctx context.Context, id ResourceID) (*Metadata, error) {
+	return m.store.Get(ctx, m.fillActor(ctx, id))
+}
+
+// backoffError returns a non-nil error when meta is an error-state row whose
+// retry-after moment has not yet arrived — the fetch must not be re-attempted —
+// carrying the stored upstream error. Nil otherwise (including nil meta).
+func backoffError(meta *Metadata) error {
+	if meta == nil || meta.State != StateError || meta.RetryAfter == nil || !time.Now().Before(*meta.RetryAfter) {
+		return nil
+	}
+	msg := meta.ErrorMessage
+	if msg == "" {
+		msg = "unknown error"
+	}
+	return fmt.Errorf("upstream fetch failed, in retry backoff until %s: %s",
+		meta.RetryAfter.UTC().Format(time.RFC3339), msg)
 }
 
 // Invalidate marks a resource as stale.
@@ -118,6 +171,9 @@ func (m *Manager) RefreshAllOfKind(ctx context.Context, kind string, trigger Tri
 	return nil
 }
 
+// fetchSafetyTimeout is a leak guard: a wedged upstream must not block shutdown's Drain forever.
+const fetchSafetyTimeout = 5 * time.Minute
+
 func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSource) (Outcome, error) {
 	fetcher, ok := m.fetchers[id.Kind]
 	if !ok {
@@ -125,40 +181,56 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		return OutcomeHit, nil
 	}
 
+	// Detached from the caller's cancellation: the fetch is shared work, so an
+	m.inflight.Add(1)
+	m.inflightCount.Add(1)
+	defer func() {
+		m.inflightCount.Add(-1)
+		m.inflight.Done()
+	}()
+	persistCtx := context.WithoutCancel(ctx)
+	fetchCtx, cancelFetch := context.WithTimeout(persistCtx, fetchSafetyTimeout)
+	defer cancelFetch()
+
 	// Per-resource mutex to coalesce concurrent fetches.
 	mu := m.resourceMutex(id)
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Re-check after acquiring lock — another goroutine may have fetched.
+	// Re-check after acquiring lock — another goroutine may have fetched, or
+	// just failed (in which case honor its retry-after backoff instead of
+	// retrying immediately from the pile-up behind the lock).
 	if trigger == TriggerLazy {
-		meta, err := m.store.Get(ctx, id)
-		if err == nil && meta != nil && meta.State == StateFresh {
-			if meta.ExpiresAt != nil && meta.ExpiresAt.After(time.Now()) {
+		meta, err := m.store.Get(persistCtx, id)
+		if err == nil && meta != nil {
+			if meta.State == StateFresh && meta.ExpiresAt != nil && meta.ExpiresAt.After(time.Now()) {
 				return OutcomeHit, nil
+			}
+			if err := backoffError(meta); err != nil {
+				return OutcomeError, err
 			}
 		}
 	}
 
 	// Ensure metadata row exists before marking fetching.
-	meta, err := m.store.Get(ctx, id)
+	meta, err := m.store.Get(persistCtx, id)
 	if err != nil {
 		return OutcomeError, err
 	}
 	if meta == nil {
-		if err := m.store.Upsert(ctx, &Metadata{
+		if err := m.store.Upsert(persistCtx, &Metadata{
 			ResourceID: id,
 			State:      StateFetching,
 		}); err != nil {
 			return OutcomeError, err
 		}
 	} else {
-		if err := m.store.MarkFetching(ctx, id); err != nil {
+		if err := m.store.MarkFetching(persistCtx, id); err != nil {
 			return OutcomeError, err
 		}
 	}
 
-	logID, err := m.store.InsertRefreshLog(ctx, id, trigger)
+	logID, err := m.store.InsertRefreshLog(persistCtx, id, trigger)
 	if err != nil {
 		slog.Warn("insert refresh log failed", "error", err)
 	}
@@ -168,7 +240,7 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		etag = meta.ETag
 	}
 
-	result, fetchErr := fetcher.Fetch(ctx, id.Key, etag)
+	result, fetchErr := fetcher.Fetch(fetchCtx, id.Key, etag)
 
 	policy := m.policies[id.Kind]
 	if fetchErr != nil {
@@ -176,9 +248,9 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		if policy.ErrorRetryMin == 0 {
 			retryAfter = time.Now().Add(1 * time.Minute)
 		}
-		_ = m.store.MarkError(ctx, id, fetchErr.Error(), retryAfter)
+		_ = m.store.MarkError(persistCtx, id, fetchErr.Error(), retryAfter)
 		if logID > 0 {
-			_ = m.store.CompleteRefreshLog(ctx, logID, false, 0, fetchErr.Error())
+			_ = m.store.CompleteRefreshLog(persistCtx, logID, false, 0, fetchErr.Error())
 		}
 		return OutcomeError, fetchErr
 	}
@@ -188,11 +260,11 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		ttl = 6 * time.Hour
 	}
 	expiresAt := time.Now().Add(ttl)
-	if err := m.store.MarkFresh(ctx, id, result.NewETag, expiresAt); err != nil {
+	if err := m.store.MarkFresh(persistCtx, id, result.NewETag, expiresAt); err != nil {
 		return OutcomeError, err
 	}
 	if logID > 0 {
-		_ = m.store.CompleteRefreshLog(ctx, logID, true, result.RecordsChanged, "")
+		_ = m.store.CompleteRefreshLog(persistCtx, logID, true, result.RecordsChanged, "")
 	}
 
 	return OutcomeMiss, nil

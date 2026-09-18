@@ -1,0 +1,22 @@
+package fixture
+
+// Flagged: the value lands between quotes the literal supplies.
+func badString(sha string) string {
+	return `{"ref":"refs/heads/main","after":"` + sha + `"}`
+}
+
+// Flagged too, and worse: a fragment carrying a quote or a backslash reshapes
+// the document rather than one string.
+func badFragment(fragment string) string {
+	return `{"conclusion":` + fragment + `}`
+}
+
+// Not flagged: not JSON.
+func notJSON(name string) string {
+	return "assets/" + name + ".js"
+}
+
+// Not flagged: constant JSON.
+func constant() string {
+	return `{"conclusion":null}`
+}

@@ -6,28 +6,35 @@ import (
 	"net/http"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
 type handlers struct {
 	mgr   *freshness.Manager
 	store *ghdata.Store
-	// ghProxy forwards requests the mirror does not serve from cache straight to
-	// GitHub, uncached (recording each as a passthrough). The GraphQL handler uses
-	// it for queries it cannot answer from the cache; it is also the router's
-	// NotFound/MethodNotAllowed fallback.
+	// ghProxy is the passthrough fallback for anything not served from cache.
 	ghProxy http.Handler
-	// reqlog records per-request cache dispositions (hit/miss/passthrough) for the
-	// dashboard's "Requests" view.
+	// reqlog records per-request cache dispositions for the Requests tab.
 	reqlog *requestLog
+	// gh supplies upstream fetches' base URL and VerifyAppIdentity.
+	gh *ghclient.Client
+	// upstream buffers and absorbs a miss; the passthrough proxy streams instead.
+	upstream *http.Client
+	// meter records X-RateLimit-* for the Rate limit tab. Nil-safe.
+	meter *ratemeter.Store
+	// recordIdentity maps a principal to a display name. Nil-safe.
+	recordIdentity identityRecorder
+	// timeline records each miss's timed fetch for the Timeline chart. Nil-safe.
+	timeline *reqtimeline.Recorder
+	// shapes captures uncached traffic's key/type shape for /api/brief. Nil-safe.
+	shapes *shapeStore
 }
 
-// NOTE: the mirror used to serve /user, /user/orgs, /compare, and /pulls/{n}/files
-// from cache, but with TRIMMED response shapes (a subset of GitHub's fields). A
-// cache must be byte-for-byte identical to the origin, not a transformative
-// middleman, so those routes were removed; they now fall through to the verbatim
-// passthrough proxy (router.go). Re-introduce one only when it can return GitHub's
-// exact shape, gated by an identity test (see api_test.go).
+// Cached REST routes rebuild the response without any URL field, under an
+// explicit contract. see docs/cache/-tier-contract.md
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

@@ -7,12 +7,16 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,12 +27,72 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
+// schemaTemplate is a blank cache DB built per test binary and copied for
+var schemaTemplate struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if schemaTemplate.dir != "" {
+		_ = os.RemoveAll(schemaTemplate.dir)
+	}
+	os.Exit(code)
+}
+
+// openTestDB opens a throwaway cache DB at path, seeded from schemaTemplate.
+func openTestDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	schemaTemplate.once.Do(func() {
+		schemaTemplate.dir, schemaTemplate.err = os.MkdirTemp("", "gsm-schema-template")
+		if schemaTemplate.err != nil {
+			return
+		}
+		schemaTemplate.path = filepath.Join(schemaTemplate.dir, "template.db")
+		db, err := database.Open(schemaTemplate.path)
+		if err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		// The last connection to close checkpoints the WAL back into the main
+		if err := db.Close(); err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		if _, err := os.Stat(schemaTemplate.path + "-wal"); !os.IsNotExist(err) {
+			schemaTemplate.err = fmt.Errorf("template DB still has a -wal after close (stat: %v)", err)
+		}
+	})
+	require.NoError(t, schemaTemplate.err)
+
+	blank, err := os.ReadFile(schemaTemplate.path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, blank, 0o600))
+
+	db, err := database.Open(path)
+	require.NoError(t, err)
+	return db
+}
+
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
+
+// testUserID/testUserLogin are the identity the default fake GitHub answers on
+const (
+	testUserID    = 7001
+	testUserLogin = "testuser"
+	testUserActor = "user:7001"
+)
 
 // testWebhookSecret is the HMAC secret the test router verifies webhooks against.
 const testWebhookSecret = "test-webhook-secret"
@@ -45,10 +109,10 @@ func (f *stubFetcher) Fetch(ctx context.Context, key string, etag string) (fresh
 // Its fake GitHub answers every path with a login JSON, enough for requireAuth.
 func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.Store, *sql.DB) {
 	t.Helper()
-	// Stub GitHub's /user endpoint so requireAuth can validate the test token
-	// without reaching the real API.
+	// Stub GitHub's /user endpoint so requireAuth can resolve the test token to
+	// a user (id + login) without reaching the real API.
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 	})
 	router, store, db, _ := newTestStackWithGitHub(t, authSvc, gh)
 	return router, store, db
@@ -56,13 +120,38 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 
 // newTestStackWithGitHub is like newTestStack but lets the caller supply the
 // fake upstream GitHub handler, and returns its URL — used by passthrough tests
-// that need to observe forwarded requests. requireAuth resolves the bearer
-// token against this same handler, so it must answer GET /user with a login.
 func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
+	s := newFullTestStack(t, authSvc, ghHandler)
+	return s.router, s.store, s.db, s.ghURL
+}
+
+// testStack is the full router assembly for tests that also need the
+// subscriber-notification pieces (the notifier for deterministic flushes) or
+// the timeline ring (for asserting timed traffic events).
+type testStack struct {
+	router   http.Handler
+	store    *ghdata.Store
+	db       *sql.DB
+	ghURL    string
+	notifier *notify.Notifier
+	timeline *reqtimeline.Recorder
+	// debouncer is nil unless the test asked for passthrough coalescing via
+	debouncer *Debouncer
+}
+
+func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
+	return newFullTestStackDebounced(t, authSvc, ghHandler, 0)
+}
+
+// newFullTestStackDebounced builds the stack with the passthrough debouncer
+// holding eligible reads for window (= disabled, the default everywhere
+// else).
+func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler http.Handler, window time.Duration) testStack {
+	t.Helper()
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.Nil(t, err)
+	dbPath := filepath.Join(dir, "test.db")
+	db := openTestDB(t, dbPath)
 
 	t.Cleanup(func() { db.Close() })
 
@@ -70,22 +159,38 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 	fStore := freshness.NewStore(db)
 	mgr := freshness.NewManager(fStore)
 
-	// Register stub fetchers so EnsureFresh doesn't panic.
-	for _, kind := range []string{syncpkg.KindUser, syncpkg.KindUserOrgs, syncpkg.KindOrgRepos, syncpkg.KindPRFiles, syncpkg.KindCompare} {
-		mgr.RegisterFetcher(freshness.Policy{Kind: kind}, &stubFetcher{})
-	}
+	// Register a stub fetcher so EnsureFresh doesn't panic.
+	mgr.RegisterFetcher(freshness.Policy{Kind: syncpkg.KindOrgRepos}, &stubFetcher{})
 
-	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store, nil)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
+
+	// Subscriptions live in their own DB file, like production. Single-attempt
+	subs, err := notify.Open(filepath.Join(dir, "subscriptions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { subs.Close() })
+	notifier := notify.New(notify.Config{
+		Store: subs, Access: store,
+		Attempts: 1, AttemptTimeout: 5 * time.Second, Backoff: []time.Duration{time.Millisecond},
+	})
+	t.Cleanup(func() { notifier.Drain(5 * time.Second) })
 
 	ghSrv := httptest.NewServer(ghHandler)
 	t.Cleanup(ghSrv.Close)
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
+	// Passive rate-limit meter, wired like cmd/server: the ghclient hook plus
+	meter := ratemeter.New()
+	gh.SetRateObserver(meter.Observe)
+
 	// nil app -> the consistency checker reports Available()==false, the realistic
-	// "no GitHub App configured" state for these tests.
-	checker := syncpkg.NewConsistencyChecker(gh, store, nil)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker)
-	return router, store, db, ghSrv.URL
+	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
+	timeline := reqtimeline.New()
+	// Wire the client's exchange observer like cmd/server does, so tests see
+	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
+	debouncer := NewDebouncer(window)
+	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer}
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
@@ -100,10 +205,24 @@ func sign(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// seedCtx returns a context scoped to the same cache partition that an
-// authenticated request bearing testToken resolves to.
+// seedCtx returns a context carrying the test user's principal, for store
+// operations that read the actor from context.
 func seedCtx() context.Context {
-	return actor.WithActor(context.Background(), ghclient.Fingerprint(testToken))
+	return actor.WithActor(context.Background(), testUserActor)
+}
+
+// seedOrgTruth merges repos (and optional PRs) into global truth AS IF the
+// given principal had run an org list-sync: truth rows are written and the
+// principal earns list_sync grants for every repo.
+func seedOrgTruth(t *testing.T, store *ghdata.Store, principal, owner string, repos []dbgen.Repo, prsByRepo map[string][]dbgen.PullRequest) {
+	t.Helper()
+	data := ghdata.OrgSyncData{
+		Repos:      repos,
+		PRsByRepo:  prsByRepo,
+		LabelsByPR: map[string]map[int64][]dbgen.PrLabel{},
+	}
+	now := time.Now()
+	require.NoError(t, store.SyncOrgTruth(context.Background(), owner, data, principal, now, now))
 }
 
 // authedReq builds a request carrying a valid bearer token.
@@ -113,15 +232,10 @@ func authedReq(method, target string, body io.Reader) *http.Request {
 	return req
 }
 
-// NOTE: the /user, /user/orgs, /compare, and /pulls/{n}/files cached endpoints
-// were removed (they returned trimmed, non-GitHub shapes). They now pass through
-// to GitHub verbatim — see TestProxy_FormerlyCachedNowForwarded in proxy_test.go.
-// The only cached data route left is POST /graphql (the org-repos query).
-
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
-// with no Authorization header. The formerly-cached REST paths now fall through
-// to the passthrough proxy, which itself enforces the token; the GraphQL route
-// is gated by requireAuth. Either way a tokenless request is 401.
+// with no Authorization header. Non-cached REST paths fall through to the
+// passthrough proxy, which itself enforces the token; the GraphQL route is
+// gated by requireAuth. Either way a tokenless request is.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -146,36 +260,89 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestCredentialIsolation verifies that data cached under one credential (the
-// org-repos GraphQL cache, the only cached data route) is not served to a request
-// bearing a different credential, even for the same login.
-func TestCredentialIsolation(t *testing.T) {
-	router, store := setupTestRouter(t)
+// TestRevealIsolation verifies the reveal layer: global truth absorbed via
+// principal's sync (a PRIVATE-by-default repo, since the GraphQL sync cannot
+// learn visibility) is NOT revealed to a different user with no grant, while
+// the syncing user sees it via their list_sync grant.
+func TestRevealIsolation(t *testing.T) {
+	// Fake GitHub resolves each token to its own user.
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/user", r.URL.Path)
 
-	// Seed org repos visible only to testToken's bucket.
-	store.SetOrgRepos(seedCtx(), "my-org", []dbgen.Repo{
-		{Owner: "my-org", Name: "secret", NameWithOwner: "my-org/secret", Url: "u"},
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + testToken:
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+		case "Bearer other-user-token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "otheruser", "id": 8002})
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
 	})
+	router, store, _, _ := newTestStackWithGitHub(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}), gh)
 
-	// A different token (same stubbed login) resolves to a different bucket; the
-	// org-repos query must return nothing for it.
+	// Global truth learns about the repo from the test user's sync; only that
+	// user is granted (visibility unknown -> treated private, fail closed).
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "secret", NameWithOwner: "my-org/secret", Url: "u"},
+	}, nil)
+
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer other-token")
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	nodesFor := func(token string) []interface{} {
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		return resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+	}
 
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
-	assert.Equal(t, 0, len(nodes), "a different credential must not see another credential's cached repos")
+	assert.Len(t, nodesFor(testToken), 1, "the syncing user's grant reveals the repo")
+	assert.Len(t, nodesFor("other-user-token"), 0, "an ungranted user must not see a non-public repo")
+}
+
+// TestRevealPublicFastPath verifies that a repo whose visibility is PUBLIC in
+// global truth is revealed to any authenticated principal, grant or not.
+func TestRevealPublicFastPath(t *testing.T) {
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + testToken:
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
+		case "Bearer other-user-token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "otheruser", "id": 8002})
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	})
+	router, store, _, _ := newTestStackWithGitHub(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}), gh)
+
+	// Truth knows the repo is public (e.g. a webhook's repository object said
+	// so). No grants exist for anyone.
+	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{
+		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
+		Visibility: ghdata.VisibilityPublic,
+	}))
+	// The other user's org marker must be fresh or the stub fetcher runs (a
+	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	for _, token := range []string{testToken, "other-user-token"} {
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+		assert.Len(t, nodes, 1, "a public repo is revealed to any principal (token %s)", token)
+	}
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
 // a bearer token (it is authenticated by HMAC signature instead). A ping is an
-// untracked event, so it is accepted as a no-op (202), not rejected (401/403).
+// untracked event, so it is accepted as a no-op (), not rejected (/).
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 

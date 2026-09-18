@@ -2,51 +2,68 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
-	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
-	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
-	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// WebhookDispatcher maps webhook events to cache applies / freshness invalidations.
 type WebhookDispatcher struct {
-	mgr   *freshness.Manager
-	store *ghdata.Store
-	// app, when configured, lets the dispatcher pull an as-yet-uncached repo on
-	// demand (minting an installation token from the delivery's installation.id)
-	// so the first webhook for a repo bootstraps a cache scope. nil disables the
-	// on-demand pull — deliveries for uncached repos are then skipped.
-	app *ghclient.AppAuthenticator
+	mgr      invalidator
+	store    *ghdata.Store
+	ordering *OrderingStats
+	reorder  *reorderBuffer
 }
 
-func NewWebhookDispatcher(mgr *freshness.Manager, store *ghdata.Store, app *ghclient.AppAuthenticator) *WebhookDispatcher {
-	return &WebhookDispatcher{mgr: mgr, store: store, app: app}
+// invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
+type invalidator interface {
+	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
-// outcome is the internal per-handler result: a disposition (one of the
-// webhook.Disp* constants), a human-readable detail, and the number of cache
-// scopes touched. Dispatch lifts it into a webhook.DispatchResult.
+// NewWebhookDispatcher has no reorder window; production uses NewWebhookDispatcherWindowed instead.
+func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
+	return NewWebhookDispatcherWindowed(mgr, store, 0)
+}
+
+// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-.
+// see docs/webhooks/ordering.md
+func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
+	stats := NewOrderingStats()
+	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
+}
+
+// Ordering exposes what the out-of-order gate has seen, for the dashboard.
+func (d *WebhookDispatcher) Ordering() OrderingSnapshot { return d.ordering.Snapshot() }
+
+// outcome is a handler's result: a disposition plus a human-readable detail.
 type outcome struct {
 	disposition string
 	detail      string
-	scopes      int
 }
 
-func applied(detail string, scopes int) outcome {
-	return outcome{disposition: webhook.DispApplied, detail: detail, scopes: scopes}
-}
-func skipped(detail string) outcome { return outcome{disposition: webhook.DispSkipped, detail: detail} }
+func applied(detail string) outcome { return outcome{disposition: webhook.DispApplied, detail: detail} }
 func ignored(detail string) outcome { return outcome{disposition: webhook.DispIgnored, detail: detail} }
 func errored(detail string) outcome { return outcome{disposition: webhook.DispError, detail: detail} }
 
-// Dispatch processes a webhook event, applying it to the cache (or invalidating
-// affected resources), and returns what it did. It also records the delivery in
-// the global webhook log so the dashboard can show whether data was preserved.
+// Dispatch processes a webhook event, applying it to global truth, and returns
+// what it did. It also records the delivery in the global webhook log so the
+// dashboard can show whether data was preserved.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
+	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
+	if order, ok := webhook.OrderOf(event); ok {
+		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
+			return res
+		}
+	}
+	return d.dispatchNow(ctx, event)
+}
+
+// dispatchNow processes delivery, past any reordering hold.
+func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
 	out := d.handle(ctx, event)
@@ -57,7 +74,6 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 		Repo:        event.RepoFullName(),
 		Disposition: out.disposition,
 		Detail:      out.detail,
-		Scopes:      out.scopes,
 	}
 
 	// Record the delivery (best-effort: never fail the delivery over logging).
@@ -68,7 +84,6 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 		Repo:        result.Repo,
 		Disposition: out.disposition,
 		Detail:      out.detail,
-		Actors:      int64(out.scopes),
 	}); err != nil {
 		slog.Warn("webhook: record delivery failed", "error", err)
 	}
@@ -78,9 +93,23 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 
 // handle routes an event to its handler, returning the outcome.
 func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) outcome {
+	// Order: a superseded view must not apply or invalidate.
+	// see docs/webhooks/ordering.md
+	if superseded, out := d.checkOrder(ctx, event); superseded {
+		return out
+	}
+
+	// Response-cache invalidation is best-effort and disposition-neutral; it never changes what the delivery reports.
+	d.invalidateResponseCaches(ctx, event)
+
+	// Keeps the repos row current from the payload; global truth learns a repo from its webhook, no fetch needed.
+	d.absorbRepoFromPayload(ctx, event)
+
 	switch event.Type {
 	case "push":
 		return d.onPush(ctx, event)
+	case "create", "delete":
+		return d.onRefLifecycle(ctx, event)
 	case "pull_request":
 		return d.onPullRequest(ctx, event)
 	case "pull_request_review":
@@ -93,89 +122,139 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onOrgChange(ctx, event)
 	case "label":
 		return d.onLabel(ctx, event)
+	case "workflow_job":
+		return d.onWorkflowJob(ctx, event)
+	case "workflow_run":
+		return d.onWorkflowRun(ctx, event)
 	default:
 		return ignored("event type not tracked")
+	}
+}
+
+// absorbRepoFromPayload upserts the repos row from the delivery's repository
+// object (when present). This is how a never-fetched repo enters global truth
+// -- and how visibility stays webhook-fresh for the reveal layer's public fast
+// path. Deleted-repo events are excluded (the row is about to be removed).
+func (d *WebhookDispatcher) absorbRepoFromPayload(ctx context.Context, event webhook.Event) {
+	if event.Type == "repository" && event.Action == "deleted" {
+		return
+	}
+	repo, ok := webhook.ParseRepositoryPayload(event.Raw)
+	if !ok {
+		return
+	}
+	if err := d.store.UpsertRepo(ctx, repo); err != nil {
+		slog.Warn("webhook: absorb repository object failed", "repo", event.RepoFullName(), "error", err)
 	}
 }
 
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
 	payload, err := webhook.ParsePushPayload(event.Raw)
 	if err != nil {
+		// An unparseable push still proves something moved, so un-resolve mergeable repo-wide.
+		if owner, name := event.RepoOwner(), event.RepoName(); owner != "" && name != "" {
+			if nerr := d.store.NullPRMergeableByRepo(ctx, owner, name); nerr != nil {
+				slog.Warn("webhook: repo-wide un-resolve PR mergeable failed", "repo", owner+"/"+name, "error", nerr)
+			}
+		}
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
-	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
-	if err != nil {
-		slog.Warn("webhook: list actors for push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("list actors failed")
+	// A branch push makes GitHub recompute mergeability for every open PR
+	// based on (or heading from) that branch, and no webhook ever carries the
+	// recomputed value -- so un-resolve the cached mergeable (remembering the
+	// invalidated test-merge sha: a refetch re-offering it is presumed
+	// pre-push -- plus the push's after tip, the proof by which an answer
+	// that already reflects this push is recognized and accepted) rather than
+	// let the single-PR cache keep serving the pre-push answer. This
+	// invalidation runs, before any other fallible step, so a transient
+	// error elsewhere in the handler can never skip it -- each step logs its
+	// own failure and the handler carries on.
+	if branch := payload.Branch(); branch != "" {
+		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
+			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
+		}
+		// A push to the default branch also stales default_branch_status; the next check event repopulates it.
+		if d.isDefaultBranch(ctx, event, payload.Owner, payload.Repo, branch) {
+			if err := d.store.SetRepoDefaultBranchStatus(ctx, payload.Owner, payload.Repo, sql.NullString{}); err != nil {
+				slog.Warn("webhook: un-resolve default branch status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+			}
+		}
 	}
-	if len(actors) == 0 {
-		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
-	}
-	if err := d.store.SetRepoPushedAtForActors(ctx, actors, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
+	d.absorbPushCommits(ctx, payload)
+	if err := d.store.SetRepoPushedAt(ctx, payload.Owner, payload.Repo, payload.PushedAt); err != nil {
 		slog.Warn("webhook: apply push failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("apply push failed")
 	}
-	return applied("updated pushed_at", len(actors))
+	return applied("updated pushed_at")
 }
 
-func (d *WebhookDispatcher) onPullRequest(ctx context.Context, event webhook.Event) outcome {
-	// Apply the PR payload to the webhook-fed org cache. The PR's file list and
-	// branch comparison are NOT cached by the mirror anymore (those endpoints
-	// passthrough to GitHub verbatim), so there is nothing content-dependent to
-	// invalidate here.
-	return d.applyPRPayload(ctx, event)
-}
-
-// applyPRPayload parses full PR data from the webhook and writes it directly to
-// the DB for all actors who have this repo cached.
-func (d *WebhookDispatcher) applyPRPayload(ctx context.Context, event webhook.Event) outcome {
-	payload, err := webhook.ParsePRPayload(event.Raw)
+// isDefaultBranch reports whether branch is the repo's default branch,
+// preferring the payload's own repository.default_branch (push payloads carry
+// it) and falling back to the cached repo row (absorbed moments ago, or by an
+// earlier sync). Unknown reads as false -- never null a status on a guess.
+func (d *WebhookDispatcher) isDefaultBranch(ctx context.Context, event webhook.Event, owner, repo, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if r, ok := webhook.ParseRepositoryPayload(event.Raw); ok && r.DefaultBranch.Valid && r.DefaultBranch.String != "" {
+		return r.DefaultBranch.String == branch
+	}
+	row, err := d.store.GetRepo(ctx, owner, repo)
 	if err != nil {
-		slog.Warn("webhook: failed to parse PR payload, falling back to invalidation", "error", err)
-		return d.invalidateRepoOrg(ctx, event, "unparseable PR payload")
+		return false
 	}
-
-	owner, repo := payload.PR.Owner, payload.PR.Repo
-	if owner == "" || repo == "" {
-		return d.invalidateRepoOrg(ctx, event, "PR payload missing owner/repo")
-	}
-
-	actors, err := d.actorsForRepo(ctx, event, owner, repo)
-	if err != nil {
-		slog.Warn("webhook: failed to list actors for repo", "repo", owner+"/"+repo, "error", err)
-		return errored("list actors failed")
-	}
-	if len(actors) == 0 {
-		return skipped("no cached scope for " + owner + "/" + repo)
-	}
-
-	// PR closed/merged → delete (we only cache open PRs).
-	if payload.PR.State == "CLOSED" {
-		if err := d.store.DeletePRForActors(ctx, actors, owner, repo, payload.PR.Number); err != nil {
-			slog.Warn("webhook: failed to delete PR for actors", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-			return errored("delete closed PR failed")
-		}
-		// Drop the commit-check rows for the (now irrelevant) head commit.
-		if err := d.store.DeleteCommitChecksForActors(ctx, actors, owner, repo, payload.PR.HeadRefOid.String); err != nil {
-			slog.Warn("webhook: failed to delete commit checks for closed PR", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		}
-		slog.Info("webhook: deleted closed PR from cache", "pr", prRef(owner, repo, payload.PR.Number), "actors", len(actors))
-		return applied(fmt.Sprintf("removed closed PR #%d", payload.PR.Number), len(actors))
-	}
-
-	// Open/updated PR → upsert.
-	if err := d.store.UpsertPRForActors(ctx, actors, payload.PR, payload.Labels); err != nil {
-		slog.Warn("webhook: failed to upsert PR for actors", "pr", prRef(owner, repo, payload.PR.Number), "error", err)
-		return errored("upsert PR failed")
-	}
-	slog.Info("webhook: applied PR data from webhook payload", "pr", prRef(owner, repo, payload.PR.Number), "action", event.Action, "actors", len(actors))
-	return applied(fmt.Sprintf("upserted PR #%d", payload.PR.Number), len(actors))
+	return row.DefaultBranch.Valid && row.DefaultBranch.String == branch
 }
 
-func (d *WebhookDispatcher) onPullRequestReview(ctx context.Context, event webhook.Event) outcome {
-	// The review payload embeds the full pull_request, so apply it like a
-	// pull_request event instead of invalidating the whole org.
-	return d.applyPRPayload(ctx, event)
+// absorbPushCommits upserts the pushed commits into the global git-commits
+// cache, so a subsequent GET /repos/{o}/{r}/git/commits/{sha} hits without any
+// GitHub fetch ever having happened. The push payload states each commit's id,
+// tree, message, timestamp, and author/committer -- exactly the state the
+// endpoint returns -- and parents come from the payload's linear chain
+// (ChainedCommits declines forced/new-ref/possibly-truncated pushes rather
+// than derive wrong parents). Best-effort and disposition-neutral: a failure
+// is logged, never reported.
+func (d *WebhookDispatcher) absorbPushCommits(ctx context.Context, payload webhook.PushPayload) {
+	chain := payload.ChainedCommits()
+	if len(chain) == 0 {
+		return
+	}
+	owner := ghdata.NormalizeRepoKey(payload.Owner)
+	repo := ghdata.NormalizeRepoKey(payload.Repo)
+	commits := make([]ghdata.CachedGitCommit, 0, len(chain))
+	for i, c := range chain {
+		if !fullHexSHA(c.ID) || c.TreeID == "" {
+			return // malformed payload; absorb nothing rather than partial state
+		}
+		commits = append(commits, ghdata.CachedGitCommit{
+			Owner: owner, Repo: repo, SHA: strings.ToLower(c.ID), Message: c.Message,
+			//  payload timestamp serves both dates: webhooks report author and committer as the same instant.
+			AuthorName: c.AuthorName, AuthorEmail: c.AuthorEmail, AuthorDate: c.Timestamp,
+			CommitterName: c.CommitterName, CommitterEmail: c.CommitterEmail, CommitterDate: c.Timestamp,
+			TreeSHA: c.TreeID,
+			Parents: []string{strings.ToLower(payload.ParentForChained(chain, i))},
+		})
+	}
+	if err := d.store.UpsertGitCommits(ctx, commits, time.Now()); err != nil {
+		slog.Warn("webhook: absorb push commits failed", "repo", owner+"/"+repo, "error", err)
+		return
+	}
+	slog.Info("webhook: absorbed push commits into git-commit cache",
+		"repo", owner+"/"+repo, "commits", len(commits))
+}
+
+// fullHexSHA reports whether s is a full-length hex object id.
+func fullHexSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Event) outcome {
@@ -183,40 +262,92 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
-	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
-	if err != nil {
-		slog.Warn("webhook: list actors for status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("list actors failed")
+	// A non-completed check_suite records nothing: GitHub auto-creates a permanent-ghost PENDING
+	// suite for every app with checks:write, even that never runs a check on the sha.
+	// see docs/webhooks/dispatch.md
+	if event.Type == "check_suite" && payload.State == "PENDING" {
+		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
 	}
-	if len(actors) == 0 {
-		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
-	}
-	rollup, err := d.store.ApplyCommitStatusForActors(ctx, actors, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
+	rollup, err := d.store.ApplyCommitStatus(ctx, payload.Owner, payload.Repo, payload.SHA, payload.Context, payload.State, payload.OnDefaultBranch)
 	if err != nil {
 		slog.Warn("webhook: apply commit status failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 		return errored("apply commit status failed")
 	}
 	slog.Info("webhook: applied commit status",
 		"repo", payload.Owner+"/"+payload.Repo, "sha", payload.SHA, "context", payload.Context,
-		"rollup", rollup, "defaultBranch", payload.OnDefaultBranch, "actors", len(actors))
-	return applied(fmt.Sprintf("%s=%s, rollup=%s", payload.Context, payload.State, rollup), len(actors))
+		"rollup", rollup, "defaultBranch", payload.OnDefaultBranch)
+	return applied(fmt.Sprintf("%s=%s, rollup=%s", payload.Context, payload.State, rollup))
 }
 
+// onRepository applies repository lifecycle events directly to global truth.
+// The generic absorbRepoFromPayload above already upserted the current
+// repository object (covering created/edited/publicized/privatized/archived/
+// unarchived, since the payload carries the post-change state); this handler
+// adds the destructive cases and the grant-freshness nudges.
 func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Event) outcome {
-	owner := event.RepoOwner()
-	if owner == "" {
-		return ignored("repository event missing owner")
+	owner, name := event.RepoOwner(), event.RepoName()
+	if owner == "" || name == "" {
+		return ignored("repository event missing owner/name")
 	}
-	d.invalidate(ctx, KindOrgRepos, owner)
-	return outcome{disposition: webhook.DispInvalidated, detail: "structural change; marked org repos stale"}
+
+	switch event.Action {
+	case "deleted":
+		if err := d.store.DeleteRepoCascade(ctx, owner, name); err != nil {
+			slog.Warn("webhook: delete repo failed", "repo", owner+"/"+name, "error", err)
+			return errored("delete repo failed")
+		}
+		d.invalidate(ctx, KindOrgRepos, owner)
+		return applied("removed deleted repo " + owner + "/" + name)
+
+	case "renamed":
+		// The payload's repository object carries the NEW name (already
+		// upserted); changes.repository.name.from names the old row, whose
+		// dependents are now orphaned truth -- drop them.
+		if from := webhook.ParseRenameFrom(event.Raw); from != "" && from != name {
+			if err := d.store.DeleteRepoCascade(ctx, owner, from); err != nil {
+				slog.Warn("webhook: delete renamed-away repo failed", "repo", owner+"/"+from, "error", err)
+			}
+		}
+		d.invalidate(ctx, KindOrgRepos, owner)
+		return applied("renamed repo; upserted " + owner + "/" + name)
+
+	case "privatized", "publicized":
+		// absorbRepoFromPayload already stored it; make the flip explicit against a degenerate payload.
+		vis := ghdata.VisibilityPrivate
+		if event.Action == "publicized" {
+			vis = ghdata.VisibilityPublic
+		}
+		if err := d.store.SetRepoVisibility(ctx, owner, name, vis); err != nil {
+			slog.Warn("webhook: set visibility failed", "repo", owner+"/"+name, "error", err)
+			return errored("set visibility failed")
+		}
+		return applied("visibility -> " + vis)
+
+	case "transferred":
+		// The new owner's object was upserted already; nudge both sides' syncs so grants and truth re-converge.
+		d.invalidate(ctx, KindOrgRepos, owner)
+		return applied("transferred repo; upserted under " + owner)
+
+	default:
+		// created/edited/archived/unarchived: the generic absorb above already applied it;
+		// fall back only if it couldn't parse a repository object.
+		if _, ok := webhook.ParseRepositoryPayload(event.Raw); !ok {
+			return d.invalidateRepoOrg(ctx, event, "repository payload missing repository object")
+		}
+		return applied("upserted repo " + owner + "/" + name)
+	}
 }
 
+// onOrgChange handles organization/membership events. They change WHO can see
+// what (not what is true), so the response is to mark every principal's
+// org-repos sync marker for the org stale: each principal's next read re-syncs
+// their grant set with their own token.
 func (d *WebhookDispatcher) onOrgChange(ctx context.Context, event webhook.Event) outcome {
 	if event.OrgLogin == "" {
 		return ignored("org event missing login")
 	}
-	d.invalidate(ctx, KindUserOrgs, event.OrgLogin)
-	return outcome{disposition: webhook.DispInvalidated, detail: "membership change; marked user orgs stale"}
+	d.invalidate(ctx, KindOrgRepos, event.OrgLogin)
+	return outcome{disposition: webhook.DispInvalidated, detail: "membership change; marked principals' org syncs stale"}
 }
 
 func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) outcome {
@@ -232,76 +363,22 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) ou
 	if payload.Action == "edited" && payload.OldName != "" && payload.OldName != payload.Name {
 		return d.invalidateRepoOrg(ctx, event, "label renamed")
 	}
-	actors, err := d.actorsForRepo(ctx, event, payload.Owner, payload.Repo)
-	if err != nil {
-		slog.Warn("webhook: list actors for label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("list actors failed")
-	}
-	if len(actors) == 0 {
-		return skipped("no cached scope for " + payload.Owner + "/" + payload.Repo)
-	}
 	switch payload.Action {
 	case "deleted":
-		if err := d.store.DeletePRLabelByNameForActors(ctx, actors, payload.Owner, payload.Repo, payload.Name); err != nil {
+		if err := d.store.DeletePRLabelByName(ctx, payload.Owner, payload.Repo, payload.Name); err != nil {
 			slog.Warn("webhook: apply label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 			return errored("delete label failed")
 		}
-		return applied("removed label "+payload.Name, len(actors))
+		return applied("removed label " + payload.Name)
 	case "edited":
-		if err := d.store.RecolorPRLabelForActors(ctx, actors, payload.Owner, payload.Repo, payload.Name, payload.Color); err != nil {
+		if err := d.store.RecolorPRLabel(ctx, payload.Owner, payload.Repo, payload.Name, payload.Color); err != nil {
 			slog.Warn("webhook: apply label failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
 			return errored("recolor label failed")
 		}
-		return applied("recolored label "+payload.Name, len(actors))
+		return applied("recolored label " + payload.Name)
 	default:
 		return ignored("label action " + payload.Action + " not tracked")
 	}
-}
-
-// actorsForRepo returns the actors that have this repo cached. When none do, it
-// pulls the repo on demand — fetching the owner's repos once, as the GitHub App
-// installation named in the delivery — so a webhook for an as-yet-uncached repo
-// bootstraps a scope instead of being dropped. One fetch seeds every repo the
-// installation can see, so subsequent deliveries for that org apply directly.
-// Pulling is best-effort: if no app is configured, the delivery carries no
-// installation, or the fetch fails, the repo simply stays uncached and the
-// caller skips.
-func (d *WebhookDispatcher) actorsForRepo(ctx context.Context, event webhook.Event, owner, repo string) ([]string, error) {
-	actors, err := d.store.ActorsForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	if len(actors) > 0 {
-		return actors, nil
-	}
-	if !d.pullOnDemand(ctx, event, owner) {
-		return actors, nil
-	}
-	return d.store.ActorsForRepo(ctx, owner, repo)
-}
-
-// pullOnDemand fetches owner's repos into the delivery's app-installation
-// partition, returning whether the fetch ran. It reports true only when the
-// fetch actually completed, so the caller knows a re-query is worthwhile.
-func (d *WebhookDispatcher) pullOnDemand(ctx context.Context, event webhook.Event, owner string) bool {
-	if d.app == nil || event.InstallationID == 0 || owner == "" {
-		return false
-	}
-	token, err := d.app.InstallationToken(ctx, event.InstallationID)
-	if err != nil {
-		slog.Warn("webhook: on-demand pull: mint installation token failed",
-			"installation", event.InstallationID, "owner", owner, "error", err)
-		return false
-	}
-	pctx := ghclient.WithToken(ctx, token)
-	pctx = actor.WithActor(pctx, AppInstallationActor(event.InstallationID))
-	if err := d.mgr.EnsureFresh(pctx, freshness.ResourceID{Kind: KindOrgRepos, Key: owner}); err != nil {
-		slog.Warn("webhook: on-demand pull org repos failed",
-			"installation", event.InstallationID, "owner", owner, "error", err)
-		return false
-	}
-	slog.Info("webhook: pulled org repos on demand", "installation", event.InstallationID, "owner", owner)
-	return true
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
@@ -311,8 +388,9 @@ func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
 }
 
 // invalidateRepoOrg is the fallback when a payload can't be applied directly:
-// mark the owner's org-repos cache stale so the next request re-fetches. When
-// the owner is unknown there is nothing to invalidate, so the delivery is a no-op.
+// mark every principal's org-repos sync for the owner stale so the next reads
+// re-fetch (refreshing truth as a side effect). When the owner is unknown
+// there is nothing to invalidate, so the delivery is a no-op.
 func (d *WebhookDispatcher) invalidateRepoOrg(ctx context.Context, event webhook.Event, reason string) outcome {
 	owner := event.RepoOwner()
 	if owner == "" {

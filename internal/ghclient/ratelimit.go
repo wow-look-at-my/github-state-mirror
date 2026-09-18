@@ -2,7 +2,7 @@ package ghclient
 
 import "context"
 
-// RateLimitResource is one GitHub rate-limit bucket (core, graphql, search, ...).
+// RateLimitResource is GitHub rate-limit bucket (core, graphql, search,...).
 type RateLimitResource struct {
 	Limit     int   `json:"limit"`
 	Remaining int   `json:"remaining"`
@@ -10,9 +10,10 @@ type RateLimitResource struct {
 	Reset     int64 `json:"reset"` // Unix epoch seconds when the window resets
 }
 
-// RateLimitResponse is the GET /rate_limit payload.
+// RateLimitResponse is the GET /rate_limit payload; see docs/ghclient.md.
 type RateLimitResponse struct {
 	Resources map[string]RateLimitResource `json:"resources"`
+	Rate      *RateLimitResource           `json:"rate,omitempty"`
 }
 
 // GetRateLimit fetches GET /rate_limit using the token in ctx. It does not count

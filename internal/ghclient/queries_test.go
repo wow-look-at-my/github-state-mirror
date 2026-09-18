@@ -212,7 +212,7 @@ func TestGetOrgData_PRPagination(t *testing.T) {
 			return
 		}
 
-		// Org query: one repo whose open PRs overflow the first page.
+		// Org query: repo whose open PRs overflow the page.
 		resp := gqlResponse{}
 		resp.Data.Organization.Repositories.PageInfo = gqlPageInfo{HasNextPage: false}
 		repo := gqlRepo{Name: "repo1", NameWithOwner: "org/repo1"}

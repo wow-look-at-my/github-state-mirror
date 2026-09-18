@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func newTestService(t *testing.T) (*Service, *httptest.Server) {
@@ -38,7 +39,7 @@ func newTestService(t *testing.T) (*Service, *httptest.Server) {
 		ClientID:     "client-id",
 		ClientSecret: "client-secret",
 		SessionKey:   []byte("test-key"),
-		AdminLogins:  map[string]bool{"pazerop": true},
+		AdminLogins:  set.Of("pazerop"),
 		TokenURL:     srv.URL + "/login/oauth/access_token",
 		APIBaseURL:   srv.URL,
 	})
@@ -52,7 +53,7 @@ func TestConfigured(t *testing.T) {
 }
 
 func TestIsAdmin_CaseInsensitive(t *testing.T) {
-	svc := New(Config{AdminLogins: map[string]bool{"pazerop": true}})
+	svc := New(Config{AdminLogins: set.Of("pazerop")})
 	assert.True(t, svc.IsAdmin("PazerOP"))
 	assert.True(t, svc.IsAdmin("pazerop"))
 	assert.False(t, svc.IsAdmin("octocat"))

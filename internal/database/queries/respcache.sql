@@ -1,0 +1,1249 @@
+-- ============================================================================
+-- Cached-route response state (contents / git commits / installation tokens)
+-- ============================================================================
+--
+-- contents_cache and git_commits_cache are GLOBAL truth (one row per resource);
+-- whether a caller may read a row is the reveal layer's job (see the
+-- access_grants queries in ghdata.sql). install_token_cache and
+-- repo_installations stay keyed by the verified app identity: they cache
+-- app-specific answers (a minted credential; which installation covers a
+-- repo), not shared GitHub state.
+
+-- ---- contents_cache ----
+
+-- name: GetContentsCache :one
+SELECT * FROM contents_cache
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?;
+
+-- name: UpsertContentsCache :exec
+INSERT INTO contents_cache (owner, repo, path, ref, kind, name, sha, size, encoding, content, entries, message, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, path, ref) DO UPDATE SET
+    kind = excluded.kind,
+    name = excluded.name,
+    sha = excluded.sha,
+    size = excluded.size,
+    encoding = excluded.encoding,
+    content = excluded.content,
+    entries = excluded.entries,
+    message = excluded.message,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchContentsCache :exec
+UPDATE contents_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND path = ? AND ref = ?;
+
+-- name: DeleteContentsCacheByRepo :exec
+DELETE FROM contents_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteContentsCacheForRef drops one requested ref spelling's rows (an
+-- empty ref = the default-branch rows) -- the per-ref push flush. A push to
+-- branch X only moves X-relative answers, so other refs' rows survive.
+-- name: DeleteContentsCacheForRef :exec
+DELETE FROM contents_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteExpiredContentsCache :exec
+DELETE FROM contents_cache WHERE expires_at <= ?;
+
+-- PruneContentsCacheLRU keeps only the most recently used rows. The subquery
+-- selects everything beyond the newest `offset` rows by last_used_at; LIMIT -1
+-- means "no limit" in SQLite, so OFFSET skips the keepers.
+-- name: PruneContentsCacheLRU :exec
+DELETE FROM contents_cache WHERE id IN (
+    SELECT id FROM contents_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- git_commits_cache ----
+
+-- name: GetGitCommitCache :one
+SELECT * FROM git_commits_cache
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: UpsertGitCommitCache :exec
+INSERT INTO git_commits_cache (owner, repo, sha, message, author_name, author_email, author_date, committer_name, committer_email, committer_date, tree_sha, parents, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha) DO UPDATE SET
+    message = excluded.message,
+    author_name = excluded.author_name,
+    author_email = excluded.author_email,
+    author_date = excluded.author_date,
+    committer_name = excluded.committer_name,
+    committer_email = excluded.committer_email,
+    committer_date = excluded.committer_date,
+    tree_sha = excluded.tree_sha,
+    parents = excluded.parents,
+    fetched_at = excluded.fetched_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitCommitCache :exec
+UPDATE git_commits_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: PruneGitCommitsCacheLRU :exec
+DELETE FROM git_commits_cache WHERE id IN (
+    SELECT id FROM git_commits_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- commits_list_cache (per-page snapshots for the commits LIST route) ----
+
+-- name: GetCommitsListCache :one
+SELECT * FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertCommitsListCache :exec
+INSERT INTO commits_list_cache (owner, repo, ref_param, per_page, page, shas, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref_param, per_page, page) DO UPDATE SET
+    shas = excluded.shas,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCommitsListCache :exec
+UPDATE commits_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref_param = ? AND per_page = ? AND page = ?;
+
+-- DeleteCommitsListCacheByRepo drops a repo's snapshots -- the repository
+-- webhook flush and the unparseable-push fallback (a push moves every
+-- ref-relative listing). The absorbed git_commits_cache rows are immutable
+-- and stay.
+-- name: DeleteCommitsListCacheByRepo :exec
+DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCommitsListCacheForRef drops one requested ref spelling's snapshots
+-- (an empty ref = the default-branch listing) -- the per-ref push flush. The
+-- absorbed git_commits_cache rows are immutable and stay.
+-- name: DeleteCommitsListCacheForRef :exec
+DELETE FROM commits_list_cache WHERE owner = ? AND repo = ? AND ref_param = ?;
+
+-- name: DeleteExpiredCommitsListCache :exec
+DELETE FROM commits_list_cache WHERE expires_at <= ?;
+
+-- name: PruneCommitsListCacheLRU :exec
+DELETE FROM commits_list_cache WHERE id IN (
+    SELECT id FROM commits_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- compare_cache (GET /repos/{owner}/{repo}/compare/{basehead}) ----
+
+-- name: GetCompareCache :one
+SELECT * FROM compare_cache
+WHERE owner = ? AND repo = ? AND basehead = ?;
+
+-- name: UpsertCompareCache :exec
+INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, basehead) DO UPDATE SET
+    base_ref = excluded.base_ref,
+    head_ref = excluded.head_ref,
+    base_tip_sha = excluded.base_tip_sha,
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCompareCache :exec
+UPDATE compare_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND basehead = ?;
+
+-- DeleteCompareCacheByRepo drops a repo's compare docs -- the repository
+-- webhook flush and the unparseable-push fallback (a push to either side of
+-- any basehead can change the comparison).
+-- name: DeleteCompareCacheByRepo :exec
+DELETE FROM compare_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCompareCacheForRef drops every comparison naming one ref on EITHER
+-- side -- the per-ref push flush (callers pass the pushed ref twice, once
+-- per side). Comparisons not touching the pushed ref survive.
+-- name: DeleteCompareCacheForRef :exec
+DELETE FROM compare_cache WHERE owner = ? AND repo = ? AND (base_ref = ? OR head_ref = ?);
+
+-- name: DeleteExpiredCompareCache :exec
+DELETE FROM compare_cache WHERE expires_at <= ?;
+
+-- name: PruneCompareCacheLRU :exec
+DELETE FROM compare_cache WHERE id IN (
+    SELECT id FROM compare_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- commit_ci_cache (GET /repos/{owner}/{repo}/commits/{ref}/status,
+-- ---- GET .../commits/{ref}/check-runs, and GET .../commits/{ref}/statuses) ----
+
+-- name: GetCommitCICache :one
+SELECT * FROM commit_ci_cache
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertCommitCICache :exec
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref, kind, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCommitCICache :exec
+UPDATE commit_ci_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?;
+
+-- DeleteCommitCICacheByRepo drops ALL of a repo's commit-CI snapshots (every
+-- kind, every ref, every page) -- the repository webhook flush and the
+-- no-per-ref-signal fallbacks (unparseable push/check payloads).
+-- name: DeleteCommitCICacheByRepo :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteCommitCICacheForRef drops one verbatim ref spelling's snapshots (all
+-- kinds, all pages) -- the per-ref status/check_run/check_suite/push flush.
+-- Other refs' snapshots survive: each spelling is its own row and the
+-- payload names exactly which spellings moved.
+-- name: DeleteCommitCICacheForRef :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+-- kind. A status delivery and a check delivery move disjoint documents --
+-- statuses never appear in a check-runs listing and check runs never appear
+-- in a combined status -- so each flushes only the kinds it can have moved.
+-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?;
+
+-- ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+-- status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+-- instead of dropping them. Every spelling is listed, not just the sha:
+-- a branch-form combined status names the sha it resolved to, so the ones
+-- describing this commit are recognizable from their own contents.
+-- name: ListCommitCICacheByRepoKind :many
+SELECT * FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?;
+
+-- name: DeleteExpiredCommitCICache :exec
+DELETE FROM commit_ci_cache WHERE expires_at <= ?;
+
+-- name: PruneCommitCICacheLRU :exec
+DELETE FROM commit_ci_cache WHERE id IN (
+    SELECT id FROM commit_ci_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- install_token_cache ----
+
+-- name: GetInstallTokenCache :one
+SELECT * FROM install_token_cache
+WHERE actor = ? AND installation_id = ? AND body_hash = ?;
+
+-- name: UpsertInstallTokenCache :exec
+INSERT INTO install_token_cache (actor, installation_id, body_hash, token, token_expires_at, permissions, repository_selection, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, installation_id, body_hash) DO UPDATE SET
+    token = excluded.token,
+    token_expires_at = excluded.token_expires_at,
+    permissions = excluded.permissions,
+    repository_selection = excluded.repository_selection,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: DeleteInstallTokenCacheByInstallation :exec
+DELETE FROM install_token_cache WHERE installation_id = ?;
+
+-- DeleteInstallTokenCacheByToken drops the cached mint(s) that issued one
+-- exact token -- the upstream-auth-failure invalidation: a proxied call
+-- carrying this token came back 401/403, so the mint behind it must not
+-- keep serving (its grants no longer match GitHub's).
+-- name: DeleteInstallTokenCacheByToken :exec
+DELETE FROM install_token_cache WHERE token = ?;
+
+-- name: DeleteExpiredInstallTokenCache :exec
+DELETE FROM install_token_cache WHERE expires_at <= ?;
+
+-- name: PruneInstallTokenCacheLRU :exec
+DELETE FROM install_token_cache WHERE id IN (
+    SELECT id FROM install_token_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- pulls_list_cache (the "open-PR list complete" markers) ----
+
+-- name: GetPullsListMarker :one
+SELECT * FROM pulls_list_cache
+WHERE owner = ? AND repo = ?;
+
+-- name: UpsertPullsListMarker :exec
+INSERT INTO pulls_list_cache (owner, repo, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullsListMarker :exec
+UPDATE pulls_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ?;
+
+-- DeletePullsListMarkersByRepo drops the marker on structural events
+-- (repository renamed/deleted/etc.), NOT on pull_request events (those
+-- maintain rows and leave the marker).
+-- name: DeletePullsListMarkersByRepo :exec
+DELETE FROM pulls_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredPullsListMarkers :exec
+DELETE FROM pulls_list_cache WHERE expires_at <= ?;
+
+-- name: PrunePullsListMarkersLRU :exec
+DELETE FROM pulls_list_cache WHERE id IN (
+    SELECT id FROM pulls_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- repo_installation_cache (GET /repos/{owner}/{repo}/installation) ----
+
+-- name: GetRepoInstallationCache :one
+SELECT * FROM repo_installation_cache
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: UpsertRepoInstallationCache :exec
+INSERT INTO repo_installation_cache (actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    status = excluded.status,
+    message = excluded.message,
+    installation_id = excluded.installation_id,
+    account_login = excluded.account_login,
+    account_type = excluded.account_type,
+    repository_selection = excluded.repository_selection,
+    app_id = excluded.app_id,
+    app_slug = excluded.app_slug,
+    target_type = excluded.target_type,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchRepoInstallationCache :exec
+UPDATE repo_installation_cache SET last_used_at = ?
+WHERE actor = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteRepoInstallationCacheByInstallation :exec
+DELETE FROM repo_installation_cache WHERE installation_id = ?;
+
+-- DeleteAbsentRepoInstallationCache drops every "not installed" VERDICT row.
+-- Those carry installation_id 0, so the by-id flush above cannot reach them,
+-- and an installation event means some account gained (or lost) an install --
+-- exactly what a verdict claims is absent.
+-- name: DeleteAbsentRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE status <> 200;
+
+-- name: DeleteExpiredRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE expires_at <= ?;
+
+-- name: PruneRepoInstallationCacheLRU :exec
+DELETE FROM repo_installation_cache WHERE id IN (
+    SELECT id FROM repo_installation_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- pull_files_cache (GET /repos/{owner}/{repo}/pulls/{number}/files) ----
+
+-- name: GetPullFilesCache :one
+SELECT * FROM pull_files_cache
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertPullFilesCache :exec
+INSERT INTO pull_files_cache (owner, repo, number, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullFilesCache :exec
+UPDATE pull_files_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ? AND per_page = ? AND page = ?;
+
+-- DeletePullFilesCacheByRepo drops a repo's PR-files snapshots -- the
+-- push/repository webhook flush (a push may have moved any same-repo PR's
+-- head; the belt for missed pull_request deliveries).
+-- name: DeletePullFilesCacheByRepo :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ?;
+
+-- DeletePullFilesCacheByPR drops one PR's snapshots -- the pull_request event
+-- flush (head pushed/synchronize -- including fork heads whose pushes we
+-- never see -- base retargets, reopens).
+-- name: DeletePullFilesCacheByPR :exec
+DELETE FROM pull_files_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredPullFilesCache :exec
+DELETE FROM pull_files_cache WHERE expires_at <= ?;
+
+-- name: PrunePullFilesCacheLRU :exec
+DELETE FROM pull_files_cache WHERE id IN (
+    SELECT id FROM pull_files_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- closed_pull_cache (closed answers for GET /repos/{owner}/{repo}/pulls/{number}) ----
+
+-- name: GetClosedPullCache :one
+SELECT * FROM closed_pull_cache
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: UpsertClosedPullCache :exec
+INSERT INTO closed_pull_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchClosedPullCache :exec
+UPDATE closed_pull_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- DeleteClosedPullCacheByRepo drops a repo's closed-PR docs -- the repository
+-- webhook flush. A push is deliberately NOT a flush: it cannot mutate a
+-- closed PR.
+-- name: DeleteClosedPullCacheByRepo :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteClosedPullCacheByPR drops one PR's closed doc -- the pull_request
+-- event flush (reopened/edited/relabeled), and the reopened-race safety
+-- after an open absorb.
+-- name: DeleteClosedPullCacheByPR :exec
+DELETE FROM closed_pull_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredClosedPullCache :exec
+DELETE FROM closed_pull_cache WHERE expires_at <= ?;
+
+-- name: PruneClosedPullCacheLRU :exec
+DELETE FROM closed_pull_cache WHERE id IN (
+    SELECT id FROM closed_pull_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- branches_list_cache (GET /repos/{owner}/{repo}/branches) ----
+
+-- name: GetBranchesListCache :one
+SELECT * FROM branches_list_cache
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertBranchesListCache :exec
+INSERT INTO branches_list_cache (owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchBranchesListCache :exec
+UPDATE branches_list_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND per_page = ? AND page = ?;
+
+-- ListBranchesListCacheByRepo returns a repo's cached pages so a push can
+-- rewrite the tip it states inside each one (ApplyPushedBranchTip) instead of
+-- dropping the listing.
+-- name: ListBranchesListCacheByRepo :many
+SELECT * FROM branches_list_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteBranchesListCacheByRepo drops a repo's branches snapshots -- the
+-- push/repository webhook flush (branch create, delete, and tip-move all
+-- arrive as pushes).
+-- name: DeleteBranchesListCacheByRepo :exec
+DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredBranchesListCache :exec
+DELETE FROM branches_list_cache WHERE expires_at <= ?;
+
+-- name: PruneBranchesListCacheLRU :exec
+DELETE FROM branches_list_cache WHERE id IN (
+    SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=) ----
+
+-- name: GetWorkflowRunsCache :one
+SELECT * FROM workflow_runs_cache
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowRunsCache :exec
+INSERT INTO workflow_runs_cache (owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, head_sha, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowRunsCache :exec
+UPDATE workflow_runs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND head_sha = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowRunsCacheByRepo drops a repo's workflow-runs snapshots --
+-- the repository webhook flush and the sha-less payload fallback.
+-- name: DeleteWorkflowRunsCacheByRepo :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
+-- the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
+-- snapshots survive.
+-- ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+-- workflow_run delivery can rewrite the run's entry inside each page
+-- (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT * FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+
+-- name: DeleteWorkflowRunsCacheForHeadSHA :exec
+DELETE FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?;
+
+-- ---- workflow_runs (truth) + workflow_runs_list_cache (completeness) ----
+
+-- UpsertWorkflowRunFull records a run from an AUTHORITATIVE source -- a
+-- workflow_run delivery or a REST absorb -- both of which carry the run's own
+-- status and conclusion. Out-of-order tolerant on the run's own updated_at:
+-- an older event never overwrites a newer one (a delivery replay, or a
+-- listing absorbed while a fresher delivery was in flight).
+-- name: UpsertWorkflowRunFull :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt    = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name           = CASE WHEN excluded.name <> '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha       = CASE WHEN excluded.head_sha <> '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch    = CASE WHEN excluded.head_branch <> '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status         = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.status ELSE workflow_runs.status END,
+    conclusion     = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.conclusion ELSE workflow_runs.conclusion END,
+    html_url       = CASE WHEN excluded.html_url <> '' THEN excluded.html_url ELSE workflow_runs.html_url END,
+    created_at     = CASE WHEN excluded.created_at <> '' THEN excluded.created_at ELSE workflow_runs.created_at END,
+    updated_at     = MAX(excluded.updated_at, workflow_runs.updated_at),
+    run_started_at = CASE WHEN excluded.run_started_at <> '' THEN excluded.run_started_at ELSE workflow_runs.run_started_at END,
+    touched_at     = excluded.touched_at;
+
+-- UpsertWorkflowRunFromJob records what a workflow_job delivery can prove
+-- about its RUN. A job payload names the run's identity but carries no
+-- run-level status, so this may only ever CREATE the row or RAISE its status
+-- floor: a job that is in_progress proves the run is in_progress. It must
+-- never conclude a run (the job set may be incomplete) and never regress one
+-- that a workflow_run delivery or a REST absorb already settled -- hence the
+-- status clause fires only when the stored status is 'queued' and the row was
+-- never given a conclusion.
+-- name: UpsertWorkflowRunFromJob :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name        = CASE WHEN workflow_runs.name = '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha    = CASE WHEN workflow_runs.head_sha = '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch = CASE WHEN workflow_runs.head_branch = '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status      = CASE WHEN workflow_runs.status = 'queued' AND workflow_runs.conclusion = '' AND excluded.status = 'in_progress'
+                       THEN 'in_progress' ELSE workflow_runs.status END,
+    touched_at  = excluded.touched_at;
+
+-- ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
+-- own ordering), optionally filtered by status and/or head branch and/or head
+-- sha. An empty filter argument means "no filter on this field".
+-- The `status` filter matches a run's status OR its CONCLUSION, because
+-- GitHub's own filter does: ?status=success selects completed runs that
+-- succeeded, while ?status=queued selects by status. Matching only the status
+-- column would answer ?status=success with nothing.
+--
+-- Every parameter here is NAMED on purpose: sqlc numbers `?` placeholders and
+-- sqlc.arg() references in one shared sequence, so mixing the two silently
+-- misaligns the bindings ("missing argument with index N" at run time).
+-- name: ListWorkflowRuns :many
+SELECT * FROM workflow_runs
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
+ORDER BY created_at DESC, run_id DESC
+LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
+
+-- CountWorkflowRuns is the same filter without pagination -- the listing's
+-- total_count, exact because the completeness marker vouches for the set.
+-- name: CountWorkflowRuns :one
+SELECT COUNT(*) FROM workflow_runs
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha));
+
+-- DeleteWorkflowRunsNotIn drops the rows a reconciling absorb proved stale:
+-- runs that still MATCH the filter in truth but were absent from a short
+-- page-1 response for that same filter. Their state provably moved and the
+-- response did not say where to, so the row goes and the next read re-absorbs
+-- it. sqlc.slice expands to the run ids the response did contain.
+-- name: DeleteWorkflowRunsNotIn :exec
+DELETE FROM workflow_runs
+WHERE owner = sqlc.arg(owner) AND repo = sqlc.arg(repo)
+  AND (sqlc.arg(status) = '' OR status = sqlc.arg(status) OR conclusion = sqlc.arg(status))
+  AND (sqlc.arg(head_branch) = '' OR head_branch = sqlc.arg(head_branch))
+  AND (sqlc.arg(head_sha) = '' OR head_sha = sqlc.arg(head_sha))
+  AND run_id NOT IN (sqlc.slice(kept));
+
+-- name: DeleteWorkflowRunsByRepo :exec
+DELETE FROM workflow_runs WHERE owner = ? AND repo = ?;
+
+-- PruneSettledWorkflowRuns bounds the table: completed runs the mirror has
+-- not touched within the retention window are dropped. Runs still queued or
+-- in progress are never pruned.
+-- name: PruneSettledWorkflowRuns :exec
+DELETE FROM workflow_runs WHERE status = 'completed' AND touched_at < ?;
+
+-- name: GetWorkflowRunsListMarker :one
+SELECT * FROM workflow_runs_list_cache WHERE owner = ? AND repo = ? AND filters = ?;
+
+-- name: UpsertWorkflowRunsListMarker :exec
+INSERT INTO workflow_runs_list_cache (owner, repo, filters, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, filters) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at;
+
+-- DeleteWorkflowRunsListMarkers clears a repo's completeness proofs. Only
+-- repository events (and the expiry) do this -- a run delivery MAINTAINS the
+-- rows the marker vouches for, so it must never clear the marker.
+-- name: DeleteWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE expires_at <= ?;
+
+-- name: DeleteExpiredWorkflowRunsCache :exec
+DELETE FROM workflow_runs_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowRunsCacheLRU :exec
+DELETE FROM workflow_runs_cache WHERE id IN (
+    SELECT id FROM workflow_runs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- git_commit_miss_cache (expiring 404s for GET /repos/{owner}/{repo}/git/commits/{sha}) ----
+
+-- name: GetGitCommitMissCache :one
+SELECT * FROM git_commit_miss_cache
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: UpsertGitCommitMissCache :exec
+INSERT INTO git_commit_miss_cache (owner, repo, sha, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitCommitMissCache :exec
+UPDATE git_commit_miss_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteGitCommitMissCacheByRepo :exec
+DELETE FROM git_commit_miss_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteGitCommitMiss un-misses one sha. Every real git-commit upsert runs
+-- it (ghdata.upsertGitCommit), so a sha that materializes -- pushed, listed,
+-- or compared into git_commits_cache -- stops answering 404 immediately.
+-- name: DeleteGitCommitMiss :exec
+DELETE FROM git_commit_miss_cache WHERE owner = ? AND repo = ? AND sha = ?;
+
+-- name: DeleteExpiredGitCommitMissCache :exec
+DELETE FROM git_commit_miss_cache WHERE expires_at <= ?;
+
+-- name: PruneGitCommitMissCacheLRU :exec
+DELETE FROM git_commit_miss_cache WHERE id IN (
+    SELECT id FROM git_commit_miss_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- pull_diff406_cache (406 verdicts for the single-PR diff read) ----
+
+-- name: GetPullDiff406Cache :one
+SELECT * FROM pull_diff406_cache
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: UpsertPullDiff406Cache :exec
+INSERT INTO pull_diff406_cache (owner, repo, number, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, number) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchPullDiff406Cache :exec
+UPDATE pull_diff406_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND number = ?;
+
+-- DeletePullDiff406CacheByRepo drops a repo's 406 verdicts -- the
+-- push/repository webhook flush (a base push can move a PR's three-dot diff
+-- across the 406 size boundary in either direction).
+-- name: DeletePullDiff406CacheByRepo :exec
+DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ?;
+
+-- DeletePullDiff406CacheForPR drops one PR's 406 verdict -- the
+-- pull_request/pull_request_review event flush (a head push or retarget can
+-- shrink the diff back under the boundary).
+-- name: DeletePullDiff406CacheForPR :exec
+DELETE FROM pull_diff406_cache WHERE owner = ? AND repo = ? AND number = ?;
+
+-- name: DeleteExpiredPullDiff406Cache :exec
+DELETE FROM pull_diff406_cache WHERE expires_at <= ?;
+
+-- name: PrunePullDiff406CacheLRU :exec
+DELETE FROM pull_diff406_cache WHERE id IN (
+    SELECT id FROM pull_diff406_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- git_ref_cache (GET /repos/{owner}/{repo}/git/ref/{ref}) ----
+
+-- name: GetGitRefCache :one
+SELECT * FROM git_ref_cache
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: UpsertGitRefCache :exec
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at,
+    -- An empty value LEAVES the recorded contradiction alone: a push applying
+    -- its own tip settles nothing about a lagging PR base.sha, and clearing
+    -- the memory there would re-arm a refetch the row already paid for.
+    reconciled_against = CASE WHEN excluded.reconciled_against = '' THEN git_ref_cache.reconciled_against ELSE excluded.reconciled_against END;
+
+-- ContradictingPRBaseTip finds an absorbed OPEN PR whose base branch is this
+-- ref and whose base.sha is NOT the sha this row serves -- evidence, from a
+-- view absorbed AFTER the row was fetched, that the row has moved on.
+-- Newest-absorbed first, so several PRs on one branch settle deterministically
+-- on one refetch rather than taking turns re-triggering it.
+-- name: ContradictingPRBaseTip :one
+SELECT base_ref_oid FROM pull_requests
+WHERE owner = ? AND repo = ? AND base_ref_name = ?
+  AND base_ref_oid IS NOT NULL AND base_ref_oid != '' AND base_ref_oid != ?
+  AND touched_at > ?
+ORDER BY touched_at DESC
+LIMIT 1;
+
+-- name: TouchGitRefCache :exec
+UPDATE git_ref_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- DeleteGitRefCacheForRef drops ONE requested spelling of a ref -- the
+-- per-ref push flush (a push moves, creates, or deletes exactly one ref).
+-- name: DeleteGitRefCacheForRef :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteGitRefCacheByRepo :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredGitRefCache :exec
+DELETE FROM git_ref_cache WHERE expires_at <= ?;
+
+-- name: PruneGitRefCacheLRU :exec
+DELETE FROM git_ref_cache WHERE id IN (
+    SELECT id FROM git_ref_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflow_jobs_cache (Actions job reads) ----
+
+-- name: GetWorkflowJobsCache :one
+SELECT * FROM workflow_jobs_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowJobsCache :exec
+INSERT INTO workflow_jobs_cache (owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    run_id = excluded.run_id,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowJobsCache :exec
+UPDATE workflow_jobs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowJobsCacheForRun drops every row a run's jobs back -- both the
+-- run's own jobs pages and the single-job rows under it. A re-run replaces a
+-- run's jobs under the SAME run id, so this is the flush that matters.
+-- name: DeleteWorkflowJobsCacheForRun :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
+-- ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+-- pages and the single-job rows under it -- so a workflow_job delivery can
+-- rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+-- dropping answers the delivery just told us the new value of.
+-- name: ListWorkflowJobsCacheForRun :many
+SELECT * FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?;
+
+-- name: DeleteWorkflowJobsCacheByRepo :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowJobsCache :exec
+DELETE FROM workflow_jobs_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowJobsCacheLRU :exec
+DELETE FROM workflow_jobs_cache WHERE id IN (
+    SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- DeleteCommitsListCachePullSnapshots drops a repo's PR-commit snapshots --
+-- the rows whose ref key is the synthetic "pull/<number>/commits" (see
+-- internal/api/respcache_pullcommits.go). A push moves a PR's commit list
+-- with no per-PR signal, exactly as it does the PR-files pages, so it flushes
+-- these repo-wide as the belt behind the per-PR pull_request flush.
+-- name: DeleteCommitsListCachePullSnapshots :exec
+DELETE FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param LIKE 'pull/%';
+
+-- ---- code_quality_setup_cache (GET /repos/{owner}/{repo}/code-quality/setup) ----
+
+-- name: GetCodeQualitySetupCache :one
+SELECT * FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: UpsertCodeQualitySetupCache :exec
+INSERT INTO code_quality_setup_cache (owner, repo, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCodeQualitySetupCache :exec
+UPDATE code_quality_setup_cache SET last_used_at = ? WHERE owner = ? AND repo = ?;
+
+-- name: DeleteCodeQualitySetupCacheByRepo :exec
+DELETE FROM code_quality_setup_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCodeQualitySetupCache :exec
+DELETE FROM code_quality_setup_cache WHERE expires_at <= ?;
+
+-- name: PruneCodeQualitySetupCacheLRU :exec
+DELETE FROM code_quality_setup_cache WHERE id IN (
+    SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- label_cache (GET /repos/{owner}/{repo}/labels/{name}) ----
+
+-- name: GetLabelCache :one
+SELECT * FROM label_cache WHERE owner = ? AND repo = ? AND name = ?;
+
+-- name: UpsertLabelCache :exec
+INSERT INTO label_cache (owner, repo, name, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, name) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchLabelCache :exec
+UPDATE label_cache SET last_used_at = ? WHERE owner = ? AND repo = ? AND name = ?;
+
+-- DeleteLabelCacheByRepo is the ONLY flush grain: a label event names one
+-- label, but a rename names two, and every requested spelling of a name is
+-- its own row. Label events are rare and a repo holds few labels.
+-- name: DeleteLabelCacheByRepo :exec
+DELETE FROM label_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredLabelCache :exec
+DELETE FROM label_cache WHERE expires_at <= ?;
+
+-- name: PruneLabelCacheLRU :exec
+DELETE FROM label_cache WHERE id IN (
+    SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- installation_repos_cache (GET /installation/repositories) ----
+
+-- name: GetInstallationReposCache :one
+SELECT * FROM installation_repos_cache
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertInstallationReposCache :exec
+INSERT INTO installation_repos_cache (token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchInstallationReposCache :exec
+UPDATE installation_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND per_page = ? AND page = ?;
+
+-- DeleteAllInstallationReposCache is the installation-event flush. Rows key a
+-- credential, not an installation id, so there is nothing finer to match on --
+-- and these deliveries are rare while the table holds one row per live token.
+-- name: DeleteAllInstallationReposCache :exec
+DELETE FROM installation_repos_cache;
+
+-- name: DeleteExpiredInstallationReposCache :exec
+DELETE FROM installation_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneInstallationReposCacheLRU :exec
+DELETE FROM installation_repos_cache WHERE id IN (
+    SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+
+-- A listing row carries hook_id 0; a single-hook row carries its id and pages
+-- at 0. The key covers both, so neither can answer the other's question.
+-- name: GetHooksCache :one
+SELECT * FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertHooksCache :exec
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, hook_id, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchHooksCache :exec
+UPDATE hooks_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteHooksCacheForTarget drops one target's listings across EVERY
+-- credential. A hook created, edited or deleted through the mirror changes
+-- what every caller sees, not just the one that wrote it -- so the write flush
+-- cannot be per-credential even though the rows are.
+-- name: DeleteHooksCacheForTarget :exec
+DELETE FROM hooks_cache WHERE scope = ? AND owner = ? AND repo = ?;
+
+-- name: DeleteExpiredHooksCache :exec
+DELETE FROM hooks_cache WHERE expires_at <= ?;
+
+-- name: PruneHooksCacheLRU :exec
+DELETE FROM hooks_cache WHERE id IN (
+    SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- git_trees_cache (GET /repos/{owner}/{repo}/git/trees/{sha}) ----
+
+-- name: GetGitTreeCache :one
+SELECT * FROM git_trees_cache
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?;
+
+-- name: UpsertGitTreeCache :exec
+INSERT INTO git_trees_cache (owner, repo, sha, recursive, doc, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha, recursive) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchGitTreeCache :exec
+UPDATE git_trees_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?;
+
+-- name: PruneGitTreesCacheLRU :exec
+DELETE FROM git_trees_cache WHERE id IN (
+    SELECT id FROM git_trees_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- check_run_cache (GET /repos/{owner}/{repo}/check-runs/{check_run_id}) ----
+
+-- name: GetCheckRunCache :one
+SELECT * FROM check_run_cache
+WHERE owner = ? AND repo = ? AND check_run_id = ?;
+
+-- name: UpsertCheckRunCache :exec
+INSERT INTO check_run_cache (owner, repo, check_run_id, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, check_run_id) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchCheckRunCache :exec
+UPDATE check_run_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND check_run_id = ?;
+
+-- name: DeleteCheckRunCacheByRepo :exec
+DELETE FROM check_run_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredCheckRunCache :exec
+DELETE FROM check_run_cache WHERE expires_at <= ?;
+
+-- name: PruneCheckRunCacheLRU :exec
+DELETE FROM check_run_cache WHERE id IN (
+    SELECT id FROM check_run_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- matching_refs_cache (GET /repos/{owner}/{repo}/git/matching-refs/heads/*) ----
+
+-- name: GetMatchingRefsCache :one
+SELECT * FROM matching_refs_cache
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertMatchingRefsCache :exec
+INSERT INTO matching_refs_cache (owner, repo, prefix, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, prefix, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchMatchingRefsCache :exec
+UPDATE matching_refs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteMatchingRefsCacheByRepo :exec
+DELETE FROM matching_refs_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredMatchingRefsCache :exec
+DELETE FROM matching_refs_cache WHERE expires_at <= ?;
+
+-- name: PruneMatchingRefsCacheLRU :exec
+DELETE FROM matching_refs_cache WHERE id IN (
+    SELECT id FROM matching_refs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- identity_cache (GET /app, GET /user, GET /user/orgs) ----
+
+-- name: GetIdentityCache :one
+SELECT * FROM identity_cache
+WHERE subject_key = ? AND kind = ?;
+
+-- name: UpsertIdentityCache :exec
+INSERT INTO identity_cache (subject_key, kind, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (subject_key, kind) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchIdentityCache :exec
+UPDATE identity_cache SET last_used_at = ?
+WHERE subject_key = ? AND kind = ?;
+
+-- name: DeleteExpiredIdentityCache :exec
+DELETE FROM identity_cache WHERE expires_at <= ?;
+
+-- name: PruneIdentityCacheLRU :exec
+DELETE FROM identity_cache WHERE id IN (
+    SELECT id FROM identity_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- org_runners_cache (GET /orgs/{org}/actions/runners) ----
+
+-- name: GetOrgRunnersCache :one
+SELECT * FROM org_runners_cache
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertOrgRunnersCache :exec
+INSERT INTO org_runners_cache (token_fp, org, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, org, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchOrgRunnersCache :exec
+UPDATE org_runners_cache SET last_used_at = ?
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteExpiredOrgRunnersCache :exec
+DELETE FROM org_runners_cache WHERE expires_at <= ?;
+
+-- name: PruneOrgRunnersCacheLRU :exec
+DELETE FROM org_runners_cache WHERE id IN (
+    SELECT id FROM org_runners_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- app_installations_cache (GET /app/installations) ----
+
+-- name: GetAppInstallationsCache :one
+SELECT * FROM app_installations_cache
+WHERE app_key = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertAppInstallationsCache :exec
+INSERT INTO app_installations_cache (app_key, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (app_key, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchAppInstallationsCache :exec
+UPDATE app_installations_cache SET last_used_at = ?
+WHERE app_key = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteAppInstallationsCacheForApp :exec
+DELETE FROM app_installations_cache WHERE app_key = ?;
+
+-- name: DeleteExpiredAppInstallationsCache :exec
+DELETE FROM app_installations_cache WHERE expires_at <= ?;
+
+-- name: PruneAppInstallationsCacheLRU :exec
+DELETE FROM app_installations_cache WHERE id IN (
+    SELECT id FROM app_installations_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- search_issues_cache (GET /search/issues) ----
+
+-- name: GetSearchIssuesCache :one
+SELECT * FROM search_issues_cache WHERE token_fp = ? AND query_key = ?;
+
+-- name: UpsertSearchIssuesCache :exec
+INSERT INTO search_issues_cache (token_fp, query_key, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, query_key) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchSearchIssuesCache :exec
+UPDATE search_issues_cache SET last_used_at = ? WHERE token_fp = ? AND query_key = ?;
+
+-- name: DeleteExpiredSearchIssuesCache :exec
+DELETE FROM search_issues_cache WHERE expires_at <= ?;
+
+-- name: PruneSearchIssuesCacheLRU :exec
+DELETE FROM search_issues_cache WHERE id IN (
+    SELECT id FROM search_issues_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- user_repos_cache (GET /user/repos) ----
+
+-- name: GetUserReposCache :one
+SELECT * FROM user_repos_cache
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertUserReposCache :exec
+INSERT INTO user_repos_cache (token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, sort, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchUserReposCache :exec
+UPDATE user_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?;
+
+-- name: DeleteExpiredUserReposCache :exec
+DELETE FROM user_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneUserReposCacheLRU :exec
+DELETE FROM user_repos_cache WHERE id IN (
+    SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- readme_cache (GET /repos/{owner}/{repo}/readme[/{dir}]) ----
+
+-- name: GetReadmeCache :one
+SELECT * FROM readme_cache WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?;
+
+-- name: UpsertReadmeCache :exec
+INSERT INTO readme_cache (owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, dir, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchReadmeCache :exec
+UPDATE readme_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?;
+
+-- name: DeleteReadmeCacheByRepo :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ?;
+
+-- DeleteReadmeCacheForRef is the per-ref grain a push names, matching the
+-- contents_cache flush: rows key the ref the CALLER asked for, so a
+-- default-branch push flushes the '' spelling too.
+-- name: DeleteReadmeCacheForRef :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ? AND ref = ?;
+
+-- name: DeleteExpiredReadmeCache :exec
+DELETE FROM readme_cache WHERE expires_at <= ?;
+
+-- name: PruneReadmeCacheLRU :exec
+DELETE FROM readme_cache WHERE id IN (
+    SELECT id FROM readme_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- workflows_cache (GET /repos/{owner}/{repo}/actions/workflows[/{id}]) ----
+
+-- name: GetWorkflowsCache :one
+SELECT * FROM workflows_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertWorkflowsCache :exec
+INSERT INTO workflows_cache (owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchWorkflowsCache :exec
+UPDATE workflows_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?;
+
+-- DeleteWorkflowsCacheByRepo is the only flush grain a push supports: the
+-- delivery names changed FILES, and a file maps to a workflow id only through
+-- an answer this table is the cache of. A repo holds few workflows.
+-- name: DeleteWorkflowsCacheByRepo :exec
+DELETE FROM workflows_cache WHERE owner = ? AND repo = ?;
+
+-- name: DeleteExpiredWorkflowsCache :exec
+DELETE FROM workflows_cache WHERE expires_at <= ?;
+
+-- name: PruneWorkflowsCacheLRU :exec
+DELETE FROM workflows_cache WHERE id IN (
+    SELECT id FROM workflows_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);
+
+-- ---- owner_repos_cache (GET /orgs/{org}/repos, GET /users/{username}/repos) ----
+
+-- name: GetOwnerReposCache :one
+SELECT * FROM owner_repos_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?;
+
+-- name: UpsertOwnerReposCache :exec
+INSERT INTO owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, sort, direction, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at;
+
+-- name: TouchOwnerReposCache :exec
+UPDATE owner_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?;
+
+-- DeleteOwnerReposCacheByOwner spans every credential, because a created,
+-- deleted or renamed repo moves the owner's listing for all of them.
+-- name: DeleteOwnerReposCacheByOwner :exec
+DELETE FROM owner_repos_cache WHERE owner = ?;
+
+-- name: DeleteExpiredOwnerReposCache :exec
+DELETE FROM owner_repos_cache WHERE expires_at <= ?;
+
+-- name: PruneOwnerReposCacheLRU :exec
+DELETE FROM owner_repos_cache WHERE id IN (
+    SELECT id FROM owner_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+);

@@ -2,12 +2,17 @@
   "name": "github-state-mirror-web",
   "version": "0.0.0",
   "private": true,
-  "description": "TypeScript sources for the GitHub State Mirror dashboard. Compiled to internal/api/web/assets/*.js (committed, generated) and embedded into the Go binary.",
+  "type": "module",
+  "description": "TypeScript sources for the GitHub State Mirror dashboard — the only source. Compiled to internal/api/web/assets/*.js (a gitignored build output, rebuilt by CI) and embedded into the Go binary.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "check:harness": "tsc -p tsconfig.harness.json",
+    "test:image": "node --test docker/imagecheck.test.ts",
+    "test:dashboard": "node --test internal/api/testdata/dashboardcheck.test.ts"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
   }
 }
