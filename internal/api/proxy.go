@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 )
 
 // newGitHubProxy returns an http.Handler that transparently reverse-proxies a
@@ -47,27 +48,53 @@ func newGitHubProxy(baseURL string) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if bearerToken(r) == "" {
-			http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
+		token := bearerToken(r)
+		if token == "" {
+			// Anonymous passthrough: allow tokenless requests ONLY onto GitHub's
+			// public surface, and only if this request is not clearly targeting
+			// private/privileged data (see anonymousPublicOnly). GitHub itself is
+			// the authority on public-vs-private; we just refuse the obviously
+			// private endpoints up front so an anonymous client cannot even
+			// attempt them, and never send a service credential in their place.
+			if !anonymousPublicOnly(r) {
+				http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
+				return
+			}
+			r.Header.Del("Authorization")
+			rp.ServeHTTP(w, r)
 			return
 		}
+		// Authenticated: forward the caller's credential unchanged. The mirror
+		// never substitutes its own token.
 		rp.ServeHTTP(w, r)
 	})
 }
 
-// stripUpstreamCORS removes the Access-Control-Allow-* / Max-Age headers from a
-// forwarded GitHub response. The mirror's own corsMiddleware is the single
-// authority for those, so leaving GitHub's copies in place would duplicate them
-// — most importantly Access-Control-Allow-Origin, which browsers reject when it
-// appears more than once ("multiple values"). Access-Control-Expose-Headers is
-// intentionally preserved: the mirror does not set it, and it lets cross-origin
-// clients read GitHub's X-RateLimit-*, Link, and similar headers.
-func stripUpstreamCORS(resp *http.Response) error {
-	h := resp.Header
-	h.Del("Access-Control-Allow-Origin")
-	h.Del("Access-Control-Allow-Methods")
-	h.Del("Access-Control-Allow-Headers")
-	h.Del("Access-Control-Allow-Credentials")
-	h.Del("Access-Control-Max-Age")
-	return nil
+// anonymousPublicOnly reports whether a tokenless request may be forwarded to
+// GitHub. It is a defense-in-depth guard on top of GitHub's own authorization:
+// an anonymous request can legitimately read only public data, so anything that
+// is unmistakably privileged/private — user/org-scoped resources, notifications,
+// anything that would require a token to even mean anything — is rejected before
+// it leaves the mirror. GitHub still enforces the real boundary for every other
+// path (an anonymous read of a private repo is 404/403 upstream); this exists to
+// keep tokenless traffic off those paths entirely, and to keep the mirror from
+// looking like an open relay for credential-bearing endpoints.
+func anonymousPublicOnly(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		// Public writes do not exist on GitHub: only authenticated users can
+		// create/update anything (even on public repos), so no anonymous
+		// non-GET/HEAD request is ever legitimate.
+		return false
+	}
+	p := r.URL.Path
+	switch {
+	case strings.HasPrefix(p, "/user"), strings.HasPrefix(p, "/users/"), strings.HasPrefix(p, "/orgs/"), strings.HasPrefix(p, "/notifications"):
+		return false
+	case strings.HasPrefix(p, "/repos/"):
+		// /repos/{owner}/{repo}/... is public only if the repo is public; GitHub
+		// decides. No additional restriction here.
+		return true
+	default:
+		return true
+	}
 }
