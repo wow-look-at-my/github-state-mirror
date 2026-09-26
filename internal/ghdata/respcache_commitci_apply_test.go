@@ -3,6 +3,7 @@ package ghdata
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -378,6 +379,61 @@ func TestApplyCheckRunToCommitCI_SurvivesTheEndOfACIRun(t *testing.T) {
 	require.NotNil(t, page.CheckRuns[1].Conclusion)
 	assert.Equal(t, "success", *page.CheckRuns[1].Conclusion)
 	assert.Equal(t, "queued", page.CheckRuns[0].Status)
+}
+
+// jobOf gives a run the details_url that GitHub Actions gives every job run.
+func jobOf(run StoredCheckRun, runID int64) StoredCheckRun {
+	u := fmt.Sprintf("https://github.com/org1/repo1/actions/runs/%d/job/%d", runID, run.ID)
+	run.DetailsURL = &u
+	return run
+}
+
+// The wedge this repairs: a page kept two jobs `queued` after GitHub completed
+// them, because their check_run deliveries never landed. The run's own
+// completion is the evidence. Pages that the run does not contradict stay.
+func TestDropCheckRunPagesContradictedByRun(t *testing.T) {
+	s := testStore(t)
+	ctx, now := context.Background(), time.Now()
+	started := "2026-09-26T17:30:45Z"
+	const runID, otherRunID = 36259285459, 999
+	const otherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	finished := func(id int64) StoredCheckRun {
+		r := jobOf(checkRun(id, "completed", &started), runID)
+		r.Conclusion = ptr("success")
+		return r
+	}
+	elsewhere := jobOf(checkRun(9, "queued", &started), runID)
+	elsewhere.HeadSHA = otherSHA
+
+	seeds := []struct {
+		ref, doc string
+		perPage  int
+	}{
+		{ciSHA, checkRunsDoc(t, finished(3), jobOf(checkRun(2, "queued", &started), runID), finished(1)), 100},
+		{"main", checkRunsDoc(t, finished(3), finished(2), finished(1)), 100},
+		{"other-run", checkRunsDoc(t, jobOf(checkRun(4, "in_progress", &started), otherRunID)), 100},
+		{"other-sha", checkRunsDoc(t, elsewhere), 100},
+	}
+	for _, seed := range seeds {
+		require.NoError(t, s.PutCachedCommitCI(ctx, CachedCommitCI{
+			Owner: "org1", Repo: "repo1", Ref: seed.ref, Kind: CommitCIKindCheckRuns, Status: 200, Doc: seed.doc,
+		}, seed.perPage, 1, now, time.Hour))
+	}
+
+	dropped, err := s.DropCheckRunPagesContradictedByRun(ctx, "org1", "repo1", ciSHA, runID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, dropped)
+
+	_, ok, err := s.GetCachedCommitCI(ctx, "org1", "repo1", ciSHA, CommitCIKindCheckRuns, 100, 1, now)
+	require.NoError(t, err)
+	assert.False(t, ok, "a page with an unfinished job of a completed run must be dropped")
+
+	for _, keep := range []string{"main", "other-run", "other-sha"} {
+		_, ok, err := s.GetCachedCommitCI(ctx, "org1", "repo1", keep, CommitCIKindCheckRuns, 100, 1, now)
+		require.NoError(t, err)
+		assert.True(t, ok, "page %q is not contradicted by this run and must stay", keep)
+	}
 }
 
 // A page about a DIFFERENT commit is not this delivery's business. The page

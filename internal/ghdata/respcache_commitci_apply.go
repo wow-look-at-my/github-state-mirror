@@ -3,8 +3,10 @@ package ghdata
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
@@ -175,6 +177,57 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 		applied = true
 	}
 	return applied, nil
+}
+
+// DropCheckRunPagesContradictedByRun deletes every cached check-runs page of
+// headSHA that still lists a job of this Actions run as unfinished. The caller
+// calls it only for a completed run, and a completed run has no unfinished job.
+// Such a page lost a check_run delivery, and no later delivery corrects it.
+// The run payload does not state each job's conclusion, so a flush is the only
+// repair. It returns the count of pages it deleted.
+func (s *Store) DropCheckRunPagesContradictedByRun(ctx context.Context, owner, repo, headSHA string, runID int64) (int, error) {
+	if runID <= 0 || !IsFullHexSHA(headSHA) {
+		return 0, nil
+	}
+	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
+	rows, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindCheckRuns,
+	})
+	if err != nil {
+		return 0, err
+	}
+	jobPath := fmt.Sprintf("/actions/runs/%d/job/", runID)
+	dropped := 0
+	for _, row := range rows {
+		var page StoredCheckRunsPage
+		if err := json.Unmarshal([]byte(row.Doc), &page); err != nil || !pageDescribesSHA(&page, headSHA) {
+			continue
+		}
+		if !listsUnfinishedJobOf(&page, jobPath) {
+			continue
+		}
+		if err := s.deleteCommitCIRow(ctx, ownerKey, repoKey, row); err != nil {
+			return dropped, err
+		}
+		dropped++
+	}
+	return dropped, nil
+}
+
+// listsUnfinishedJobOf reports whether the page holds a run that is not
+// completed and whose URL names a job under jobPath.
+func listsUnfinishedJobOf(page *StoredCheckRunsPage, jobPath string) bool {
+	for _, cr := range page.CheckRuns {
+		if cr.Status == "completed" {
+			continue
+		}
+		for _, u := range []*string{cr.DetailsURL, cr.HTMLURL} {
+			if u != nil && strings.Contains(*u, jobPath) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkRunsPageDescribes reports whether a stored page is about this commit.
