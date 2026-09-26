@@ -40,6 +40,10 @@ COPY --from=shell --chown=65532:65532 /out/tmp /tmp
 # The SQLite cache DB is disposable but needs a writable, nonroot-owned location.
 ENV DB_PATH=/var/lib/github-state-mirror/github-mirror.db
 ENV LISTEN_ADDR=:8080
+# The boot script unpacks its loader into /dev/shm first, and docker mounts
+# /dev/shm noexec. busybox answers `[ -x ]` from the mode bits, so the script
+# then execs the loader there and exits 126. /tmp above is writable and exec.
+ENV APE_LOADERDIR=/tmp
 
 EXPOSE 8080
 VOLUME /var/lib/github-state-mirror

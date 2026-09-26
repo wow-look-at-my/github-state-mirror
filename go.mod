@@ -5,11 +5,11 @@ go 1.26
 require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/stretchr/testify v1.11.1
-	github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0-20260907033306-8dbcb43f5300 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/js-snippets/timelinewire v0.0.0 // go-toolchain:auto-branch
 	modernc.org/sqlite v1.48.0
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
