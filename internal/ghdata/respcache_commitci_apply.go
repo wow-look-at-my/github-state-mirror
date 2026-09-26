@@ -12,7 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// A `status` delivery carries the whole status it announces, so the
+// A `status` delivery carries the whole status it announces.
 
 // CommitStatusUpdate is `status` delivery's account of commit status,
 // in GitHub's own spelling of every field the stored documents carry.

@@ -388,7 +388,7 @@ func jobOf(run StoredCheckRun, runID int64) StoredCheckRun {
 	return run
 }
 
-// The wedge this repairs: a page kept two jobs `queued` after GitHub completed
+// The wedge this repairs: a page kept jobs `queued` after GitHub completed
 // them, because their check_run deliveries never landed. The run's own
 // completion is the evidence. Pages that the run does not contradict stay.
 func TestDropCheckRunPagesContradictedByRun(t *testing.T) {
@@ -483,7 +483,7 @@ func TestSettleCommitCIFromStatus_LeavesRowsAboutOtherCommits(t *testing.T) {
 	require.NoError(t, err)
 	elsewhere := string(other)
 	for _, seed := range []struct{ ref, doc string }{
-		{"main", here},         // the branch points at the commit this status is on
+		{"main", here},
 		{ciSHA, here},          // the sha spelling of the same answer
 		{"release", elsewhere}, // a branch pointing somewhere else entirely
 	} {
