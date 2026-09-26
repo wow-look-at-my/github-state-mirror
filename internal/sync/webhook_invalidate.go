@@ -120,6 +120,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
 		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
 		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
+		d.dropCheckRunPagesBehindCompletedRun(ctx, owner+"/"+repo, owner, repo, event)
 	case "installation", "installation_repositories":
 		// The app-installations LISTING is stored VERBATIM per page, so a changed installation is flushed by its app_id, not spliced in.
 		if appID := webhook.ParseInstallationAppID(event.Raw); appID != "" {
@@ -253,6 +254,23 @@ func (d *WebhookDispatcher) flushWorkflowJobsForRun(ctx context.Context, scope, 
 		return
 	}
 	flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsForRun(ctx, owner, repo, runID))
+}
+
+// dropCheckRunPagesBehindCompletedRun drops the check-runs pages a completed
+// run proves stale. A page that lost a job's check_run delivery otherwise
+// serves that job as unfinished for the whole TTL.
+// see docs/webhooks/invalidations.md ("The check-run rewrite")
+func (d *WebhookDispatcher) dropCheckRunPagesBehindCompletedRun(ctx context.Context, scope, owner, repo string, event webhook.Event) {
+	run, err := webhook.ParseWorkflowRunPayload(event.Raw)
+	if err != nil || run.Status != "completed" {
+		return
+	}
+	dropped, err := d.store.DropCheckRunPagesContradictedByRun(ctx, owner, repo, run.HeadSHA, run.RunID)
+	flush("check-runs pages behind a completed run", scope, err)
+	if dropped > 0 {
+		slog.Warn("webhook: completed run contradicted cached check-runs pages; a check_run delivery was lost",
+			"scope", scope, "sha", run.HeadSHA, "run", run.RunID, "pages", dropped)
+	}
 }
 
 // refSpellings returns every ref spelling GitHub accepts for a short branch or tag name; a per-ref flush must cover all.
