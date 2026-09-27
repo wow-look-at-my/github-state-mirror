@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
-
 )
 
 // A separate, never-nuked SQLite file; schema evolves additively only.
