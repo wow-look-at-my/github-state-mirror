@@ -140,6 +140,9 @@ const demoWebhooks: WebhooksResponse = {
 };
 
 // --- request activity log (admin "Requests" tab) ---
+// The route-shape groups sum exactly to by_disposition, sorted by total like
+// the backend, so the preview's share percentages are coherent.
+//
 // Keep every route and every pass_query shape REAL — a shape some consumer
 // actually sends. Invented ones read as genuine caching gaps to anyone
 // looking at the preview: a fabricated `/commits?author,since` here already
@@ -217,6 +220,7 @@ function demoTimelineEvents(): TimelineEvent[] {
         id: ++id, kind: "webhook", lane: "⇐ (unverified)", start: ago(1450), dur_ms: 2,
         disposition: "unverified", detail: "claimed event: push",
     });
+    // Inbound request spans: a failed passthrough, plus sub-millisecond cache hits.
     rq(3300, 640, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
     rq(2700, 410, "POST", "/graphql", 200, "miss", "pr-minder");
     rq(2200, 980, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss", "pr-minder");
@@ -283,6 +287,7 @@ const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit: RateLimitResponse = {
     live: [
         {
+            // The full bucket set GitHub returns for an App, long names and the warn and critical bands included.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
@@ -317,6 +322,7 @@ const demoRateLimit: RateLimitResponse = {
         // Resolved identities carry a display name; the token fingerprint and
         // app-jwt rows stay nameless to demo the bare-key fallback.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
+        // A reading that consumed nothing: the client-side usage filter hides it.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
         { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },

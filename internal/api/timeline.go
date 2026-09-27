@@ -177,17 +177,14 @@ type timelineResponse struct {
 
 // handleTimeline returns the timed traffic events for the dashboard's
 // Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. read shapes, all answering the same payload:
+// actor/tenant. It reads these query shapes, all answering the same payload:
 //
 //	(no params)          the whole retained window
-//	?since=<id>          only events newer than that cursor — the 5s live poll
-//	?from=&to=<unix ms>  the events overlapping a time window — the chart's
+//	?since=<id>          only events newer than that cursor: the 5s live poll
+//	?from=&to=<unix ms>  the events overlapping a time window: the chart's async history loader
 //
-// async history loader.
-//
-//	paint from having to decode 24h of traffic to draw
-//
-// hour of it
+// The history loader keeps a paint from decoding the whole 24h ring to draw
+// the hour on screen.
 //
 // since and from/to are mutually exclusive: they answer different questions
 // (what is NEW vs what was HAPPENING), and silently ANDing them would let a

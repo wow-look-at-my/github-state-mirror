@@ -1,8 +1,8 @@
 // Shared DTO types for the dashboard front-end: the shapes returned by the
 // /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
 // endpoints, plus the demo-preview config. Single source of truth — both app.ts
-// (the renderer) and demo-data.ts (the preview fixtures) import these, so both
-// can never drift. Imported with `import type`, so nothing here emits into the
+// (the renderer) and demo-data.ts (the preview fixtures) import these, so the
+// renderer and its fixtures can never drift. Imported with `import type`, so nothing here emits into the
 // runtime bundles (this is a declaration file: tsc produces no .js for it).
 
 export interface Me {
@@ -134,7 +134,7 @@ export interface RequestEvent {
     method: string;
     path: string;
     disposition: string;
-    status?: number;
+    status?: number; // upstream HTTP status for a passthrough or write; absent otherwise
     // Why this read was forwarded uncached; passthroughs only, absent
     // otherwise. Same closed vocabulary as RequestGroup.by_reason's keys.
     reason?: string;
@@ -426,6 +426,7 @@ export interface ConsistencyReport {
 // works, then exactly one terminal line — phase "report" carrying the full
 // ConsistencyReport, or phase "error" when the run failed mid-stream.
 export interface CheckProgressEvent {
+    // start, owner, fetch, visibility, diffed, applied, skip, done, report or error.
     phase: string;
     owner?: string;
     index?: number; // this owner's 1-based position (phase=owner)

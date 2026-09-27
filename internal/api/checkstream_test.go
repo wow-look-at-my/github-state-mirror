@@ -26,9 +26,9 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-//	owner "org1" with live repo: App installations, token mints, and
-//
-// /graphql answering both owner-agnostic queries (data + visibility twins).
+// checkerFakeGitHub serves the consistency checker's whole fetch surface for a
+// single owner with a live repo: App installations, token mints, and /graphql
+// answering both owner-agnostic queries (data and visibility twins).
 func checkerFakeGitHub(t *testing.T) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
