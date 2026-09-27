@@ -51,7 +51,7 @@ type Store struct {
 // idempotently and existing rows are always kept.
 func Open(path string) (*Store, error) {
 	// The main DB's connection settings, applied to every pooled connection.
-	db, err := sql.Open("sqlite", database.DSN(path))
+	db, err := sql.Open("sqlite", database.DurableDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open subscriptions db: %w", err)
 	}

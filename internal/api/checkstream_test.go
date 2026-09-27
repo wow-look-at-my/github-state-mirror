@@ -26,8 +26,6 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// checkerFakeGitHub serves the consistency checker's whole fetch surface for
-//
 //	owner "org1" with live repo: App installations, token mints, and
 //
 // /graphql answering both owner-agnostic queries (data + visibility twins).
@@ -107,7 +105,7 @@ func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http
 
 	checker := syncpkg.NewConsistencyChecker(client, store, fStore, app)
 	// A nil notifier keeps subscriber notifications inert for these tests.
-	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter, nil, dbPath, nil, nil, nil), store
+	return NewRouter(mgr, store, testWebhookSecret, dispatcher, client, []string{"*"}, authSvc, "", checker, meter, nil, dbPath, nil, nil, nil, nil), store
 }
 
 // decodeStreamLines splits an NDJSON body and unmarshals every line.

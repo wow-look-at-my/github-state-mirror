@@ -14,11 +14,18 @@ var schemaSQL string
 
 // What each schema change was and why: docs/schema-history.md.
 
-// DSN is the driver connection string for the SQLite file at path. SQLite
-// scopes these pragmas to one connection, so the DSN applies them to every
-// connection the pool opens.
+// SQLite scopes pragmas to one connection, so the DSN applies them to every connection the pool opens.
+const sharedPragmas = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(30000)&_pragma=foreign_keys(1)&_txlock=immediate"
+
+// DSN is for the cache DB. It never fsyncs: the kernel flushes the file when
+// it chooses. A power loss can corrupt the file, and Open then rebuilds it.
 func DSN(path string) string {
-	return path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+	return path + "?" + sharedPragmas + "&_pragma=synchronous(OFF)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-65536)&_pragma=mmap_size(268435456)"
+}
+
+// DurableDSN is for a DB that is never rebuilt, so a commit must survive a power loss.
+func DurableDSN(path string) string {
+	return path + "?" + sharedPragmas + "&_pragma=synchronous(NORMAL)"
 }
 
 // Open opens (or creates) the SQLite database at path. A file whose schema is
@@ -28,19 +35,22 @@ func DSN(path string) string {
 // A schema change is the ONLY thing that rebuilds it, and it always does: the
 // comparison is against schema.sql's own scrubbed fingerprint, so there is no
 // declaration to keep in step with the file and no lever to pull without.
-func Open(path string) (*sql.DB, error) {
+func Open(path string) (*sql.DB, error) { return OpenObserved(path, nil) }
+
+// OpenObserved is Open with every SQLite call timed into obs. A nil obs times nothing.
+func OpenObserved(path string, obs Observer) (*sql.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return createFresh(path)
+		return createFresh(path, obs)
 	} else if err != nil {
 		return nil, fmt.Errorf("stat db: %w", err)
 	}
 
 	// File exists — try to open and verify.
-	db, err := openAndConfigure(path)
+	db, err := openAndConfigure(path, obs)
 	if err != nil {
 		// Corrupt or unreadable — nuke it.
 		os.Remove(path)
-		return createFresh(path)
+		return createFresh(path, obs)
 	}
 
 	var fingerprint string
@@ -48,14 +58,14 @@ func Open(path string) (*sql.DB, error) {
 		// Different schema, or a file too old to state which — nuke and recreate.
 		db.Close()
 		os.Remove(path)
-		return createFresh(path)
+		return createFresh(path, obs)
 	}
 
 	return db, nil
 }
 
-func createFresh(path string) (*sql.DB, error) {
-	db, err := openAndConfigure(path)
+func createFresh(path string, obs Observer) (*sql.DB, error) {
+	db, err := openAndConfigure(path, obs)
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +80,15 @@ func createFresh(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-func openAndConfigure(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", DSN(path))
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+func openAndConfigure(path string, obs Observer) (*sql.DB, error) {
+	var db *sql.DB
+	if obs == nil {
+		var err error
+		if db, err = sql.Open("sqlite", DSN(path)); err != nil {
+			return nil, fmt.Errorf("open db: %w", err)
+		}
+	} else {
+		db = sql.OpenDB(observedConnector{dsn: DSN(path), drv: baseDriver(), obs: obs})
 	}
 	// sql.Open is lazy; Ping opens a connection, so a bad file fails here and gets nuked.
 	if err := db.Ping(); err != nil {

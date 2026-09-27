@@ -5,7 +5,7 @@
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
-    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, DemoConfig,
+    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, LatencyResponse, DemoConfig,
     TimelineEvent, TimelineResponse,
 } from "./types";
 
@@ -140,10 +140,6 @@ const demoWebhooks: WebhooksResponse = {
 };
 
 // --- request activity log (admin "Requests" tab) ---
-// The route-shape groups sum exactly to by_disposition (hit 1503, miss 71,
-// passthrough 226, write 38, error 4 -> total 1842), sorted by total desc like
-// the backend, so the preview's share percentages are coherent.
-//
 // Keep every route and every pass_query shape REAL — a shape some consumer
 // actually sends. Invented ones read as genuine caching gaps to anyone
 // looking at the preview: a fabricated `/commits?author,since` here already
@@ -204,8 +200,8 @@ function demoTimelineEvents(): TimelineEvent[] {
             actor: actor ?? (actorName ? "app:3433933" : "token:00ff11ee22dd"), actor_name: actorName,
         });
     };
-    // Webhook pips across three event-type lanes — plus a rejected delivery
-    // on the fixed unverified lane (bad signature; claimed type is untrusted
+    // Webhook pips across event-type lanes — plus a rejected delivery on
+    // the fixed unverified lane (bad signature; claimed type is untrusted
     // tooltip detail only).
     wh(3480, 12, "push", "", "wow-look-at-my/buildhost");
     wh(3100, 9, "check_run", "completed", "wow-look-at-my/buildhost");
@@ -221,7 +217,6 @@ function demoTimelineEvents(): TimelineEvent[] {
         id: ++id, kind: "webhook", lane: "⇐ (unverified)", start: ago(1450), dur_ms: 2,
         disposition: "unverified", detail: "claimed event: push",
     });
-    // Inbound request spans (one failed 502, plus sub-ms cache hits).
     rq(3300, 640, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
     rq(2700, 410, "POST", "/graphql", 200, "miss", "pr-minder");
     rq(2200, 980, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss", "pr-minder");
@@ -263,17 +258,31 @@ const demoTimeline: TimelineResponse = {
     now: ago(0),
 };
 
+// --- Latency tab: bounds match internal/latency.Bounds (ms).
+const latBounds = [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
+const latKind = (kind: string, buckets: number[], p50: number, p95: number, p99: number, max: number) => {
+    const count = buckets.reduce((a, b) => a + b, 0);
+    return { kind, count, mean_ms: p50 * 1.4, p50_ms: p50, p95_ms: p95, p99_ms: p99, max_ms: max, buckets };
+};
+const demoLatency: LatencyResponse = {
+    since: ago(3 * 3600),
+    bounds_ms: latBounds,
+    webhook_timeout_ms: 10000,
+    kinds: [
+        latKind("db.begin", [5200, 310, 120, 60, 22, 14, 9, 6, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0], 0.1, 0.5, 5, 480),
+        latKind("db.commit", [0, 800, 3100, 1300, 420, 80, 12, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.5, 2.5, 5, 21),
+        latKind("db.exec", [9100, 6400, 2100, 700, 180, 60, 22, 9, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 88),
+        latKind("db.query", [14000, 8200, 3900, 1600, 520, 140, 40, 11, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 46),
+        latKind("webhook.handle", [0, 0, 0, 12, 180, 640, 410, 220, 90, 44, 21, 9, 4, 2, 1, 1, 3, 0], 5, 50, 500, 12400),
+    ],
+};
+
 // --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
 // --- passively observed X-RateLimit-* readings per (identity, resource) ---
 const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit: RateLimitResponse = {
     live: [
         {
-            // A realistic full bucket set — GitHub's /rate_limit returns ~15
-            // resources for an App — including the long names that used to
-            // break the tile layout, plus buckets in the warn (≥70% used,
-            // yellow) and critical (≥90% used, red) bands so the preview
-            // demonstrates every meter state.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
@@ -308,8 +317,6 @@ const demoRateLimit: RateLimitResponse = {
         // Resolved identities carry a display name; the token fingerprint and
         // app-jwt rows stay nameless to demo the bare-key fallback.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
-        // Zero-usage reading (nothing consumed this window, e.g. only 304s) —
-        // hidden by the client-side used > 0 filter, so the preview exercises it.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
         { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
@@ -445,6 +452,7 @@ const config: DemoConfig = {
             webhooks: demoWebhooks,
             timeline: demoTimeline,
             ratelimit: demoRateLimit,
+            latency: demoLatency,
             browse: demoBrowse,
             grants: adminGrants,
             check: demoCheck,
