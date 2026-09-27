@@ -16,6 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -36,7 +37,9 @@ func main() {
 	// Set before any store write.
 	ghdata.CacheMaxRows = cfg.CacheMaxRows
 
-	db, err := database.Open(cfg.DBPath)
+	// lat backs the dashboard Latency tab: every SQLite call and every webhook dispatch.
+	lat := latency.New()
+	db, err := database.OpenObserved(cfg.DBPath, lat)
 	if err != nil {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
@@ -124,7 +127,7 @@ func main() {
 	}
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

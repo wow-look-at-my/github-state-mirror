@@ -20,6 +20,7 @@ import type {
     RequestEvent, RequestGroup, RequestsResponse, BriefResponse,
     TimelineResponse, GsmTimelineElement,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
+    LatencyResponse, LatencyKind,
     DemoStateData, DemoConfig,
 } from "./types";
 
@@ -195,6 +196,7 @@ async function renderDashboard(me: Me): Promise<void> {
             el("button", { "data-scope": "requests", onclick: () => switchTab("requests") }, "Requests"),
             el("button", { "data-scope": "webhooks", onclick: () => switchTab("webhooks") }, "Webhooks"),
             el("button", { "data-scope": "ratelimit", onclick: () => switchTab("ratelimit") }, "Rate limit"),
+            el("button", { "data-scope": "latency", onclick: () => switchTab("latency") }, "Latency"),
         );
         head.appendChild(tabs);
     }
@@ -255,12 +257,13 @@ function loadView(scope: string, silent = false): Promise<void> {
     if (scope === "requests") return loadRequests(silent);
     if (scope === "timeline") return loadTimeline();
     if (scope === "ratelimit") return loadRateLimits(silent);
+    if (scope === "latency") return loadLatency(silent);
     return loadScope(scope, silent);
 }
 
 // ALL_VIEWS lists every tab name the Copy JSON control knows about, matching
 // the tabs' own data-scope values 1:1. Non-admins only ever see "mine".
-const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "timeline"];
+const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"];
 
 // dataForView fetches one tab's own JSON directly from its endpoint,
 // independent of whatever is currently rendered. Backs the Copy JSON
@@ -273,6 +276,7 @@ async function dataForView(scope: string): Promise<unknown> {
         case "webhooks": return api<WebhooksResponse>("/api/webhooks");
         case "requests": return api<RequestsResponse>("/api/requests");
         case "ratelimit": return api<RateLimitResponse>("/api/ratelimit");
+        case "latency": return api<LatencyResponse>("/api/latency");
         case "timeline": return api<TimelineResponse>("/api/timeline");
         default: throw new Error("unknown view " + scope);
     }
@@ -1395,6 +1399,90 @@ async function loadRateLimits(silent = false): Promise<void> {
     }
 }
 
+// The kinds the server reports, in display order, with what each measures.
+const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
+    ["webhook.handle", "Webhook handling", "receipt to response, per dispatched delivery"],
+    ["db.begin", "SQLite write-lock wait", "BEGIN IMMEDIATE: the time spent waiting for the write lock"],
+    ["db.exec", "SQLite exec", "one write statement, or a read-free statement"],
+    ["db.query", "SQLite query", "one read, to its first row"],
+    ["db.commit", "SQLite commit", "one transaction commit"],
+];
+
+async function loadLatency(silent = false): Promise<void> {
+    const body = byId("scope-body");
+    const sub = byId("scope-sub");
+    if (!silent) {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: "Loading latency…" }));
+    }
+    let data: LatencyResponse;
+    try {
+        data = await api<LatencyResponse>("/api/latency");
+    } catch (e) {
+        if (silent) return;
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "error-banner", text: "Could not load latency: " + (e as Error).message }));
+        return;
+    }
+    if (currentView !== "latency") return;
+    body.innerHTML = "";
+    sub.textContent = "Latency distributions since " + fmtTime(data.since) + " — in-memory; resets on restart";
+
+    const byKind = new Map(data.kinds.map((k) => [k.kind, k]));
+    const known = new Set(LATENCY_KINDS.map(([k]) => k));
+    const rows: Array<[string, string, string]> = [...LATENCY_KINDS];
+    for (const k of data.kinds) if (!known.has(k.kind)) rows.push([k.kind, k.kind, ""]);
+
+    for (const [kind, title, what] of rows) {
+        const k = byKind.get(kind);
+        body.appendChild(el("div", { class: "section-label", text: title }));
+        if (!k || k.count === 0) {
+            body.appendChild(el("div", { class: "empty" }, el("p", { text: "Nothing observed yet." }), el("p", { class: "sub", text: what })));
+            continue;
+        }
+        body.appendChild(latencyCard(k, data.bounds_ms, what, kind === "webhook.handle" ? data.webhook_timeout_ms : 0));
+    }
+}
+
+// latencyCard shows one kind's percentiles and a histogram. A bar's height is
+// its share of the kind's observations.
+function latencyCard(k: LatencyKind, boundsMs: number[], what: string, timeoutMs: number): HTMLElement {
+    const peak = Math.max(...k.buckets);
+    const bars = el("div", { class: "lat-hist" });
+    let overTimeout = 0;
+    k.buckets.forEach((n, i) => {
+        const lo = i === 0 ? 0 : boundsMs[i - 1];
+        const label = i < boundsMs.length ? "≤ " + fmtMs(boundsMs[i]) : "> " + fmtMs(boundsMs[boundsMs.length - 1]);
+        const late = timeoutMs > 0 && lo >= timeoutMs;
+        if (late) overTimeout += n;
+        const pct = k.count ? (100 * n) / k.count : 0;
+        bars.appendChild(el("div", { class: "lat-col" + (late ? " late" : ""), title: label + ": " + n + " (" + pct.toFixed(1) + "%)" },
+            el("div", { class: "lat-bar-wrap" },
+                el("div", { class: "lat-bar" + (n ? "" : " zero"), style: "height:" + (peak ? (100 * n) / peak : 0).toFixed(1) + "%" })),
+            el("div", { class: "lat-x", text: label.replace("≤ ", "") }),
+        ));
+    });
+    const stat = (v: string, l: string, cls = "") => el("div", { class: "mini" + cls }, el("div", { class: "n", text: v }), el("div", { class: "l", text: l }));
+    return el("div", { class: "lat-card" },
+        el("div", { class: "mini-grid" },
+            stat(k.count.toLocaleString(), "count"),
+            stat(fmtMs(k.p50_ms), "p50"),
+            stat(fmtMs(k.p95_ms), "p95"),
+            stat(fmtMs(k.p99_ms), "p99"),
+            stat(fmtMs(k.max_ms), "max"),
+            timeoutMs > 0 ? stat(overTimeout.toLocaleString(), "over GitHub's " + fmtMs(timeoutMs) + " timeout", overTimeout ? " bad" : "") : null,
+        ),
+        bars,
+        el("div", { class: "lat-what", text: what }),
+    );
+}
+
+function fmtMs(ms: number): string {
+    if (ms >= 1000) return (ms / 1000).toFixed(ms >= 10000 ? 0 : 1) + "s";
+    if (ms >= 1) return ms.toFixed(ms >= 10 ? 0 : 1) + "ms";
+    return Math.round(ms * 1000) + "µs";
+}
+
 // observedRateGrid renders one tile per (identity, resource). The backend
 // sorts by identity then resource, so one identity's buckets sit together;
 // each tile is a <rate-meter> plus an "observed …" caption. A resolved
@@ -2060,6 +2148,10 @@ function demoApi<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
     if (path.startsWith("/api/ratelimit")) {
         if (!d.ratelimit) return demoReject(503);
         return Promise.resolve(d.ratelimit as unknown as T);
+    }
+    if (path.startsWith("/api/latency")) {
+        if (!d.latency) return demoReject(403);
+        return Promise.resolve(d.latency as unknown as T);
     }
     return Promise.reject(new Error("unknown demo path " + path));
 }

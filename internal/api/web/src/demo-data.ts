@@ -5,7 +5,7 @@
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
-    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, DemoConfig,
+    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, LatencyResponse, DemoConfig,
     TimelineEvent, TimelineResponse,
 } from "./types";
 
@@ -263,6 +263,25 @@ const demoTimeline: TimelineResponse = {
     now: ago(0),
 };
 
+// --- Latency tab: bounds match internal/latency.Bounds (ms).
+const latBounds = [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
+const latKind = (kind: string, buckets: number[], p50: number, p95: number, p99: number, max: number) => {
+    const count = buckets.reduce((a, b) => a + b, 0);
+    return { kind, count, mean_ms: p50 * 1.4, p50_ms: p50, p95_ms: p95, p99_ms: p99, max_ms: max, buckets };
+};
+const demoLatency: LatencyResponse = {
+    since: ago(3 * 3600),
+    bounds_ms: latBounds,
+    webhook_timeout_ms: 10000,
+    kinds: [
+        latKind("db.begin", [5200, 310, 120, 60, 22, 14, 9, 6, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0], 0.1, 0.5, 5, 480),
+        latKind("db.commit", [0, 800, 3100, 1300, 420, 80, 12, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.5, 2.5, 5, 21),
+        latKind("db.exec", [9100, 6400, 2100, 700, 180, 60, 22, 9, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 88),
+        latKind("db.query", [14000, 8200, 3900, 1600, 520, 140, 40, 11, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 46),
+        latKind("webhook.handle", [0, 0, 0, 12, 180, 640, 410, 220, 90, 44, 21, 9, 4, 2, 1, 1, 3, 0], 5, 50, 500, 12400),
+    ],
+};
+
 // --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
 // --- passively observed X-RateLimit-* readings per (identity, resource) ---
 const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
@@ -445,6 +464,7 @@ const config: DemoConfig = {
             webhooks: demoWebhooks,
             timeline: demoTimeline,
             ratelimit: demoRateLimit,
+            latency: demoLatency,
             browse: demoBrowse,
             grants: adminGrants,
             check: demoCheck,

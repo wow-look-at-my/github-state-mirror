@@ -266,6 +266,27 @@ export interface RateLimitResponse {
     note?: string;
 }
 
+// One operation kind's latency distribution. buckets[i] counts observations
+// <= bounds_ms[i]; the extra last bucket counts the rest.
+export interface LatencyKind {
+    kind: string;
+    count: number;
+    mean_ms: number;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+    max_ms: number;
+    buckets: number[];
+}
+
+// /api/latency: in-memory histograms since `since`; resets on restart.
+export interface LatencyResponse {
+    since: string; // RFC3339
+    bounds_ms: number[];
+    kinds: LatencyKind[];
+    webhook_timeout_ms: number;
+}
+
 // ---- admin cache browse (global truth rows) ----
 export interface BrowseRepo {
     owner: string;
@@ -429,6 +450,7 @@ export interface DemoStateData {
     requests?: RequestsResponse;
     timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
+    latency?: LatencyResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
     check?: ConsistencyReport; // global check (read-only)
