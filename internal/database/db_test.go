@@ -1,11 +1,16 @@
 package database
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOpen_CreatesNewDB(t *testing.T) {
@@ -127,6 +132,77 @@ func TestOpen_NukesAFileThatPredatesFingerprinting(t *testing.T) {
 
 	assert.Equal(t, schemaFingerprint(schemaSQL), fingerprint)
 
+}
+
+// SQLite scopes busy_timeout and foreign_keys to ONE connection. Every
+// connection the pool opens must carry them, not only the first one.
+func TestOpen_EveryPooledConnectionCarriesThePragmas(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	var conns []*sql.Conn
+	for range 4 {
+		c, err := db.Conn(ctx)
+		require.NoError(t, err)
+		conns = append(conns, c)
+	}
+	for i, c := range conns {
+		var busy, fk int
+		require.NoError(t, c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy))
+		require.NoError(t, c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk))
+		assert.Equal(t, 5000, busy, "connection %d has no busy_timeout: a concurrent writer gets SQLITE_BUSY at once", i)
+		assert.Equal(t, 1, fk, "connection %d has foreign_keys off", i)
+	}
+	for _, c := range conns {
+		require.NoError(t, c.Close())
+	}
+}
+
+// A burst of webhook deliveries writes from many goroutines at once. Each
+// read-then-write transaction must wait for the lock, never fail with SQLITE_BUSY.
+func TestOpen_ConcurrentReadThenWriteTransactionsDoNotFail(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	const writers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tx, err := db.Begin()
+			if err != nil {
+				errs <- err
+				return
+			}
+			var n int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM repos").Scan(&n); err != nil {
+				tx.Rollback()
+				errs <- err
+				return
+			}
+			name := fmt.Sprintf("r%d", i)
+			if _, err := tx.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', ?, ?, 'http://url')", name, "org/"+name); err != nil {
+				tx.Rollback()
+				errs <- err
+				return
+			}
+			errs <- tx.Commit()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		assert.NoError(t, err)
+	}
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM repos").Scan(&count))
+	assert.Equal(t, writers, count)
 }
 
 func TestOpen_MissingFile(t *testing.T) {
