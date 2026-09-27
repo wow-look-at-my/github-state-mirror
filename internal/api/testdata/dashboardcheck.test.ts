@@ -72,11 +72,13 @@ test("the Latency tab renders histograms and flags the timeout tail", async (t) 
 	await page.goto(`http://127.0.0.1:${PORT}/#latency`);
 	await page.waitForSelector(".lat-card");
 
-	assert.equal(await page.locator(".lat-card").count(), 5, "one card per demo kind");
-	const tallest = await page.$$eval(".lat-bar", (bars) => Math.max(...bars.map((b) => b.getBoundingClientRect().height)));
+	const root = "#scope-body";
+	const count = (sel: string) => page.$eval(root, (el, s) => el.querySelectorAll(s as string).length, sel);
+	assert.equal(await count(".lat-card"), 5, "one card per demo kind");
+	const tallest = await page.$eval(root, (el) => Math.max(...Array.from(el.querySelectorAll(".lat-bar")).map((b) => b.getBoundingClientRect().height)));
 	assert.ok(tallest > 50, `the tallest bar is ${tallest}px: the histogram is not drawn`);
-	assert.ok(await page.locator(".lat-col.late .lat-bar:not(.zero)").count() > 0, "no bucket past the 10s timeout is flagged");
-	assert.equal(await page.locator(".mini.bad").count(), 1, "the over-timeout count is not flagged");
+	assert.ok(await count(".lat-col.late .lat-bar:not(.zero)") > 0, "no bucket past the 10s timeout is flagged");
+	assert.equal(await count(".mini.bad"), 1, "the over-timeout count is not flagged");
 
 	if (process.env.GSM_SCREENSHOT) await page.screenshot({ path: process.env.GSM_SCREENSHOT, fullPage: true });
 });
