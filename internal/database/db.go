@@ -14,11 +14,11 @@ var schemaSQL string
 
 // What each schema change was and why: docs/schema-history.md.
 
-var pragmas = []string{
-	"PRAGMA journal_mode=WAL",
-	"PRAGMA busy_timeout=5000",
-	"PRAGMA synchronous=NORMAL",
-	"PRAGMA foreign_keys=ON",
+// DSN is the driver connection string for the SQLite file at path. SQLite
+// scopes these pragmas to one connection, so the DSN applies them to every
+// connection the pool opens.
+func DSN(path string) string {
+	return path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 }
 
 // Open opens (or creates) the SQLite database at path. A file whose schema is
@@ -71,15 +71,14 @@ func createFresh(path string) (*sql.DB, error) {
 }
 
 func openAndConfigure(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", DSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("exec %q: %w", pragma, err)
-		}
+	// sql.Open is lazy; Ping opens a connection, so a bad file fails here and gets nuked.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure db: %w", err)
 	}
 	return db, nil
 }

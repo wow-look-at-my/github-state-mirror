@@ -10,7 +10,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
+
 )
 
 // A separate, never-nuked SQLite file; schema evolves additively only.
@@ -35,15 +36,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_principal ON subscriptions(principal);
 `
 
-// pragmas mirror the main DB's connection settings (database.Open) where they
-// make sense for a small config DB.
-var pragmas = []string{
-	"PRAGMA journal_mode=WAL",
-	"PRAGMA busy_timeout=5000",
-	"PRAGMA synchronous=NORMAL",
-	"PRAGMA foreign_keys=ON",
-}
-
 // Sentinel errors the API layer maps onto HTTP statuses.
 var (
 	ErrNotFound      = errors.New("subscription not found") // a foreign id answers the same; no existence leak
@@ -59,15 +51,10 @@ type Store struct {
 // there is no version check and no nuke path: the schema is applied
 // idempotently and existing rows are always kept.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// The main DB's connection settings, applied to every pooled connection.
+	db, err := sql.Open("sqlite", database.DSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open subscriptions db: %w", err)
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("subscriptions db: exec %q: %w", pragma, err)
-		}
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
