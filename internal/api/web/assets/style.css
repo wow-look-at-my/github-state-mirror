@@ -244,6 +244,24 @@ a:hover { text-decoration: underline; }
 .mini .n { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mini .l { font-size: 11px; color: var(--fg-muted); }
 .mini.zero .n { color: var(--gray); }
+.mini.bad .n { color: var(--red); }
+
+/* ---- Latency ---- */
+.lat-card {
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+}
+.lat-hist { display: flex; gap: 3px; align-items: stretch; margin-top: 8px; }
+.lat-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lat-bar-wrap { height: 90px; display: flex; align-items: flex-end; }
+.lat-bar { width: 100%; min-height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+.lat-bar.zero { background: var(--border-muted); }
+.lat-col.late .lat-bar:not(.zero) { background: var(--red); }
+.lat-x {
+    font-size: 10px; color: var(--fg-muted); text-align: center; margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lat-what { font-size: 12px; color: var(--fg-muted); margin-top: 8px; }
 
 /* ---- Freshness ---- */
 .section-label {
