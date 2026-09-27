@@ -35,7 +35,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// schemaTemplate is a blank cache DB built per test binary and copied for
 var schemaTemplate struct {
 	once sync.Once
 	dir  string
@@ -88,7 +87,6 @@ func openTestDB(t *testing.T, path string) *sql.DB {
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
 
-// testUserID/testUserLogin are the identity the default fake GitHub answers on
 const (
 	testUserID    = 7001
 	testUserLogin = "testuser"

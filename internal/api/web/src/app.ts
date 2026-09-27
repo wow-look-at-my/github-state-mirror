@@ -2,9 +2,9 @@
 // (tsc) to ../assets/app.js, which is committed (a generated artifact) and
 // embedded into the Go binary. Edit this .ts file, never the .js.
 //
-// Talks to two endpoints:
-//   GET /api/me                   -> Me
-//   GET /api/cache?scope=mine|all -> CacheResponse
+// Talks to these endpoints, among others: GET
+//   /api/me -> Me GET /api/cache?scope=mine|all ->
+//   CacheResponse
 //
 // When window.__GSM_DEMO__ is defined (only the standalone styling preview ships
 // a demo-data.js that sets it), the same rendering runs against canned data and
@@ -181,10 +181,6 @@ async function renderDashboard(me: Me): Promise<void> {
     const main = byId("main");
     main.innerHTML = "";
 
-    // Row 1 is title + tabs, row 2 is the per-tab subtitle (`.sub` is full-width
-    // in CSS, so it always wraps onto its own line). The subtitle length varies
-    // wildly per tab; keeping it out of row 1 is what pins the tab bar in place
-    // instead of letting it slide around — or wrap — with the text beside it.
     const head = el("div", { class: "page-head" });
     head.appendChild(el("h1", { text: "Cache state" }));
     let tabs: HTMLElement | null = null;
@@ -261,8 +257,7 @@ function loadView(scope: string, silent = false): Promise<void> {
     return loadScope(scope, silent);
 }
 
-// ALL_VIEWS lists every tab name the Copy JSON control knows about, matching
-// the tabs' own data-scope values 1:1. Non-admins only ever see "mine".
+// Non-admins only ever see "mine".
 const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"];
 
 // dataForView fetches one tab's own JSON directly from its endpoint,
@@ -880,8 +875,6 @@ function pctLabel(count: number | undefined, total: number): string {
     return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
 }
 
-// formatBytes renders a byte count human-readably: KB/MB/GB/TB (1000-based)
-// with one decimal, plain "N B" below 1 KB.
 function formatBytes(n: number): string {
     if (n < 1000) return n + " B";
     const units = ["KB", "MB", "GB", "TB"];
@@ -899,11 +892,11 @@ function dbSizeLabel(db?: number, wal?: number): string {
     return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
 }
 
-// ---- request groups (aggregate hot spots) ----
-// Two tables over the server's per-route-shape counters (cumulative since
-// restart, like the totals — NOT windowed by the recent ring): the hottest
-// routes overall, and the hottest UNCACHED routes — reads forwarded to
-// GitHub, i.e. caching candidates.
+// ---- request groups (aggregate hot spots) ---- Tables over the server's
+// per-route-shape counters (cumulative since restart, like the totals —
+// NOT windowed by the recent ring): the hottest routes overall, and the
+// hottest UNCACHED routes — reads forwarded to GitHub, i.e. caching
+// candidates.
 
 const TOP_GROUPS = 15;
 
@@ -947,19 +940,14 @@ function groupRouteCell(g: RequestGroup): HTMLElement {
 }
 
 // wideWrap puts a flat table in a block that may bleed into the page margins
-// (see .table-wide). It has to be a wrapping DIV rather than the class on the
-// table itself: a table with width:100% resolves that percentage against its
-// containing block, so negative margins only SHIFT it off-centre instead of
-// widening it. A plain block has auto width and grows into both margins.
+// (see .table-wide). A plain block has auto width and grows into both
+// margins.
 function wideWrap(table: HTMLElement): HTMLElement {
     return el("div", { class: "table-wide" }, table);
 }
 
-// groupSection wraps a grouped table. `wide` opts into the page-margin bleed
-// (see .table-wide) and is deliberately NOT the default: stretching a table of
-// four narrow columns to the same width as a six-column one just spreads its
-// content across a screen's worth of empty space. Only a table that actually
-// runs out of room asks for it.
+// groupSection wraps a grouped table. Only a table that actually runs out of
+// room asks for it.
 function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {
     return el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: true },
         el("summary", { text: title }),
@@ -1061,9 +1049,8 @@ function debounceCell(g: RequestGroup): HTMLElement {
 }
 
 // uncachedGroupsSection: the groups with passthrough traffic — reads the
-// cache did not handle, ranked by passthrough count. Write-only groups never
-// appear (a mutation is proxied by design, not a caching gap; the
-// passthrough > 0 filter excludes them). Null when nothing qualifies.
+// cache did not handle, ranked by passthrough count. Null when nothing
+// qualifies.
 function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number): HTMLElement | null {
     const uncached = groups.filter((g) => (g.passthrough || 0) > 0)
         .sort((a, b) => b.passthrough - a.passthrough).slice(0, TOP_GROUPS);
@@ -1089,16 +1076,16 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
             )),
             el("tbody", null, rows),
         ),
-        true); // six columns of chips — this is the table that needs the room
+        true);
 }
 
-// ---- implementation brief (admin) ----
-// The tables above say WHICH routes are uncached and why. Modeling one needs
-// the two things a counter cannot hold: the query shapes callers actually
-// send, and the SHAPE of what GitHub answers. The server captures both
-// (keys and types only, never values) and renders them, with this repo's
-// tier-2 checklist, as one Markdown document — so handing the work off is a
-// button, not a copy-paste of this whole page.
+// ---- implementation brief (admin) ---- The tables above say WHICH routes
+// are uncached and why. Modeling one needs both things a counter cannot hold:
+// the query shapes callers actually send, and the SHAPE of what GitHub
+// answers. The server captures both (keys and types only, never values) and
+// renders them, with this repo's tier-2 checklist, as one Markdown document
+// — so handing the work off is a button, not a copy-paste of this whole
+// page.
 function briefBar(): HTMLElement {
     return el("div", { class: "brief-bar" },
         el("button", { class: "btn btn-sm", onclick: () => void openBrief() }, "Capture implementation brief"),
@@ -1338,10 +1325,10 @@ function statusBadge(status?: number): Node {
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
 
-// ---- GitHub rate limit (admin only) ----
-// Two halves: "live" — the mirror's own GitHub App polled per installation —
-// and "observed" — X-RateLimit-* headers passively recorded off every
-// upstream response, covering the callers' credentials too, at zero API cost.
+// ---- GitHub rate limit (admin only) ---- Halves: "live" — the mirror's own
+// GitHub App polled per installation — and "observed" — X-RateLimit-*
+// headers passively recorded off every upstream response, covering the callers'
+// credentials too, at zero API cost.
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
 async function loadRateLimits(silent = false): Promise<void> {
@@ -1363,10 +1350,7 @@ async function loadRateLimits(silent = false): Promise<void> {
     if (currentView !== "ratelimit") return;
     body.innerHTML = "";
     const installs = data.live ?? [];
-    // Zero-usage observations (used <= 0 — nothing consumed in the current
-    // window, e.g. an identity that only ever got 304s) are noise; hide them
-    // client-side. If everything filters out, the section's normal empty
-    // state below renders instead of an empty grid.
+    // Zero-usage observations are noise; an empty result falls through to the empty state below.
     const observed = (data.observed ?? []).filter((o) => o.used > 0);
     sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
         (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
@@ -1748,9 +1732,9 @@ function splitNdjson(buf: string): { lines: string[]; rest: string } {
 
 // CheckProgressState is what the modal renders while a run streams.
 interface CheckProgressState {
-    ownersTotal: number; // 0 until the start event
-    ownerIndex: number; // 1-based current owner; 0 before the first
-    within: number; // 0..1 progress inside the current owner
+    ownersTotal: number;
+    ownerIndex: number;
+    within: number;
     status: string; // the live status line
 }
 
@@ -1808,8 +1792,7 @@ function reduceCheckProgress(p: CheckProgressState, ev: CheckProgressEvent): Che
     return next;
 }
 
-// checkProgressFraction maps the state to the bar's 0..1 fill: owners
-// completed plus the within-owner sub-progress. Pure.
+// Pure.
 function checkProgressFraction(p: CheckProgressState): number {
     if (p.ownersTotal <= 0) return 0;
     const f = (Math.max(p.ownerIndex, 1) - 1 + p.within) / p.ownersTotal;
