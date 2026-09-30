@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,11 +150,13 @@ func TestOpen_EveryPooledConnectionCarriesThePragmas(t *testing.T) {
 		conns = append(conns, c)
 	}
 	for i, c := range conns {
-		var busy, fk int
+		var busy, fk, syncMode int
 		require.NoError(t, c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy))
 		require.NoError(t, c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk))
-		assert.Equal(t, 5000, busy, "connection %d has no busy_timeout: a concurrent writer gets SQLITE_BUSY at once", i)
+		require.NoError(t, c.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&syncMode))
+		assert.Equal(t, 30000, busy, "connection %d has no busy_timeout: a concurrent writer gets SQLITE_BUSY at once", i)
 		assert.Equal(t, 1, fk, "connection %d has foreign_keys off", i)
+		assert.Equal(t, 0, syncMode, "connection %d fsyncs: the cache DB runs with synchronous=OFF", i)
 	}
 	for _, c := range conns {
 		require.NoError(t, c.Close())
@@ -203,6 +206,37 @@ func TestOpen_ConcurrentReadThenWriteTransactionsDoNotFail(t *testing.T) {
 	var count int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM repos").Scan(&count))
 	assert.Equal(t, writers, count)
+}
+
+type kindCounter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (k *kindCounter) Observe(kind string, _ time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.n[kind]++
+}
+
+func TestOpenObserved_TimesEveryKindOfCall(t *testing.T) {
+	obs := &kindCounter{n: map[string]int{}}
+	db, err := OpenObserved(filepath.Join(t.TempDir(), "test.db"), obs)
+	require.NoError(t, err)
+	defer db.Close()
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	_, err = tx.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+	var n int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM repos").Scan(&n))
+	assert.Equal(t, 1, n)
+
+	for _, kind := range []string{KindBegin, KindExec, KindQuery, KindCommit} {
+		assert.Positive(t, obs.n[kind], "%s was never observed", kind)
+	}
 }
 
 func TestOpen_MissingFile(t *testing.T) {

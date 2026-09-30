@@ -26,8 +26,6 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// checkerFakeGitHub serves the consistency checker's whole fetch surface for
-//
 //	owner "org1" with live repo: App installations, token mints, and
 //
 // /graphql answering both owner-agnostic queries (data + visibility twins).

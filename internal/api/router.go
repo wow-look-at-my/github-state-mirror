@@ -11,6 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
+	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -34,6 +35,7 @@ func NewRouter(
 	timeline *reqtimeline.Recorder,
 	debouncer *Debouncer,
 	app *ghclient.AppAuthenticator,
+	lat *latency.Recorder,
 	oauthRelaySecrets map[string]string,
 ) http.Handler {
 	r := chi.NewRouter()
@@ -72,10 +74,12 @@ func NewRouter(
 	if app != nil {
 		appEvents = app.SubscribedEvents
 	}
-	newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering).routes(r)
+	dash := newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering)
+	dash.latency = lat
+	dash.routes(r)
 
 	// Webhook endpoint: HMAC-signed, outside requireAuth; see docs/webhooks/dispatch.md.
-	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline), notifier))
+	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline, lat), notifier))
 
 	// Update-liveness probes, outside requireAuth; see CLAUDE.md's "Update-check endpoints".
 	registerUpdateChecks(r, store, mgr)

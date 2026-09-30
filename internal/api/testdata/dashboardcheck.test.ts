@@ -56,6 +56,33 @@ async function displayOf(page: Page, selector: string): Promise<string> {
 	return page.$eval(selector, (el) => getComputedStyle(el).display);
 }
 
+// The Latency tab draws one histogram per kind, and the webhook kind marks the
+// buckets past GitHub's timeout. Bars are sized by CSS, so only a real engine
+// can say whether they are visible at all.
+test("the Latency tab renders histograms and flags the timeout tail", async (t) => {
+	const server = serve();
+	const exe = process.env.GSM_CHROMIUM ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+	let browser: Browser | undefined;
+	t.after(async () => {
+		await browser?.close();
+		server.close();
+	});
+	browser = await chromium.launch(existsSync(exe) ? { executablePath: exe, args: ["--no-sandbox"] } : { args: ["--no-sandbox"] });
+	const page = await browser.newPage({ viewport: { width: 1280, height: 1600 } });
+	await page.goto(`http://127.0.0.1:${PORT}/#latency`);
+	await page.waitForSelector(".lat-card");
+
+	const root = "#scope-body";
+	const count = (sel: string) => page.$eval(root, (el, s) => el.querySelectorAll(s as string).length, sel);
+	assert.equal(await count(".lat-card"), 5, "one card per demo kind");
+	const tallest = await page.$eval(root, (el) => Math.max(...Array.from(el.querySelectorAll(".lat-bar")).map((b) => b.getBoundingClientRect().height)));
+	assert.ok(tallest > 50, `the tallest bar is ${tallest}px: the histogram is not drawn`);
+	assert.ok(await count(".lat-col.late .lat-bar:not(.zero)") > 0, "no bucket past the 10s timeout is flagged");
+	assert.equal(await count(".mini.bad"), 1, "the over-timeout count is not flagged");
+
+	if (process.env.GSM_SCREENSHOT) await page.screenshot({ path: process.env.GSM_SCREENSHOT, fullPage: true });
+});
+
 test("the Copy JSON menu opens and closes", async (t) => {
 	for (const f of ["assets/app.js", "assets/style.css", "assets/demo-data.js"]) {
 		assert.ok(existsSync(join(WEB, f)), `${f} is missing — run npm run build first; without it this whole file would test nothing`);

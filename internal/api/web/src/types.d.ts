@@ -1,9 +1,9 @@
 // Shared DTO types for the dashboard front-end: the shapes returned by the
 // /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
 // endpoints, plus the demo-preview config. Single source of truth — both app.ts
-// (the renderer) and demo-data.ts (the preview fixtures) import these, so the
-// two can never drift. Imported with `import type`, so nothing here emits into
-// the runtime bundles (this is a declaration file: tsc produces no .js for it).
+// (the renderer) and demo-data.ts (the preview fixtures) import these, so both
+// can never drift. Imported with `import type`, so nothing here emits into the
+// runtime bundles (this is a declaration file: tsc produces no .js for it).
 
 export interface Me {
     authenticated: boolean;
@@ -134,7 +134,7 @@ export interface RequestEvent {
     method: string;
     path: string;
     disposition: string;
-    status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
+    status?: number;
     // Why this read was forwarded uncached; passthroughs only, absent
     // otherwise. Same closed vocabulary as RequestGroup.by_reason's keys.
     reason?: string;
@@ -264,6 +264,27 @@ export interface RateLimitResponse {
     observed: ObservedRateLimit[] | null;
     // note explains an empty/failed live poll.
     note?: string;
+}
+
+// One operation kind's latency distribution. buckets[i] counts observations
+// <= bounds_ms[i]; the extra last bucket counts the rest.
+export interface LatencyKind {
+    kind: string;
+    count: number;
+    mean_ms: number;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+    max_ms: number;
+    buckets: number[];
+}
+
+// /api/latency: in-memory histograms since `since`; resets on restart.
+export interface LatencyResponse {
+    since: string; // RFC3339
+    bounds_ms: number[];
+    kinds: LatencyKind[];
+    webhook_timeout_ms: number;
 }
 
 // ---- admin cache browse (global truth rows) ----
@@ -405,8 +426,6 @@ export interface ConsistencyReport {
 // works, then exactly one terminal line — phase "report" carrying the full
 // ConsistencyReport, or phase "error" when the run failed mid-stream.
 export interface CheckProgressEvent {
-    // start | owner | fetch | visibility | diffed | applied | skip | done
-    // | report | error (the last two only as the terminal line)
     phase: string;
     owner?: string;
     index?: number; // this owner's 1-based position (phase=owner)
@@ -429,6 +448,7 @@ export interface DemoStateData {
     requests?: RequestsResponse;
     timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
+    latency?: LatencyResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
     check?: ConsistencyReport; // global check (read-only)

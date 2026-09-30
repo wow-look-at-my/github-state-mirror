@@ -34,7 +34,7 @@ declare module "playwright" {
         waitForFunction(fn: () => unknown, arg?: unknown, options?: { timeout?: number }): Promise<unknown>;
         waitForTimeout(ms: number): Promise<void>;
         evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
-        $eval<T>(selector: string, fn: (el: Element) => T): Promise<T>;
+        $eval<T>(selector: string, fn: (el: Element, arg?: unknown) => T, arg?: unknown): Promise<T>;
         click(selector: string, options?: { position?: { x: number; y: number } }): Promise<void>;
         getAttribute(selector: string, name: string): Promise<string | null>;
         keyboard: { press(key: string): Promise<void> };

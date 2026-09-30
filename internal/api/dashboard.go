@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -53,6 +54,8 @@ type dashboard struct {
 	appEvents func(context.Context) ([]string, error)
 	// ordering reports the out-of-order delivery gate's stats; nil omits the Webhooks tab panel.
 	ordering func() syncpkg.OrderingSnapshot
+	// latency backs the Latency tab; nil serves an empty snapshot.
+	latency *latency.Recorder
 }
 
 func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {
@@ -142,6 +145,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/cache/check", d.handleCacheCheck)
 	r.Post("/api/cache/check", d.handleCacheCheck)
 	r.Get("/api/ratelimit", d.handleRateLimit)
+	r.Get("/api/latency", d.handleLatency)
 	r.Get("/api/notifications", d.handleNotifications)
 	r.Get("/api/brief", d.handleBrief)
 }

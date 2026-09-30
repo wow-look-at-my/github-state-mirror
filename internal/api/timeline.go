@@ -10,6 +10,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
+	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -103,16 +104,25 @@ func TimelineLoginObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 
 // Adapts to webhook.DeliveryRecorder (a leaf package).
 type deliveryTimeline struct {
-	tl *reqtimeline.Recorder
+	tl  *reqtimeline.Recorder
+	lat *latency.Recorder
 }
+
+// KindWebhook is the Latency tab's name for a dispatched delivery's handling time, receipt to response.
+const KindWebhook = "webhook.handle"
 
 func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.DispatchResult, receivedAt time.Time, duration time.Duration) {
 	switch result.Disposition {
 	case webhook.DispUnverified, webhook.DispRejected:
 		// Untrusted; fixed lane, claimed metadata rides as clamped detail.
-		d.tl.RecordWebhookRejected(receivedAt, duration, result.Disposition, event.Type, event.DeliveryID)
+		if d.tl != nil {
+			d.tl.RecordWebhookRejected(receivedAt, duration, result.Disposition, event.Type, event.DeliveryID)
+		}
 	default:
-		d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
+		d.lat.Observe(KindWebhook, duration)
+		if d.tl != nil {
+			d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
+		}
 	}
 }
 
@@ -133,11 +143,11 @@ func TimelineExchangeObserver(tl *reqtimeline.Recorder) ghclient.ExchangeObserve
 
 // timelineDeliveryRecorder wraps a recorder for webhook.Handler, keeping the
 // handler's nil fast-path when no recorder is configured.
-func timelineDeliveryRecorder(tl *reqtimeline.Recorder) webhook.DeliveryRecorder {
-	if tl == nil {
+func timelineDeliveryRecorder(tl *reqtimeline.Recorder, lat *latency.Recorder) webhook.DeliveryRecorder {
+	if tl == nil && lat == nil {
 		return nil
 	}
-	return deliveryTimeline{tl: tl}
+	return deliveryTimeline{tl: tl, lat: lat}
 }
 
 // Empty is unset; unparseable is rejected, not silently treated as unset.
@@ -173,7 +183,7 @@ type timelineResponse struct {
 //	?since=<id>          only events newer than that cursor — the 5s live poll
 //	?from=&to=<unix ms>  the events overlapping a time window — the chart's
 //
-// async history loader, which is what keeps a
+// async history loader.
 //
 //	paint from having to decode 24h of traffic to draw
 //
