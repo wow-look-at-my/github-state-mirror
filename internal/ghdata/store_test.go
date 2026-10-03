@@ -337,4 +337,3 @@ func TestGrantsByPrincipal_OnlyUnexpired(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n, "list and count agree on live grants")
 }
-
