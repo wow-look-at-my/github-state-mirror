@@ -107,6 +107,13 @@ const demoWebhooks: WebhooksResponse = {
     // Ordering: mostly in order, a handful sorted back into place by the
     // window, a few too late for it and refused. Shaped like real traffic --
     // out-of-order deliveries are a steady trickle, not an incident.
+    relay: [
+        {
+            target: "https://api-mirror.example.com/webhook", queued: 0, queue_capacity: 1000, in_flight: 0,
+            delivered: 1802, retried: 3, permanently_failed: 0, dropped: 0,
+            last_error: "delivery d4e4e508-6ce9-11f1-9233-8efd5d462518 attempt 1: http 502", last_error_at: ago(3600),
+        },
+    ],
     ordering: {
         ordered: 1731,
         superseded: 14,

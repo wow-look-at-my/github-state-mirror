@@ -482,6 +482,7 @@ function tooltipFor(hit: TimelineHit): Node | null {
     } else if (e.kind === "notify") {
         root.appendChild(elem("div", "tt-title", e.lane));
         row("target", e.target ?? "");
+        row("delivery", e.delivery_id ?? "");
         row("status", e.status ? String(e.status) : "");
         row("attempt", e.attempt ? String(e.attempt) + (e.final ? " (final)" : "") : "");
         row("disposition", e.disposition ?? "");

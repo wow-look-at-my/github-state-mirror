@@ -27,7 +27,7 @@ import (
 const (
 	KindWebhook = "webhook" // an incoming GitHub webhook delivery (any outcome)
 	KindRequest = "request" // an HTTP exchange on the GitHub data plane (inbound request or upstream call)
-	KindNotify  = "notify"  // an outbound subscriber-notification delivery attempt
+	KindNotify  = "notify"  // an outbound delivery attempt: a subscriber notification or a webhook relay
 )
 
 // Defaults for New. Retention is the primary bound; the count cap is a coarse
@@ -168,6 +168,27 @@ func (r *Recorder) RecordNotify(start time.Time, dur time.Duration, target strin
 		Start:       start,
 		DurMs:       dur.Milliseconds(),
 		Target:      clampDisplay(target),
+		Status:      status,
+		Attempt:     attempt,
+		Final:       final,
+		Disposition: disposition,
+	})
+}
+
+// RecordRelay records one attempt to forward a webhook delivery to a relay
+// target. It shares the notify kind: both are outbound deliveries to a
+// configured endpoint. final marks a 2xx or a permanent refusal.
+func (r *Recorder) RecordRelay(start time.Time, dur time.Duration, target, deliveryID string, status int, attempt int, final bool, disposition string) {
+	if r == nil {
+		return
+	}
+	r.record(Event{
+		Kind:        KindNotify,
+		Lane:        "⇒ relay",
+		Start:       start,
+		DurMs:       dur.Milliseconds(),
+		Target:      clampDisplay(target),
+		DeliveryID:  clampDisplay(deliveryID),
 		Status:      status,
 		Attempt:     attempt,
 		Final:       final,

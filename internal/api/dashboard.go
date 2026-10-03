@@ -17,6 +17,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/relay"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -56,6 +57,8 @@ type dashboard struct {
 	ordering func() syncpkg.OrderingSnapshot
 	// latency backs the Latency tab; nil serves an empty snapshot.
 	latency *latency.Recorder
+	// relay backs the Webhooks tab's relay panel; nil omits it.
+	relay *relay.Relay
 }
 
 func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {

@@ -13,7 +13,7 @@
 
 import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
-    WebhookDelivery, WebhooksResponse, MissingSubscription, OrderingSnapshot, OutOfOrderSample,
+    WebhookDelivery, WebhooksResponse, MissingSubscription, OrderingSnapshot, OutOfOrderSample, RelayTarget,
     BrowseRepo, BrowsePR, BrowseResponse,
     BrowseGrant, GrantsResponse,
     Discrepancy, ConsistencyReport, AppliedSummary, TruthFreshness, CheckProgressEvent,
@@ -615,6 +615,8 @@ async function loadWebhooks(silent = false): Promise<void> {
     const missing = data.missing_subscriptions ?? [];
     if (missing.length > 0) body.appendChild(missingSubscriptionsBanner(missing));
     if (data.ordering) body.appendChild(orderingPanel(data.ordering));
+    const relay = data.relay ?? [];
+    if (relay.length > 0) body.appendChild(relayPanel(relay));
 
     if (deliveries.length === 0) {
         body.appendChild(el("div", { class: "empty" },
@@ -698,6 +700,45 @@ function orderingPanel(o: OrderingSnapshot): HTMLElement {
     const recent = o.recent ?? [];
     if (recent.length) section.appendChild(wideWrap(outOfOrderTable(recent)));
     return section;
+}
+
+// ---- webhook relay ----
+//
+// GitHub records only the mirror's answer, so a relay target that misses a
+// delivery is visible nowhere but here. The panel opens itself when a target
+// has lost or is holding deliveries.
+function relayPanel(targets: RelayTarget[]): HTMLElement {
+    const lossy = targets.some((t) => t.dropped > 0 || t.permanently_failed > 0 || t.queued > 0);
+    const rows = targets.map((t) => el("tr", null,
+        el("td", { class: "wh-repo", text: t.target }),
+        el("td", { text: t.queued + " / " + t.queue_capacity }),
+        el("td", { text: String(t.in_flight) }),
+        el("td", { text: String(t.delivered) }),
+        el("td", { text: String(t.retried) }),
+        el("td", { class: t.permanently_failed > 0 ? "status-code warn" : "", text: String(t.permanently_failed) }),
+        el("td", { class: t.dropped > 0 ? "status-code warn" : "", text: String(t.dropped) }),
+        el("td", { class: "wh-detail", text: t.last_error ? t.last_error + " (" + fmtTime(t.last_error_at) + ")" : "—" }),
+    ));
+    return el("details", { class: "req-groups", open: lossy },
+        el("summary", { text: "Webhook relay" }),
+        el("p", {
+            class: "grp-caption",
+            text: "Every verified delivery is forwarded to these targets and retried on a fixed interval until it lands. A permanent 4xx stops the retries; a full queue drops the delivery. The queue lives in memory, so a restart loses what is still queued.",
+        }),
+        wideWrap(el("table", { class: "webhooks" },
+            el("thead", null, el("tr", null,
+                el("th", { text: "Target" }),
+                el("th", { text: "Queued" }),
+                el("th", { text: "In flight" }),
+                el("th", { text: "Delivered" }),
+                el("th", { text: "Retried" }),
+                el("th", { text: "Failed (permanent)" }),
+                el("th", { text: "Dropped" }),
+                el("th", { text: "Last error" }),
+            )),
+            el("tbody", null, ...rows),
+        )),
+    );
 }
 
 function fmtSecs(s: number): string {

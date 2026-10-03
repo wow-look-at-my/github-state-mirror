@@ -123,6 +123,22 @@ export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
     missing_subscriptions?: MissingSubscription[] | null;
     ordering?: OrderingSnapshot | null;
+    // One entry per relay target; absent when WEBHOOK_RELAY_URLS is unset.
+    relay?: RelayTarget[] | null;
+}
+
+// One webhook relay target's queue and counters (internal/relay TargetStats).
+export interface RelayTarget {
+    target: string;
+    queued: number;
+    queue_capacity: number;
+    in_flight: number;
+    delivered: number;
+    retried: number;
+    permanently_failed: number;
+    dropped: number;
+    last_error?: string;
+    last_error_at?: string;
 }
 
 // ---- request activity (cache hit/miss/passthrough/write) ----

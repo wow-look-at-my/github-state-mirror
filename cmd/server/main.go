@@ -19,6 +19,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
+	"github.com/wow-look-at-my/github-state-mirror/internal/relay"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
@@ -126,8 +127,18 @@ func main() {
 		slog.Info("passthrough debouncing disabled; uncacheable reads forward immediately")
 	}
 
+	// see docs/webhooks/relay.md
+	rl := relay.New(relay.Config{Targets: cfg.WebhookRelayURLs, Timeline: timeline})
+	if rl == nil {
+		slog.Info("WEBHOOK_RELAY_URLS not set; deliveries are not relayed")
+	} else {
+		for _, t := range cfg.WebhookRelayURLs {
+			slog.Info("relaying verified webhook deliveries", "target", relay.Display(t))
+		}
+	}
+
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, rl)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -157,6 +168,8 @@ func main() {
 	slog.Info("starting server", "addr", cfg.ListenAddr)
 	err = srv.ListenAndServe()
 
+	// Drain logs what each relay target still had undelivered.
+	rl.Drain(30 * time.Second)
 	// Drain fetches before closing the DB.
 	debouncer.Drain(30 * time.Second)
 	if !mgr.Drain(30 * time.Second) {

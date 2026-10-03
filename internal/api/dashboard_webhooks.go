@@ -6,6 +6,7 @@ import (
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/relay"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 	"github.com/wow-look-at-my/go-containers/set"
 )
@@ -22,6 +23,8 @@ type webhooksResponse struct {
 	MissingSubscriptions []missingSubscription `json:"missing_subscriptions,omitempty"`
 	// See docs/webhooks/ordering.md for what this reports and why.
 	Ordering *syncpkg.OrderingSnapshot `json:"ordering,omitempty"`
+	// One entry per WEBHOOK_RELAY_URLS target; omitted when none is set. See docs/webhooks/relay.md.
+	Relay []relay.TargetStats `json:"relay,omitempty"`
 }
 
 type missingSubscription struct {
@@ -53,6 +56,7 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, webhooksResponse{
 		Deliveries: deliveries, MissingSubscriptions: d.missingSubscriptions(r), Ordering: ordering,
+		Relay: d.relay.Stats(),
 	})
 }
 

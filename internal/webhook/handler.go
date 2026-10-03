@@ -44,12 +44,20 @@ type DeliveryRecorder interface {
 	RecordDelivery(event Event, result DispatchResult, receivedAt time.Time, duration time.Duration)
 }
 
-// Handler returns an http.Handler that receives GitHub webhook POSTs. A
-// non-nil recorder is told about each verified delivery with its measured
-// handling duration; any non-nil notifiers are invoked (non-blocking) after
-// each dispatch with the dispatch outcome — the variadic keeps notifier-less
-// call sites unchanged.
+// Relayer receives every delivery whose signature verified, before dispatch
+// and whatever its outcome.
+type Relayer interface {
+	RelayDelivery(header http.Header, body []byte)
+}
+
+// Handler returns an http.Handler that receives GitHub webhook POSTs.
 func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers ...IngestNotifier) http.HandlerFunc {
+	return HandlerWithRelay(secret, dispatcher, recorder, nil, notifiers...)
+}
+
+// HandlerWithRelay is Handler plus a relay that gets each verified delivery.
+// A nil relay relays nothing.
+func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, relay Relayer, notifiers ...IngestNotifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// The handling clock starts at receipt, so EVERY outcome — rejected,
 		receivedAt := time.Now()
@@ -91,6 +99,10 @@ func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, no
 			reject(DispUnverified, "signature verification failed")
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
+		}
+
+		if relay != nil {
+			relay.RelayDelivery(r.Header, body)
 		}
 
 		eventType := r.Header.Get("X-GitHub-Event")

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -49,6 +50,9 @@ type Config struct {
 	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-; skips straight to the watermark gate.
 	WebhookReorderWindow time.Duration
 
+	// WebhookRelayURLs get a copy of every verified delivery; empty relays nothing. See docs/webhooks/relay.md.
+	WebhookRelayURLs []string
+
 	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
 	CacheMaxRows int64
 
@@ -90,7 +94,12 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	relayURLs, err := parseRelayURLs(os.Getenv("WEBHOOK_RELAY_URLS"))
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
+		WebhookRelayURLs:     relayURLs,
 		ListenAddr:           envOr("LISTEN_ADDR", ":8080"),
 		DBPath:               envOr("DB_PATH", "github-mirror.db"),
 		WebhookSecret:        os.Getenv("WEBHOOK_SECRET"),
@@ -194,6 +203,38 @@ func parsePassthroughDebounce(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: must be <= %s", s, maxPassthroughDebounce)
 	}
 	return d, nil
+}
+
+// parseRelayURLs parses WEBHOOK_RELAY_URLS. Each entry must be an absolute
+// http or https URL. An empty or duplicate entry is a typo, so it fails startup.
+func parseRelayURLs(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	seen := set.New[string]()
+	var out []string
+	for i, raw := range strings.Split(s, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			return nil, fmt.Errorf("invalid WEBHOOK_RELAY_URLS: entry %d is empty", i+1)
+		}
+		u, err := url.Parse(entry)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WEBHOOK_RELAY_URLS entry %q: %w", entry, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return nil, fmt.Errorf("invalid WEBHOOK_RELAY_URLS entry %q: scheme must be http or https", entry)
+		}
+		if u.Host == "" {
+			return nil, fmt.Errorf("invalid WEBHOOK_RELAY_URLS entry %q: no host", entry)
+		}
+		if seen.Contains(entry) {
+			return nil, fmt.Errorf("invalid WEBHOOK_RELAY_URLS entry %q: listed twice, which would relay each delivery twice", entry)
+		}
+		seen.Add(entry)
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 // GitHubAppConfigured checks only the ID; AppPrivateKeyPEM validates the key separately.
