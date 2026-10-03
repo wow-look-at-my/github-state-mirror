@@ -37,7 +37,7 @@ var DenyTTL = 5 * time.Minute
 // reconcileGrace protects webhook-absorbed truth from a racing fetch: an org
 const reconcileGrace = 2 * time.Minute
 
-// Repo visibility values (repos.visibility). Empty means unknown: the
+// Repo visibility values (repos.visibility). Empty means unknown.
 const (
 	VisibilityUnknown = ""
 	VisibilityPublic  = "public"
@@ -137,9 +137,7 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 
 // ---- Org truth sync (the fetch write path) ----
 
-// SyncOrgTruth merges an org-repos fetch into global truth and replace-syncs
-// the fetching principal's grants for the owner. It is UPSERT-plus-guarded-
-// reconcile, never delete-then-insert:
+// SyncOrgTruth merges an org-repos fetch into global truth and replace-syncs the fetching principal's grants for the owner. It is UPSERT-plus-guarded- reconcile, never delete-then-insert:
 //
 //   - Repo rows are only ever upserted. A fetch is principal's PARTIAL
 //     view (it omits repos that principal cannot see, and archived repos), so
@@ -152,8 +150,6 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 //   - Every repo the fetch returned earns the principal a list_sync grant
 //     (replace-synced: absence from the new list revokes the old list_sync
 //     grant); the principal's deny verdicts for the owner are cleared.
-//
-// fetchStart is when the fetch began (grace-window anchor); now stamps rows.
 func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData, principal string, fetchStart, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -209,7 +205,6 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 			if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: r.Owner, Repo: r.Name, PrNumber: row.Number}); err != nil {
 				return err
 			}
-			// No closure recorded: this delete is inferred from ABSENCE, and
 		}
 	}
 

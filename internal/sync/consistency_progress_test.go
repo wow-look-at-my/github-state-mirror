@@ -10,9 +10,9 @@ import (
 )
 
 // TestConsistencyChecker_ProgressEvents: the run reports its phase boundaries
-// through the callback, in order -- start (with the owner count), then per
-// owner an "owner" announcement followed by fetch/visibility/diffed (or a
-// "skip" with the reason), and a final "done".
+// through the callback, in order -- start (with the owner count), then an
+// "owner" announcement followed by fetch/visibility/diffed (or a "skip" with
+// the reason), and a final "done".
 func TestConsistencyChecker_ProgressEvents(t *testing.T) {
 	srv := driftFake(t)
 	checker, store, _ := newCheckerTest(t, srv.URL)
@@ -44,8 +44,8 @@ func TestConsistencyChecker_ProgressEvents(t *testing.T) {
 	assert.Equal(t, ProgressEvent{Phase: "owner", Owner: "org1", Index: 2, Total: 3}, announced[1])
 	assert.Equal(t, ProgressEvent{Phase: "owner", Owner: "someuser", Index: 3, Total: 3}, announced[2])
 
-	// Per owner the phases arrive in pipeline order. phaseSeq collapses the
-	// event list to owner's phase sequence.
+	// The phases arrive in pipeline order. phaseSeq collapses the event list to
+	// owner's phase sequence.
 	phaseSeq := func(owner string) []string {
 		var seq []string
 		for _, ev := range events {

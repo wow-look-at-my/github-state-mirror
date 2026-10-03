@@ -36,7 +36,7 @@ func TestReorder_OlderArrivingSecondIsSortedBackIntoPlace(t *testing.T) {
 
 	var wg sync.WaitGroup
 	results := make([]webhook.DispatchResult, 2)
-	// The newer view arrives; the older lands while the window is
+	// The newer view arrives.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

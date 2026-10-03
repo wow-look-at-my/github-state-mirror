@@ -14,7 +14,6 @@ import (
 )
 
 // Implements the cached PR-files route (tier of the cache contract).
-// See docs/cache/rest-routes.md for the shape, size cap, and flush rules.
 
 const (
 	// pullFilesCacheTTL backstops a MISSED pull_request delivery; webhooks flush sooner.
@@ -120,7 +119,8 @@ func (h *handlers) cachedPullFiles(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// pullFileJSON keeps previous_filename and patch as pointers so their presence, not just value, survives the trim.
+// pullFileJSON keeps previous_filename and patch as pointers so their
+// presence, not value, survives the trim.
 type pullFileJSON struct {
 	Filename         string  `json:"filename"`
 	Status           string  `json:"status"`

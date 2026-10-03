@@ -319,8 +319,8 @@ func TestStore_Delete(t *testing.T) {
 // TestManager_FetchSurvivesCallerCancel locks the detached-fetch behavior: an
 // in-flight fetch is shared work whose result is cached for every future
 // caller, so a client aborting its request mid-fetch must neither cancel the
-// fetch nor prevent the result from being stored. (Previously an impatient
-// browser abort could cancel the multi-page org-repos fetch on every attempt,
+// fetch nor prevent the result from being stored. ( an impatient browser
+// abort could cancel the multi-page org-repos fetch on every attempt,
 // preventing a scope from ever refreshing.)
 func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
 	s := testStore(t)
@@ -357,8 +357,7 @@ func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
 	assert.Equal(t, StateFresh, meta.State, "the result must be stored even though the requester is gone")
 }
 
-// TestManager_FetchIgnoresCallerDeadline: a caller's own (possibly very short)
-// deadline must NOT bound the detached fetch -- shared work is not killed by
+// TestManager_FetchIgnoresCallerDeadline.
 //
 //	impatient caller (a short caller deadline starved every fetch a
 //

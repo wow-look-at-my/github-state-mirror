@@ -11,11 +11,8 @@ import (
 
 // The storage layer for the cached compare route (.../compare/{basehead}); see docs/cache/rest-routes.md.
 
-// CachedCompare is cached comparison: the rendered document exactly as
-// the API layer will serve it. BaseRef/HeadRef are the basehead's sides
-// (the API layer splits at the "..." its route guard already requires), kept
-// as their own columns so a push to ref can flush exactly the
-// comparisons naming it. Status is the upstream answer the row absorbed:
+// CachedCompare is cached comparison: the rendered document exactly as the
+// API layer will serve it.
 type CachedCompare struct {
 	Owner    string // lowercased
 	Repo     string // lowercased

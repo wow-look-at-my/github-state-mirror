@@ -187,7 +187,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 			_, _ = w.Write([]byte(`{"id": 999, "state": "success", "context": "all-builds",
 				"url": "https://api.github.com/repos/org1/repo1/statuses/x"}`))
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/statuses/") && len(parts) >= 5 && parts[3] == "statuses":
-			// The legacy statuses-list alias /repos/{o}/{r}/statuses/{ref}.
+			// The statuses-list alias /repos/{o}/{r}/statuses/{ref}.
 			atomic.AddInt32(&u.statusesHits, 1)
 			u.statuses(w, r)
 		case strings.Contains(r.URL.Path, "/commits/"):
@@ -209,7 +209,7 @@ func (u *commitCIUpstream) handler() http.Handler {
 				u.statuses(w, r)
 				return
 			}
-			// Unmodeled tails (single-commit read, /check-suites) just answer forwarded:true.
+			// Unmodeled tails (single-commit read, /check-suites) answer forwarded:true.
 			atomic.AddInt32(&u.otherHits, 1)
 			servePRJSON(w, map[string]any{"forwarded": true})
 		case len(parts) == 3 && parts[0] == "repos":

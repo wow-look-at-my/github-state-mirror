@@ -11,10 +11,6 @@
 // attempt it makes, through any helper, present or future -- which is the
 // same reason ghclient times its own exchanges at the transport rather than
 // in each method.
-//
-// Leaf package: stdlib only, so anything may import it (the internal/actor
-// stance). What an observation MEANS -- which lane, which identity -- is the
-// caller's to decide.
 package httpobs
 
 import (
@@ -26,7 +22,7 @@ import (
 type Observer func(req *http.Request, status int, start time.Time, dur time.Duration)
 
 // Transport wraps base so every round trip is reported to obs. A nil base
-// means http.DefaultTransport. A nil obs returns base unchanged -- the
+// means http.DefaultTransport.
 func Transport(base http.RoundTripper, obs Observer) http.RoundTripper {
 	if obs == nil {
 		return base

@@ -44,8 +44,8 @@ func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *fre
 // a stateful delivery for a repo NOBODY has ever fetched applies straight to
 // global truth (the repos row is created from the payload's own repository
 // object) -- there is no "no cached scope" skip, no on-demand pull, no app
-// needed. (Operator directive: "just because nobody has fetched something
-// doesn't mean we get to ignore updates from webhooks for it.")
+// needed. (Operator directive: " because nobody has fetched something doesn't
+// mean we get to ignore updates from webhooks for it.")
 func TestDispatch_NeverSeenRepoAppliesGlobally(t *testing.T) {
 	d, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

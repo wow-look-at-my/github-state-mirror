@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// doJSON's transient-failure retry policy. What is and is not retried is a
+// doJSON's transient-failure retry policy.
 const doJSONAttempts = 3
 
 // retryAfterCap stops a huge Retry-After from wedging a deadline-bounded fetch.

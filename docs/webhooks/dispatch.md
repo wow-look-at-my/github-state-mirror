@@ -4,12 +4,12 @@ How each event type is applied directly to global truth. Extracted verbatim from
 
 ## The rule: apply the payload. Invalidation is the last resort.
 
-GitHub puts the new value in the delivery. Using it is the primary operation of this service. Deleting a row, so that a later reader buys the same fact back over HTTP, is the failure this section exists to stop. It recurs frequently, and it is the repo's signature defect. It never announces itself. The code looks tidy, the tests pass, and the cost is a needless request. The row is also simply absent for a window.
+GitHub puts the new value in the delivery. Using it is the primary operation of this service. Deleting a row, so that a later reader buys the same fact back over HTTP, is the failure this section exists to stop. It recurs frequently. It is the repo's signature defect. It never announces itself. The code looks tidy, the tests pass, and the cost is a needless request. The row is also absent for a window.
 
 **The procedure, in order, for every handler and every cached route:**
 
 1. **Does the payload carry the new value?** Write it. This is the answer for most events and most fields.
-2. **Does it carry enough to DERIVE the new value?** Derive and write it. Two examples are parents from a push's linear commit chain, and a rollup recomputed from the checks already in truth.
+2. **Does it carry enough to DERIVE the new value?** Derive and write it. Examples are parents from a push's linear commit chain, and a rollup recomputed from the checks already in truth.
 3. **Only if neither** — an unparseable body, or a change whose RESULT the payload genuinely does not state — invalidate. When you do, the comment must say *what the payload cannot answer*. "Invalidate, the next reader refetches" is a bug report.
 
 A cached route added without walking those steps is unfinished. That is the same rule the three-tier contract applies to a still-forwarding route.
@@ -38,7 +38,7 @@ An applied answer is byte-identical to a fetched one, pinned by `TestCachedGitRe
 
 ### The second one: `branches_list_cache`
 
-A branches page lists one entry per branch, and a tip-move changes exactly that entry's sha. It changes neither the page's membership nor its ordering, because GitHub sorts by name. The push states the sha, so `ghdata.ApplyPushedBranchTip` rewrites every cached page that already lists the branch, and the pages keep serving. Only what a page cannot be edited into falls back to the repo-wide flush. That covers a create, because no page lists the branch yet, and a delete, whose `after` is all zeros. Both of those move membership. A **tag** push touches neither, because a tag is not in the listing, so it now does nothing here instead of flushing the repo's pages.
+A branches page lists one entry per branch, and a tip-move changes exactly that entry's sha. It changes neither the page's membership nor its ordering, because GitHub sorts by name. The push states the sha, so `ghdata.ApplyPushedBranchTip` rewrites every cached page that already lists the branch, and the pages keep serving. Only what a page cannot be edited into falls back to the repo-wide flush. That covers a create, because no page lists the branch yet, and a delete, whose `after` is all zeros. Both of those move membership. A **tag** push touches neither, because a tag is not in the listing. As a result, it now does nothing here instead of flushing the repo's pages.
 
 This one is worth more than the ref route it copies. pr-minder's fork-point detection lists every branch of a repo. The old flush therefore re-listed the whole repo after every push to it. `TestCachedBranchesList_PushAppliesTip` pins the applied page as byte-identical to the fetched one. That is why `marshalTrimmed` delegates to `ghdata.MarshalCacheDoc`. A doc rewritten in the storage layer and a doc rendered in the API layer must be the same bytes. One renderer is the only way to guarantee that.
 
@@ -46,7 +46,7 @@ This one is worth more than the ref route it copies. pr-minder's fork-point dete
 
 GitHub sends a `push` for most branch movement, but not for all of it. A tag creation and some ref lifecycle changes arrive only as `create` or `delete`. Without these events the mirror keeps serving the old ref answer for the full TTL, which is the lost-delivery failure in miniature.
 
-`onRefLifecycle` (`internal/sync/webhook_ref.go`) reads `ref` and `ref_type` and flushes what that ref addresses. It walks every spelling of the ref, the same set `refSpellings` gives the push handler. Under each spelling it drops the git-ref, contents, commits-list, compare and commit-CI rows. It flushes the branches list and the matching-refs rows for a branch, and leaves both alone for a tag, because a tag appears in neither.
+`onRefLifecycle` (`internal/sync/webhook_ref.go`) reads `ref` and `ref_type` and flushes what that ref addresses. It walks every spelling of the ref, the same set `refSpellings` gives the push handler. Under each spelling it drops the git-ref, contents, commits-list, compare and commit-CI rows. It flushes the branches list and the matching-refs rows for a branch. It leaves both alone for a tag, because a tag appears in neither.
 
 This is a step-3 invalidation. It is justified for the create half. The payload names the ref and states nothing about its sha, so no tip can be applied and no page entry can be written. The delete half is owed a conversion. The payload states that the ref is GONE, which is an answer a reader can be served, rather than a row to drop. `docs/webhooks/invalidations.md` carries that entry with the conversion named.
 
@@ -54,7 +54,7 @@ Ordering treats a ref lifecycle delivery as its own subject, `ref:<repo>:<ref_ty
 
 ### Still to do
 
-- **Legitimately invalidated**, where step 3 genuinely applies: `contents_cache` and `commits_list_cache`, because a push names changed PATHS and never their contents. Also `compare_cache`, because GitHub computes a comparison rather than stating it. Also the PR merge fields, because GitHub recomputes `mergeable` asynchronously and never webhooks the result. For those fields the un-resolve, plus its stale-sha proof, IS the correct handling.
+- **Legitimately invalidated**, where step multiple genuinely applies: `contents_cache` and `commits_list_cache`, because a push names changed PATHS and never their contents. Also `compare_cache`, because GitHub computes a comparison rather than stating it. Also the PR merge fields, because GitHub recomputes `mergeable` asynchronously and never webhooks the result. For those fields the un-resolve, plus its stale-sha proof, IS the correct handling.
 
 ### What the dispatcher applies, per event
 

@@ -61,7 +61,7 @@ func TestCachedWorkflowRuns_RoundTrip(t *testing.T) {
 
 // TestWorkflowRuns_ApplyMovesOneRun is the property the whole listing design
 // rests on: applying a run's new state UPDATES THAT RUN and leaves every
-// other run answerable. Nothing is cleared, so the filtered view changes by
+// other run answerable. Nothing is cleared.
 //
 //	row.
 func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {

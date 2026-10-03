@@ -5,8 +5,7 @@ import (
 	"strings"
 )
 
-// gh reads a host that is not github.com as GitHub Enterprise Server. See
-// docs/gh-cli.md for the path grammar and why this runs ahead of the router.
+// gh reads a host that is not github.com as GitHub Enterprise Server.
 
 const (
 	gheRESTPrefix  = "/api/v3"

@@ -28,13 +28,7 @@ func DurableDSN(path string) string {
 	return path + "?" + sharedPragmas + "&_pragma=synchronous(NORMAL)"
 }
 
-// Open opens (or creates) the SQLite database at path. A file whose schema is
-// not the this binary was built against, or that cannot be read at all, is
-// deleted and rebuilt. This is a cache — data loss is acceptable.
-//
-// A schema change is the ONLY thing that rebuilds it, and it always does: the
-// comparison is against schema.sql's own scrubbed fingerprint, so there is no
-// declaration to keep in step with the file and no lever to pull without.
+// Open opens (or creates) the SQLite database at path.
 func Open(path string) (*sql.DB, error) { return OpenObserved(path, nil) }
 
 // OpenObserved is Open with every SQLite call timed into obs. A nil obs times nothing.

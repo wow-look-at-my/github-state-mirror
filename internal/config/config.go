@@ -53,7 +53,7 @@ type Config struct {
 	// WebhookRelayURLs get a copy of every verified delivery; empty relays nothing. See docs/webhooks/relay.md.
 	WebhookRelayURLs []string
 
-	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
+	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) grows to it.
 	CacheMaxRows int64
 
 	// GitHub App credentials for background refreshes; the service holds no static user token otherwise.

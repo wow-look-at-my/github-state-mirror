@@ -26,13 +26,10 @@ import type {
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
 
-// Whether the signed-in user is an admin. Admins get the truth Browse / Check
-// actions and per-principal Grants views (admin-only endpoints). Set in
-// renderDashboard.
+// Whether the signed-in user is an admin.
 let dashIsAdmin = false;
 
-// The signed-in user, as last reported by /api/me. Carried into the "Copy
-// full state as JSON" document so it is self-describing (whose slice this is).
+// The signed-in user, as last reported by /api/me.
 let lastMe: Me | null = null;
 
 const COUNT_FIELDS: ReadonlyArray<readonly [keyof Counts, string]> = [
@@ -87,10 +84,7 @@ function fmtTime(s?: string): string {
     if (isNaN(d.getTime())) return s;
     const diff = (Date.now() - d.getTime()) / 1000;
     if (diff < -5) {
-        // A FUTURE timestamp (e.g. a grant's Expires column) renders as
-        // "in Nm/Nh/Nd" with the same buckets as the past branch. Without
-        // this, every future time fell into `diff < 60` and read "just now".
-        // Tiny negative skew (within 5s) still reads "just now" below.
+        // A FUTURE timestamp (e.g. a grant's Expires column) renders as "in Nm/Nh/Nd" with the same buckets.
         const ahead = -diff;
         if (ahead < 60) return "in " + Math.floor(ahead) + "s";
         if (ahead < 3600) return "in " + Math.floor(ahead / 60) + "m";
@@ -204,10 +198,7 @@ async function renderDashboard(me: Me): Promise<void> {
     body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
     main.appendChild(body);
 
-    // Start on the tab named by the URL hash (#webhooks, #ratelimit, …) so a
-    // refresh or shared link restores it — but only if that tab was actually
-    // rendered for this user. An unknown (or admin-only, for a non-admin) hash
-    // falls back to the default tab and is dropped from the URL.
+    // Start on the tab named by the URL hash (#webhooks, #ratelimit, …) so a refresh or shared link restores it — but only if that tab was rendered.
     const fromHash = location.hash.slice(1);
     const initial = hasTab(fromHash) ? fromHash : "mine";
     if (fromHash && initial !== fromHash) {
@@ -216,7 +207,6 @@ async function renderDashboard(me: Me): Promise<void> {
     markActive(initial);
     currentView = initial;
     // Manually editing the hash (or navigating a bookmark) switches tabs too.
-    // switchTab uses replaceState, which never fires hashchange — no loop.
     onHashChange = (scope) => {
         if (scope !== currentView && hasTab(scope)) switchTab(scope);
     };
@@ -240,8 +230,7 @@ async function renderDashboard(me: Me): Promise<void> {
         if (!tabs) return;
         markActive(scope);
         currentView = scope;
-        // replaceState (not location.hash=) so tab clicks don't pile up history
-        // entries the back button would have to walk through.
+        // replaceState (not location.hash=) so tab clicks don't pile up history entries the back button would have.
         history.replaceState(null, "", "#" + scope);
         void loadView(scope);
     }
@@ -261,9 +250,9 @@ function loadView(scope: string, silent = false): Promise<void> {
 const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"];
 
 // dataForView fetches one tab's own JSON directly from its endpoint,
-// independent of whatever is currently rendered. Backs the Copy JSON
-// control, so a copy is always a live fetch rather than a snapshot of
-// whatever last happened to be on screen.
+// independent of whatever is rendered. Backs the Copy JSON control, so a copy
+// is always a live fetch rather than a snapshot of whatever last happened to
+// be on screen.
 async function dataForView(scope: string): Promise<unknown> {
     switch (scope) {
         case "mine": return api<CacheResponse>("/api/cache?scope=mine");
@@ -278,9 +267,9 @@ async function dataForView(scope: string): Promise<unknown> {
 }
 
 // fullStateJSON gathers every tab the signed-in user can see into one
-// document — the "just give me everything on screen" escape hatch. A tab
-// whose fetch fails still reports itself under its own key with the error,
-// rather than silently dropping that section from the document.
+// document — the " give me everything on screen" escape hatch. A tab whose
+// fetch fails still reports itself under its own key with the error, rather
+// than silently dropping that section from the document.
 async function fullStateJSON(): Promise<unknown> {
     const views = dashIsAdmin ? ALL_VIEWS : ["mine"];
     const state: Record<string, unknown> = { generated_at: new Date().toISOString(), me: lastMe };
@@ -342,29 +331,19 @@ function renderCopyJsonControl(): HTMLElement {
     return wrap;
 }
 
-// ---- auto-refresh ----
-// The dashboard polls the active tab every few seconds so cache/freshness/rate
-// state stays live without a manual reload. Refreshes are "silent" (no loading
-// flash) and pause while a modal is open.
+// ---- auto-refresh ---- The dashboard polls the active tab every few seconds.
 const REFRESH_MS = 5000;
 let currentView = "mine";
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let modalOpen = false;
 
-// ---- URL-hash tab sync ----
-// The active tab is mirrored into the URL hash so a refresh or shared link
-// restores it. renderDashboard installs the handler scoped to the tabs it
-// actually rendered; logged-out/error views leave it null (hash ignored).
+// ---- URL-hash tab sync ---- The active tab is mirrored into the URL hash so a refresh.
 let onHashChange: ((scope: string) => void) | null = null;
 if (typeof window !== "undefined") {
     window.addEventListener("hashchange", () => onHashChange?.(location.hash.slice(1)));
 }
 
-// ---- copy JSON dropdown (page head, every tab) ----
-// Closing the menu on an outside click or Escape uses ONE persistent document
-// listener, in the same reattach-a-mutable-handler style as onHashChange
-// above: renderDashboard can run more than once (demo mode re-boots on every
-// state switch), and a listener added fresh on every render would leak.
+// ---- copy JSON dropdown (page head, every tab) ---- Closing the menu on an outside click or Escape uses ONE persistent document listener.
 let closeCopyJsonMenu: (() => void) | null = null;
 if (typeof document !== "undefined") {
     document.addEventListener("click", () => closeCopyJsonMenu?.());
@@ -638,8 +617,8 @@ const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 // A missing event subscription degrades the mirror SILENTLY -- the caches
-// that depend on it just re-fetch forever -- so it gets a banner naming the
-// event and what it costs, not a log line nobody reads.
+// that depend on it re-fetch forever -- so it gets a banner naming the event
+// and what it costs, not a log line nobody reads.
 function missingSubscriptionsBanner(missing: MissingSubscription[]): HTMLElement {
     const banner = el("div", { class: "error-banner" },
         el("strong", { text: "Missing webhook subscriptions" }),
@@ -834,15 +813,14 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
     );
 }
 
-// ---- traffic timeline (admin only) ----
-// A swimlane chart of incoming webhook deliveries (one lane per event type)
-// and outgoing proxied GitHub requests (one lane per route shape), each bar a
-// REAL measured duration — rendered by the <gsm-timeline> element
-// (src/timeline.ts). Unlike every other tab this loader must NOT wipe and
-// rebuild on refresh: the canvas holds viewport/zoom state, so the element is
-// created ONCE and kept alive — it polls /api/timeline?since=<id> itself (5s,
-// paused while the page is hidden) and merges new events in place. The shared
-// auto-refresh tick just lands here and finds the element already present.
+// ---- traffic timeline (admin only) ---- A swimlane chart of incoming
+// webhook deliveries (one lane per event type) and outgoing proxied GitHub
+// requests (one lane per route shape), each bar a REAL measured duration —
+// rendered by the <gsm-timeline> element (src/timeline.ts). Unlike every
+// other tab this loader must NOT wipe and rebuild on refresh: the canvas
+// holds viewport/zoom state, so the element is created ONCE and kept alive
+// — it polls /api/timeline?since=<id> itself (5s, paused while the page is
+// hidden) and merges new events in place.
 async function loadTimeline(): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
@@ -850,17 +828,16 @@ async function loadTimeline(): Promise<void> {
     if (body.querySelector("gsm-timeline")) return; // element self-updates; never rebuild it
     body.innerHTML = "";
     const tl = el("gsm-timeline") as GsmTimelineElement;
-    // In demo mode route the element's polls through demoApi (canned data for
-    // the backend-free preview); production keeps its bounded default fetcher.
+    // In demo mode route the element's polls through demoApi (canned data for the backend-free preview).
     if (DEMO) tl.fetcher = (path) => api<TimelineResponse>(path);
     body.appendChild(tl);
 }
 
-// ---- request activity (admin only) ----
-// Shows data-API requests hitting the cache and how each was served: a cache
-// HIT (no GitHub call), a MISS (fetched then cached), or a PASSTHROUGH (forwarded
-// to GitHub uncached). This is the live view of how much the cache is actually
-// used vs. proxied straight through.
+// ---- request activity (admin only) ---- Shows data-API requests hitting the
+// cache and how each was served: a cache HIT (no GitHub call), a MISS
+// (fetched then cached), or a PASSTHROUGH (forwarded to GitHub uncached).
+// This is the live view of how much the cache is used vs. proxied straight
+// through.
 async function loadRequests(silent = false): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
@@ -927,19 +904,14 @@ function formatBytes(n: number): string {
     return v.toFixed(1) + " " + units[i];
 }
 
-// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g.
-// "DB 1.4 GB (+125.8 MB WAL)". The WAL suffix drops when absent/zero; the
-// whole label is empty when the backend omitted the size (file missing).
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g. "DB.4 GB
+// (+. MB WAL)".
 function dbSizeLabel(db?: number, wal?: number): string {
     if (!db) return "";
     return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
 }
 
-// ---- request groups (aggregate hot spots) ---- Tables over the server's
-// per-route-shape counters (cumulative since restart, like the totals —
-// NOT windowed by the recent ring): the hottest routes overall, and the
-// hottest UNCACHED routes — reads forwarded to GitHub, i.e. caching
-// candidates.
+// ---- request groups (aggregate hot spots) ---- Tables over the server's per-route-shape counters.
 
 const TOP_GROUPS = 15;
 
@@ -961,9 +933,9 @@ function groupCount(g: RequestGroup, disp: string): number {
     }
 }
 
-// groupBreakdown renders a group's non-zero dispositions as count chips
-// (e.g. "hit 1503  miss 41"), optionally skipping the one already shown in
-// its own column.
+// groupBreakdown renders a group's non-zero dispositions as count chips (e.g.
+// "hit 1503 miss 41"), optionally skipping the one already shown in its own
+// column.
 function groupBreakdown(g: RequestGroup, skip?: string): HTMLElement {
     const cell = el("td", { class: "grp-breakdown" });
     for (const [disp] of REQUEST_DISPOSITIONS) {
@@ -983,14 +955,13 @@ function groupRouteCell(g: RequestGroup): HTMLElement {
 }
 
 // wideWrap puts a flat table in a block that may bleed into the page margins
-// (see .table-wide). A plain block has auto width and grows into both
-// margins.
+// (see .table-wide).
 function wideWrap(table: HTMLElement): HTMLElement {
     return el("div", { class: "table-wide" }, table);
 }
 
-// groupSection wraps a grouped table. Only a table that actually runs out of
-// room asks for it.
+// groupSection wraps a grouped table. Only a table that runs out of room asks
+// for it.
 function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {
     return el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: true },
         el("summary", { text: title }),
@@ -1124,11 +1095,7 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
 
 // ---- implementation brief (admin) ---- The tables above say WHICH routes
 // are uncached and why. Modeling one needs both things a counter cannot hold:
-// the query shapes callers actually send, and the SHAPE of what GitHub
-// answers. The server captures both (keys and types only, never values) and
-// renders them, with this repo's tier-2 checklist, as one Markdown document
-// — so handing the work off is a button, not a copy-paste of this whole
-// page.
+// the query shapes callers send, and the SHAPE of what GitHub answers.
 function briefBar(): HTMLElement {
     return el("div", { class: "brief-bar" },
         el("button", { class: "btn btn-sm", onclick: () => void openBrief() }, "Capture implementation brief"),
@@ -1155,9 +1122,7 @@ async function openBrief(): Promise<void> {
 function renderBrief(d: BriefResponse): HTMLElement {
     const md = d.markdown || "";
     // A candidate is genuinely missing only when NOTHING has been sampled for
-    // it yet. A status confirmed not JSON (shape.non_json) has a permanent
-    // answer -- no skeleton ever comes -- and must not count as outstanding,
-    // or this line keeps claiming "yet" about a route that will never change.
+    // it yet.
     const missing = (d.candidates ?? []).filter((c) =>
         !c.shape || (!(c.shape.bodies ?? []).length && !(c.shape.non_json ?? []).length)).length;
     const wrap = el("div", { class: "detail" });
@@ -1217,14 +1182,7 @@ function reqDispClass(disp: string): string {
     }
 }
 
-// ---- collapsible table rows ----
-// The log tables are dense and their cells ellipsize to stay inside the
-// window, so each row can expand to show what was cut off. Rows are keyed and
-// the open set survives the 5s background refresh — without that, an open row
-// would snap shut every few seconds, which is worse than not opening at all.
-// Which rows the reader has expanded, per table, so a silent refresh does not
-// collapse what they opened. Keyed lazily: a table naming itself here for the
-// first time gets its own set rather than a crash mid-render.
+// ---- collapsible table rows ---- The log tables are dense and their cells ellipsize to stay inside the window.
 const expandedRows: Record<string, Set<string>> = {};
 
 function expandedSet(table: string): Set<string> {
@@ -1235,10 +1193,7 @@ function expandedSet(table: string): Set<string> {
     return fresh;
 }
 
-// requestRowKey identifies a request row across refreshes. The ring has no ids,
-// so the timestamp + what was requested + by whom is the available identity;
-// the index disambiguates the genuinely identical polls a fleet sweep produces
-// within the same second.
+// requestRowKey identifies a request row across refreshes.
 function requestRowKey(e: RequestEvent, i: number): string {
     return [e.at, e.method, e.path, e.actor || "", String(i)].join("\u0000");
 }
@@ -1291,8 +1246,8 @@ function detailPairs(pairs: Array<[string, string | null | undefined]>): HTMLEle
     return dl;
 }
 
-// fmtAbsolute renders the full local timestamp (fmtTime gives the relative
-// "just now" form). Invalid input passes through unchanged.
+// fmtAbsolute renders the full local timestamp (fmtTime gives the relative "
+// now" form). Invalid input passes through unchanged.
 function fmtAbsolute(s?: string): string {
     if (!s) return "";
     const d = new Date(s);
@@ -1313,9 +1268,7 @@ function requestLegend(): HTMLElement {
 function requestTable(events: RequestEvent[]): HTMLElement {
     const rows = events.flatMap((e, i) => {
         const disp = e.disposition || "passthrough";
-        // A passthrough's reason rides on the disposition chip's tooltip: the
-        // flat history is dense, and the per-route "Why" column above already
-        // carries the aggregate story.
+        // A passthrough's reason rides on the disposition chip's tooltip.
         const dispTitle = e.reason
             ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
             : null;
@@ -1345,7 +1298,7 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         ]));
     });
     // No "When" column: the ring is the LIVE tail of traffic, so on any busy
-    // mirror every row reads "just now" — a whole column of noise. The exact
+    // mirror every row reads " now" — a whole column of noise. The exact
     // timestamp is in each row's detail panel, where it is worth reading.
     return el("table", { class: "webhooks rows-collapsible cols-requests" },
         el("thead", null, el("tr", null,
@@ -1368,10 +1321,7 @@ function statusBadge(status?: number): Node {
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
 
-// ---- GitHub rate limit (admin only) ---- Halves: "live" — the mirror's own
-// GitHub App polled per installation — and "observed" — X-RateLimit-*
-// headers passively recorded off every upstream response, covering the callers'
-// credentials too, at zero API cost.
+// ---- GitHub rate limit (admin only) ---- Halves.
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
 async function loadRateLimits(silent = false): Promise<void> {
@@ -1549,7 +1499,7 @@ function rateLimitCard(inst: InstallationRateLimit): HTMLElement {
     const grid = el("div", { class: "rate-grid" });
     // Each tile is a <rate-meter> web component (src/rate-meter.ts, loaded by
     // its own <script> tag in index.html) that owns its markup and styles in
-    // shadow DOM; el() passes these unknown props through as attributes.
+    // shadow DOM.
     for (const name of names) {
         const r = resources[name];
         grid.appendChild(el("rate-meter", {
@@ -1756,13 +1706,8 @@ function statusCell(status?: string): HTMLElement {
     return el("td", null, el("span", { class: "status-pill " + status.toLowerCase(), text: status }));
 }
 
-// ---- streaming consistency check / reconcile ----
-//
-// The endpoint's ?stream=1 mode answers NDJSON: one JSON progress line per
-// checker phase (a fleet run takes minutes — per owner: a paginated repo
-// fetch, a visibility fetch, the diff, and in apply mode the corrections),
-// with the full report as the final {"phase":"report"} line. EventSource
-// can't POST (the Reconcile is a POST), so the body stream is read manually.
+// ---- streaming consistency check / reconcile ---- The endpoint's ?stream=1
+// mode answers NDJSON.
 
 // splitNdjson consumes the COMPLETE lines in buf, returning them plus the
 // unconsumed remainder (a partial trailing line). Pure — the stream reader
@@ -1802,8 +1747,7 @@ function reduceCheckProgress(p: CheckProgressState, ev: CheckProgressEvent): Che
         case "fetch": {
             const n = ev.repos_fetched ?? 0;
             const total = ev.repos_total ?? 0;
-            // The paginated repo fetch dominates an owner's wall time; scale it
-            // across most of the owner's slice when the total is known.
+            // The paginated repo fetch dominates an owner's wall time.
             next.within = total > 0 ? 0.05 + 0.75 * Math.min(n / total, 1) : 0.4;
             next.status = who + ": fetched " + n + (total > 0 ? "/" + total : "") + " repos…";
             break;
@@ -1989,8 +1933,8 @@ function renderCheck(r: ConsistencyReport): HTMLElement {
         wrap.appendChild(truthFreshnessTable(owners.map((o) => [o, tf[o]] as const)));
     }
 
-    // The Reconcile tally: what apply mode actually corrected (discrepancies
-    // below show the PRE-apply state).
+    // The Reconcile tally: what apply mode corrected (discrepancies below
+    // show the PRE-apply state).
     if (r.applied) {
         wrap.appendChild(el("div", { class: "section-label", text: "Applied corrections" }));
         wrap.appendChild(appliedGrid(r.applied));
@@ -2167,8 +2111,7 @@ function demoApi<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
     }
     if (path.startsWith("/api/timeline")) {
         if (!d.timeline) return demoReject(403);
-        // The canned payload is served for every poll; the element merges by
-        // event id, so re-serving the same events is harmless.
+        // The canned payload is served for every poll.
         return Promise.resolve(d.timeline as unknown as T);
     }
     if (path.startsWith("/api/ratelimit")) {
@@ -2193,8 +2136,7 @@ let demoBannerEl: HTMLElement | null = null;
 function renderDemoBanner(): void {
     const cfg = DEMO as DemoConfig;
     cfg.current = cfg.current ?? cfg.initial;
-    // boot() re-runs on every demo state switch; reuse the banner already in
-    // the DOM instead of stacking another one — only its active button changes.
+    // boot() re-runs on every demo state switch.
     if (demoBannerEl && demoBannerEl.isConnected) {
         updateDemoBanner();
         return;

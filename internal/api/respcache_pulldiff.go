@@ -10,8 +10,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Implements the single-PR DIFF read's cached verdicts (tier of the
-
 // pullDiff406TTL backstops a stale verdict; webhooks flush sooner.
 const pullDiff406TTL = 24 * time.Hour
 

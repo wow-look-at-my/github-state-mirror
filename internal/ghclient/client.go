@@ -156,9 +156,7 @@ type TokenIdentity struct {
 	Login string
 }
 
-// ResolveTokenIdentity resolves the token in ctx to its GitHub user via
-// GET /user, caching the answer — including the definitive "not a user"
-// verdict — per token, so GitHub is asked per unique token.
+// ResolveTokenIdentity resolves the token in ctx to its GitHub user via GET /user, caching the answer — including the definitive "not a user" verdict — per token, so GitHub is asked per unique token.
 //
 // Outcomes:
 //   - user token: TokenIdentity{IsUser: true, ID, Login}, cached
@@ -168,10 +166,7 @@ type TokenIdentity struct {
 //   - anything transient (network error, 5xx,, a rate-limited): an
 //     error, and NOTHING is cached — the next call retries
 //
-// A counts as transient (not a verdict) when it looks like rate limiting
-// (Retry-After, or X-RateLimit-Remaining:): caching "not a user" for a
-// rate-limited USER token would silently mis-partition that user for the
-// process lifetime.
+// A counts as transient (not a verdict) when it looks like rate limiting (Retry-After, or X-RateLimit-Remaining:): caching "not a user" for a rate-limited USER token would silently mis-partition that user for the process lifetime.
 func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error) {
 	token := tokenFromContext(ctx)
 	if token == "" {

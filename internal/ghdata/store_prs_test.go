@@ -74,8 +74,8 @@ func TestGetPullRequest(t *testing.T) {
 // TestUpsertPR_MergeableNullDoesNotClobber locks the COALESCE on mergeable: a
 // pull_request webhook that arrives while GitHub is still computing
 // mergeability carries mergeable=null (and GitHub never re-delivers the event
-// when it resolves), so a NULL in the payload must preserve a previously-known
-// value — while a genuinely resolved value must still overwrite.
+// when it resolves), so a NULL in the payload must preserve a-known value —
+// while a genuinely resolved value must still overwrite.
 func TestUpsertPR_MergeableNullDoesNotClobber(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

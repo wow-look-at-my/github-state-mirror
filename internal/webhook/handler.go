@@ -26,10 +26,7 @@ type IngestNotifier interface {
 	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
 }
 
-// Recorder-only dispositions for deliveries that never reach dispatch. They
-// feed the timeline chart (every delivery attempt is recorded, whatever its
-// fate — a gap on the chart is a bug); they are never returned to GitHub,
-// whose responses stay the plain http.Error texts.
+// Recorder-only dispositions for deliveries that never reach dispatch.
 const (
 	// DispUnverified marks a delivery whose authenticity could not be
 	DispUnverified = "unverified"
@@ -85,8 +82,8 @@ func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRec
 			return
 		}
 
-		// Fail closed: without a configured secret we cannot verify that a
-		// webhook actually came from GitHub, and an unauthenticated endpoint
+		// Fail closed: without a configured secret we cannot verify that a webhook
+		// came from GitHub, and an unauthenticated endpoint
 		if secret == "" {
 			slog.Error("webhook rejected: WEBHOOK_SECRET is not set")
 			reject(DispUnverified, "webhook secret not configured")

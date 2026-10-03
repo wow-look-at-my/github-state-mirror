@@ -11,8 +11,8 @@
 #
 # distroless ships no shell, so busybox supplies one. The base stays distroless
 # because it carries the CA certificates every upstream GitHub call needs.
-# busybox also prepares the two directories, since distroless has no shell to
-# run mkdir in: the SQLite cache dir, and /tmp, which staging writes to.
+# busybox also prepares both directories, since distroless has no shell to run
+# mkdir in: the SQLite cache dir, and /tmp, which staging writes to.
 FROM busybox:musl AS shell
 # The applet links are made by hand, RELATIVE. `busybox --install -s` writes
 # each one as an absolute path to where it ran, so every link would dangle once
@@ -54,6 +54,5 @@ USER nonroot
 
 # Through the shell ON PURPOSE. The exec form execve()s the file directly, and
 # the kernel cannot exec an APE -- that ENOEXEC is what left this image unable
-# to start. The boot script execs the staged copy, so the server still replaces
-# the shell as PID 1 and STOPSIGNAL reaches it.
+# to start.
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/github-state-mirror"]

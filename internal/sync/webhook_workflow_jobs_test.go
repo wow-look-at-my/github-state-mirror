@@ -12,7 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// Relative to now so the fixtures never age past the completed-job retention; truncated to the
+// Relative to now so the fixtures never age past the completed-job retention.
 //
 //	so the RFC3339 strings round-trip byte-identically through payload -> store.
 var (
@@ -147,18 +147,17 @@ func TestDispatch_WorkflowJob_LateInProgressDoesNotRegress(t *testing.T) {
 }
 
 // TestDispatch_WorkflowJob_LateInProgressPastRetention is the deterministic
-// reproduction of the -- master incident (run, commit
-// 998ee25): the then-hardcoded fixture completed_at aged past the -day
-// retention horizon, RecordWorkflowJob's on-write prune deleted the completed
-// row the same call had just written, and the late in_progress then INSERTED
-// a fresh running row -- status regressed to "in_progress", conclusion
-// blanked -- because the upsert's regression guard only fires when the row
-// still exists. The same interleaving is reachable in production via delivery
-// replays of old events (GitHub keeps deliveries days; the org's
-// webhook-runner SDK replays missed windows). Retention now also keys on
-// updated_at (when the mirror last applied a webhook), so a just-recorded row
-// can never be pruned out from under the guard, however old the event's own
-// completed_at is.
+// reproduction of the -- master incident (run,ee25): the then-hardcoded
+// fixture completed_at aged past the -day retention horizon,
+// RecordWorkflowJob's on-write prune deleted the completed row the same call
+// had written, and the late in_progress then INSERTED a fresh running row --
+// status regressed to "in_progress", conclusion blanked -- because the
+// upsert's regression guard only fires when the row still exists. The same
+// interleaving is reachable in production via delivery replays of old events
+// (GitHub keeps deliveries days; the org's webhook-runner SDK replays missed
+// windows). Retention now also keys on updated_at (when the mirror last
+// applied a webhook), so a just-recorded row can never be pruned out from
+// under the guard, however old the event's own completed_at is.
 func TestDispatch_WorkflowJob_LateInProgressPastRetention(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

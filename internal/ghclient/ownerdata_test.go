@@ -264,7 +264,7 @@ func TestGetOwnerData_NullOwnerFailsLoudly(t *testing.T) {
 }
 
 // TestGetOwnerData_GraphQLErrorsNotRetried: GraphQL-level errors[] arrive as
-// HTTP semantic answers, not transport blips -- they must fail fast on the
+// HTTP semantic answers.
 //
 //	attempt (only /// and network errors are retried).
 func TestGetOwnerData_GraphQLErrorsNotRetried(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Event is a parsed webhook event with just enough info for dispatch.
+// Event is a parsed webhook event with enough info for dispatch.
 type Event struct {
 	Type       string // X-GitHub-Event header value
 	DeliveryID string // X-GitHub-Delivery header value (UUID), for the delivery log
@@ -246,7 +246,7 @@ func ParseRenameFrom(raw json.RawMessage) string {
 }
 
 // CheckPayload is a single commit-check state parsed from a status/check_run/
-// check_suite webhook. Context is a stable dedup key (latest state wins).
+// check_suite webhook.
 type CheckPayload struct {
 	Owner   string
 	Repo    string
@@ -306,10 +306,9 @@ func ParseCheckPayload(eventType string, raw json.RawMessage) (CheckPayload, err
 		defaultBranch = body.Repository.DefaultBranch
 	}
 
-	// p.Branches collects only NON-EMPTY names; the OnDefaultBranch check
-	// below reads the same list, which is behavior-identical to the old
-	// unfiltered local slice (an empty name can never equal a non-empty
-	// default branch).
+	// p.Branches collects only NON-EMPTY names; the OnDefaultBranch check below
+	// reads the same list, which is behavior-identical to the unfiltered local
+	// slice (an empty name can never equal a non-empty default branch).
 	switch eventType {
 	case "status":
 		p.SHA = body.SHA

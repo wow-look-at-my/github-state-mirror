@@ -12,9 +12,6 @@
 // drops the oldest as a memory backstop against a traffic flood. There is
 // deliberately NO background goroutine or timer; laziness is the whole
 // eviction story.
-//
-// Methods are nil-receiver-safe (the events.Recorder / ratemeter stance), so
-// call sites never need a nil guard.
 package reqtimeline
 
 import (
@@ -89,8 +86,8 @@ func (e Event) end() time.Time {
 	return e.Start.Add(time.Duration(e.DurMs) * time.Millisecond)
 }
 
-// Recorder is the bounded in-memory event ring. The value is NOT ready;
-// use New. All methods are safe on a nil receiver (no-ops / empty snapshots).
+// Recorder is the bounded in-memory event ring. The value is NOT ready; use
+// New.
 type Recorder struct {
 	mu        sync.Mutex
 	retention time.Duration

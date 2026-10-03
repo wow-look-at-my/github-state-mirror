@@ -9,8 +9,7 @@ import (
 )
 
 // A delivery this mirror never received is the quietest failure it has: the
-// mirror keeps serving what it last absorbed, with nothing anywhere saying so.
-// see docs/webhooks/delivery-gaps.md
+// mirror keeps serving what it last absorbed.
 
 const (
 	// ReplayLookback bounds how far back a failure is worth replaying; past it the caches it would move have already expired.

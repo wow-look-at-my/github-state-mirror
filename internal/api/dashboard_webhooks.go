@@ -12,10 +12,7 @@ import (
 )
 
 // The dashboard's Webhooks tab: the delivery log, plus the check for event
-// subscriptions the mirror depends on and has not seen. A missing
-// subscription is the quietest failure this service has -- the caches that
-// need it simply re-fetch forever -- so it is surfaced here rather than left
-// to be inferred from an absence in the table below it.
+// subscriptions the mirror depends on and has not seen.
 
 type webhooksResponse struct {
 	Deliveries []ghdata.WebhookDelivery `json:"deliveries"`

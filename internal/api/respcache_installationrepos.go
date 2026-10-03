@@ -12,8 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Cached installation-repositories listing (tier of the cache contract): GET /installation/repositories
-// see docs/cache/rest-routes.md
+// Cached installation-repositories listing (tier of the cache contract).
 
 const (
 	// installationReposTTL is the PRIMARY bound on a row, not a backstop: the mirror sees only its own App's flush events.

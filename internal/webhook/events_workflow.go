@@ -6,10 +6,7 @@ import (
 )
 
 // GitHub Actions payload parsing: workflow_job (per-JOB state) and
-// workflow_run (per-RUN state). Both feed global truth -- the workflow_jobs
-// table and the workflow_runs table the repo-wide runs listing is rebuilt
-// from -- so both parse strictly: a payload with no identifiable job or run
-// is an error, never a guess.
+// workflow_run (per-RUN state).
 
 // WorkflowJobPayload is a GitHub Actions job's state parsed from a workflow_job webhook; empty string means the field was not reported yet.
 // see docs/webhooks/response-cache-invalidation.md

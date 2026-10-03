@@ -151,7 +151,7 @@ func NewRouter(
 		// The /commits/* subtree dispatcher (status/check-runs/statuses); see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/commits/*", h.commitsSubtree)
 
-		// The legacy statuses-list spelling, same handler and row space as above; see docs/cache/rest-routes.md.
+		// The statuses-list spelling, same handler and row space as above; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/statuses/*", h.statusesAlias)
 
 		// Cached compare, the -dot base...head comparison; see docs/cache/rest-routes.md.
