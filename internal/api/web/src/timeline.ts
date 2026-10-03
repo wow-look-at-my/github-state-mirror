@@ -14,16 +14,12 @@
 // itself (5s, paused while the page is hidden) and mergeData()s new events, so
 // the canvas never suffers the other tabs' wipe-and-rebuild refresh.
 //
-// The component itself is NOT part of this repo: the browser imports it at
-// RUNTIME from js-snippets' buildhost library site (live at master head —
-// republished on every js-snippets master push; replaced the quota-dead
-// GitHub Pages deploy 2026-07-20; the org's standard consumption model,
-// never vendored). A failed component fetch degrades
-// softly and never parks: the element shows "chart loading…" and retries the
-// dynamic import on a FIXED 5s cadence forever (cache-busted ?retry=N, because
-// browsers memoize failed module fetches). Fix component bugs upstream in
-// js-snippets — only adapter logic lives here. Types for the URL import come
-// from src/js-snippets-timeline.d.ts, an interim hand-maintained shim.
+// A failed component fetch degrades softly and never parks: the element shows
+// "chart loading…" and retries the dynamic import on a FIXED 5s cadence
+// forever (cache-busted ?retry=N, because browsers memoize failed module
+// fetches). Fix component bugs upstream in js-snippets — only adapter logic
+// lives here. Types for the URL import come from
+// src/js-snippets-timeline.d.ts, an interim hand-maintained shim.
 
 // Types only — erased at compile time. Deliberately NOT a static value import:
 // a static import that fails would kill this module; the runtime load is the
@@ -54,17 +50,13 @@ const COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/t
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const POLL_MS = 5000; // the dashboard's shared refresh cadence (app.ts REFRESH_MS)
 const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
-const STALE_AFTER_MS = 12000; // ~2.5 missed polls => the chart says "stale" instead of lying
+const STALE_AFTER_MS = 12000;
 const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
 // The first paint FETCHES exactly the hour it draws, and older ranges arrive
 // through the component's async history loader as the viewport reaches them.
-// This is not a bandwidth optimization — it is what makes the frame budget
-// reachable at all: a full 24h window is 100k intervals, and 100k live objects
-// cost GC pauses no amount of slicing can hide (measured: 4-7 ms scavenges
-// landing mid-decode). An hour is ~4k.
-// A history request is clamped to this span too, so one huge zoom-out becomes
-// several bounded loads rather than one 100k-interval stall; the component
-// re-asks for whatever stays uncovered.
+// An hour is ~4k. A history request is clamped to this span too, so one huge
+// zoom-out becomes several bounded loads rather than one 100k-interval stall;
+// the component re-asks for whatever stays uncovered.
 const HISTORY_SPAN_MS = 60 * 60 * 1000;
 
 // Bounded default fetcher. app.ts overrides `fetcher` only in demo mode (the
@@ -118,10 +110,9 @@ function fmtDur(ms: number): string {
 // The payload is COLUMNAR, and both halves of that format live elsewhere: the
 // Go encoder in internal/api/timelinewire.go, the decoder + frame-paced driver
 // in js-snippets (ui/timeline-wire.js), imported at RUNTIME like the component
-// beside it. Against the JSON it replaces it is ~10 B/event gzipped instead of
-// ~32, and ~5x cheaper to turn into intervals.
+// beside it.
 //
-// The two implementations are pinned to each other by BYTES, not by running
+// Both implementations are pinned to each other by BYTES, not by running
 // one from the other: internal/api/timelinewire_golden_test.go asserts the
 // encoder emits an exact payload, and js-snippets' timeline-wire.test.ts
 // decodes that same payload. A change to the layout is a NEW version (new
@@ -160,9 +151,9 @@ interface TimelinePage {
 }
 
 // The library module, loaded once at boot alongside the component. A dynamic
-// import (not a static URL import) for the same two reasons the component
-// uses one: a failed fetch must degrade to "chart loading…" rather than kill
-// this module, and node — which runs the harnesses against the built file —
+// import (not a static URL import) for the same reasons the component uses one:
+// a failed fetch must degrade to "chart loading…" rather than kill this
+// module, and node — which runs the harnesses against the built file —
 // cannot resolve an https specifier at load time.
 type WireModule = typeof import(
     'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js');
@@ -188,13 +179,7 @@ const FRAME_BUDGET_MS = 8;
 // whole grown chart at once. That is why a feed is the one thing still sized
 // adaptively — its cost per interval is not fixed.
 //
-// The CAP matters as much as the target, because the cost is not linear in the
-// feed alone: a merge gets dearer as the chart holds more, so an estimate from
-// an early cheap call overshoots later ones (measured: the size ran up to 2048
-// and those calls then cost 5.5-6.0 ms). 512 is the largest size measured to
-// stay comfortably inside the budget once the chart is full, and the adaptive
-// size still shrinks below it on a slower machine. The first call is smaller
-// again: it is the one that initializes the canvas.
+// The first call is smaller again: it is the one that initializes the canvas.
 const TARGET_FEED_MS = 4;
 const MAX_FEED_INTERVALS = 512;
 const START_FEED_INTERVALS = 128;
@@ -207,7 +192,7 @@ function nextFeedSize(size: number, ms: number): number {
     return Math.max(32, Math.min(ceiling, Math.round((size * TARGET_FEED_MS) / ms) || 32));
 }
 
-/** Walks [0,n) in STEP-sized ranges, yielding after each. */
+/* */
 function* chunked(n: number, work: (from: number, to: number) => void): Task<void> {
     for (let i = 0; i < n; ) {
         const to = Math.min(i + STEP, n);
@@ -553,9 +538,6 @@ class GsmTimeline extends HTMLElement {
         // reaches them, instead of the page paying for 24h up front.
         // Feature-detected so an older component build still renders.
         if ("loadRange" in tl) tl.loadRange = this.loadRange;
-        // Feature-detected staleness marking: with a 5s poll, ~2.5 missed
-        // polls means the feed is genuinely dead — say so on the chart
-        // instead of extrapolating.
         if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
         tl.setAttribute("empty-text", "no traffic recorded yet");
         this.view = tl;

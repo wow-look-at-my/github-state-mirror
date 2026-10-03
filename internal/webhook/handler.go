@@ -16,7 +16,7 @@ import (
 // dispatchTimeout bounds how long a webhook dispatch may run, so a stuck store
 const dispatchTimeout = 30 * time.Second
 
-// Dispatcher is called to process a parsed webhook event. It returns a
+// Dispatcher is called to process a parsed webhook event.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, event Event) DispatchResult
 }
@@ -131,7 +131,7 @@ func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRec
 			recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
 		}
 
-		// Ingest is done — hand the outcome to any subscriber notifier. The
+		// Ingest is done — hand the outcome to any subscriber notifier.
 		ingestedAt := time.Now()
 		for _, n := range notifiers {
 			if n != nil {
