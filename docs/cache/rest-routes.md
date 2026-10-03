@@ -1,28 +1,12 @@
 # Cached REST routes (the tier-2 catalogue)
 
-One entry per cached REST route family: what it absorbs, the exact trimmed
-shape it rebuilds, its query-shape guard, and what invalidates it. Extracted
-verbatim from CLAUDE.md, which now carries only the contract and an index --
-the depth lives here so it can grow.
+One entry per cached REST route family: what it absorbs, the exact trimmed shape it rebuilds, its query-shape guard, and what invalidates it. Extracted verbatim from CLAUDE.md, which now carries only the contract and an index -- the depth lives here so it can grow.
 
-The contract these all obey (reveal gate, absorb-and-rebuild, no URL keys,
-explicit invalidation) is in CLAUDE.md under "The cache contract (three
-tiers)". `GET /api/brief` on the dashboard renders the same checklist next to
-the traffic that is still uncached.
+The contract these all obey (reveal gate, absorb-and-rebuild, no URL keys, explicit invalidation) is in CLAUDE.md under "The cache contract (three tiers)". `GET /api/brief` on the dashboard renders the same checklist next to the traffic that is still uncached.
 
 ## The identical-or-passthrough rule (internal/api/proxy_test.go)
 
-An endpoint is either served byte-identical to GitHub (from a verbatim
-cache, or a live forward) or it is not cached at all -- never a trimmed
-subset a consumer might read a dropped field from. `/user`, `/compare`, and
-`/pulls/{n}/files` were all, at different points, cached with a trim that
-broke or would break a consumer; each was fixed by keeping the rule rather
-than relitigating it. `/compare` and `/pulls/{n}/files` are tier-2 routes
-whose rebuilds preserve the consumer-read fields exactly
-(`respcache_compare_test.go`, `respcache_pullfiles_test.go`). `/user` (and
-`/app`, `/user/orgs` alongside it) cache the upstream body VERBATIM, byte for
-byte, instead of guessing a field subset again -- see
-`respcache_identity_test.go` for the hit/miss byte-identity proof.
+An endpoint is either served byte-identical to GitHub (from a verbatim cache, or a live forward) or it is not cached at all -- never a trimmed subset a consumer might read a dropped field from. `/user`, `/compare`, and `/pulls/{n}/files` were all, at different points, cached with a trim that broke or would break a consumer; each was fixed by keeping the rule rather than relitigating it. `/compare` and `/pulls/{n}/files` are tier-2 routes whose rebuilds preserve the consumer-read fields exactly (`respcache_compare_test.go`, `respcache_pullfiles_test.go`). `/user` (and `/app`, `/user/orgs` alongside it) cache the upstream body VERBATIM, byte for byte, instead of guessing a field subset again -- see `respcache_identity_test.go` for the hit/miss byte-identity proof.
 
 ## The routes
 
@@ -48,10 +32,7 @@ byte, instead of guessing a field subset again -- see
 - `GET /repos/{owner}/{repo}/branches` — the branches listing (behind reveal; pr-minder's `listBranchHeads` feeds auto_open_pr fork-point detection, repeated fleet-wide by the reconcile hook — ~18% of passthroughs before this route). Whole-doc per-page snapshots in `branches_list_cache`, keyed `(owner, repo, per_page, page)`; trimmed item `{name, commit:{sha}, protected}` (consumers read `name` + `commit.sha`; `protected` rides along as an always-present bool) with `commit.url`, the protection object, and `protection_url` dropped. Same shape guard as the files route (`per_page`/`page` only); the single-branch `/branches/{branch}` read is a different shape and stays passthrough. Only a 200 absorbs; empty array cacheable. Branch create, delete, and tip-move all arrive as push events, so `push`/`repository` flush repo-wide, + 24h TTL. A tip-move is applied into the stored pages from the push's own `after` (`ghdata.ApplyPushedBranchTip`); only membership changes flush the snapshots. No doc-size cap: the item shape has no unbounded field, and the 8 MiB `fetchUpstream` cap already bounds the raw body.
 - `GET /repos/{owner}/{repo}/actions/runs` (`respcache_actionsruns.go`) — TWO request shapes, served two different ways, because they have two different invalidation signals and the signal decides the design.
   - The **per-commit** shape `?head_sha=<sha>` (behind reveal; survey 2026-07-11: pr-minder's `hasWorkflowRuns` sends `?head_sha=<hex>&per_page=1` and reads ONLY `total_count` — the zombie probe, repeated fleet-wide — and required-builds' `listWorkflowRuns` pages `?head_sha=<hex>&per_page=100&page=N` reading name/status/conclusion/html_url). A sha is a precise flush key, so this stays a whole-doc snapshot in `workflow_runs_cache` keyed `(owner, repo, head_sha, per_page, page)`, flushed per sha by `status`/`check_run`/`check_suite`/`workflow_job` and repo-wide by `repository`, 24h TTL. A `workflow_run` delivery instead **rewrites** the run's entry in place (`ghdata.ApplyWorkflowRunToPages`) — it IS the object these pages list, a run is updated in place upstream, and the listing is ordered by creation (measured; see docs/webhooks/invalidations.md), so the entry cannot move; it falls back to the per-sha flush for a run the pages do not list, which is a new run only a fetch can settle.
-  - The repo-wide **LISTING** `?status=<s>&branch=<b>` — the GHA runner coordinator's queued-backlog poll, which at 46k forwards was 78% of ALL passthrough traffic and the largest single uncached slice the log has ever shown. This answer names no sha, so no delivery can flush it precisely — and clearing the repo's listings on every job event is invalidate-and-refetch, which the doctrine forbids outright. **So it is not a snapshot at all: it is rebuilt from the `workflow_runs` TRUTH table**, which the dispatcher maintains ONE RUN AT A TIME (`onWorkflowRun` applies the whole object; a `workflow_job` delivery establishes its run's identity and raises its status floor). A run entering or leaving `queued` changes this answer by updating one row, with every other run still served — `TestCachedWorkflowRuns_ListingTracksAppliedRunState` pins exactly that, and `TestDispatch_RunStateEvents_NeverClearTheListing` pins that no run delivery clears anything.
-  Rows alone never prove a list, so the listing is gated on a **completeness proof** (`workflow_runs_list_cache`, the `pulls_list_cache` pattern): one row per `(owner, repo, canonical filter set)` recording that a page-1 response for exactly that filter came back SHORT, which is what proves truth then held every matching run. The same short answer RECONCILES — a row still matching the filter that the response omitted has provably moved, so it goes. A run delivery MAINTAINS the rows and therefore must never touch the marker; only `repository` events and its own short expiry (`ghdata.WorkflowRunsListTTL`, 2 min) clear it. That expiry bounds exactly one hole: a run entering the set with NO delivery naming it, which needs the App subscribed to `workflow_run` — a run with no jobs yet emits no `workflow_job` — and a queued backlog is what a coordinator provisions against, so it is held to minutes rather than hours.
-  Shape guard (both shapes): `head_sha` full hex lowercase-normalized; `status` one of GitHub's documented values; `branch` a bounded, control-character-free ref name; `per_page` 1..100; `page` 1..10. The modeled filters are canonicalized (sorted, escaped) so reordering a query string cannot mint a second proof. **The `status` filter matches a run's status OR its CONCLUSION**, because GitHub's does — `?status=success` selects completed runs that succeeded, and matching only the status column would answer it with nothing. Every other filter (`event`/`actor`/`created`/`exclude_pull_requests`/...) is unmodeled and passes through; deeper `/actions/runs/{id}/...` paths never reach the exact-literal registration and keep falling to the NotFound proxy.
-  Rebuild (identical from either source — one `renderWorkflowRuns`, so a hit and a miss cannot drift): `{total_count, workflow_runs:[{id, name, head_sha, status, conclusion, html_url, created_at, updated_at, run_started_at}]}`. On a miss `total_count` is copied VERBATIM from upstream (GitHub's TOTAL matching count, NOT the page length — exactly what the `per_page=1` probe reads); on a truth rebuild it is the filtered row count, exact because the marker vouches for the set. name/conclusion/run_started_at are nullable with keys always emitted (truth stores `''` for "not reported" and renders it as null); `html_url` is a pinned consumer-read allowlist exception. Dropped: `node_id`, the `head_branch`/`event`/`actor`/`repository`/`head_commit` objects, every other `*_url`, and the unbounded `pull_requests`/`referenced_workflows` arrays. The trimmed shape lives in the store, so a `workflow_run` delivery's rewrite and the render agree byte for byte. Absorb gate: 200 + object + `total_count` and `workflow_runs` both PRESENT; per run id > 0, non-empty status, full-hex head_sha; the zero-runs answer is cacheable — it IS the zombie probe's verdict. Every listed run enters truth whichever shape asked for it, so per-commit fetches keep the listing's rows warm for free. Run DELETION emits no webhook at all and is what both expiries are actually for.
+  - The repo-wide **LISTING** `?status=<s>&branch=<b>` — the GHA runner coordinator's queued-backlog poll, which at 46k forwards was 78% of ALL passthrough traffic and the largest single uncached slice the log has ever shown. This answer names no sha, so no delivery can flush it precisely — and clearing the repo's listings on every job event is invalidate-and-refetch, which the doctrine forbids outright. **So it is not a snapshot at all: it is rebuilt from the `workflow_runs` TRUTH table**, which the dispatcher maintains ONE RUN AT A TIME (`onWorkflowRun` applies the whole object; a `workflow_job` delivery establishes its run's identity and raises its status floor). A run entering or leaving `queued` changes this answer by updating one row, with every other run still served — `TestCachedWorkflowRuns_ListingTracksAppliedRunState` pins exactly that, and `TestDispatch_RunStateEvents_NeverClearTheListing` pins that no run delivery clears anything. Rows alone never prove a list, so the listing is gated on a **completeness proof** (`workflow_runs_list_cache`, the `pulls_list_cache` pattern): one row per `(owner, repo, canonical filter set)` recording that a page-1 response for exactly that filter came back SHORT, which is what proves truth then held every matching run. The same short answer RECONCILES — a row still matching the filter that the response omitted has provably moved, so it goes. A run delivery MAINTAINS the rows and therefore must never touch the marker; only `repository` events and its own short expiry (`ghdata.WorkflowRunsListTTL`, 2 min) clear it. That expiry bounds exactly one hole: a run entering the set with NO delivery naming it, which needs the App subscribed to `workflow_run` — a run with no jobs yet emits no `workflow_job` — and a queued backlog is what a coordinator provisions against, so it is held to minutes rather than hours. Shape guard (both shapes): `head_sha` full hex lowercase-normalized; `status` one of GitHub's documented values; `branch` a bounded, control-character-free ref name; `per_page` 1..100; `page` 1..10. The modeled filters are canonicalized (sorted, escaped) so reordering a query string cannot mint a second proof. **The `status` filter matches a run's status OR its CONCLUSION**, because GitHub's does — `?status=success` selects completed runs that succeeded, and matching only the status column would answer it with nothing. Every other filter (`event`/`actor`/`created`/`exclude_pull_requests`/...) is unmodeled and passes through; deeper `/actions/runs/{id}/...` paths never reach the exact-literal registration and keep falling to the NotFound proxy. Rebuild (identical from either source — one `renderWorkflowRuns`, so a hit and a miss cannot drift): `{total_count, workflow_runs:[{id, name, head_sha, status, conclusion, html_url, created_at, updated_at, run_started_at}]}`. On a miss `total_count` is copied VERBATIM from upstream (GitHub's TOTAL matching count, NOT the page length — exactly what the `per_page=1` probe reads); on a truth rebuild it is the filtered row count, exact because the marker vouches for the set. name/conclusion/run_started_at are nullable with keys always emitted (truth stores `''` for "not reported" and renders it as null); `html_url` is a pinned consumer-read allowlist exception. Dropped: `node_id`, the `head_branch`/`event`/`actor`/`repository`/`head_commit` objects, every other `*_url`, and the unbounded `pull_requests`/`referenced_workflows` arrays. The trimmed shape lives in the store, so a `workflow_run` delivery's rewrite and the render agree byte for byte. Absorb gate: 200 + object + `total_count` and `workflow_runs` both PRESENT; per run id > 0, non-empty status, full-hex head_sha; the zero-runs answer is cacheable — it IS the zombie probe's verdict. Every listed run enters truth whichever shape asked for it, so per-commit fetches keep the listing's rows warm for free. Run DELETION emits no webhook at all and is what both expiries are actually for.
 - `GET /repos/{owner}/{repo}` — the bare repository read (behind reveal; the reconcile hook's `getDefaultBranch`, plus status-only access checks in the buildhost `canAccessRepo` style, where the 200-vs-404 IS the answer). UNLIKE every other cached route there is NO snapshot table and NO per-row TTL: the rebuild comes straight from the `repos` TRUTH row — the same webhook-maintained, fleet-synced, consistency-checked state tier 1 serves — so truth freshness IS the freshness model (mirroring how `/graphql` serves truth; `repository` events correct rename/delete/visibility, and a reveal probe re-absorbs the row per principal within the ≤24h grant TTL, which bounds how stale a private repo's row can sit for a probing caller). Served only when the row can answer COMPLETELY: known visibility (unknown `''` fails CLOSED — e.g. a row seeded only by the identity-locked GraphQL fetch, which carries no visibility), a known `default_branch`, and a canonical full name; anything else fetches with the caller's token and the absorbed 200 heals the row. Trimmed rebuild: `{name, full_name, owner:{login}, private, visibility, default_branch, archived, disabled}` — `private` derived (visibility != public, so `internal` folds to private=true); `pushed_at` deliberately NOT emitted (truth `''` cannot distinguish never-pushed from not-yet-synced, and no consumer reads it); `fork`/`id` not stored, so not emitted. Query params, non-default Accepts, and HEAD requests (MethodNotAllowed → the proxy) pass through; a non-200 fetch relays unstored.
 
 - `GET /repos/{owner}/{repo}/git/ref/{ref...}` (`respcache_gitrefs.go`) — the ref-to-tip lookup ("where does this branch point right now"), the largest UNROUTED slice of the request log before it existed: fleet reconcile passes ask it per branch, forever. The wildcard is greedy (a ref path is at least `heads/<name>` and branch names carry slashes) and the ref is stored **VERBATIM, never resolved** — `heads/main` and `refs/heads/main` are distinct requests, so each is its own row and the push flush covers every spelling (`refSpellings`). Rebuild: `{ref, node_id, object:{sha, type}}` — the canonical ref name GitHub reported, a stable identifier, and the object trimmed to sha + type; `url` and `object.url` dropped. Shape guard: no query parameter changes this answer so any is unmodeled, and the ref must be a fully-qualified two-part ref (`heads/<name>`, `tags/<name>`, with or without the `refs/` prefix) — GitHub answers a PARTIAL ref (`heads`) with an ARRAY, a different shape this route does not hold. The **404 is absorbed as a VERDICT** on the compare route's precedent (sweeps re-poll deleted heads — a merged PR's head — forever), and it cannot outlive the ref: ref creation arrives as a push for that exact ref, which drops the row. Freshness: a `push` **APPLIES its own `after` tip** to the row in every spelling (`ghdata.ApplyPushedRefTip`) — the payload states the answer, so nothing is refetched and the row is never briefly absent. It falls back to the per-ref DELETE only where the payload cannot answer: a deletion (all-zeros `after`), a cached 404 verdict a creation must clear (no `node_id` in a push payload to build a real answer from), or an unreadable row. Repo-wide delete by `repository` and by a push naming no usable ref. The 24h TTL is now only the backstop for a delivery that never landed.
@@ -91,68 +72,17 @@ byte, instead of guessing a field subset again -- see
 
 ## Still forwarding — open work, not verdicts
 
-There is no "correctly uncached" outcome (operator ruling, 2026-08-06):
-*"never encourage bypassing the cache for any reason. Bypassing the cache is a
-hack that means we need something fixed in github-state-mirror."* A route that
-still forwards is unfinished, and a resource no delivery names today is a
-missing invalidation signal to go add — not a reason to stop. This section
-records what each one still needs, so the next pass starts from the open
-question rather than rediscovering the route.
+There is no "correctly uncached" outcome (operator ruling, 2026-08-06): *"never encourage bypassing the cache for any reason. Bypassing the cache is a hack that means we need something fixed in github-state-mirror."* A route that still forwards is unfinished, and a resource no delivery names today is a missing invalidation signal to go add — not a reason to stop. This section records what each one still needs, so the next pass starts from the open question rather than rediscovering the route.
 
-This list used to open with the runner coordinator's queued-backlog poll,
-written up as permanently uncacheable because "a real-time work queue has no
-webhook naming the change". It did: `check_suite`/`check_run`/`workflow_job`
-deliver both edges of `queued`, and the shape is cached now (above). Read the
-rest with that in mind.
+This list used to open with the runner coordinator's queued-backlog poll, written up as permanently uncacheable because "a real-time work queue has no webhook naming the change". It did: `check_suite`/`check_run`/`workflow_job` deliver both edges of `queued`, and the shape is cached now (above). Read the rest with that in mind.
 
-Volumes below are from the 2026-08-09 implementation brief (915,259 requests
-in one process; 191,547 of them passthroughs). That capture predates the
-repo-wide runs listing landing, so its largest entry — 152,581 forwards of
-`/actions/runs` under `unmodeled-query` — is already closed by the route
-above and is not repeated here.
+Volumes below are from the 2026-08-09 implementation brief (915,259 requests in one process; 191,547 of them passthroughs). That capture predates the repo-wide runs listing landing, so its largest entry — 152,581 forwards of `/actions/runs` under `unmodeled-query` — is already closed by the route above and is not repeated here.
 
-- ~~`GET /repos/{owner}/{repo}/actions/runs/{id}/jobs` (8722 forwards) and
-  `/actions/jobs/{id}` (9125) while a job is queued or in progress~~ — **done**,
-  and not the way this entry proposed. It called for rebuilding the answer from
-  the `workflow_jobs` TRUTH table, which would have needed the queued edge
-  recorded, two new columns, and a completeness marker. None of that was
-  necessary: the delivery already carries the whole job object, so the stored
-  ANSWER is rewritten from it and the fetch supplies the membership a truth
-  table would have needed a marker to prove. The caveat this entry raised —
-  a job's `steps` advance mid-run with NO delivery, so only a not-yet-started
-  job rebuilds faithfully — was the load-bearing part, and it is why the live
-  TTL is three-way rather than one number. See the route above.
-- **A SHARED row for the hook listings.** Both are cached now (above), but
-  per credential, so two credentials asking about the same repo each still
-  pay their own fetch. Sharing one row needs an admin oracle, and GitHub has
-  two: `permissions.admin` on the `GET /repos/{owner}/{repo}` object the
-  reveal probe ALREADY fetches, and — for an installation token — the
-  installation's own permission set, which the mirror already caches on the
-  mint and repo-installation routes. Either is a new grant dimension rather
-  than a tweak, **and the arithmetic decides whether it is worth one**: the
-  org listing is asked ~17 times per credential across a handful of orgs, so
-  the repeats the shared row would collect are the ones the per-credential
-  rows already collapse; the repo listing looks like ~118 rotating
-  credentials reading each repo exactly ONCE, and against that shape a
-  global row gated on a per-(credential, repo) probe costs precisely the
-  upstream call it saves. Only a proof earned ONCE PER CREDENTIAL — the
-  installation's permission set, never a per-repo probe — can pay there.
-  Measure the distinct-repo count from a fresh brief before building it; the
-  ~118×1 reading is inferred from caller counts, not from repo counts the
-  brief carries.
-- `GET /repos/{owner}/{repo}/actions/runs` filtered by `event`/`actor`/
-  `created` — the same route, the same invalidation; these filters simply
-  have no observed traffic to survey, so they are not in the key yet. Adding
-  one is a validator plus a key component.
-- `GET /repos/{owner}/{repo}/commits/{ref}/status` answering **403** (1659,
-  every one of them pr-minder's, every one a 403) — the route exists and the
-  reveal gate passes (the repo is readable); the 403 is GitHub refusing the
-  SUB-RESOURCE to that credential's permission set. That is an authoritative
-  verdict and cacheable per principal, but it is also a caller bug worth
-  fixing at the source first: 1659 identical refusals means a token is
-  missing a scope it is asked for on every sweep.
-- `GET /app/hook/deliveries` — deliberately left uncached; see
-  docs/cache/uncacheable-routes.md.
+- ~~`GET /repos/{owner}/{repo}/actions/runs/{id}/jobs` (8722 forwards) and `/actions/jobs/{id}` (9125) while a job is queued or in progress~~ — **done**, and not the way this entry proposed. It called for rebuilding the answer from the `workflow_jobs` TRUTH table, which would have needed the queued edge recorded, two new columns, and a completeness marker. None of that was necessary: the delivery already carries the whole job object, so the stored ANSWER is rewritten from it and the fetch supplies the membership a truth table would have needed a marker to prove. The caveat this entry raised — a job's `steps` advance mid-run with NO delivery, so only a not-yet-started job rebuilds faithfully — was the load-bearing part, and it is why the live TTL is three-way rather than one number. See the route above.
+- **A SHARED row for the hook listings.** Both are cached now (above), but per credential, so two credentials asking about the same repo each still pay their own fetch. Sharing one row needs an admin oracle, and GitHub has two: `permissions.admin` on the `GET /repos/{owner}/{repo}` object the reveal probe ALREADY fetches, and — for an installation token — the installation's own permission set, which the mirror already caches on the mint and repo-installation routes. Either is a new grant dimension rather than a tweak, **and the arithmetic decides whether it is worth one**: the org listing is asked ~17 times per credential across a handful of orgs, so the repeats the shared row would collect are the ones the per-credential rows already collapse; the repo listing looks like ~118 rotating credentials reading each repo exactly ONCE, and against that shape a global row gated on a per-(credential, repo) probe costs precisely the upstream call it saves. Only a proof earned ONCE PER CREDENTIAL — the installation's permission set, never a per-repo probe — can pay there. Measure the distinct-repo count from a fresh brief before building it; the ~118×1 reading is inferred from caller counts, not from repo counts the brief carries.
+- `GET /repos/{owner}/{repo}/actions/runs` filtered by `event`/`actor`/ `created` — the same route, the same invalidation; these filters simply have no observed traffic to survey, so they are not in the key yet. Adding one is a validator plus a key component.
+- `GET /repos/{owner}/{repo}/commits/{ref}/status` answering **403** (1659, every one of them pr-minder's, every one a 403) — the route exists and the reveal gate passes (the repo is readable); the 403 is GitHub refusing the SUB-RESOURCE to that credential's permission set. That is an authoritative verdict and cacheable per principal, but it is also a caller bug worth fixing at the source first: 1659 identical refusals means a token is missing a scope it is asked for on every sweep.
+- `GET /app/hook/deliveries` — deliberately left uncached; see docs/cache/uncacheable-routes.md.
 
 The 2026-09-07 brief adds these, and none of them is a verdict:
 
@@ -161,13 +91,6 @@ The 2026-09-07 brief adds these, and none of them is a verdict:
 - `GET /repos/{owner}/{repo}/commits/{ref}` where the ref is an ABBREVIATED sha (367, `unmodeled-path`). The commits subtree dispatcher takes a full hex object id. GitHub resolves a prefix, and the mirror does not model that. The prefix is not a stable key either, because a repo can grow a second object under it.
 - `GET /repos/{owner}/{repo}/check-runs/{id}/annotations` (32) and `GET /repos/{owner}/{repo}/actions/jobs/{id}/logs` (50). The annotations listing is settled once its check run completes, and `check_run` names that id already. The logs route answers a redirect to a signed, expiring location, which is a different resource class from everything above.
 
-Routes closed since the 2026-08-09 brief that this section no longer
-lists (moved to "The routes" above, each with its actual invalidation
-signal): `GET /app` + `GET /user` + `GET /user/orgs`,
-`GET /orgs/{org}/actions/runners`, `GET /app/installations`,
-`GET /user/repos`, `GET /search/issues`,
-`GET /repos/{owner}/{repo}/git/trees/{sha}`,
-`GET /repos/{owner}/{repo}/check-runs/{check_run_id}`, and
-`GET /repos/{owner}/{repo}/git/matching-refs/heads/…`.
+Routes closed since the 2026-08-09 brief that this section no longer lists (moved to "The routes" above, each with its actual invalidation signal): `GET /app` + `GET /user` + `GET /user/orgs`, `GET /orgs/{org}/actions/runners`, `GET /app/installations`, `GET /user/repos`, `GET /search/issues`, `GET /repos/{owner}/{repo}/git/trees/{sha}`, `GET /repos/{owner}/{repo}/check-runs/{check_run_id}`, and `GET /repos/{owner}/{repo}/git/matching-refs/heads/…`.
 
 Closed since the 2026-09-07 brief: `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/actions/workflows[/{id}]`, `GET /orgs/{org}/repos`, and `GET /users/{username}/repos`.

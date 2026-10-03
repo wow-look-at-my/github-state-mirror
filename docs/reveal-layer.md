@@ -6,51 +6,19 @@ The load-bearing security section: storage is global, authorization is a read-ti
 
 ## The four-step decision (public / grant / deny cache / probe)
 
-The truth store is global (one row per resource; webhooks and any caller's
-fetches all feed it), so serving cached state must be gated per caller.
-GitHub itself is the permission oracle -- the mirror never invents an
-authorization model, it only caches GitHub's own answers:
+The truth store is global (one row per resource; webhooks and any caller's fetches all feed it), so serving cached state must be gated per caller. GitHub itself is the permission oracle -- the mirror never invents an authorization model, it only caches GitHub's own answers:
 
-1. PUBLIC fast path: the repo's webhook/REST-learned visibility is
-   'public' -> any authenticated principal may read its cached state. A
-   repo whose visibility is unknown ('', e.g. seeded only by the
-   identity-locked GraphQL fetch, which cannot carry visibility) is
-   treated as PRIVATE -- fail closed.
-2. GRANT: the principal holds an unexpired access_grants row for the
-   repo, earned from GitHub's own answers to that principal's requests
-   (an org list-sync with their token, or an earlier probe).
-3. DENY VERDICT: GitHub authoritatively told this principal "no" (404 /
-   non-rate-limit 403) for this exact resource within the deny TTL ->
-   serve that answer again without asking GitHub.
-4. PROBE: otherwise ask GitHub: GET /repos/{owner}/{repo} with the
-   caller's own token (buildhost's canAccessRepo pattern). 200 proves
-   access -> absorb the (canonical, visibility-carrying) repository
-   object into truth, record a grant, proceed. 404/authoritative-403 ->
-   record a deny verdict, relay the answer. Transient failures (5xx,
-   429, rate-limited 403, network) are relayed but NEVER cached -- a
-   hiccup must not pin a caller out (or in).
+1. PUBLIC fast path: the repo's webhook/REST-learned visibility is 'public' -> any authenticated principal may read its cached state. A repo whose visibility is unknown ('', e.g. seeded only by the identity-locked GraphQL fetch, which cannot carry visibility) is treated as PRIVATE -- fail closed.
+2. GRANT: the principal holds an unexpired access_grants row for the repo, earned from GitHub's own answers to that principal's requests (an org list-sync with their token, or an earlier probe).
+3. DENY VERDICT: GitHub authoritatively told this principal "no" (404 / non-rate-limit 403) for this exact resource within the deny TTL -> serve that answer again without asking GitHub.
+4. PROBE: otherwise ask GitHub: GET /repos/{owner}/{repo} with the caller's own token (buildhost's canAccessRepo pattern). 200 proves access -> absorb the (canonical, visibility-carrying) repository object into truth, record a grant, proceed. 404/authoritative-403 -> record a deny verdict, relay the answer. Transient failures (5xx, 429, rate-limited 403, network) are relayed but NEVER cached -- a hiccup must not pin a caller out (or in).
 
-The probe costs one upstream call on a principal's FIRST touch of a
-non-public repo (per grant TTL); it also heals unknown-visibility rows,
-since the probe response carries visibility for everyone's benefit.
+The probe costs one upstream call on a principal's FIRST touch of a non-public repo (per grant TTL); it also heals unknown-visibility rows, since the probe response carries visibility for everyone's benefit.
 
 ## `KindOrgRepos` (`internal/sync/registry.go`)
 
-A PRINCIPAL's org list-sync marker (actor = principal, key = org login):
-freshness of that principal's grant set for the owner. The fetch refreshes
-global truth as a side effect. (The `/pulls` list's completeness marker lives
-in its own table, `pulls_list_cache` -- that route absorbs the caller's own
-request rather than running a fetcher.)
+A PRINCIPAL's org list-sync marker (actor = principal, key = org login): freshness of that principal's grant set for the owner. The fetch refreshes global truth as a side effect. (The `/pulls` list's completeness marker lives in its own table, `pulls_list_cache` -- that route absorbs the caller's own request rather than running a fetcher.)
 
 ## Trusted-app mode (X-Mirror-Identity)
 
-A caller may assert a stable identity with a GitHub App JWT in
-X-Mirror-Identity. We verify it against GitHub (GET /app — unforgeable, since
-only the app's private key produces a JWT GitHub accepts) and partition that
-caller by the app, NOT by the token fingerprint. This lets a first-party app
-whose installation tokens rotate hourly share one warm cache bucket, while the
-Authorization token is still used for upstream fetches so per-repo
-authorization is preserved. Callers without this header keep the fingerprint
-isolation, so untrusting multi-tenant use is unaffected. (Distinct from the
-background refresher's app-installation:<id> partition: that is the mirror as
-its own app; this is an external app caller tagging its data-API requests.)
+A caller may assert a stable identity with a GitHub App JWT in X-Mirror-Identity. We verify it against GitHub (GET /app — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partition that caller by the app, NOT by the token fingerprint. This lets a first-party app whose installation tokens rotate hourly share one warm cache bucket, while the Authorization token is still used for upstream fetches so per-repo authorization is preserved. Callers without this header keep the fingerprint isolation, so untrusting multi-tenant use is unaffected. (Distinct from the background refresher's app-installation:<id> partition: that is the mirror as its own app; this is an external app caller tagging its data-API requests.)
