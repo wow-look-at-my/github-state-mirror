@@ -83,6 +83,40 @@ test("the Latency tab renders histograms and flags the timeout tail", async (t) 
 	if (process.env.GSM_SCREENSHOT) await page.screenshot({ path: process.env.GSM_SCREENSHOT, fullPage: true });
 });
 
+// A relay target that lost deliveries must open its panel and mark the loss.
+test("the Webhooks tab shows the relay targets and flags drops", async (t) => {
+	const server = serve();
+	const exe = process.env.GSM_CHROMIUM ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+	let browser: Browser | undefined;
+	t.after(async () => {
+		await browser?.close();
+		server.close();
+	});
+	browser = await chromium.launch(existsSync(exe) ? { executablePath: exe, args: ["--no-sandbox"] } : { args: ["--no-sandbox"] });
+	const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+	await page.goto(`http://127.0.0.1:${PORT}/#webhooks`);
+	await page.waitForFunction(() => Array.from(document.querySelectorAll("summary")).some((s) => s.textContent === "Webhook relay"));
+
+	const panel = await page.$eval("#scope-body", (root) => {
+		const d = Array.from(root.querySelectorAll("details")).find((x) => x.querySelector("summary")?.textContent === "Webhook relay");
+		const row = d?.querySelector("tbody tr");
+		return {
+			open: d?.hasAttribute("open") ?? false,
+			cells: Array.from(row?.querySelectorAll("td") ?? []).map((c) => c.textContent ?? ""),
+			flagged: d?.querySelectorAll("tbody td.warn").length ?? 0,
+			rowHeight: row?.getBoundingClientRect().height ?? 0,
+		};
+	});
+	assert.ok(panel.open, "a target with drops must open the panel");
+	assert.equal(panel.cells[0], "https://api-mirror.example.com/webhook");
+	assert.equal(panel.cells[3], "1802", "delivered");
+	assert.equal(panel.cells[6], "2", "dropped");
+	assert.equal(panel.flagged, 1, "the drop count is not flagged");
+	assert.ok(panel.rowHeight > 0, "the relay table is not on screen");
+
+	if (process.env.GSM_SCREENSHOT_RELAY) await page.screenshot({ path: process.env.GSM_SCREENSHOT_RELAY });
+});
+
 test("the Copy JSON menu opens and closes", async (t) => {
 	for (const f of ["assets/app.js", "assets/style.css", "assets/demo-data.js"]) {
 		assert.ok(existsSync(join(WEB, f)), `${f} is missing — run npm run build first; without it this whole file would test nothing`);

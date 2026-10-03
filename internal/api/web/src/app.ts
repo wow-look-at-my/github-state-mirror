@@ -709,6 +709,8 @@ function orderingPanel(o: OrderingSnapshot): HTMLElement {
 // has lost or is holding deliveries.
 function relayPanel(targets: RelayTarget[]): HTMLElement {
     const lossy = targets.some((t) => t.dropped > 0 || t.permanently_failed > 0 || t.queued > 0);
+    const lastError = (t: RelayTarget): string =>
+        t.last_error ? t.last_error + " (" + fmtTime(t.last_error_at) + ")" : "—";
     const rows = targets.map((t) => el("tr", null,
         el("td", { class: "wh-repo", text: t.target }),
         el("td", { text: t.queued + " / " + t.queue_capacity }),
@@ -717,7 +719,7 @@ function relayPanel(targets: RelayTarget[]): HTMLElement {
         el("td", { text: String(t.retried) }),
         el("td", { class: t.permanently_failed > 0 ? "status-code warn" : "", text: String(t.permanently_failed) }),
         el("td", { class: t.dropped > 0 ? "status-code warn" : "", text: String(t.dropped) }),
-        el("td", { class: "wh-detail", text: t.last_error ? t.last_error + " (" + fmtTime(t.last_error_at) + ")" : "—" }),
+        el("td", { class: "wh-detail", title: lastError(t), text: lastError(t) }),
     ));
     return el("details", { class: "req-groups", open: lossy },
         el("summary", { text: "Webhook relay" }),

@@ -110,8 +110,8 @@ const demoWebhooks: WebhooksResponse = {
     relay: [
         {
             target: "https://api-mirror.example.com/webhook", queued: 0, queue_capacity: 1000, in_flight: 0,
-            delivered: 1802, retried: 3, permanently_failed: 0, dropped: 0,
-            last_error: "delivery d4e4e508-6ce9-11f1-9233-8efd5d462518 attempt 1: http 502", last_error_at: ago(3600),
+            delivered: 1802, retried: 3, permanently_failed: 0, dropped: 2,
+            last_error: "dropped delivery d4e4e508-6ce9-11f1-9233-8efd5d462518: queue full (capacity 1000)", last_error_at: ago(3600),
         },
     ],
     ordering: {
