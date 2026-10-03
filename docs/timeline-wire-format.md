@@ -12,7 +12,7 @@ A bake-off, in a throwaway module (`prototype/timelinewire/`, own `go.mod` so th
 
 **That module is gone, deliberately.** It was a prototype, it answered its question, and the answer is these tables plus the format that shipped. Keeping a second Go module with protobuf and bson dependencies to re-derive a decision already made is dead weight. To re-run it, check out `4a78cb8^` — nothing since then changed the shape of the data it measured.
 
-What survives in this repo is `internal/api/testdata/browsercheck.ts`, the real-browser harness — the only place the whole pipeline (fetch → library decode → our intervals → component draw) is measured together. It is TypeScript, type-checked against `web/src/` by `npm run check:harness`, so a changed export fails the build rather than surfacing mid-measurement.
+What survives in this repo is `internal/api/testdata/browsercheck.ts`, the real-browser harness — the only place the whole pipeline (fetch → library decode → our intervals → component draw) is measured together. It is TypeScript, type-checked against `web/src/` by `just check-harness`, so a changed export fails the build rather than surfacing mid-measurement.
 
 The node harnesses that drove the codec (`framecheck.ts`, `shipbench.ts`) are gone with the codec itself — see the next section.
 

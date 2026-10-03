@@ -15,11 +15,11 @@ Each grant guards a specific hard failure, not a general "be safe" default.
 
 ## `web-check`
 
-The dashboard front-end has exactly ONE source: TypeScript in `internal/api/web/src/*.ts`. `npm run build` (tsc) emits `internal/api/web/assets/*.js` as a build output. That output is gitignored and never committed. Every job that needs it compiles it, and `build` compiles it before the Go build embeds it.
+The dashboard front-end has exactly ONE source: TypeScript in `internal/api/web/src/*.ts`. `just build` (tsc) emits `internal/api/web/assets/*.js` as a build output. That output is gitignored and never committed. Every job that needs it compiles it, and `build` compiles it before the Go build embeds it.
 
 This job is the type-check gate, because tsc exits non-zero on any error. It also enforces the no-committed-JS rule. A generated file thus never creeps back into the tree as a second, staleable source of truth.
 
-The test harnesses in `internal/api/testdata/` are TypeScript. `npm run check:harness` checks them against the dashboard source they drive. A changed export signature thus fails here, rather than at runtime inside a measurement. node runs the `.ts` files directly. As a result, this step emits nothing.
+The test harnesses in `internal/api/testdata/` are TypeScript. `just check-harness` checks them against the dashboard source they drive. A changed export signature thus fails here, rather than at runtime inside a measurement. node runs the `.ts` files directly. As a result, this step emits nothing.
 
 ## `build`
 
@@ -33,7 +33,7 @@ START the image and require it to serve. Nothing did that before. `build` tests 
 
 `path: build` must match what `publish-ghcr` passes. The hand-off holds the binaries themselves, not a `build/` directory. A restore into the workspace root thus leaves the Dockerfile's `COPY` with nothing to find.
 
-The assertions live in `docker/imagecheck.test.ts`, not in this job. This job only restores the binary and runs the suite. An engineer thus reproduces a failure with `npm run test:image`, instead of pushing a commit to see it.
+The assertions live in `docker/imagecheck.test.ts`, not in this job. This job only restores the binary and runs the suite. An engineer thus reproduces a failure with `just test-image`, instead of pushing a commit to see it.
 
 ## `publish-ghcr`
 

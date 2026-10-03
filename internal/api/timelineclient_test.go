@@ -57,7 +57,7 @@ func TestTimelineClientRefusesJSON(t *testing.T) {
 	module, err := filepath.Abs("web/assets/timeline.js")
 	require.NoError(t, err)
 	if _, err := os.Stat(module); err != nil {
-		t.Skip("run `npm run build` first: " + module + " is missing")
+		t.Skip("run `just build` first: " + module + " is missing")
 	}
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not installed — cannot drive the browser module")

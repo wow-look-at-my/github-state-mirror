@@ -9,7 +9,7 @@
 // Needs playwright (deliberately not a devDependency, see CLAUDE.md) and the
 // built assets. It FAILS rather than skips without them.
 //
-//   npm run build && npm i -D playwright && npm run test:dashboard
+//   just build && npm i -D playwright && just test-dashboard
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -119,7 +119,7 @@ test("the Webhooks tab shows the relay targets and flags drops", async (t) => {
 
 test("the Copy JSON menu opens and closes", async (t) => {
 	for (const f of ["assets/app.js", "assets/style.css", "assets/demo-data.js"]) {
-		assert.ok(existsSync(join(WEB, f)), `${f} is missing — run npm run build first; without it this whole file would test nothing`);
+		assert.ok(existsSync(join(WEB, f)), `${f} is missing — run just build first; without it this whole file would test nothing`);
 	}
 
 	const server = serve();

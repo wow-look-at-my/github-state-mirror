@@ -44,10 +44,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y just
       - run: npm ci
-      - run: npm run build
+      - run: just build
 
-      - run: npm run check:harness
+      - run: just check-harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
         with:
@@ -74,8 +75,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y just
       - run: npm ci
-      - run: npm run build
+      - run: just build
       # See docs/ci.md: do not add an explicit cache-upload step here.
       - uses: wow-look-at-my/go-toolchain@master
         with:
@@ -96,8 +98,9 @@ jobs:
         with:
           name: go-build
           path: build
+      - run: sudo apt-get update && sudo apt-get install -y just
       - run: npm ci
-      - run: npm run test:image
+      - run: just test-image
 
   # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
   publish-ghcr:
@@ -113,8 +116,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y just
       - run: npm ci
-      - run: npm run build
+      - run: just build
       - name: Assemble the demo bundle
         id: bundle
         uses: wow-look-at-my/actions@typescript#latest

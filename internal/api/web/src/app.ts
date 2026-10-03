@@ -1,4 +1,4 @@
-// Source of truth for the dashboard front-end. Compiled by `npm run build`
+// Source of truth for the dashboard front-end. Compiled by `just build`
 // (tsc) to ../assets/app.js, which is committed (a generated artifact) and
 // embedded into the Go binary. Edit this .ts file, never the .js.
 //

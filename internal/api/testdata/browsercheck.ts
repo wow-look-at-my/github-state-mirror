@@ -18,7 +18,7 @@
 // reports the longest LONG TASK the browser observed, which counts everything
 // on the main thread whether we wrote it or not.
 //
-//   npm run build
+//   just build
 //   GSM_DUMP=/tmp go test ./internal/api -run TestTimelineWireDumpPayloads -v
 //   curl -fsSL https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js -o /tmp/timeline-view.js
 //   node internal/api/testdata/browsercheck.mjs /tmp/timeline-1h.bin /tmp/timeline-view.js

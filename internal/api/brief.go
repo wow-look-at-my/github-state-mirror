@@ -249,7 +249,7 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"- `internal/sync/webhook.go` — the invalidation, wired into `invalidateResponseCaches` / " +
 	"`invalidateForPush`.\n" +
 	"- Tests: a hit/miss pair, the shape-guard passthroughs, the invalidation, and the no-URL-keys " +
-	"assertion. Then `npm run build && go-toolchain`.\n"
+	"assertion. Then `just build && go-toolchain`.\n"
 
 // handleBrief renders the implementation brief (brief.go): every uncached
 // route joined to its captured request/response shape, plus the tier-

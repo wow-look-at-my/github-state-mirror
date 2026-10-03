@@ -1,4 +1,4 @@
-// Canned data for the standalone styling preview ONLY. Compiled by `npm run
+// Canned data for the standalone styling preview ONLY. Compiled by `just
 // build` (tsc) to ../assets/demo-data.js.
 
 import type {
