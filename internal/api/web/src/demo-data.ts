@@ -1,5 +1,5 @@
-// Canned data for the standalone styling preview ONLY. Compiled by ` build`
-// (tsc) to ../assets/demo-data.js.
+// Canned data for the standalone styling preview ONLY. Compiled by `just
+// build` (tsc) to ../assets/demo-data.js.
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
