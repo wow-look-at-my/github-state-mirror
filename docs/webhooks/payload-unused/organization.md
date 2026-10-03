@@ -20,16 +20,16 @@ What a membership change genuinely moves is not state. It is **freshness**: who 
 
 `onOrgChange` marks the org's `KindOrgRepos` sync markers stale for every principal (`InvalidateAllActors`). The next caller who needs that list re-syncs it. Nobody re-syncs until then.
 
-The cost is honest and bounded. However, it is real: this is a **fleet-wide** invalidation triggered by a change affecting **one account**. Every principal that has ever synced this org re-syncs, not just the person who joined or left. The mirror cannot narrow it, because narrowing needs a mapping from the payload's login to the principals holding that org's sync markers, and `invalidator` exposes only `InvalidateAllActors(kind, key)` — one key, all actors, by construction.
+The cost is honest and bounded. However, it is real: this is a **fleet-wide** invalidation triggered by a change affecting **one account**. Every principal that has ever synced this org re-syncs, not just the person who joined or left. The mirror cannot narrow it, because narrowing needs a mapping from the payload's login to the principals holding that org's sync markers. `invalidator` exposes only `InvalidateAllActors(kind, key)` — one key, all actors, by construction.
 
-These events are also rare. An organization's membership changes on a human timescale, not a CI timescale, so the wasted re-syncs are measured in a handful per week against a delivery log that turns over in minutes.
+These events are also rare. An organization's membership changes on a human timescale, not a CI timescale. As a result, the wasted re-syncs are measured in a handful per week against a delivery log that turns over in minutes.
 
 ## What would have to change
 
 Separate things. They are worth naming so the next person does not have to re-derive them:
 
-1. **To apply anything at all**, the mirror will first have to start storing org membership — a table, a reason to keep it, and something served from it. Nothing today reads such a thing. Adding a table purely so this handler has somewhere to write will be the tail wagging the dog.
-2. **To stop the fleet-wide invalidation** (the more useful of the two), the `invalidator` interface needs a per-principal narrowing — `InvalidateActor(principal, kind, key)` — plus a login-to-principal lookup, which `actor_identities` already provides (it maps a principal to the login GitHub verified for it). Then `member_removed`/`member_added` will restale only the affected principal's marker. That is a genuine improvement and it does use the payload. It is simply not the same thing as applying state. It is not implemented today.
+1. **To apply anything at all**, the mirror will first have to start storing org membership — a table, a reason to keep it. Something served from it. Nothing today reads such a thing. Adding a table purely so this handler has somewhere to write will be the tail wagging the dog.
+2. **To stop the fleet-wide invalidation** (the more useful of the two), the `invalidator` interface needs a per-principal narrowing — `InvalidateActor(principal, kind, key)` — plus a login-to-principal lookup. This `actor_identities` already provides (it maps a principal to the login GitHub verified for it). Then `member_removed`/`member_added` will restale only the affected principal's marker. That is a genuine improvement and it does use the payload. It is simply not the same thing as applying state. It is not implemented today.
 
 A cheaper partial step, also unimplemented: `member_invited`, `renamed` and `edited` cannot change what any account may read. As a result, those actions can be answered with no invalidation at all rather than the current unconditional one.
 
@@ -37,7 +37,7 @@ A cheaper partial step, also unimplemented: `member_invited`, `renamed` and `edi
 
 `TestWebhookHandlersConsumeTheirPayload` (`internal/sync/webhook_payload_audit_test.go`) checks this in **both** directions on every build:
 
-- Every event type in the dispatcher's switch must either have a handler that provably reads the delivery body — followed through delegation, by AST walk — or a file at `docs/webhooks/payload-unused/<event>.md`.
+- Every event type in the dispatcher's switch must either have a handler that provably reads the delivery body — followed through delegation. This is by AST walk — or a file at `docs/webhooks/payload-unused/<event>.md`.
 - An event whose handler **does** read its payload may not also carry that file. So if anyone implements either change above, the build fails until this document is deleted in the same commit. The exception cannot outlive the reason for it.
 
 The audit also refuses a stub: this file must answer each of the headings above and be substantial. This is because an exception nobody can explain at length is usually a handler that must be applying its payload.

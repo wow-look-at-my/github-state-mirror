@@ -1,15 +1,15 @@
-// Source of truth for the dashboard front-end. Compiled by `just build`
-// (tsc) to ../assets/app.js, which is committed (a generated artifact) and
-// embedded into the Go binary. Edit this .ts file, never the .js.
+// Source of truth for the dashboard front-end. Compiled by ` build` (tsc) to
+// ../assets/app.js, which is committed (a generated artifact) and embedded
+// into the Go binary. Edit this .ts file, never the .js.
 //
 // Talks to these endpoints, among others: GET
 //   /api/me -> Me GET /api/cache?scope=mine|all ->
 //   CacheResponse
 //
-// When window.__GSM_DEMO__ is defined (only the standalone styling preview ships
-// a demo-data.js that sets it), the same rendering runs against canned data and
-// a state switcher is shown. Production never defines it, so the real backend is
-// used.
+// When window.__GSM_DEMO__ is defined (only the standalone styling preview
+// ships a demo-data.js that sets it), the same rendering runs against canned
+// data and a state switcher is shown. Production never defines it, so the
+// real backend is used.
 
 import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,

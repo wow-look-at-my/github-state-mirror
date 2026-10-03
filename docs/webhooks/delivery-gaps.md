@@ -15,7 +15,7 @@ Observed live, two repos, lost pushes:
 | `grok-build` | 10:01:29Z (`3de7d7c`) | `d753927`, served on a cache HIT | 21 min and counting |
 | `webhooks` | 00:45:25Z (`a1d111c`) | `5db5993`, served on a cache HIT | 9.6 h |
 
-A stale HIT is proof on its own: a reader will have fetched the current tip. As a result, the row can only be stale if it was written before the push and nothing dropped it after. Deliveries themselves were fine — a branch push to each of two repos was applied by the same running process a bounded number of seconds, measured the same afternoon. These specific ones were lost.
+A stale HIT is proof on its own: a reader will have fetched the current tip. As a result, the row can only be stale if it was written before the push and nothing dropped it after. Deliveries themselves were fine. A branch push to each of two repos was applied by the same running process a bounded number of seconds, measured the same afternoon. These specific ones were lost.
 
 ## Why it stops a PR forever
 
@@ -57,7 +57,7 @@ The fix is at the **write**, not here. An ordinary late delivery does exactly th
 
 A write with **no** `updated_at` is refused too: it cannot prove anything, and refusing what cannot prove it is the entire job. Every real source stamps it.
 
-Only a **statement** that the PR closed records one — the `closed` delivery, or a single-PR fetch answering non-open. The reconcile sweeps (the org snapshot, the complete `/pulls` page) delete rows by inferring the close from *absence* from an eventually-consistent list, which is exactly why those paths carry a grace window. A closure recorded from a wrong inference will refuse the PR's real deliveries for a day. A wrong delete costs one refetch, and the sweep re-runs.
+Only a **statement** that the PR closed records one — the `closed` delivery, or a single-PR fetch answering non-open. The reconcile sweeps (the org snapshot, the complete `/pulls` page) delete rows by inferring the close from *absence* from an eventually-consistent list. This is exactly why those paths carry a grace window. A closure recorded from a wrong inference will refuse the PR's real deliveries for a day. A wrong delete costs one refetch, and the sweep re-runs.
 
 ### 2. Notice the staleness on read (`compare_cache.base_tip_sha`)
 
@@ -67,7 +67,7 @@ GitHub states `base_commit.sha` on every comparison: the exact base-side tip the
 
 Deliberately narrow:
 
-- Only the **base** side. GitHub states no head tip, and deriving one from the last element of `commits` is wrong the moment a comparison exceeds GitHub's 250-commit cap — a truncated list whose tail is not the head.
+- Only the **base** side. GitHub states no head tip, and deriving one from the last element of `commits` is wrong the moment a comparison exceeds GitHub's 250-commit cap. This is a truncated list whose tail is not the head.
 - A **sha** on the base side is immutable. Nothing to check.
 - A branch whose tip has **never been observed** falls through to the existing contract (flush, then TTL). Refusing there will not make any answer fresher. It will turn every first comparison into a permanent miss.
 - **Tags are out of scope.** An annotated tag's ref object is the tag object, not the commit, so its sha will never equal a base tip. Every tag-based comparison will read as moved forever.

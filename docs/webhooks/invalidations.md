@@ -102,7 +102,7 @@ What the payload can IDENTIFY decides which rows are reached. The ref spellings 
 
 A check run is not a status. A status is APPEND-ONLY, because re-posting a context mints a new object. A check run is UPDATED IN PLACE, because one id carries the run from queued through completed. The rewrite therefore never has to decide where an entry goes. It only has to know that the entry does not MOVE when it changes.
 
-That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one, which rules out completion ordering. The order was byte-identical across both samples while one run moved from in_progress to completed.
+That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one. This rules out completion ordering. The order was byte-identical across both samples while one run moved from in_progress to completed.
 
 Id ordering also fixes where a run the page does not list yet BELONGS. A creation is therefore an insert rather than a flush. This is the case that mattered. The last deliveries of a CI run are a new job's creation and a queued job's start. They land in the seconds where GitHub's own listing is furthest behind them. Flushing there sent the next reader upstream at exactly that moment. The answer it absorbed was OLDER than the payloads already in hand. A finished run then sends nothing more, so the stale page stood for its whole TTL. One measured instance held an `all-builds` gate pending for a day with every job green. The cached page still reported a job that had finished as `in_progress`, and omitted a job created a second later.
 
@@ -119,7 +119,7 @@ A page carries no sha of its own. Every ENTRY does. That is what makes a page ab
 
 ## Live job state
 
-The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job had finished was stored, because a queued or running job is a live value the GHA runner coordinator provisions against. No TTL short enough to be safe there is long enough to be worth having.
+The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job had finished was stored, because a queued or running job is a live value. The GHA runner coordinator provisions against. No TTL short enough to be safe there is long enough to be worth having.
 
 That reasoning is right about a TTL and wrong about the only instrument available. A `workflow_job` delivery carries the whole job object. A stored answer therefore does not have to age toward the truth. It can be told. The split:
 
@@ -163,4 +163,4 @@ Already done:
 - A sha's runs pages on a `workflow_run` delivery.
 - The cross-kind flushing that had every CI delivery dropping every commit-CI kind.
 
-Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-identical to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove the entry does not move.
+Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-identical to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove. The entry does not move.
