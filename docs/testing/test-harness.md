@@ -2,7 +2,7 @@
 
 ## schemaTemplate (internal/api/api_test.go)
 
-schemaTemplate is a blank cache DB built ONCE per test binary and copied for every test that needs one. Creating one costs the 45 CREATE TABLE + CREATE INDEX statements of schema.sql and the fsync that lands them. This package opens a fresh DB per test across several hundred of them, against go-toolchain's hard 30s per-binary timeout, and a CI run has already died inside exactly that exec. Copying the finished file costs a fraction of it, and database.Open then takes its existing-file path -- same pragmas, same fingerprint check, same DB.
+schemaTemplate is a blank cache DB built ONCE per test binary and copied for every test that needs one. Creating one costs every CREATE TABLE and CREATE INDEX statement of schema.sql and the fsync that lands them. This package opens a fresh DB per test across several hundred of them, against go-toolchain's hard 30s per-binary timeout, and a CI run has already died inside exactly that exec. Copying the finished file costs a fraction of it, and database.Open then takes its existing-file path -- same pragmas, same fingerprint check, same DB.
 
 ## newTestStackWithGitHub (internal/api/api_test.go)
 

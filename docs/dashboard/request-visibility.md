@@ -6,7 +6,7 @@ This is an operator ruling, not a preference (restated): **everything the mirror
 
 ## Why call-site instrumentation is not enough
 
-Recording at the call site covers the calls you thought of. The ones that go missing are the ones nobody thought of — including every call site added later, by someone who did not know the rule existed.
+Recording at the call site covers the calls you thought of. The ones that go missing are the ones nobody thought of. That includes every call site added later by someone who did not know the rule.
 
 The mirror had a live example. `internal/auth` built its own `http.Client` for the OAuth handshake. As a result, every dashboard sign-in made two real GitHub calls that appeared nowhere** — on the very page they were serving. Nothing was wrong with the code that made them. Nobody had written the recording line. Nothing can have told them to.
 
@@ -27,7 +27,7 @@ Inbound traffic is charted separately by `requestLog.observe*` end-to-end from t
 
 ## The build gate
 
-`internal/guards.TestEveryOutboundClientIsObserved` walks every non-test Go file for anything that can originate a request — an `http.Client` literal, an `httputil.ReverseProxy` literal, `http.DefaultClient` and the package-level `http.Get`/`Post`/`PostForm`/`Head`. It requires each to be declared in `observedClients` with the mechanism that makes it visible.
+`internal/guards.TestEveryOutboundClientIsObserved` walks every non-test Go file for anything that can originate a request. That covers an `http.Client` literal and an `httputil.ReverseProxy` literal. It also covers `http.DefaultClient` and the package-level `http.Get`/`Post`/`PostForm`/`Head`. It requires each to be declared in `observedClients` with the mechanism that makes it visible.
 
 - An undeclared sender **fails the build**. Verified by adding one and watching it go red, not assumed.
 - The declaration carries a **count** per file. Keying by file alone will let a second client appear in a listed file and inherit a sentence written about a different one.
