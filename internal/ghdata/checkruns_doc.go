@@ -7,7 +7,7 @@ import (
 
 // The stored shape of GET /repos/{owner}/{repo}/commits/{ref}/check-runs
 
-// StoredCheckRunApp is a check run's producing app, trimmed to its id -- the
+// StoredCheckRunApp is a check run's producing app.
 //
 //	app field the known consumer contract branches on.
 type StoredCheckRunApp struct {

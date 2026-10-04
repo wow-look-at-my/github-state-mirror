@@ -11,18 +11,8 @@ import (
 	"time"
 )
 
-// Passthrough SHAPE capture: what the request-group counters (requestgroups.go)
-// deliberately do not hold.
-//
-// The groups answer "which uncached route is hottest and why". Modeling that
-// route then needs the part the log throws away: what the request actually
-// looked like (query parameter names, Accept, who sends it) and — the piece
-// nothing recorded until now — what GitHub ANSWERS with, so the trimmed rebuild
-// can be designed without guessing GitHub's schema from memory. This store
-// samples that, per route shape, and `GET /api/brief` renders it as a ready-to-
-// act implementation brief.
-//
-// Values are never recorded. A body sample is reduced to its JSON SKELETON —
+// Passthrough SHAPE capture: what the request-group counters
+// (requestgroups.go) deliberately do not hold.
 
 const (
 	// shapeStoreCap bounds the map; past it, new shapes are dropped and known ones keep updating.
@@ -45,8 +35,7 @@ const (
 )
 
 // routeShape is everything captured about (method, route shape) that a
-// cached-route implementation would otherwise have to be reverse-engineered
-// from the calling service's source.
+// cached-route implementation.
 type routeShape struct {
 	method string
 	route  string
@@ -165,7 +154,7 @@ func (s *shapeStore) observe(o observation) {
 	if !attempted {
 		return
 	}
-	// Advances whether or not it parsed as JSON: a confirmed-non-JSON status is
+	// Advances whether it parsed as JSON.
 	sh.lastSampleAt = now
 	if skeleton != "" {
 		delete(sh.nonJSON, o.Status)

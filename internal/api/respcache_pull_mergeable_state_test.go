@@ -11,8 +11,8 @@ import (
 
 // mergeable_state was parsed off upstream and then dropped by the rebuild, on
 // every path -- the rebuilt document is what the MISS path serves too, so no
-// fetch ever healed it and a consumer simply could not read the field. It is
-// the only place GitHub says a strict up-to-date rule is what blocks a merge
+// fetch ever healed it and a consumer could not read the field. It is the
+// only place GitHub says a strict up-to-date rule is what blocks a merge
 // ("behind"), so its absence is what pushed pr-minder onto inferring
 // behindness from a compare, an answer this cache can serve stale.
 

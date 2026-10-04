@@ -146,8 +146,8 @@ func gitCommit404Upstream(u *respCacheUpstream) {
 // cached a git-commit ("a missing sha can be pushed later"), but the
 // dominant traffic is pr-minder's mergeWouldBeEmpty re-reading GC'd
 // test-merge shas on every fleet sweep, each read a fresh upstream
-// forever. The is now absorbed as an EXPIRING miss marker (rebuilt in
-// the contents route's notFoundJSON shape, relayed as a miss), and the
+// forever. The is now absorbed as an EXPIRING miss marker (rebuilt in the
+// contents route's notFoundJSON shape, relayed as a miss).
 //
 //	read is a cached hit with upstream calls.
 func TestCachedGitCommit_404MissMarker(t *testing.T) {

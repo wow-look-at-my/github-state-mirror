@@ -45,12 +45,6 @@ type OrderingStats struct {
 	worst       time.Duration
 	totalLate   time.Duration
 
-	// What the reorder window did: reordered counts BATCHES it actually re-sorted, not just held.
-	held      int64
-	reordered int64
-	totalHeld time.Duration
-
-	window  time.Duration
 	byEvent map[string]int64
 	samples []OutOfOrderSample
 }
@@ -59,24 +53,6 @@ const OutOfOrderGrace = 10 * time.Second
 
 func NewOrderingStats() *OrderingStats {
 	return &OrderingStats{byEvent: map[string]int64{}}
-}
-
-// recordHeld notes delivery's time in the reorder window; recordWindow records the window it was configured with.
-func (s *OrderingStats) recordHeld(d time.Duration) {
-	s.bump(func() {
-		s.held++
-		s.totalHeld += d
-	})
-}
-
-func (s *OrderingStats) recordWindow(w time.Duration) { s.bump(func() { s.window = w }) }
-
-// recordReordered notes a batch the window actually re-sorted -- the only
-// evidence that holding deliveries changed any outcome.
-func (s *OrderingStats) recordReordered(subject string, size int) {
-	s.bump(func() { s.reordered++ })
-	slog.Info("webhook: reorder window re-sorted a batch into event order",
-		"subject", subject, "deliveries", size)
 }
 
 // OrderingSnapshot is the stats as the API serves them.
@@ -92,12 +68,6 @@ type OrderingSnapshot struct {
 	MeanLatenessSeconds  float64            `json:"mean_lateness_seconds"`
 	ByEvent              map[string]int64   `json:"by_event,omitempty"`
 	Recent               []OutOfOrderSample `json:"recent,omitempty"`
-
-	// The reorder window's own numbers; a held count with reordered means the window buys nothing.
-	Held              int64   `json:"held"`
-	Reordered         int64   `json:"reordered"`
-	MeanHoldSeconds   float64 `json:"mean_hold_seconds"`
-	ReorderWindowSecs float64 `json:"reorder_window_seconds"`
 }
 
 // Snapshot copies the stats out. Nil-receiver-safe: an unwired dispatcher
@@ -112,10 +82,6 @@ func (s *OrderingStats) Snapshot() OrderingSnapshot {
 		Ordered: s.ordered, Superseded: s.superseded, Unorderable: s.unorderable, Failed: s.failed,
 		SupersededWithin: s.withinGrace, SupersededBeyond: s.beyondGrace,
 		GraceSeconds: OutOfOrderGrace.Seconds(), WorstLatenessSeconds: s.worst.Seconds(),
-		Held: s.held, Reordered: s.reordered, ReorderWindowSecs: s.window.Seconds(),
-	}
-	if s.held > 0 {
-		out.MeanHoldSeconds = s.totalHeld.Seconds() / float64(s.held)
 	}
 	if s.superseded > 0 {
 		out.MeanLatenessSeconds = s.totalLate.Seconds() / float64(s.superseded)

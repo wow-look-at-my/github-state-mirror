@@ -11,7 +11,6 @@ import (
 
 // Request grouping for the dashboard's Requests tab: a cumulative
 // per-(method, route-shape) counter, live on the requestLog.
-// see docs/dashboard/dashboard.md
 
 const (
 	// A route count near this cap means garbage paths, not real traffic.

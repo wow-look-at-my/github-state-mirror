@@ -10,8 +10,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Session is authenticated refresh identity: a context carrying a GitHub token and cache partition, plus the installation account it belongs to.
-// see docs/reveal-layer.md
+// Session is authenticated refresh identity: a context carrying a GitHub
+// token and cache partition.
 type Session struct {
 	Ctx            context.Context
 	Owner          string // installation account login (Organization or User)

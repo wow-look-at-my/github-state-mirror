@@ -119,7 +119,7 @@ func TestWebhookHandlersConsumeTheirPayload(t *testing.T) {
 		return false
 	}
 
-	// The dispatcher's switch IS the list of events we use. Read it from the
+	// The dispatcher's switch IS the list of events we use.
 	handle, ok := funcs["handle"]
 	require.True(t, ok, "WebhookDispatcher.handle must exist")
 
@@ -212,5 +212,3 @@ func assertExceptionDoc(t *testing.T, event, docPath, doc string) {
 			"probably should be applying the payload.", docPath, len(doc))
 	assert.Contains(t, doc, event, "%s never names the event (%s) it exempts", docPath, event)
 }
-
-// audit cache probe

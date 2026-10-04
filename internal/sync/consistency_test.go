@@ -28,7 +28,8 @@ type fakeOwner struct {
 	vis   []map[string]any // ownerRepoVisibilityQuery nodes (includes archived)
 }
 
-// consistencyFakeGitHub serves the checker's fetch surface: installations, token mints, and a /graphql per owner.
+// consistencyFakeGitHub serves the checker's fetch surface: installations,
+// token mints, and a /graphql.
 func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.Server {
 	return consistencyFakeGitHubFailing(t, owners, 0)
 }

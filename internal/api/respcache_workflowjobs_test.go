@@ -143,8 +143,7 @@ func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 // movement is a job WAITING to start carries it (the deliveries keep such a
 // page exactly right, since a queued job has no steps yet); a running job's
 // steps advance unreported and earn the shorter; a settled page keeps the
-// long. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all
-// .
+// long. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all.
 func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {

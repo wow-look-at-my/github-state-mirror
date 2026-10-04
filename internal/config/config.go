@@ -27,12 +27,6 @@ const (
 	maxPassthroughDebounce     = 30 * time.Second
 )
 
-// maxWebhookReorderWindow stays under GitHub's single-digit- delivery timeout.
-const (
-	defaultWebhookReorderWindow = 2 * time.Second
-	maxWebhookReorderWindow     = 5 * time.Second
-)
-
 type Config struct {
 	ListenAddr    string
 	DBPath        string
@@ -46,10 +40,7 @@ type Config struct {
 	// PassthroughDebounce holds an eligible uncacheable read so concurrent
 	PassthroughDebounce time.Duration
 
-	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-; skips straight to the watermark gate.
-	WebhookReorderWindow time.Duration
-
-	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
+	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) grows to it.
 	CacheMaxRows int64
 
 	// GitHub App credentials for background refreshes; the service holds no static user token otherwise.
@@ -86,21 +77,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	reorderWindow, err := parseWebhookReorderWindow(os.Getenv("WEBHOOK_REORDER_WINDOW"))
-	if err != nil {
-		return Config{}, err
-	}
 	c := Config{
-		ListenAddr:           envOr("LISTEN_ADDR", ":8080"),
-		DBPath:               envOr("DB_PATH", "github-mirror.db"),
-		WebhookSecret:        os.Getenv("WEBHOOK_SECRET"),
-		SubscriptionsDBPath:  os.Getenv("SUBSCRIPTIONS_DB_PATH"),
-		AllowedOrigins:       parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval:      refreshInterval,
-		ReplayInterval:       replayInterval,
-		PassthroughDebounce:  debounce,
-		WebhookReorderWindow: reorderWindow,
-		CacheMaxRows:         cacheMaxRows,
+		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
+		DBPath:              envOr("DB_PATH", "github-mirror.db"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
+		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RefreshInterval:     refreshInterval,
+		ReplayInterval:      replayInterval,
+		PassthroughDebounce: debounce,
+		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),
@@ -156,24 +142,6 @@ func parseReplayInterval(s string) (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: must not be negative", s)
-	}
-	return d, nil
-}
-
-// parseWebhookReorderWindow parses WEBHOOK_REORDER_WINDOW; the ceiling bounds risking GitHub's own delivery timeout.
-func parseWebhookReorderWindow(s string) (time.Duration, error) {
-	if s == "" {
-		return defaultWebhookReorderWindow, nil
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: %w", s, err)
-	}
-	if d < 0 {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must not be negative (0 dispatches on arrival)", s)
-	}
-	if d > maxWebhookReorderWindow {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must be <= %s (every delivery waits it, and GitHub times deliveries out)", s, maxWebhookReorderWindow)
 	}
 	return d, nil
 }

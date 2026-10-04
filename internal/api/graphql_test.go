@@ -244,7 +244,6 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 				State:     "OPEN",
 				CreatedAt: "2024-01-01",
 				UpdatedAt: "2024-01-02",
-				// LastCommitStatus intentionally left invalid (no CI status recorded).
 			},
 		},
 	})

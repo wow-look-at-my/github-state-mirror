@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"sync"
 	"time"
 )
 
@@ -31,10 +32,13 @@ func baseDriver() driver.Driver {
 	return db.Driver()
 }
 
+// observedConnector opens connections that share one write gate (gate.go). A
+// nil obs times nothing.
 type observedConnector struct {
-	dsn string
-	drv driver.Driver
-	obs Observer
+	dsn  string
+	drv  driver.Driver
+	obs  Observer
+	gate *writeGate
 }
 
 func (c observedConnector) Connect(context.Context) (driver.Conn, error) {
@@ -42,7 +46,7 @@ func (c observedConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &observedConn{Conn: conn, obs: c.obs}, nil
+	return &observedConn{Conn: conn, obs: c.obs, gate: c.gate}, nil
 }
 
 func (c observedConnector) Driver() driver.Driver { return c.drv }
@@ -50,28 +54,60 @@ func (c observedConnector) Driver() driver.Driver { return c.drv }
 // observedConn times the calls database/sql makes.
 type observedConn struct {
 	driver.Conn
-	obs Observer
+	obs  Observer
+	gate *writeGate
+	inTx bool
 }
 
-func (c *observedConn) timed(kind string, start time.Time) { c.obs.Observe(kind, time.Since(start)) }
+func (c *observedConn) timed(kind string, start time.Time) {
+	if c.obs != nil {
+		c.obs.Observe(kind, time.Since(start))
+	}
+}
 
+// BeginTx holds the gate until Commit or Rollback; db.begin's time includes the wait for it.
 func (c *observedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	defer c.timed(KindBegin, time.Now())
-	tx, err := c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
-	if err != nil {
+	if err := c.gate.acquire(ctx); err != nil {
 		return nil, err
 	}
-	return &observedTx{Tx: tx, obs: c.obs}, nil
+	tx, err := c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+	if err != nil {
+		c.gate.release()
+		return nil, err
+	}
+	c.inTx = true
+	return &observedTx{Tx: tx, conn: c}, nil
 }
 
+// ExecContext outside a transaction is an autocommit write, admitted through the gate for its duration.
 func (c *observedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	defer c.timed(KindExec, time.Now())
+	if !c.inTx {
+		if err := c.gate.acquire(ctx); err != nil {
+			return nil, err
+		}
+		defer c.gate.release()
+	}
 	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
 }
 
+// QueryContext admits an autocommit write (INSERT ... RETURNING) through the
+// gate, held until its rows close; reads never wait for it.
 func (c *observedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	defer c.timed(KindQuery, time.Now())
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if c.inTx || !isWriteSQL(query) {
+		return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	}
+	if err := c.gate.acquire(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if err != nil {
+		c.gate.release()
+		return nil, err
+	}
+	return &gatedRows{Rows: rows, gate: c.gate}, nil
 }
 
 func (c *observedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -88,12 +124,33 @@ func (c *observedConn) IsValid() bool { return c.Conn.(driver.Validator).IsValid
 
 type observedTx struct {
 	driver.Tx
-	obs Observer
+	conn *observedConn
 }
 
 func (t *observedTx) Commit() error {
-	start := time.Now()
-	err := t.Tx.Commit()
-	t.obs.Observe(KindCommit, time.Since(start))
-	return err
+	defer t.end()
+	defer t.conn.timed(KindCommit, time.Now())
+	return t.Tx.Commit()
+}
+
+func (t *observedTx) Rollback() error {
+	defer t.end()
+	return t.Tx.Rollback()
+}
+
+func (t *observedTx) end() {
+	t.conn.inTx = false
+	t.conn.gate.release()
+}
+
+// gatedRows releases the gate when a write query's rows close.
+type gatedRows struct {
+	driver.Rows
+	gate *writeGate
+	once sync.Once
+}
+
+func (r *gatedRows) Close() error {
+	defer r.once.Do(r.gate.release)
+	return r.Rows.Close()
 }

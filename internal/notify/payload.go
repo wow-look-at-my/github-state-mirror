@@ -29,7 +29,6 @@ type Notification struct {
 	SentAt         string `json:"sent_at"`     // RFC3339Nano: stamped per attempt
 }
 
-// identifiers are the cheap per-event correlation fields lifted from the
 type identifiers struct {
 	prNumber int64
 	ref      string
@@ -39,7 +38,7 @@ type identifiers struct {
 // extractIdentifiers pulls the correlation identifiers the event type
 // carries: PR events yield pr_number + head sha, pushes yield ref + after
 // sha, CI events yield the commit sha. Anything else includes what is cheaply
-// available and omits the rest; a malformed payload just yields fewer fields.
+// available and omits the rest; a malformed payload yields fewer fields.
 func extractIdentifiers(event webhook.Event) identifiers {
 	var ids identifiers
 	switch event.Type {

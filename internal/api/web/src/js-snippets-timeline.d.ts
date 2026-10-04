@@ -53,11 +53,7 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
         coverage?: TimeRange;
     }
 
-    /**
-     * Async history loader: invoked when the viewport reaches uncovered past.
-     * Supply the data via mergeData() before resolving; resolve
-     * `{ exhausted: true }` when nothing exists before this range.
-     */
+    /** Async history loader: invoked when the viewport reaches uncovered past. */
     export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
 
     /** What the pointer is over — handed to tooltipFor and hover/click events. */
@@ -89,10 +85,7 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
         /** Whether the view is docked to the live "now" edge. */
         get followNow(): boolean;
         set followNow(v: boolean);
-        /** Staleness marking (feature-detect with `typeof el.markFresh ===
-         * 'function'`): call markFresh() whenever the feed proves alive; if
-         * staleAfterMs elapses without one the chart renders as stale instead
-         * of extrapolating fiction. */
+        /** Staleness marking (feature-detect with `typeof el.markFresh === 'function'`): call markFresh() whenever the feed proves alive. */
         markFresh?(): void;
         staleAfterMs?: number;
     }
@@ -115,7 +108,7 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
 
     export interface StringColumn {
         dict: string[];
-        /** null when the column went unused: every row reads dict[0]. */
+        /* */
         idx: Int32Array | null;
     }
 

@@ -151,16 +151,15 @@ type storedGitRefDoc struct {
 // ApplyPushedRefTip writes a push's OWN answer into the cached ref rows: the
 // payload states the ref's exact new tip (`after`), so there is nothing to go
 // ask GitHub for. This is the apply-don't-invalidate rule (CLAUDE.md,
-// docs/webhooks/dispatch.md) on the route whose whole answer a push
-// carries -- deleting the row instead spends a needless GET on the next
-// reader and leaves the tip unknown until someone pays for it.
+// docs/webhooks/dispatch.md) on the route whose whole answer a push carries
+// -- deleting the row instead spends a needless GET on the next reader and
+// leaves the tip unknown until someone pays for it.
 //
-// Applies only to an existing row, per spelling. A verdict row is
-// LEFT for the caller to delete: promoting it to a real answer would need the
-// ref's node_id, which no push payload carries, and inventing would put a
+// Applies only to an existing row, per spelling. A verdict row is LEFT for
+// the caller to delete: promoting it to a real answer would need the ref's
+// node_id, which no push payload carries, and inventing would put a
 // fabricated field on the wire. A missing row stays missing -- there is no
-// stale answer to correct, and caching a ref nobody asked for is not this
-// function's job.
+// stale answer to correct, and caching a ref.
 func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSHA string, now time.Time, ttl time.Duration) (bool, error) {
 	// An all-zeros oid means a deletion and must never be written as a tip; fall through to the caller's delete.
 	if !IsFullHexSHA(afterSHA) || strings.Trim(afterSHA, "0") == "" {

@@ -16,7 +16,7 @@ import (
 // The incident, end to end. A PR's synchronize delivery failed; the PR then
 // merged and its closed delivery applied; the replayer asked GitHub to re-send
 // the failed, and GitHub re-sent the payload it built at the time -- a
-// pre-merge view. Applying it put a merged PR back in the cache as open, where
+// pre-merge view. Applying it put a merged PR back in the cache as open.
 
 // prPayloadAt is makePRPayload with the delivery's own updated_at, the field
 // that says WHEN the view it carries was taken.

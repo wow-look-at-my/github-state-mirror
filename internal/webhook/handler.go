@@ -13,10 +13,7 @@ import (
 	"time"
 )
 
-// dispatchTimeout bounds how long a webhook dispatch may run, so a stuck store
-const dispatchTimeout = 30 * time.Second
-
-// Dispatcher is called to process a parsed webhook event. It returns a
+// Dispatcher is called to process a parsed webhook event.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, event Event) DispatchResult
 }
@@ -26,10 +23,7 @@ type IngestNotifier interface {
 	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
 }
 
-// Recorder-only dispositions for deliveries that never reach dispatch. They
-// feed the timeline chart (every delivery attempt is recorded, whatever its
-// fate — a gap on the chart is a bug); they are never returned to GitHub,
-// whose responses stay the plain http.Error texts.
+// Recorder-only dispositions for deliveries that never reach dispatch.
 const (
 	// DispUnverified marks a delivery whose authenticity could not be
 	DispUnverified = "unverified"
@@ -77,8 +71,8 @@ func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, no
 			return
 		}
 
-		// Fail closed: without a configured secret we cannot verify that a
-		// webhook actually came from GitHub, and an unauthenticated endpoint
+		// Fail closed: without a configured secret we cannot verify that a webhook
+		// came from GitHub, and an unauthenticated endpoint
 		if secret == "" {
 			slog.Error("webhook rejected: WEBHOOK_SECRET is not set")
 			reject(DispUnverified, "webhook secret not configured")
@@ -110,25 +104,35 @@ func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, no
 		event := ParseEvent(eventType, body)
 		event.DeliveryID = r.Header.Get("X-GitHub-Delivery")
 
-		// Dispatch synchronously so the response reflects the real outcome (the
-		ctx, cancel := context.WithTimeout(r.Context(), dispatchTimeout)
-		defer cancel()
-		result := dispatcher.Dispatch(ctx, event)
-
-		if recorder != nil {
-			recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+		done := make(chan DispatchResult, 1)
+		go func() {
+			done <- apply(context.WithoutCancel(r.Context()), dispatcher, recorder, notifiers, event, receivedAt)
+		}()
+		select {
+		case result := <-done:
+			writeResult(w, result)
+		case <-r.Context().Done():
+			slog.Warn("webhook: sender went away before the delivery finished applying; it is still being applied",
+				"type", event.Type, "delivery", event.DeliveryID, "after", time.Since(receivedAt))
 		}
-
-		// Ingest is done — hand the outcome to any subscriber notifier. The
-		ingestedAt := time.Now()
-		for _, n := range notifiers {
-			if n != nil {
-				n.NotifyIngest(event, result, ingestedAt)
-			}
-		}
-
-		writeResult(w, result)
 	}
+}
+
+// apply dispatches one verified delivery, then records it and notifies subscribers.
+func apply(ctx context.Context, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers []IngestNotifier, event Event, receivedAt time.Time) DispatchResult {
+	result := dispatcher.Dispatch(ctx, event)
+
+	if recorder != nil {
+		recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+	}
+
+	ingestedAt := time.Now()
+	for _, n := range notifiers {
+		if n != nil {
+			n.NotifyIngest(event, result, ingestedAt)
+		}
+	}
+	return result
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
