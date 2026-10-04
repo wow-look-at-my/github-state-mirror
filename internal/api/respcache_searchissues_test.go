@@ -12,10 +12,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Search-results route tests. The security property under test is the
-// this route exists to protect: search results are permission-scoped per
-// GitHub token, so credentials asking the identical query must never
-// share a row.
+// Search-results route tests. The security property under test is the this
+// route exists to protect: search results are permission-scoped per GitHub
+// token, so credentials asking the identical query must never share a row.
 
 func defaultSearchIssuesUpstream(w http.ResponseWriter, r *http.Request) {
 	writeGitHubJSON(w, map[string]any{

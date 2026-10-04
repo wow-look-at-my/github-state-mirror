@@ -87,8 +87,8 @@ func TestCachedWorkflowsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.workflowsHits))
 }
 
-// The listing and the single read are separate grains, and a file-name
-// spelling is its own row: resolving it to the numeric id needs this answer.
+// The listing and the read are separate grains, and a file-name spelling is
+// its own row: resolving it to the numeric id needs this answer.
 func TestCachedWorkflows_GrainsAndSpellingsAreDistinctRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -145,7 +145,7 @@ func TestCachedWorkflows_ShapeGuardsPassThrough(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, w.Header().Get(cacheHeader))
 
-	// The single read takes no parameters at all.
+	// The read takes no parameters at all.
 	w = do(t, router, authedReq("GET", workflowSingleTarget+"?per_page=1", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, w.Header().Get(cacheHeader))

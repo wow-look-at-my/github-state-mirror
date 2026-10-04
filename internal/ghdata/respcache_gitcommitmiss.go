@@ -13,9 +13,8 @@ import (
 // Storage layer for the git-commit miss markers (git_commit_miss_cache).
 // See docs/cache/rest-routes.md for why they exist and the clear-on-upsert invariant.
 
-// GetCachedGitCommitMiss returns the cached body for a sha, or
-// ("", false) on a miss (no marker, or an expired). A hit refreshes the
-// row's LRU timestamp.
+// GetCachedGitCommitMiss returns the cached body for a sha, or ("", false) on
+// a miss (no marker, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey, shaKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo), strings.ToLower(sha)
 	row, err := s.q.GetGitCommitMissCache(ctx, dbgen.GetGitCommitMissCacheParams{

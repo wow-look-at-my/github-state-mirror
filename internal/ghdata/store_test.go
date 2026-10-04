@@ -131,7 +131,7 @@ func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 	// Truth holds PRs (stale, closed upstream, webhook missed) and; backdate touched_at beyond the grace window.
 	require.NoError(t, s.UpsertPR(ctx, mkPR(1, "stale"), now.Add(-time.Hour)))
 	require.NoError(t, s.UpsertPR(ctx, mkPR(2, "kept"), now.Add(-time.Hour)))
-	// PR was JUST webhook-applied -- inside the grace window.
+	// PR was webhook-applied -- inside the grace window.
 	require.NoError(t, s.UpsertPR(ctx, mkPR(3, "racing webhook"), now))
 
 	// The fetch snapshot (taken at fetchStart=now) contains only PR: GraphQL
@@ -259,7 +259,7 @@ func TestPruneAccessControl(t *testing.T) {
 	counts, err := s.GlobalDataCounts(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), counts.Grants, "the expired grant row is gone")
-	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired was actually deleted.
+	// GetDenyVerdict filters expiry in Go; read the raw row to prove the expired.
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-expired"})
 	assert.Equal(t, sql.ErrNoRows, err, "the expired deny row is gone")
 	_, err = s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{Principal: "user:1", ResourceKind: "contents", ResourceKey: "k-live"})
@@ -337,5 +337,3 @@ func TestGrantsByPrincipal_OnlyUnexpired(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n, "list and count agree on live grants")
 }
-
-// TestDeleteRepoCascade removes the repo and everything hanging off it.

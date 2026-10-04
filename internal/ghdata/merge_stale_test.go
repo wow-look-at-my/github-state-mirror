@@ -16,7 +16,7 @@ import (
 //
 // Tests above the proof section pass after="" to NullPRMergeableByBranch: a
 // marker without the push-tip proof columns, a real production shape (a push
-// payload with no usable after). Tests below cover the proof-recorded paths.
+// payload with no usable after).
 const (
 	staleShaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the pre-push test-merge sha
 	staleShaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // GitHub's recomputed sha
@@ -244,7 +244,7 @@ func TestSyncOrgTruth_CannotRearmMergeableOnShalessRow(t *testing.T) {
 	assert.False(t, row.MergeCommitSha.Valid)
 	assert.Equal(t, "PR_node", row.NodeID.String, "the sync must not degrade the row's REST columns")
 
-	// Control: a PURE GraphQL row (never REST-fetched) still takes the
+	// Control.
 	gql9 := gqlPR
 	gql9.Number = 9
 	require.NoError(t, s.SyncOrgTruth(ctx, "org1", orgData(
@@ -288,7 +288,3 @@ func TestNullPRMergeableByRepo(t *testing.T) {
 	assert.Equal(t, "MERGEABLE", row.Mergeable.String)
 	assert.Equal(t, staleShaA, row.MergeCommitSha.String)
 }
-
-// ---- The push-tip proof (merge_stale_ref/merge_stale_after) ----
-
-// A push overwrites the proof with its own after tip, keeping the sha.

@@ -173,13 +173,12 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	default:
 		// Every per-ref flush below covers the pushed ref in each spelling GitHub accepts for it, since caches key rows verbatim.
 		spellings := refSpellings(refName, isTag)
-		// contents and commits-list rows key the REQUESTED ref, where the
-		// empty ref means "the default branch" -- so a default-branch push
-		// also moves the empty-ref rows and flushes that spelling too. When
-		// the payload does not say which branch is the default, be
-		// conservative for exactly these empty-ref-keyed tables
-		// (repo-wide) rather than guess; the tables with no empty-ref key
-		// stay per-ref below.
+		// contents and commits-list rows key the REQUESTED ref, where the empty ref
+		// means "the default branch" -- so a default-branch push also moves the
+		// empty-ref rows and flushes that spelling too. When the payload does not
+		// say which branch is the default, be conservative for exactly these
+		// empty-ref-keyed tables (repo-wide) rather than guess; the tables with no
+		// empty-ref key stay per-ref below.
 		if defaultBranch == "" {
 			flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
 			flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))

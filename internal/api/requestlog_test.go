@@ -148,7 +148,7 @@ func TestDashboard_Requests_ActorName(t *testing.T) {
 }
 
 // TestDashboard_Requests_Admin drives real requests through the router and
-// verifies the dashboard's /api/requests reports their cache dispositions: the
+// verifies the dashboard's /api/requests reports their cache dispositions.
 //
 //	org-repos query is a miss, the a hit, and an uncached path a
 //
@@ -249,9 +249,9 @@ func TestDashboard_Requests_DBSize(t *testing.T) {
 	assert.NotContains(t, m, "db_wal_size_bytes")
 }
 
-// TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records
-// the status GitHub returned (e.g.), so the dashboard shows whether the
-// forwarded call actually succeeded — not just that it was forwarded.
+// TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough
+// records the status GitHub returned (e.g.), so the dashboard shows whether
+// the forwarded call succeeded — not that it was forwarded.
 func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 	svc := configuredAuth(t)
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

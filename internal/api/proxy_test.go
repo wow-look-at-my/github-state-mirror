@@ -156,5 +156,3 @@ func TestProxy_PreflightNotForwarded(t *testing.T) {
 	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "preflight must not be forwarded")
 }
-
-// The identical-or-passthrough rule this package follows: see docs/cache/rest-routes.md.

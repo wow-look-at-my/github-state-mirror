@@ -139,7 +139,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 		prNodes := make([]map[string]interface{}, 0, len(prs))
 		for _, pr := range prs {
-			// Get labels for this PR.
+			// Get labels for.
 			labels, _ := h.store.ListPRLabels(ctx, pr.Owner, pr.Repo, pr.Number)
 			labelNodes := make([]map[string]interface{}, 0, len(labels))
 			for _, l := range labels {

@@ -45,12 +45,12 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 
 // The missing-subscription report must come from the APP, never from the
 // delivery log. Inferring it from traffic reads "this event has not arrived
-// lately" as "this event is not configured" -- and the retained log is bounded
-// by row count, so on a CI-heavy fleet it spans minutes and every
+// lately" as "this event is not configured" -- and the retained log is
+// bounded by row count, so on a CI-heavy fleet it spans minutes and every
 // low-frequency required event (repository, label) is reported missing
 // forever while correctly subscribed. That guard cried wolf on every page
 // load, which is strictly worse than no guard: it trains the operator to skim
-// past the time a subscription really is gone.
+// past the time a subscription is gone.
 func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 	// excludes "label"
 	subscribed := []string{}
@@ -74,7 +74,7 @@ func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 }
 
 // A fully-subscribed App reports NOTHING, however quiet the delivery log is.
-// This is the exact false alarm the old traffic-inference produced.
+// This is the exact false alarm the traffic-inference produced.
 func TestMissingSubscriptions_SilentButSubscribedReportsNothing(t *testing.T) {
 	all := []string{}
 	for _, req := range ghdata.RequiredWebhookEvents {

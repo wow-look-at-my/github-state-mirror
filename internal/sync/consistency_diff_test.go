@@ -139,9 +139,9 @@ func TestRepoFieldDiffs_Table(t *testing.T) {
 // TestDefaultBranchDiff_CarriesGitHubValue: a default_branch mismatch entry
 // must ALWAYS name both sides. GraphQL's defaultBranchRef is null for a repo
 // with no commits (REST still reports the CONFIGURED default_branch name,
-// which is what the cache holds), and the old shared add() rendered that as ""
-// -- silently dropped from the report JSON by omitempty, so the --
-// entries carried no github value at all.
+// which is what the cache holds), and the shared add() rendered that as "" --
+// silently dropped from the report JSON by omitempty, so the -- entries
+// carried no github value at all.
 func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	base := dbgen.Repo{

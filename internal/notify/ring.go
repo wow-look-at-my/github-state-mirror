@@ -79,8 +79,8 @@ func (l *activityLog) record(a Attempt) {
 	}
 }
 
-// snapshot returns the counters and up to limit recent attempts, newest
-// . Nil-safe (returns values).
+// snapshot returns the counters and up to limit recent attempts, newest.
+// Nil-safe (returns values).
 func (l *activityLog) snapshot(limit int) (Counters, []Attempt) {
 	if l == nil {
 		return Counters{}, nil

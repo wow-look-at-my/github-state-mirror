@@ -94,9 +94,9 @@ func TestDispatch_CIEventsUnresolveMergeableState(t *testing.T) {
 
 // TestDispatch_PullRequestSynchronize_UnresolvesMergeableState: the fork-head
 // freeze applies to the state facet too. A synchronize carries RETAINED
-// pre-move merge fields, so a 'clean' describing the old head must not be
-// stored against the new -- the exact shape that made a stale answer
-// serve frozen for mergeable.
+// pre-move merge fields, so a 'clean' describing the head must not be stored
+// against the new -- the exact shape that made a stale answer serve frozen
+// for mergeable.
 func TestDispatch_PullRequestSynchronize_UnresolvesMergeableState(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

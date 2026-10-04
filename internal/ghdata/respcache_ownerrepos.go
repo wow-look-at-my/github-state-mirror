@@ -9,9 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the owner repo listings. Each answers "the repos of this owner
-// that THIS token can see", so a row keys the bearer's fingerprint: a shared
-// row would reveal a token's private repos to another token.
+// Storage for the owner repo listings.
 
 const (
 	// Part of the key: a user listing omits an organization's own repos.

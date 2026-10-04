@@ -229,7 +229,7 @@ type notificationsResponse struct {
 // (counters + recent attempts; resets on restart, the request-log stance) and
 // EVERY subscription with its principal — the operator view. Principals are
 // decorated with their recorded display names (actor_identities, best-effort:
-// a failed lookup just leaves names absent). Secrets are structurally absent
+// a failed lookup leaves names absent). Secrets are structurally absent
 // (subscriptionJSON has no secret field). Admin-only, like the other global
 // operator views.
 func (d *dashboard) handleNotifications(w http.ResponseWriter, r *http.Request) {

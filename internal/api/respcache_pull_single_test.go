@@ -142,11 +142,11 @@ func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 // invalidated test-merge sha; GitHub's recompute lags, so the refetch
 // re-offers the SAME sha with a resolved mergeable -- a pre-push answer by
 // definition (a tip change always changes the test-merge sha). The mirror
-// must NOT re-resolve from it (the old behavior: lagged refetch
-// re-resolved the stale sha and every later read was a hit serving it frozen,
-// never touching GitHub again): the answer is stored AND served unresolved,
-// every poll keeps missing -- each miss re-triggering GitHub's recompute --
-// until GitHub serves a NEW sha, which resolves the row and hits again.
+// must NOT re-resolve from it (the behavior: lagged refetch re-resolved the
+// stale sha and every later read was a hit serving it frozen, never touching
+// GitHub again): the answer is stored AND served unresolved, every poll keeps
+// missing -- each miss re-triggering GitHub's recompute -- until GitHub
+// serves a NEW sha, which resolves the row and hits again.
 func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -213,8 +213,8 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 // for up to MergeStaleTTL (an hour) while github.com showed the PR computed.
 // Now the marker carries the push's after tip: the next poll's answer
 // demonstrates it post-dates the push (its base tip matches), so it is
-// accepted, served RESOLVED, and the row hits again -- healed on the very
-// next poll.
+// accepted, served RESOLVED, and the row hits again -- healed on the next
+// poll.
 func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -241,7 +241,6 @@ func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 		"repository": fixtureRepo(),
 	})
 
-	// The next poll re-offers the SAME sha -- with the base tip equal to the
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "miss", w2.Header().Get(cacheHeader))
@@ -280,5 +279,3 @@ func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a rest-incomplete row must miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 }
-
-// TestCachedPull_DiffAcceptPassthrough: pr-minder's getPullDiff sends the

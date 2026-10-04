@@ -80,8 +80,7 @@ func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 //
 // A run is UPDATED IN PLACE upstream and the listing is ordered by creation
 // (measured: across consecutive runs of repo, created_at is strictly
-// descending with violations while updated_at has), so the entry
-// cannot move.
+// descending with violations while updated_at has), so the entry cannot move.
 func TestCachedWorkflowRuns_WorkflowRunEventRewritesThePage(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
