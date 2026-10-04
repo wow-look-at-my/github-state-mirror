@@ -115,7 +115,6 @@ func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
 		"a running job raises its run's floor, still touching nothing else")
 }
 
-//
 //	cut of this route violated: run-state deliveries MAINTAIN the run
 //
 // rows, so none of them may clear the repo's rows or its completeness proof.

@@ -861,8 +861,8 @@ function formatBytes(n: number): string {
     return v.toFixed(1) + " " + units[i];
 }
 
-// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g. "DB 1.4 GB
-// (+125.8 MB WAL)".
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g. "DB.4 GB
+// (+. MB WAL)".
 function dbSizeLabel(db?: number, wal?: number): string {
     if (!db) return "";
     return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
