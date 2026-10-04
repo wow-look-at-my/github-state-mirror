@@ -37,7 +37,7 @@ var DenyTTL = 5 * time.Minute
 // reconcileGrace protects webhook-absorbed truth from a racing fetch: an org
 const reconcileGrace = 2 * time.Minute
 
-// Repo visibility values (repos.visibility). Empty means unknown: the
+// Repo visibility values (repos.visibility). Empty means unknown.
 const (
 	VisibilityUnknown = ""
 	VisibilityPublic  = "public"
@@ -209,7 +209,7 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 			if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: r.Owner, Repo: r.Name, PrNumber: row.Number}); err != nil {
 				return err
 			}
-			// No closure recorded: this delete is inferred from ABSENCE, and
+			// No closure recorded: this delete is inferred from ABSENCE.
 		}
 	}
 
@@ -424,6 +424,9 @@ func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {
 		OwnerLogin:          r.OwnerLogin,
 		OwnerAvatar:         r.OwnerAvatar,
 		OwnerUrl:            r.OwnerUrl,
+		IsFork:              r.IsFork,
+		ParentFullName:      r.ParentFullName,
+		ParentDefaultBranch: r.ParentDefaultBranch,
 	}
 }
 

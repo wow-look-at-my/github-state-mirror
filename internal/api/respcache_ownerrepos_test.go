@@ -54,10 +54,10 @@ func TestCachedOwnerRepos_MissAbsorbHit(t *testing.T) {
 	assert.JSONEq(t, `[
 		{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"},
 		 "private":false,"visibility":"public","default_branch":"main",
-		 "archived":false,"disabled":false},
+		 "archived":false,"disabled":false,"fork":false},
 		{"name":"repo2","full_name":"org1/repo2","owner":{"login":"org1"},
 		 "private":true,"visibility":"private","default_branch":"main",
-		 "archived":false,"disabled":false}
+		 "archived":false,"disabled":false,"fork":false}
 	]`, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", orgReposTarget, nil))

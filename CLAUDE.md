@@ -35,7 +35,7 @@ Storage and authorization are **separate axes**:
 ## Key Constraints
 
 - **No migrations, and nothing to declare** — `schema.sql` is hashed with comments scrubbed and whitespace normalized (`internal/database/fingerprint.go`). A DB recording a different hash is nuked and recreated on open. Editing a table nukes. Editing a comment does not, and nothing else nukes at all. A data problem is Reconcile's job, never a nuke's. The number this replaced was hand-maintained, and a change that forgot it deployed against the table it no longer described. History: docs/schema-history.md
-- **sqlc codegen** — run `sqlc generate` after modifying `schema.sql` or `queries/*.sql`
+- **sqlc codegen** — the build generates `internal/database/dbgen/*.gen.go`: go-toolchain runs the `go:generate` directive in `dbgen/doc.go`, approved on the `go.mod` module line. The output is gitignored and never committed. A change to the directive changes its hash, so go-toolchain asks for the approval again.
 - **Freshness/data separation** — `internal/freshness/` must never import GitHub-specific packages
 - **Lazy fetches are detached, backoff-gated, and drained** — `freshness.Manager.doFetch` runs the fetch and its metadata writes on a `context.WithoutCancel`-derived context, bounded only by `fetchSafetyTimeout` (5m). A client that aborts its request thus cannot kill the shared multi-page org-repos fetch mid-flight, nor stop the result being stored. A short caller deadline is deliberately NOT re-applied, because the old webhook-deadline re-application killed fetches half-done. Every detached fetch is tracked in an inflight WaitGroup. `Manager.Drain(timeout)` waits for them, and `cmd/server` calls it after `ListenAndServe` returns, BEFORE `db.Close()`. A fetch thus can never write to a closed DB at shutdown. An error-state row inside its `retry_after` window is NOT re-fetched by a lazy caller. `EnsureFreshOutcome` reports the stored error instead. A failing upstream is thus not hammered on every request. A deliberate refresh (a periodic trigger) bypasses the backoff. When `/graphql` serves the stale cache after a refresh failure it sets the `X-GSM-Stale: true` and `X-GSM-Last-Fetched` response headers, and WARN-logs with the principal. Headers only: the body stays identity-test-identical.
 - **One global truth, revealed by permission (replaces per-actor isolation)** — the security boundary is the REVEAL LAYER, never storage. Revealing `owner/repo` to a principal needs the repo to be public, a live grant, or a live probe with THAT principal's own token. Four fail-closed rules must not regress. Unknown visibility counts as private. Only an authoritative denial is cached. Grants expire. A list-sync REPLACE-syncs. docs/reveal-layer.md — principal resolution, the App-identity path, and the background App credential.
@@ -63,8 +63,7 @@ Storage and authorization are **separate axes**:
 
 ## Commands
 
-- `go-toolchain` — runs mod tidy, vet, test, build (all-in-one)
-- `sqlc generate` — regenerates `internal/database/dbgen/*.gen.go` (after editing `schema.sql` or `queries/*.sql`)
+- `go-toolchain` — runs mod tidy, sqlc generation, vet, test, build (all-in-one)
 - `npm run build` — compiles `internal/api/web/src/*.ts` to the gitignored `internal/api/web/assets/*.js`. Run it on a fresh checkout before any Go build, and after editing the dashboard front-end.
 
 ## Environment Variables

@@ -82,7 +82,7 @@ type respCacheUpstream struct {
 	job     func(w http.ResponseWriter, r *http.Request)
 	// codeQuality answers GET/PATCH /repos/{o}/{r}/code-quality/setup;
 	codeQuality func(w http.ResponseWriter, r *http.Request)
-	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
+	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}.
 	gitCommit func(w http.ResponseWriter, r *http.Request)
 	// label answers GET/PATCH/DELETE /repos/{o}/{r}/labels/{name}; settable
 	label func(w http.ResponseWriter, r *http.Request)
@@ -126,7 +126,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 			"name": parts[1], "full_name": parts[0] + "/" + parts[1],
 			"private": true, "visibility": "private",
 			"html_url":       "https://github.com/" + parts[0] + "/" + parts[1],
-			"default_branch": "main",
+			"default_branch": "main", "fork": false,
 			"owner": map[string]any{
 				"login": parts[0], "avatar_url": "https://a",
 				"html_url": "https://github.com/" + parts[0],
@@ -190,7 +190,6 @@ func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/user":
-			// Per-user partitioning resolves every bearer token here (id AND
 			atomic.AddInt32(&u.userHits, 1)
 			if r.Header.Get("Authorization") == "Bearer "+testToken {
 				_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -226,7 +225,7 @@ func (u *respCacheUpstream) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
 		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
-			// The reveal probe (and the cachedRepo route's miss fetch): is
+			// The reveal probe (and the cachedRepo route's miss fetch).
 			atomic.AddInt32(&u.probeHits, 1)
 			u.probe(w, r)
 		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):

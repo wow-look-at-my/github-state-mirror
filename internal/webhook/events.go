@@ -108,18 +108,23 @@ func ParseEvent(eventType string, payload []byte) Event {
 // GraphQL org query) DO carry visibility, so this is the reveal layer's main
 // source of public/private truth.
 type repositoryObject struct {
-	Name          string  `json:"name"`
-	FullName      string  `json:"full_name"`
-	Private       *bool   `json:"private"`
-	Visibility    string  `json:"visibility"` // public/private/internal; absent falls back to Private
-	HTMLURL       string  `json:"html_url"`
-	DefaultBranch string  `json:"default_branch"`
-	PushedAt      any     `json:"pushed_at"` // RFC3339 string, or unix seconds on some events
-	Archived      bool    `json:"archived"`
-	Disabled      bool    `json:"disabled"`
-	Fork          bool    `json:"fork"`
-	Description   *string `json:"description"`
-	Owner         struct {
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       *bool  `json:"private"`
+	Visibility    string `json:"visibility"` // public/private/internal; absent falls back to Private
+	HTMLURL       string `json:"html_url"`
+	DefaultBranch string `json:"default_branch"`
+	PushedAt      any    `json:"pushed_at"` // RFC3339 string, or unix seconds on some events
+	Archived      bool   `json:"archived"`
+	Disabled      bool   `json:"disabled"`
+	Fork          *bool  `json:"fork"`
+	// Parent is on a REST repo object only; a webhook's repository object never carries it.
+	Parent *struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+	} `json:"parent"`
+	Description *string `json:"description"`
+	Owner       struct {
 		Login     string `json:"login"`
 		AvatarURL string `json:"avatar_url"`
 		HTMLURL   string `json:"html_url"`
@@ -153,6 +158,13 @@ func (r *repositoryObject) toRepo() (dbgen.Repo, bool) {
 	}
 	if ts := timestampString(r.PushedAt); ts != "" {
 		out.PushedAt = nullStr(ts)
+	}
+	if r.Fork != nil {
+		out.IsFork = sql.NullInt64{Int64: boolToInt(*r.Fork), Valid: true}
+	}
+	if r.Parent != nil && r.Parent.FullName != "" && r.Parent.DefaultBranch != "" {
+		out.ParentFullName = nullStr(r.Parent.FullName)
+		out.ParentDefaultBranch = nullStr(r.Parent.DefaultBranch)
 	}
 	return out, true
 }
