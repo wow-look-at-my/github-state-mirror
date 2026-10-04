@@ -16,7 +16,7 @@ import (
 // Writers queued behind a held lock get it in the order they arrived, each
 // handed over directly, with no newcomer slipping in between.
 func TestWriteGate_AdmitsWritersInArrivalOrder(t *testing.T) {
-	g := newWriteGate()
+	g := newWriteGate(nil)
 	require.NoError(t, g.acquire(context.Background()))
 
 	const writers = 8
@@ -47,7 +47,7 @@ func TestWriteGate_AdmitsWritersInArrivalOrder(t *testing.T) {
 
 // A waiter whose context ends leaves the queue; the gate still reaches the next writer.
 func TestWriteGate_CancelledWaiterLeavesTheQueue(t *testing.T) {
-	g := newWriteGate()
+	g := newWriteGate(nil)
 	require.NoError(t, g.acquire(context.Background()))
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -23,7 +23,7 @@ import (
 // (no row, or an expired). A hit refreshes the row's LRU stamp.
 func (s *Store) GetCachedLabel(ctx context.Context, owner, repo, name string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetLabelCache(ctx, dbgen.GetLabelCacheParams{Owner: ownerKey, Repo: repoKey, Name: name})
+	row, err := s.qx(ctx).GetLabelCache(ctx, dbgen.GetLabelCacheParams{Owner: ownerKey, Repo: repoKey, Name: name})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -33,7 +33,7 @@ func (s *Store) GetCachedLabel(ctx context.Context, owner, repo, name string, no
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchLabelCache(ctx, dbgen.TouchLabelCacheParams{
+	_ = s.qx(ctx).TouchLabelCache(ctx, dbgen.TouchLabelCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Name: name,
 	})
 	return row.Doc, true, nil
@@ -42,23 +42,23 @@ func (s *Store) GetCachedLabel(ctx context.Context, owner, repo, name string, no
 // PutCachedLabel records fetched label, then prunes the table (expired
 // rows + LRU beyond the cap).
 func (s *Store) PutCachedLabel(ctx context.Context, owner, repo, name, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertLabelCache(ctx, dbgen.UpsertLabelCacheParams{
+	if err := s.qx(ctx).UpsertLabelCache(ctx, dbgen.UpsertLabelCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Name: name, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredLabelCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredLabelCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneLabelCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneLabelCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateLabelCache drops a repo's cached labels. Repo-wide is the only
 // grain: a `label` rename moves names at, and label answers under
 // every spelling a caller might request.
 func (s *Store) InvalidateLabelCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteLabelCacheByRepo(ctx, dbgen.DeleteLabelCacheByRepoParams{
+	return s.qx(ctx).DeleteLabelCacheByRepo(ctx, dbgen.DeleteLabelCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

@@ -24,7 +24,7 @@ type CachedGitTree struct {
 // GetCachedGitTree returns the cached tree document, or (, false) on a
 // miss. Trees are immutable: no TTL check. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedGitTree(ctx context.Context, owner, repo, sha, recursive string, now time.Time) (CachedGitTree, bool, error) {
-	row, err := s.q.GetGitTreeCache(ctx, dbgen.GetGitTreeCacheParams{
+	row, err := s.qx(ctx).GetGitTreeCache(ctx, dbgen.GetGitTreeCacheParams{
 		Owner: owner, Repo: repo, Sha: sha, Recursive: recursive,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -33,7 +33,7 @@ func (s *Store) GetCachedGitTree(ctx context.Context, owner, repo, sha, recursiv
 	if err != nil {
 		return CachedGitTree{}, false, err
 	}
-	_ = s.q.TouchGitTreeCache(ctx, dbgen.TouchGitTreeCacheParams{
+	_ = s.qx(ctx).TouchGitTreeCache(ctx, dbgen.TouchGitTreeCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, Sha: sha, Recursive: recursive,
 	})
 	return CachedGitTree{Owner: row.Owner, Repo: row.Repo, SHA: row.Sha, Recursive: row.Recursive, Doc: row.Doc}, true, nil
@@ -41,11 +41,11 @@ func (s *Store) GetCachedGitTree(ctx context.Context, owner, repo, sha, recursiv
 
 // PutCachedGitTree stores tree document, then prunes.
 func (s *Store) PutCachedGitTree(ctx context.Context, c CachedGitTree, now time.Time) error {
-	if err := s.q.UpsertGitTreeCache(ctx, dbgen.UpsertGitTreeCacheParams{
+	if err := s.qx(ctx).UpsertGitTreeCache(ctx, dbgen.UpsertGitTreeCacheParams{
 		Owner: c.Owner, Repo: c.Repo, Sha: c.SHA, Recursive: c.Recursive, Doc: c.Doc,
 		FetchedAt: rfc3339(now), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	return s.q.PruneGitTreesCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitTreesCacheLRU(ctx, CacheMaxRows)
 }
