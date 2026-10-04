@@ -72,9 +72,9 @@ func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, la
 
 // DeletePR removes a PR and its labels (a closed/merged PR leaves the cache)
 // and records the closure, at closedUpdatedAt -- the updated_at of the view
-// that reported the close. Without that record the deleted row is simply
-// absent, and absent loses to a later write carrying OLDER state: the PR
-// comes back open and nothing restates the close.
+// that reported the close. Without that record the deleted row is absent, and
+// absent loses to a later write carrying OLDER state: the PR comes back open
+// and nothing restates the close.
 func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, closedUpdatedAt string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

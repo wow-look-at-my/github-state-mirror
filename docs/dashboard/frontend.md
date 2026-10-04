@@ -6,7 +6,7 @@ Extracted from CLAUDE.md, which now carries a pointer here.
 
 The dashboard's ONLY source is `internal/api/web/src/*.ts`. `npm run build` (tsc) compiles it to `internal/api/web/assets/*.js`. That JS is a **gitignored build output that is never committed**, embedded through `//go:embed`.
 
-Work only in the `.ts`. The `.js` is disposable, regenerated on demand, never hand-edited, and never added to git.
+Work only in the `.ts`. The `.js` is disposable, regenerated on demand, not hand-edited, and never added to git.
 
 The embed names each `.js` file. A missing one is therefore a Go COMPILE error. `npm run build` must run before any Go build or test. CI's `build` job runs `npm ci && npm run build` ahead of `go-toolchain` for exactly that reason.
 

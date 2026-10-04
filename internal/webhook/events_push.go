@@ -13,8 +13,7 @@ type PushPayload struct {
 	Repo  string
 	Ref   string // e.g. "refs/heads/main"
 	// RefName is the pushed ref's SHORT name -- "main" for refs/heads/main,
-	RefName string
-	// DefaultBranch is repository.default_branch from the payload ("" when
+	RefName       string
 	DefaultBranch string
 	PushedAt      string // RFC3339
 
@@ -46,7 +45,7 @@ func shortRefName(ref string) string {
 	return ""
 }
 
-// PushCommit is commit object from a push payload. The payload states the
+// PushCommit is commit object from a push payload.
 type PushCommit struct {
 	ID             string
 	TreeID         string
@@ -134,7 +133,7 @@ func ParsePushPayload(raw json.RawMessage) (PushPayload, error) {
 const maxChainedPushCommits = 20
 
 // ChainedCommits returns the pushed commits with a trustworthy linear parent
-// chain -- commits[]'s parent is `before`, each subsequent commit's parent is
+// chain -- commits[]'s parent is `before`.
 func (p PushPayload) ChainedCommits() []PushCommit {
 	n := len(p.Commits)
 	if n == 0 || n >= maxChainedPushCommits || p.Forced {
@@ -148,7 +147,6 @@ func (p PushPayload) ChainedCommits() []PushCommit {
 	return out
 }
 
-// ParentForChained returns the derived parent sha for the i-th commit of a
 func (p PushPayload) ParentForChained(chain []PushCommit, i int) string {
 	if i == 0 {
 		return p.Before

@@ -43,7 +43,7 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 	assert.Zero(t, count, "a 200 diff must store nothing")
 }
 
-// TestCachedPullDiff_406VerdictCached: an oversized PR's diff read earns a
+// TestCachedPullDiff_406VerdictCached.
 //
 //	"diff too large" from GitHub, and pr-minder re-earns it around every
 //

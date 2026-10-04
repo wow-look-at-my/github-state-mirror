@@ -16,7 +16,6 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// These tests lock the push handler's merge-field invalidation against the
 //  H1 holes: an error in another step of the handler silently skipping the
 // invalidation, and an unparseable payload skipping it entirely. A skipped
 // invalidation leaves the single-PR route serving the pre-push mergeable /
@@ -44,10 +43,10 @@ func seedResolvedOpenPR(t *testing.T, store *ghdata.Store, number int64, base, s
 
 // TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide: a push whose payload
 // can't be parsed still proves something moved in the repo, so ALL open PRs'
-// merge fields are conservatively un-resolved (they just re-fetch) -- the old
-// fallback only marked org syncs stale and left the frozen values serving.
-// The moved branch is unknown, so NO stale-sha marker is recorded (an unmoved
-// PR's re-offered sha is valid and must re-absorb immediately).
+// merge fields are conservatively un-resolved (they re-fetch) -- the fallback
+// only marked org syncs stale and left the frozen values serving. The moved
+// branch is unknown, so NO stale-sha marker is recorded (an unmoved PR's
+// re-offered sha is valid and must re-absorb immediately).
 func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 	d, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -69,10 +68,10 @@ func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 }
 
 // TestOnPush_MergeInvalidationSurvivesPushedAtFailure: the merge-field
-// un-resolve must run even when a later step of the handler fails. The old
-// handler ordered SetRepoPushedAt and returned on its error, so a
-// transient DB failure skipped the invalidation entirely and the pre-push
-// answer kept serving as a hit. The repos table is broken here (renamed) so
+// un-resolve must run even when a later step of the handler fails. The
+// handler ordered SetRepoPushedAt and returned on its error, so a transient
+// DB failure skipped the invalidation entirely and the pre-push answer kept
+// serving as a hit. The repos table is broken here (renamed) so
 // SetRepoPushedAt fails exactly like a transient DB error -- pull_requests is
 // untouched and the invalidation must land regardless.
 func TestOnPush_MergeInvalidationSurvivesPushedAtFailure(t *testing.T) {

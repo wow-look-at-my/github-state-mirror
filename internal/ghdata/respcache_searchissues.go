@@ -12,9 +12,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// State for GET /search/issues?q=...&per_page=...&page=... -- the
-
-// SearchIssuesCacheTTL is short: no webhook narrows the staleness window for
+// SearchIssuesCacheTTL is short.
 const SearchIssuesCacheTTL = 30 * time.Second
 
 // SearchIssuesQueryKey hashes the modeled shape (q, per_page, page) into the

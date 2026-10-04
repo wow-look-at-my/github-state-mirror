@@ -12,10 +12,8 @@ import (
 // Storage for the App-JWT-authed installation lookups, keyed by the verified app id.
 // see docs/cache/rest-routes.md
 
-// CachedRepoInstallation is the absorbed state of repo-installation
-// response (App-JWT authed; keyed by the verified "app:<id>"). Status is
-// for a real installation and for the "not installed here" verdict, whose
-// only other field is Message.
+// CachedRepoInstallation is the absorbed state of repo-installation response
+// (App-JWT authed; keyed by the verified "app:<id>").
 type CachedRepoInstallation struct {
 	Owner               string // lowercased
 	Repo                string // lowercased

@@ -10,7 +10,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// GitHub Actions run state: global truth, maintained by webhooks, and the
+// GitHub Actions run state: global truth, maintained by webhooks.
 
 // workflowRunRetention: a completed run untouched this long is dropped;
 const workflowRunRetention = 14 * 24 * time.Hour

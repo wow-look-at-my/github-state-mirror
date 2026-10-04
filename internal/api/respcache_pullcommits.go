@@ -12,7 +12,6 @@ import (
 )
 
 // The cached PR commits list (tier): GET /repos/{owner}/{repo}/pulls/{number}/commits, reusing the repo commits-list storage whole.
-// see docs/cache/rest-routes.md
 
 const (
 	pullCommitsDefaultPerPage = 30

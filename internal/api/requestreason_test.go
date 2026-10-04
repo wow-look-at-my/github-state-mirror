@@ -88,8 +88,7 @@ func TestRequestLog_PassQuerySamplePrefersNonEmpty(t *testing.T) {
 
 // TestPassthroughReasons_EndToEnd drives real production traffic shapes through the router and asserts each uncached forward records WHY.
 func TestPassthroughReasons_EndToEnd(t *testing.T) {
-	// The per-route aggregate below counts what the cases recorded, so every
-	// case must have finished before it is read.
+	// The per-route aggregate below counts what the cases recorded, so every case must have finished before it is read.
 	t.Serial()
 	svc := configuredAuth(t)
 	u := newWorkflowRunsUpstream()

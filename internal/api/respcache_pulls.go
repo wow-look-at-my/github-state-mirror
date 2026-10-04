@@ -17,8 +17,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Cached PR REST routes (tier of the cache contract, like respcache.go): the open-PR list, the single PR,
-// and the repo installation lookup. see docs/cache/rest-routes.md
+// Cached PR REST routes (tier of the cache contract, like respcache.go): the
+// open-PR list, the PR.
 
 const (
 	// pullsListCacheTTL is only the backstop for a missed pull_request delivery; webhooks are the maintenance.

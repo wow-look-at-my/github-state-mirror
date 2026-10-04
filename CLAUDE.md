@@ -114,3 +114,4 @@ Storage and authorization are **separate axes**:
 - `SESSION_SECRET` (optional) — HMAC key for session cookies. Unset means a random per-process key, so sessions reset on restart. Set it in production.
 - `ADMIN_LOGINS` (optional) — comma-separated logins that get the admin dashboard views: all principals, truth browse, and the consistency check. It defaults to `PazerOP` and is case-insensitive.
 - `BASE_URL` (optional) — public base URL, such as `https://github-state-mirror.pazer.io`, used to build the OAuth `redirect_uri`. When unset it is derived from the request, honoring `X-Forwarded-Proto`.
+@AGENTS.md

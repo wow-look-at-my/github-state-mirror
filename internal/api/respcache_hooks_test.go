@@ -213,7 +213,7 @@ func TestCachedHooks_WriteFlushesEveryCredential(t *testing.T) {
 			require.Less(t, wr.Code, 400)
 			assert.Empty(t, wr.Header().Get(cacheHeader), "a write is forwarded, never rebuilt")
 
-			// BOTH credentials must now miss, not just the writer.
+			// BOTH credentials must now miss, not the writer.
 			assert.Equal(t, "miss", do(t, router, hooksReq("GET", tc.get, "tok-a")).Header().Get(cacheHeader),
 				"the writer must not read back its own stale listing")
 			assert.Equal(t, "miss", do(t, router, hooksReq("GET", tc.get, "tok-b")).Header().Get(cacheHeader),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -16,7 +17,34 @@ type WebhookDispatcher struct {
 	mgr      invalidator
 	store    *ghdata.Store
 	ordering *OrderingStats
-	reorder  *reorderBuffer
+
+	// inflight counts running dispatches, so shutdown can wait for them before the DB closes.
+	inflightMu sync.Mutex
+	inflight   sync.WaitGroup
+}
+
+// Drain waits for every running dispatch to finish, or for timeout; true when all finished.
+func (d *WebhookDispatcher) Drain(timeout time.Duration) bool {
+	d.inflightMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		d.inflight.Wait()
+		close(done)
+	}()
+	d.inflightMu.Unlock()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func (d *WebhookDispatcher) track() func() {
+	d.inflightMu.Lock()
+	d.inflight.Add(1)
+	d.inflightMu.Unlock()
+	return d.inflight.Done
 }
 
 // invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
@@ -24,16 +52,10 @@ type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
-// NewWebhookDispatcher has no reorder window; production uses NewWebhookDispatcherWindowed instead.
-func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
-	return NewWebhookDispatcherWindowed(mgr, store, 0)
-}
-
-// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-.
+// NewWebhookDispatcher applies deliveries on arrival, ordered by the per-subject watermark.
 // see docs/webhooks/ordering.md
-func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
-	stats := NewOrderingStats()
-	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
+func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
+	return &WebhookDispatcher{mgr: mgr, store: store, ordering: NewOrderingStats()}
 }
 
 // Ordering exposes what the out-of-order gate has seen, for the dashboard.
@@ -49,20 +71,14 @@ func applied(detail string) outcome { return outcome{disposition: webhook.DispAp
 func ignored(detail string) outcome { return outcome{disposition: webhook.DispIgnored, detail: detail} }
 func errored(detail string) outcome { return outcome{disposition: webhook.DispError, detail: detail} }
 
-// Dispatch processes a webhook event, applying it to global truth, and returns
-// what it did. It also records the delivery in the global webhook log so the
-// dashboard can show whether data was preserved.
+// Dispatch processes a webhook event, applying it to global truth, and
+// returns what it did.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
-	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
-	if order, ok := webhook.OrderOf(event); ok {
-		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
-			return res
-		}
-	}
+	defer d.track()()
 	return d.dispatchNow(ctx, event)
 }
 
-// dispatchNow processes delivery, past any reordering hold.
+// dispatchNow applies one delivery on arrival; the watermark in checkOrder refuses a view older than one already applied.
 func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
@@ -159,16 +175,13 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		}
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
-	// A branch push makes GitHub recompute mergeability for every open PR
-	// based on (or heading from) that branch, and no webhook ever carries the
+	// A branch push makes GitHub recompute mergeability for every open PR based
+	// on (or heading from) that branch, and no webhook ever carries the
 	// recomputed value -- so un-resolve the cached mergeable (remembering the
-	// invalidated test-merge sha: a refetch re-offering it is presumed
-	// pre-push -- plus the push's after tip, the proof by which an answer
-	// that already reflects this push is recognized and accepted) rather than
-	// let the single-PR cache keep serving the pre-push answer. This
-	// invalidation runs, before any other fallible step, so a transient
-	// error elsewhere in the handler can never skip it -- each step logs its
-	// own failure and the handler carries on.
+	// invalidated test-merge sha: a refetch re-offering it is presumed pre-push
+	// -- plus the push's after tip, the proof by which an answer that already
+	// reflects this push is recognized and accepted) rather than let the
+	// single-PR cache keep serving the pre-push answer.
 	if branch := payload.Branch(); branch != "" {
 		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
@@ -300,9 +313,9 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 		return applied("removed deleted repo " + owner + "/" + name)
 
 	case "renamed":
-		// The payload's repository object carries the NEW name (already
-		// upserted); changes.repository.name.from names the old row, whose
-		// dependents are now orphaned truth -- drop them.
+		// The payload's repository object carries the NEW name (already upserted);
+		// changes.repository.name.from names the row, whose dependents are now
+		// orphaned truth -- drop them.
 		if from := webhook.ParseRenameFrom(event.Raw); from != "" && from != name {
 			if err := d.store.DeleteRepoCascade(ctx, owner, from); err != nil {
 				slog.Warn("webhook: delete renamed-away repo failed", "repo", owner+"/"+from, "error", err)

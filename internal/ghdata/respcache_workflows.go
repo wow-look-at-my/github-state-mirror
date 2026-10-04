@@ -9,9 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the Actions WORKFLOW definitions. A definition is not a run: it
-// changes only when a push edits .github/workflows, which is why both grains
-// share a table and a repo-wide flush.
+// Storage for the Actions WORKFLOW definitions.
 
 const (
 	// The grains: the repo's listing, and a single workflow.

@@ -83,10 +83,10 @@ func (c *ConsistencyChecker) applyOwner(
 	}
 
 	for _, r := range data.Repos {
-		// . default_branch_status: explicit set INCLUDING NULL where
-		// mismatched -- the COALESCE upsert can never null a stale rollup
-		// (the gcc/.github drift class: the tip advanced to a commit with no
-		// CI and the old rollup stuck forever).
+		// . default_branch_status: explicit set INCLUDING NULL where mismatched --
+		// the COALESCE upsert can never null a stale rollup (the gcc/.github drift
+		// class: the tip advanced to a commit with no CI and the rollup stuck
+		// forever).
 		if cr, ok := cachedRepos[r.Name]; ok && ns(cr.DefaultBranchStatus) != ns(r.DefaultBranchStatus) {
 			if err := c.store.SetRepoDefaultBranchStatus(ctx, owner, r.Name, r.DefaultBranchStatus); err != nil {
 				return fmt.Errorf("set default branch status %s/%s: %w", owner, r.Name, err)
@@ -105,12 +105,11 @@ func (c *ConsistencyChecker) applyOwner(
 					if err != nil {
 						return err
 					}
-					// Only ROWS that contradict the terminal verdict need the
-					// correction: with rows there is nothing to poison the
-					// next recompute, and the sync's COALESCE upsert already
-					// stamped the non-null verdict on the column -- correcting
-					// anyway would tally every checks-less PR as "corrected" on
-					// every apply, forever.
+					// Only ROWS that contradict the terminal verdict need the correction:
+					// with rows there is nothing to poison the next recompute, and the
+					// sync's COALESCE upsert already stamped the non-null verdict on the
+					// column -- correcting anyway would tally every checks-less PR as
+					// "corrected" on every apply, forever.
 					if len(states) > 0 && ghdata.RollupState(states) != ghRollup {
 						if err := c.store.ForceCheckRollup(ctx, owner, r.Name, sha, sql.NullString{String: ghRollup, Valid: true}); err != nil {
 							return fmt.Errorf("force rollup %s#%d: %w", repoKey, fpr.Number, err)
@@ -136,7 +135,6 @@ func (c *ConsistencyChecker) applyOwner(
 						ap.CheckRowsDeleted += len(states)
 					}
 				default:
-					// PENDING/EXPECTED: not terminal; completions will recompute, so touching rows here only loses real state.
 				}
 			}
 
@@ -153,9 +151,9 @@ func (c *ConsistencyChecker) applyOwner(
 		}
 	}
 
-	// . Stamp the app-installation freshness marker so truth_freshness (and
-	// the dashboard) reflect that this owner's truth was just refreshed.
-	// Best-effort: the corrections above already landed.
+	// . Stamp the app-installation freshness marker so truth_freshness (and the
+	// dashboard) reflect that this owner's truth was refreshed. Best-effort: the
+	// corrections above already landed.
 	if c.fresh != nil {
 		exp := now.Add(6 * time.Hour) // the org_repos policy TTL
 		lastFetched := now

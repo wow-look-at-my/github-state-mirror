@@ -6,15 +6,14 @@ import (
 )
 
 // A create or delete delivery states which ref appeared or vanished, and
-// whether it is a branch or a tag. It carries NO sha, so a create cannot write
-// a tip. What it can do is say that a cached answer about this ref is wrong.
+// whether it is a branch or a tag.
 type RefLifecyclePayload struct {
 	Owner string
 	Repo  string
 	Ref   string // the SHORT name here, where a push sends the qualified form
 	// "branch" or "tag": a tag and a branch sharing a name key differently.
 	RefType  string
-	PushedAt string // repository.pushed_at, the clock this delivery orders by
+	PushedAt string // repository.pushed_at.
 }
 
 // IsTag reports whether the delivery is about a tag.

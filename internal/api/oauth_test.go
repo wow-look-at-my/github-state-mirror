@@ -15,9 +15,7 @@ import (
 
 var relayURLMu sync.Mutex
 
-// swapRelayURL repoints a relay target for the length of the test. A relay
-// target is a package-level var and the runner overlaps tests, so an
-// unserialised restore sends another test's request to the real github.com.
+// swapRelayURL repoints a relay target for the length of the test.
 func swapRelayURL(t *testing.T, target *string, url string) {
 	t.Helper()
 	relayURLMu.Lock()

@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A webhook-maintained row has to be rebuild-complete for the cached single-PR
-// route, and mergeable_state is the field that says a strict up-to-date rule
-// is what blocks the merge. Dropping it here would leave the stored state
-// frozen beside a mergeable the same payload just refreshed.
+// A webhook-maintained row has to be rebuild-complete for the cached
+// single-PR route, and mergeable_state is the field that says a strict
+// up-to-date rule is what blocks the merge. Dropping it here would leave the
+// stored state frozen beside a mergeable the same payload refreshed.
 func TestParsePRPayload_MergeableState(t *testing.T) {
 	payloadWith := func(state any) json.RawMessage {
 		pr := map[string]any{

@@ -14,7 +14,7 @@ import (
 )
 
 // ConsistencyChecker compares the GLOBAL truth store against GitHub's live
-// state and reports the drift -- comparison for the cache. It fetches
+// state and reports the drift -- comparison for the cache.
 type ConsistencyChecker struct {
 	gh    *ghclient.Client
 	store *ghdata.Store
@@ -26,11 +26,11 @@ func NewConsistencyChecker(gh *ghclient.Client, store *ghdata.Store, fresh *fres
 	return &ConsistencyChecker{gh: gh, store: store, fresh: fresh, app: app}
 }
 
-// Available reports whether the checker can run. The consistency check needs the
+// Available reports whether the checker can run.
 func (c *ConsistencyChecker) Available() bool { return c.app != nil }
 
 // InstallationRateLimit is the GitHub rate-limit status for App installation
-// (the credential the background fetches and the consistency check actually use).
+// (the credential the background fetches and the consistency check use).
 type InstallationRateLimit struct {
 	Installation string                                `json:"installation"` // account login
 	AccountType  string                                `json:"account_type,omitempty"`
@@ -86,7 +86,7 @@ type ConsistencyReport struct {
 	CheckStartedAt string    `json:"check_started_at"`
 	OrgsChecked    []string  `json:"orgs_checked"` // owners actually re-fetched and diffed
 	OrgsSkipped    []OrgSkip `json:"orgs_skipped,omitempty"`
-	// TruthFreshness is, per owner, the most recent org list-sync any
+	// TruthFreshness is,, the most recent org list-sync any
 	TruthFreshness map[string]ScopeFreshness `json:"truth_freshness,omitempty"`
 	Summary        CheckSummary              `json:"summary"`
 	// Applied tallies apply-mode corrections; nil on a read-only check.
@@ -100,7 +100,7 @@ type ScopeFreshness struct {
 	State         string `json:"state"`                     // fresh/stale/fetching/error/unknown/never_synced
 	LastFetchedAt string `json:"last_fetched_at,omitempty"` // RFC3339 of the last successful fetch
 	Error         string `json:"error,omitempty"`           // last fetch error, if any
-	Principal     string `json:"principal,omitempty"`       // whose sync marker this is
+	Principal     string `json:"principal,omitempty"`
 	// PrincipalName is Principal's recorded display name (user login / app
 	PrincipalName string `json:"principal_name,omitempty"`
 }
@@ -114,27 +114,24 @@ type OrgSkip struct {
 
 // CheckSummary is the headline tally.
 type CheckSummary struct {
-	OrgsChecked       int `json:"orgs_checked"`
-	ReposCached       int `json:"repos_cached"`
-	OpenPRsCached     int `json:"open_prs_cached"`
-	Discrepancies     int `json:"discrepancies"`
-	ReposOnlyInCache  int `json:"repos_only_in_cache"`
-	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
-	// ReposOnlyOnGitHubPrivate is the subset of ReposOnlyOnGitHub that are
+	OrgsChecked              int `json:"orgs_checked"`
+	ReposCached              int `json:"repos_cached"`
+	OpenPRsCached            int `json:"open_prs_cached"`
+	Discrepancies            int `json:"discrepancies"`
+	ReposOnlyInCache         int `json:"repos_only_in_cache"`
+	ReposOnlyOnGitHub        int `json:"repos_only_on_github"`
 	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
-	// ReposOnlyInCacheArchived is the subset of ReposOnlyInCache that are
 	ReposOnlyInCacheArchived int `json:"repos_only_in_cache_archived"`
 	PRsOnlyInCache           int `json:"prs_only_in_cache"`
 	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
 	FieldMismatches          int `json:"field_mismatches"`
-	// VisibilityLeaks counts repos cached PUBLIC that GitHub says are
-	VisibilityLeaks int `json:"visibility_leaks"`
-	// RacedDuringCheck counts informational raced_during_check entries: the
+	VisibilityLeaks          int `json:"visibility_leaks"`
+	// RacedDuringCheck counts informational raced_during_check entries.
 	RacedDuringCheck int `json:"raced_during_check"`
 }
 
 // AppliedSummary tallies what apply mode (POST /api/cache/check?apply=true)
-// actually corrected, per action.
+// corrected, per action.
 type AppliedSummary struct {
 	ReposAbsorbed          int `json:"repos_absorbed"`
 	PRsAbsorbed            int `json:"prs_absorbed"`
@@ -156,16 +153,13 @@ type Discrepancy struct {
 	Issue string `json:"issue"`        // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown | raced_during_check
 	Field string `json:"field,omitempty"`
 	// Which field differs (issue==field_mismatch / visibility_*)
-	Cached string `json:"cached,omitempty"`
-	GitHub string `json:"github,omitempty"`
-	// Visibility is the live visibility ("private"/"internal") on an
+	Cached     string `json:"cached,omitempty"`
+	GitHub     string `json:"github,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
-	// Archived marks an only_in_cache repo whose absence from the org data is
-	Archived bool `json:"archived,omitempty"`
-	// Title/UpdatedAt/TouchedAt carry the cached row's detail on
-	Title     string `json:"title,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	TouchedAt string `json:"touched_at,omitempty"`
+	Archived   bool   `json:"archived,omitempty"`
+	Title      string `json:"title,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	TouchedAt  string `json:"touched_at,omitempty"`
 	// ServedNow marks a PR-existence discrepancy whose repo has a LIVE
 	ServedNow bool   `json:"served_now,omitempty"`
 	Note      string `json:"note,omitempty"`
@@ -173,12 +167,11 @@ type Discrepancy struct {
 	Fix string `json:"fix,omitempty"`
 }
 
-// Check runs the read-only consistency check for the global truth store. When
+// Check runs the read-only consistency check for the global truth store.
 func (c *ConsistencyChecker) Check(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
 	return c.run(ctx, orgFilter, false, nil)
 }
 
-// CheckAndApply runs the consistency check and then CORRECTS the drift from
 func (c *ConsistencyChecker) CheckAndApply(ctx context.Context, orgFilter string) (*ConsistencyReport, error) {
 	return c.run(ctx, orgFilter, true, nil)
 }
@@ -256,7 +249,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 	for i, owner := range owners {
 		progress.emit(ProgressEvent{Phase: "owner", Owner: owner, Index: i + 1, Total: len(owners)})
 
-		// The owner's most-recent sync staleness, whether or not the owner
+		// The owner's most-recent sync staleness, whether the owner
 		c.recordTruthFreshness(ctx, report, owner, actorNames)
 
 		skip := func(reason string) {
@@ -290,7 +283,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 			continue
 		}
 
-		// Repo visibility + archive state as the App sees it, via the
+		// Repo visibility + archive state as the App sees it.
 		progress.emit(ProgressEvent{Phase: "visibility", Owner: owner})
 		visibility, verr := c.gh.OwnerRepoVisibilities(fetchCtx, owner)
 		if verr != nil {
@@ -358,7 +351,7 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 
 // actorNames returns the recorded principal->display-name map (from
 // actor_identities), or an empty map when the lookup is unavailable or fails
-// — the report's principal keys then simply carry no name.
+// — the report's principal keys then carry no name.
 func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
 	names := make(map[string]string)
 	if c.store == nil {
@@ -374,8 +367,6 @@ func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
 	return names
 }
 
-// recordTruthFreshness copies the most recently fetched org-sync marker for
-//
 //	owner into the report (read-only). An owner with NO marker rows is
 //
 // surfaced explicitly as "never_synced" -- silently omitting it hid "the fleet

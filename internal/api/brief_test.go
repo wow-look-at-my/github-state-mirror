@@ -83,11 +83,11 @@ func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 // TestShapeStoreNonJSONBodyStopsAskingForever is the regression test for the
 // stall this fix removes: a route whose answer is genuinely never JSON (a
 // diff/patch representation, a plain-text from requireAuth) used to keep
-// wantsBody returning true on every single subsequent passthrough forever,
-// because lastSampleAt only ever advanced inside the "skeleton succeeded"
-// branch. A confirmed-non-JSON sample must resample on the same -minute
-// cadence as a real skeleton, not on every request, and the brief must say so
-// as a permanent fact rather than "not yet captured".
+// wantsBody returning true on every subsequent passthrough forever, because
+// lastSampleAt only ever advanced inside the "skeleton succeeded" branch. A
+// confirmed-non-JSON sample must resample on the same -minute cadence as a
+// real skeleton, not on every request, and the brief must say so as a
+// permanent fact rather than "not yet captured".
 func TestShapeStoreNonJSONBodyStopsAskingForever(t *testing.T) {
 	s := newShapeStore()
 	route := "/repos/{owner}/{repo}/pulls/{number}"
@@ -124,7 +124,7 @@ func TestShapeStoreNonJSONBodyStopsAskingForever(t *testing.T) {
 	require.NotContains(t, md, "No response captured yet")
 }
 
-// decodeSample must never choke on a body that is not actually gzip (a
+// decodeSample must never choke on a body that is not gzip (a
 // Content-Encoding lie, or identity/absent): it falls back to the raw bytes
 // rather than losing the sample.
 func TestDecodeSamplePassesThroughNonGzip(t *testing.T) {

@@ -14,8 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Cached branches-list route (tier of the cache contract, like respcache.go): GET /repos/{owner}/{repo}/branches
-// see docs/cache/rest-routes.md
+// Cached branches-list route (tier of the cache contract, like respcache.go).
 
 const (
 	// branchesDefaultPerPage is GitHub's default page size when per_page is absent.

@@ -225,8 +225,7 @@ func TestObservationsFor_NilStore(t *testing.T) {
 }
 
 // TestPrune_PastResetDies: an observation whose reset moment has passed is
-// dead — an active identity would have been re-observed with a fresh future
-// reset — and Snapshot never returns it; entries with future resets survive.
+// dead — an active identity.
 func TestPrune_PastResetDies(t *testing.T) {
 	s := New()
 	now := time.Unix(1_800_000_000, 0)
@@ -354,7 +353,7 @@ func TestObserve_Name(t *testing.T) {
 	require.Len(t, s.Snapshot(), 1)
 	assert.Equal(t, "pr-minder", s.Snapshot()[0].Name, "a nameless reading must not erase the known name")
 
-	// A new verified name overwrites (e.g. an app was renamed).
+	// A new verified name overwrites (e.g. an app.
 	s.Observe("app:99", "pr-minder-2", respWith(headers))
 	assert.Equal(t, "pr-minder-2", s.Snapshot()[0].Name)
 

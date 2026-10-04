@@ -82,7 +82,7 @@ type respCacheUpstream struct {
 	job     func(w http.ResponseWriter, r *http.Request)
 	// codeQuality answers GET/PATCH /repos/{o}/{r}/code-quality/setup;
 	codeQuality func(w http.ResponseWriter, r *http.Request)
-	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}; settable per
+	// gitCommit answers GET /repos/{o}/{r}/git/commits/{sha}.
 	gitCommit func(w http.ResponseWriter, r *http.Request)
 	// label answers GET/PATCH/DELETE /repos/{o}/{r}/labels/{name}; settable
 	label func(w http.ResponseWriter, r *http.Request)
@@ -190,7 +190,6 @@ func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/user":
-			// Per-user partitioning resolves every bearer token here (id AND
 			atomic.AddInt32(&u.userHits, 1)
 			if r.Header.Get("Authorization") == "Bearer "+testToken {
 				_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
@@ -226,7 +225,7 @@ func (u *respCacheUpstream) handler() http.Handler {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 777, "slug": "testapp"})
 		case regexp.MustCompile(`^/repos/[^/]+/[^/]+$`).MatchString(r.URL.Path):
-			// The reveal probe (and the cachedRepo route's miss fetch): is
+			// The reveal probe (and the cachedRepo route's miss fetch).
 			atomic.AddInt32(&u.probeHits, 1)
 			u.probe(w, r)
 		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
@@ -371,12 +370,11 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key
 // the trimmed contract bans: url, *_url, or _links. `allowed` names EXACT key
-// names exempted for that route -- pinned exceptions for consumer-read
-// link fields (the required-builds hook renders per-status `target_url` and
+// names exempted for that route -- pinned exceptions for consumer-read link
+// fields (the required-builds hook renders per-status `target_url` and
 // per-run `details_url`/`html_url`, and reads the workflow-run `html_url`;
-// consumer survey --). Adding an exception requires a fresh consumer
-// survey, per CLAUDE.md; with no allowlist the ban is total, exactly as
-// before.
+// consumer survey --). Adding an exception requires a fresh consumer survey,
+// per CLAUDE.md; with no allowlist the ban is total, exactly as before.
 func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 	t.Helper()
 	allow := set.New[string](len(allowed))

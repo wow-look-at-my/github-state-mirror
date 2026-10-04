@@ -153,7 +153,7 @@ func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []
 		}
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
 	}
-	// "unknown" is GitHub's own word for "still computing", not an answer, and
+	// "unknown" is GitHub's own word for "still computing", not an answer.
 	if p.MergeableState != "" && p.MergeableState != "unknown" {
 		pr.MergeableState = sql.NullString{String: p.MergeableState, Valid: true}
 	}
@@ -291,13 +291,13 @@ func renderPullListItem(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullListIt
 
 func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels)}
-	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate), so merged is
+	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate).
 	applySinglePullFields(&out, pr)
 	return out
 }
 
 // renderClosedPull renders the trimmed document a CLOSED/merged answer is
-// stored and served as -- rendered at absorb time, so hit and miss are
+// stored and served as -- rendered at absorb time.
 func renderClosedPull(pr dbgen.PullRequest, labels []dbgen.PrLabel, merged bool) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels), Merged: merged}
 	applySinglePullFields(&out, pr)
