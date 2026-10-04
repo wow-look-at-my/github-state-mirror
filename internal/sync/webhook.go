@@ -17,7 +17,6 @@ type WebhookDispatcher struct {
 	mgr      invalidator
 	store    *ghdata.Store
 	ordering *OrderingStats
-	reorder  *reorderBuffer
 
 	// inflight counts running dispatches, so shutdown can wait for them before the DB closes.
 	inflightMu sync.Mutex
@@ -53,16 +52,10 @@ type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
-// NewWebhookDispatcher has no reorder window; production uses NewWebhookDispatcherWindowed instead.
-func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
-	return NewWebhookDispatcherWindowed(mgr, store, 0)
-}
-
-// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-.
+// NewWebhookDispatcher applies deliveries on arrival, ordered by the per-subject watermark.
 // see docs/webhooks/ordering.md
-func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
-	stats := NewOrderingStats()
-	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
+func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
+	return &WebhookDispatcher{mgr: mgr, store: store, ordering: NewOrderingStats()}
 }
 
 // Ordering exposes what the out-of-order gate has seen, for the dashboard.
@@ -78,21 +71,14 @@ func applied(detail string) outcome { return outcome{disposition: webhook.DispAp
 func ignored(detail string) outcome { return outcome{disposition: webhook.DispIgnored, detail: detail} }
 func errored(detail string) outcome { return outcome{disposition: webhook.DispError, detail: detail} }
 
-// Dispatch processes a webhook event, applying it to global truth, and returns
-// what it did. It also records the delivery in the global webhook log so the
-// dashboard can show whether data was preserved.
+// Dispatch processes a webhook event, applying it to global truth, and
+// returns what it did.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	defer d.track()()
-	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
-	if order, ok := webhook.OrderOf(event); ok {
-		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
-			return res
-		}
-	}
 	return d.dispatchNow(ctx, event)
 }
 
-// dispatchNow processes delivery, past any reordering hold.
+// dispatchNow applies one delivery on arrival; the watermark in checkOrder refuses a view older than one already applied.
 func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 

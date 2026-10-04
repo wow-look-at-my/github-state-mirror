@@ -77,7 +77,7 @@ func main() {
 	app := buildAppAuthenticator(cfg, gh)
 
 	// see docs/webhooks/ordering.md
-	dispatcher := syncpkg.NewWebhookDispatcherWindowed(mgr, store, cfg.WebhookReorderWindow)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// see docs/notifications.md
 	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})

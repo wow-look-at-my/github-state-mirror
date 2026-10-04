@@ -132,8 +132,26 @@ func TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther(t *testing.T) {
 	assert.Equal(t, webhook.DispSuperseded, again.Disposition)
 }
 
-// The thing a reordering buffer would have bought: a push carries commit
-// objects the newer push never restates. They are immutable and
+// A CI result's newer view arriving FIRST, then its older one, ends on the newer
+// view: deliveries apply on arrival and the watermark refuses the older snapshot.
+func TestOrdering_OutOfOrderSnapshotsEndOnTheNewestView(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	const sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	newer := dispatcher.Dispatch(ctx, webhook.ParseEvent("status",
+		statusPayload(t, "org1/repo1", sha, "ci", "success", "2026-08-10T15:08:20Z")))
+	require.Equal(t, webhook.DispApplied, newer.Disposition)
+	older := dispatcher.Dispatch(ctx, webhook.ParseEvent("status",
+		statusPayload(t, "org1/repo1", sha, "ci", "pending", "2026-08-10T15:08:18Z")))
+	assert.Equal(t, webhook.DispSuperseded, older.Disposition)
+
+	states, err := store.CommitCheckStates(ctx, "org1", "repo1", sha)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"SUCCESS"}, states, "the newest view is the one left standing")
+}
+
+// A push carries commit objects the newer push never restates. They are immutable and
 // content-addressed, so absorbing them out of order is not a stale write --
 // dropping them would mean fetching them back later.
 func TestOrdering_SupersededPushStillAbsorbsItsCommits(t *testing.T) {

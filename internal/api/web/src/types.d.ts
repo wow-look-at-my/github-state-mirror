@@ -105,11 +105,6 @@ export interface OrderingSnapshot {
     mean_lateness_seconds: number;
     by_event?: Record<string, number> | null;
     recent?: OutOfOrderSample[] | null;
-    // The reorder window's own numbers.
-    held: number;
-    reordered: number;
-    mean_hold_seconds: number;
-    reorder_window_seconds: number;
 }
 
 export interface WebhooksResponse {
