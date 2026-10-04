@@ -65,15 +65,13 @@ type storedStatusListItem struct {
 //   - kind "statuses_list" documents are bare arrays with no sha in them, so
 //     only the sha-form row is provably about this commit. The branch
 //     spellings the payload names are flushed, as before.
-//
-// The check-runs kind is not touched at all: a status never appears in a check-runs listing (statuses and checks are separate surfaces upstream).
 func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string, branchRefs []string, up CommitStatusUpdate, now time.Time, ttl time.Duration) error {
 	if !IsFullHexSHA(up.SHA) || up.Context == "" || up.State == "" {
 		return nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 
-	combined, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+	combined, err := s.qx(ctx).ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
 		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindStatus,
 	})
 	if err != nil {
@@ -98,7 +96,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 		}
 	}
 
-	lists, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+	lists, err := s.qx(ctx).ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
 		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindStatusesList,
 	})
 	if err != nil {
@@ -127,7 +125,7 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 		if ref == up.SHA {
 			continue
 		}
-		if err := s.q.DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
+		if err := s.qx(ctx).DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
 			Owner: ownerKey, Repo: repoKey, Ref: ref, Kind: CommitCIKindStatusesList,
 		}); err != nil {
 			return err
@@ -146,7 +144,7 @@ func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string,
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	rows, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+	rows, err := s.qx(ctx).ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
 		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindCheckRuns,
 	})
 	if err != nil {
@@ -186,7 +184,7 @@ func (s *Store) DropCheckRunPagesContradictedByRun(ctx context.Context, owner, r
 		return 0, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	rows, err := s.q.ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
+	rows, err := s.qx(ctx).ListCommitCICacheByRepoKind(ctx, dbgen.ListCommitCICacheByRepoKindParams{
 		Owner: ownerKey, Repo: repoKey, Kind: CommitCIKindCheckRuns,
 	})
 	if err != nil {
@@ -314,13 +312,13 @@ func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun
 // in a commit's statuses, so flushing those rows too would re-fetch answers
 // the delivery cannot have changed.
 func (s *Store) InvalidateCommitCIForRefKind(ctx context.Context, owner, repo, ref, kind string) error {
-	return s.q.DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
+	return s.qx(ctx).DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref, Kind: kind,
 	})
 }
 
 func (s *Store) deleteCommitCIRow(ctx context.Context, owner, repo string, row dbgen.CommitCiCache) error {
-	return s.q.DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
+	return s.qx(ctx).DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
 		Owner: owner, Repo: repo, Ref: row.Ref, Kind: row.Kind,
 	})
 }

@@ -28,7 +28,7 @@ A **GitHub App backend** whose installation tokens rotate hourly will earn grant
 
 ## REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Fifteen REST route families are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes: the mirror **absorbs the state** contained in the response into structured tables. The mirror rebuilds a trimmed response** from that state, with **every URL field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`, `download_url`, `documentation_url`, ...), and `_links`. A small per-route **pinned allowlist** of consumer-read link fields is the exception. It holds the statuses `target_url`, the check-run `details_url`/`html_url`, and the workflow-run `html_url`. The required-builds hook renders all of them. (Consumer survey 2026-07-11. Adding one requires a fresh survey.) Consumers are first-party tooling (pr-minder etc.) that read state fields only. Hits and misses both serve the rebuilt shape, marked with an `X-GSM-Cache: hit|miss` header. Requests the route cannot model (a non-default `Accept` such as `application/vnd.github.raw`, unknown query params, an unexpected body shape) pass through verbatim, uncached.
+Fifteen REST route families are served from cache (repo-scoped ones behind the reveal layer above). They do **not** replay GitHub's bytes: the mirror **absorbs the state** contained in the response into structured tables. The mirror **rebuilds a trimmed response** from that state, with **every URL field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`, `download_url`, `documentation_url`, ...), and `_links`. A small per-route **pinned allowlist** of consumer-read link fields is the exception. It holds the statuses `target_url`, the check-run `details_url`/`html_url`, and the workflow-run `html_url`. The required-builds hook renders all of them. (Consumer survey 2026-07-11. Adding one requires a fresh survey.) Consumers are first-party tooling (pr-minder etc.) that read state fields only. Hits and misses both serve the rebuilt shape, marked with an `X-GSM-Cache: hit|miss` header. Requests the route cannot model (a non-default `Accept` such as `application/vnd.github.raw`, unknown query params, an unexpected body shape) pass through verbatim, uncached.
 
 Uncacheable reads are also **debounced**. An eligible passthrough `GET` is held for up to `PASSTHROUGH_DEBOUNCE` (default 5s). Every identical request arriving in that window shares the upstream call the batch makes. Batches are keyed by the caller's own credential. As a result, a response is never shared across tokens. The wait is deliberate — it makes an unmodelable read cost the caller latency instead of costing GitHub a round trip per poll (`X-GSM-Debounce` reports the hold).
 
@@ -71,18 +71,18 @@ GitHub's login endpoints live on `github.com` — not `api.github.com` — and s
 
 ## Webhook
 
-- `POST /webhook` — receives GitHub webhook events and applies them to the cache. The handler processes each delivery **synchronously** (the cache writes are small, idempotent upserts that finish well within GitHub's delivery deadline) and the HTTP response reflects what happened, so a "successful" delivery actually means data was preserved:
-  - `200 OK` — applied: webhook data was written to global truth
-  - `202 Accepted` — received but nothing applied (an untracked event/action, or a fallback invalidation)
-  - `500` — an internal error. GitHub retries (and the re-applied upsert is idempotent)
+- `POST /webhook` - receives GitHub webhook events. The handler writes each verified delivery to the inbox, synced to disk, and answers. A worker applies it to the cache in arrival order (docs/webhooks/dispatch.md, "Receipt and apply"). A success means the delivery is kept, and will be applied across a restart:
+  - `202 Accepted`, `queued` - recorded. The worker applies it
+  - `202 Accepted`, `duplicate` - this `X-GitHub-Delivery` is already recorded, and is not applied twice
+  - `500`, `error` - the inbox can not record it. It lands in GitHub's failure log, and the replayer asks for it again
 
-  The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
+  The disposition is returned in the JSON body and an `X-GSM-Disposition` header. What the apply did is recorded in the dashboard's webhook log (see below).
 
-  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one cheap synchronous SQLite upsert.
+  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one inbox row and one short transaction.
 
 ## Subscriber notifications (`/_mirror/subscriptions`)
 
-A consumer can receive its own GitHub webhooks and query the mirror at once. That consumer **races the mirror's ingestion**. Its delivery can arrive before the mirror's. The read then returns pre-event state. Subscriber notifications remove the race. The mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its synchronous dispatcher applied the delivery to global truth. A read keyed off that notification thus always sees post-ingest state.
+A consumer can receive its own GitHub webhooks and query the mirror at once. That consumer **races the mirror's ingestion**. Its delivery can arrive before the mirror's. The read then returns pre-event state. Subscriber notifications remove the race. The mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its worker has applied the delivery to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
 
 The top-level **`/_mirror/*` prefix is the reserved mirror-native namespace**: GitHub's API has no underscore-prefixed top-level paths. GitHub's API registered routes always win over the passthrough proxy. As a result, nothing under `/_mirror/*` can ever collide with proxied GitHub traffic.
 
@@ -103,7 +103,7 @@ curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" https://mirror.example.c
 
 Subscription JSON: `{id, url, repos, events, active, consecutive_failures, disabled_reason, created_at, updated_at, last_success_at, last_failure_at, last_error}`. The `secret` is **never** returned by any response. `url` must be absolute https with no userinfo (plain http is allowed only for loopback hosts, so local receivers work) and must not be a private/link-local IP literal. `repos` entries are `owner` or `owner/repo` (matched case-insensitively). `events` are GitHub event names (`push`, `pull_request`, ...). Each principal may hold a bounded number of subscriptions (409 beyond).
 
-**Deliveries** are `POST`s with `Content-Type: application/json`, `X-Mirror-Event` (event name), `X-Mirror-Delivery` (the notification id), and `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`. GitHub's exact signature scheme**, so the webhook verification code you already have works unchanged. Example payload (fields absent from the event are omitted):
+**Deliveries** are `POST`s with `Content-Type: application/json`, `X-Mirror-Event` (event name), `X-Mirror-Delivery` (the notification id), and `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>` — **GitHub's exact signature scheme**, so the webhook verification code you already have works unchanged. Example payload (fields absent from the event are omitted):
 
 ```json
 {

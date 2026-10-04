@@ -29,7 +29,7 @@ Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers
 
 ## create / delete (`onRefLifecycle`)
 
-A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about the ref. A tag creation reaches the mirror through this event alone, never through a push.
+A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about the ref. A tag creation reaches the mirror through this event alone, not through a push.
 
 | row family | verdict | why |
 | --- | --- | --- |
@@ -71,7 +71,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 
 ## repository
 
-Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows WRONG rather than stale. They are keyed by a name that no longer means what it did. They also hold data a now-private repo must not serve. The payload states the repo's new identity, never the new content of every answer keyed by the one.
+Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows WRONG rather than stale. They are keyed by a name that no longer means what it did. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
 
@@ -85,7 +85,7 @@ Repo-wide on every action. **Justified**: an `edited` action can RENAME a label,
 
 ## The status rewrite
 
-Rewriting a stored document from a payload is only correct if the result matches a fetch byte for byte. A hit replays the stored bytes. For the status-shaped documents that came down to their ORDERING, which the REST docs do not state. It was measured instead, on `kubernetes/kubernetes` at `a231bf3f`, across multiple raw statuses many contexts:
+Rewriting a stored document from a payload is only correct if the result matches a fetch byte for byte. A hit replays the stored bytes. For the status-shaped documents that came down to their ORDERING, which the REST docs do not state. It was measured instead, on `kubernetes/kubernetes` at `a231bf3f`, across multiple raw statuses over multiple contexts:
 
 - Statuses are **append-only**. Re-posting a context creates a new status object with a new id and a new `created_at`. Nothing is mutated in place. That is why the raw list keeps every one of them. The combined status keeps one per context.
 - `/statuses` is **newest-first**. A new status is PREPENDED, and the context's older entries stay.
@@ -147,7 +147,7 @@ What a delivery cannot answer drops the run's rows. As a result, a fetch can set
 
 `compare_cache` exists because a three-dot compare is expensive to fetch. It must not exist at all. The mirror already stores commits in `git_commits_cache`, fed by every push and by fetch absorbs. A compare between multiple commits it holds is computable: walk to the merge base, then diff the trees. The happy path then needs no upstream call and no invalidation. The answer also stops being a second, separately-staleable copy of state the mirror already has.
 
-That is the largest owed item in this file. It is not a cache change. It needs tree and blob storage, which the mirror does not have today. The mirror stores commit objects, never the trees they point at.
+That is the largest owed item in this file. It is not a cache change. It needs tree and blob storage, which the mirror does not have today. The mirror stores commit objects, not the trees they point at.
 
 ## Owed, in order
 

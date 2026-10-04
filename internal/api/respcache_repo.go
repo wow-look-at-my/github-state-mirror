@@ -16,9 +16,15 @@ import (
 //
 //	GET /repos/{owner}/{repo}
 //
-// Unlike every other cached route there is NO snapshot table: the rebuild comes straight from the `repos` TRUTH row -- the same webhook-maintained (repository events), fleet-synced, consistency-checked state tier already serves -- so there is deliberately no per-row TTL either. Truth freshness IS the service's core model; a reveal probe additionally re-absorbs the row per principal within the <=24h grant TTL. The pinned consumers read only fields the row carries: the pr-minder-reconcile hook's getDefaultBranch (default_branch) and status-only access checks (buildhost's canAccessRepo pattern -- the is the answer).
-//
-// The row serves only when it can answer COMPLETELY: known visibility (unknown '' fails closed, e.g. a row seeded solely by the identity-locked GraphQL fetch), a known default branch, and a canonical full name -- anything else falls to the fetch path, whose is absorbed back into the row (healing it) via the same repositoryObject mapping webhooks and the reveal probe use. pushed_at is deliberately NOT emitted (truth '' cannot distinguish never-pushed from not-yet-synced, and no consumer reads it); fork/id are not stored, so not emitted. Query params, non-default Accepts, and HEAD requests (MethodNotAllowed -> the proxy) pass through.
+// Unlike every other cached route there is NO snapshot table: the rebuild
+// comes straight from the `repos` TRUTH row -- the same webhook-maintained
+// (repository events), fleet-synced, consistency-checked state tier
+// already serves -- so there is deliberately no per-row TTL either. Truth
+// freshness IS the service's core model; a reveal probe additionally
+// re-absorbs the row per principal within the <=24h grant TTL. The pinned
+// consumers read only fields the row carries: the pr-minder-reconcile hook's
+// getDefaultBranch (default_branch) and status-only access checks
+// (buildhost's canAccessRepo pattern -- the is the answer).
 
 // cachedRepo serves the bare repository read from the repos truth row,
 // fetching and absorbing on an incomplete or missing row.

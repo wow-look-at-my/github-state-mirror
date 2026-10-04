@@ -4,6 +4,10 @@ on:
   push:
     branches: ['**']
 
+concurrency:
+  group: gha_${{ github.repository }}_${{ github.workflow }}_${{ github.ref != 'refs/heads/master' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 # See docs/ci.md for why each grant below is required.
 permissions:
   id-token: write
@@ -44,7 +48,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: sudo apt-get update && sudo apt-get install -y just
+      - uses: extractions/setup-just@v2
       - run: npm ci
       - run: just build
 
@@ -75,7 +79,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: sudo apt-get update && sudo apt-get install -y just
+      - uses: extractions/setup-just@v2
       - run: npm ci
       - run: just build
       # See docs/ci.md: do not add an explicit cache-upload step here.
@@ -93,6 +97,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: extractions/setup-just@v2
       # See docs/ci.md: path must match what publish-ghcr passes.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
@@ -116,7 +121,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: sudo apt-get update && sudo apt-get install -y just
+      - uses: extractions/setup-just@v2
       - run: npm ci
       - run: just build
       - name: Assemble the demo bundle

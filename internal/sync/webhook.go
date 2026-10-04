@@ -16,7 +16,6 @@ type WebhookDispatcher struct {
 	mgr      invalidator
 	store    *ghdata.Store
 	ordering *OrderingStats
-	reorder  *reorderBuffer
 }
 
 // invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
@@ -24,16 +23,10 @@ type invalidator interface {
 	InvalidateAllActors(ctx context.Context, kind, key string) error
 }
 
-// NewWebhookDispatcher has no reorder window; production uses NewWebhookDispatcherWindowed instead.
-func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
-	return NewWebhookDispatcherWindowed(mgr, store, 0)
-}
-
-// NewWebhookDispatcherWindowed sorts same-subject deliveries within window and applies them oldest-.
+// NewWebhookDispatcher applies deliveries on arrival, ordered by the per-subject watermark.
 // see docs/webhooks/ordering.md
-func NewWebhookDispatcherWindowed(mgr invalidator, store *ghdata.Store, window time.Duration) *WebhookDispatcher {
-	stats := NewOrderingStats()
-	return &WebhookDispatcher{mgr: mgr, store: store, ordering: stats, reorder: newReorderBuffer(window, stats)}
+func NewWebhookDispatcher(mgr invalidator, store *ghdata.Store) *WebhookDispatcher {
+	return &WebhookDispatcher{mgr: mgr, store: store, ordering: NewOrderingStats()}
 }
 
 // Ordering exposes what the out-of-order gate has seen, for the dashboard.
@@ -49,46 +42,49 @@ func applied(detail string) outcome { return outcome{disposition: webhook.DispAp
 func ignored(detail string) outcome { return outcome{disposition: webhook.DispIgnored, detail: detail} }
 func errored(detail string) outcome { return outcome{disposition: webhook.DispError, detail: detail} }
 
-// Dispatch processes a webhook event, applying it to global truth, and returns
-// what it did. It also records the delivery in the global webhook log so the
-// dashboard can show whether data was preserved.
+// Dispatch applies one delivery to global truth and returns what it did. Every
+// write the delivery makes, its log row included, commits as one transaction;
+// the watermark in checkOrder refuses a view older than one already applied.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
-	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
-	if order, ok := webhook.OrderOf(event); ok {
-		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {
-			return res
-		}
-	}
-	return d.dispatchNow(ctx, event)
-}
-
-// dispatchNow processes delivery, past any reordering hold.
-func (d *WebhookDispatcher) dispatchNow(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
-	out := d.handle(ctx, event)
+	var out outcome
+	ran := false
+	apply := func(ctx context.Context) error {
+		ran = true
+		out = d.handle(ctx, event)
+		// Best-effort: a delivery is never failed over its log row.
+		if err := d.store.RecordWebhookDelivery(ctx, ghdata.WebhookDelivery{
+			DeliveryID:  event.DeliveryID,
+			EventType:   event.Type,
+			Action:      event.Action,
+			Repo:        event.RepoFullName(),
+			Disposition: out.disposition,
+			Detail:      out.detail,
+		}); err != nil {
+			slog.Warn("webhook: record delivery failed", "error", err)
+		}
+		return nil
+	}
+	err := d.store.InTx(ctx, apply)
+	switch {
+	case err == nil:
+	case !ran:
+		// The transaction never opened; each write still gets its own chance rather than the delivery being dropped.
+		slog.Warn("webhook: delivery transaction did not open; applying statement by statement", "type", event.Type, "delivery", event.DeliveryID, "error", err)
+		apply(ctx)
+	default:
+		slog.Warn("webhook: delivery transaction failed", "type", event.Type, "delivery", event.DeliveryID, "error", err)
+		out = errored("delivery transaction failed: " + err.Error())
+	}
 
-	result := webhook.DispatchResult{
+	return webhook.DispatchResult{
 		Event:       event.Type,
 		Action:      event.Action,
 		Repo:        event.RepoFullName(),
 		Disposition: out.disposition,
 		Detail:      out.detail,
 	}
-
-	// Record the delivery (best-effort: never fail the delivery over logging).
-	if err := d.store.RecordWebhookDelivery(ctx, ghdata.WebhookDelivery{
-		DeliveryID:  event.DeliveryID,
-		EventType:   event.Type,
-		Action:      event.Action,
-		Repo:        result.Repo,
-		Disposition: out.disposition,
-		Detail:      out.detail,
-	}); err != nil {
-		slog.Warn("webhook: record delivery failed", "error", err)
-	}
-
-	return result
 }
 
 // handle routes an event to its handler, returning the outcome.

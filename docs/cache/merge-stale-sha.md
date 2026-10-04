@@ -20,11 +20,22 @@ Reports whether the row carries a live push-invalidated-sha marker (both columns
 
 ## staleShaOffered
 
-Reports whether `offered` is exactly the test-merge sha a recent push invalidated on the existing row — presumed pre-push. This is because the push moved the PR's base or head and a tip change always changes the sha of a SUCCESSFUL test merge. Deliberately raw: the exemptions that can overrule the presumption — the push-tip proof (`pushProvenPostPush`) and the dirty-retained CONFLICTING pattern (`conflictingPastReplicaLag`) — are applied. This is by the absorbing callers, never here.
+Reports whether `offered` is exactly the test-merge sha a recent push
+invalidated on the existing row — presumed pre-push, because the push moved
+the PR's base or head and a tip change always changes the sha of a
+SUCCESSFUL test merge. Deliberately raw: the two exemptions that can overrule
+the presumption — the push-tip proof (`pushProvenPostPush`) and the
+dirty-retained CONFLICTING pattern (`conflictingPastReplicaLag`) — are
+applied by the absorbing callers, never here.
 
 ## PRMergeShaStale
 
-Reports whether the row's OWN `merge_commit_sha` is the push-invalidated one. The guarded writes never store that state (the sha is nulled instead). As a result, this is belt and braces for the single-PR hit gate. A row that somehow holds the provably-stale sha must miss, never serve it. Deliberately raw equality — no push-tip proof consulted: a miss here just re-fetches. The ABSORB paths are where the proof decides.
+Reports whether the row's OWN `merge_commit_sha` is the push-invalidated
+one. The guarded writes never store that state (the sha is nulled instead),
+so this is belt and braces for the single-PR hit gate: a row that somehow
+holds the provably-stale sha must miss, never serve it. Deliberately raw
+equality — no push-tip proof consulted: a miss here just re-fetches, and the
+ABSORB paths are where the proof decides.
 
 ## pushProvenPostPush
 
@@ -36,6 +47,27 @@ Reports whether the incoming answer is a CONFLICTING one offered against a marke
 
 ## AbsorbSinglePull's stale-rejection path
 
-`AbsorbSinglePull` upserts one fetched OPEN PR into global truth. Unlike the COALESCE-ing webhook upsert, the fetched `mergeable` is authoritative — including null ("GitHub is recomputing") — so it is force-set after the upsert. A null answer must keep the single-PR route missing (and re-fetching) until GitHub resolves it, never resurrect a stale value.
+`AbsorbSinglePull` upserts one fetched OPEN PR into global truth. Unlike the COALESCE-ing webhook upsert, the fetched `mergeable` is authoritative — including null ("GitHub is recomputing") — so it is force-set after the upsert. A null answer must keep the single-PR route missing (and re-fetching) until GitHub resolves it, not resurrect a stale value.
 
-One answer is NOT authoritative: a response whose `merge_commit_sha` is the exact sha a branch push just invalidated (a live `merge_stale_sha` marker). The push moved the PR's base or head, and a tip change always changes the sha of a SUCCESSFUL test merge. So GitHub re-offering the invalidated sha means its recompute has not landed and the WHOLE answer (resolved mergeable included) predates the push. Such an answer is stored UNRESOLVED (mergeable NULL, `merge_commit_sha` NULL, marker kept), so reads keep missing — each one re-triggering the recompute — until GitHub serves a NEW sha. This clears the marker. Exemptions overrule that presumption and accept the answer, sha and all, marker cleared: (1) the push-tip proof (`pushProvenPostPush`). The answer's reported tip for the marked branch equals the marking push's after sha. As a result, it demonstrably post-dates the push — which heals a WRONG mark (the race where the fresh post-push answer was absorbed before the late push delivery, which then stamped it stale) on the very next poll. And (2) the dirty-retained pattern (`conflictingPastReplicaLag`) — a CONFLICTED PR gets NO new test merge. As a result, GitHub legitimately re-offers the RETAINED last-good sha with `mergeable:false` forever. This is once the marker outlives `MergeStaleConflictingWindow` that is the only remaining explanation. The upsert's SQL guard nulls the columns. The Go check here exists because the authoritative force-set below will otherwise resurrect the rejected value. So the route can serve the response unresolved too. `staleRejected` reports that outcome to the caller.
+One answer is NOT authoritative: a response whose `merge_commit_sha` is the
+exact sha a branch push just invalidated (a live `merge_stale_sha` marker).
+The push moved the PR's base or head, and a tip change always changes the
+sha of a SUCCESSFUL test merge — so GitHub re-offering the invalidated sha
+means its recompute hasn't landed and the WHOLE answer (resolved mergeable
+included) predates the push. Such an answer is stored UNRESOLVED (mergeable
+NULL, `merge_commit_sha` NULL, marker kept), so reads keep missing — each one
+re-triggering the recompute — until GitHub serves a NEW sha, which clears the
+marker. TWO exemptions overrule that presumption and accept the answer, sha
+and all, marker cleared: (1) the push-tip proof (`pushProvenPostPush`) — the
+answer's reported tip for the marked branch equals the marking push's after
+sha, so it demonstrably post-dates the push — which heals a WRONG mark (the
+race where the fresh post-push answer was absorbed before the late push
+delivery, which then stamped it stale) on the very next poll; and (2) the
+dirty-retained pattern (`conflictingPastReplicaLag`) — a CONFLICTED PR gets
+NO new test merge, so GitHub legitimately re-offers the RETAINED last-good
+sha with `mergeable:false` forever, and once the marker outlives
+`MergeStaleConflictingWindow` that is the only remaining explanation. The
+upsert's SQL guard nulls the columns; the Go check here exists because the
+authoritative force-set below would otherwise resurrect the rejected value,
+and so the route can serve the response unresolved too. `staleRejected`
+reports that outcome to the caller.

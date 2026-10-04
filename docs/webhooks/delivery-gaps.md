@@ -2,7 +2,7 @@
 
 Every cache in this service is kept honest by webhooks. A push moves a branch tip. The delivery applies it, and the answers computed against the tip stop being served. That is the whole model. It has one assumption: the delivery arrives.
 
-Miss one and nothing says so. The mirror keeps serving what it last absorbed, for the full TTL, and the consumer reading it cannot tell the difference between "this is current" and "this is what was true several hours ago". There is no error, no log line, no red anything. It is the quietest failure the service has.
+Miss one and nothing says so. The mirror keeps serving what it last absorbed, for the full TTL, and the consumer reading it cannot tell the difference between "this is current" and "this is what was true nine hours ago". There is no error, no log line, no red anything. It is the quietest failure the service has.
 
 **GitHub does not retry.** A delivery it can not hand over is not re-sent. It is recorded in the App's own delivery log as a failure and left there.
 

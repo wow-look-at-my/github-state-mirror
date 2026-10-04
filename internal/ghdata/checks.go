@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -19,12 +20,12 @@ import (
 // when onDefaultBranch is set, onto the repo's default_branch_status. Returns
 // the resulting rollup state.
 func (s *Store) ApplyCommitStatus(ctx context.Context, owner, repo, sha, checkContext, state string, onDefaultBranch bool) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	if err := q.UpsertCommitCheck(ctx, dbgen.UpsertCommitCheckParams{
 		Owner: owner, Repo: repo, Sha: sha, Context: checkContext, State: state,
@@ -68,7 +69,7 @@ func (s *Store) DeleteCommitChecks(ctx context.Context, owner, repo, sha string)
 	if sha == "" {
 		return nil
 	}
-	return s.q.DeleteCommitChecksBySha(ctx, dbgen.DeleteCommitChecksByShaParams{Owner: owner, Repo: repo, Sha: sha})
+	return s.qx(ctx).DeleteCommitChecksBySha(ctx, dbgen.DeleteCommitChecksByShaParams{Owner: owner, Repo: repo, Sha: sha})
 }
 
 // CommitCheckStates returns the recorded per-check states for a commit (the
@@ -78,7 +79,7 @@ func (s *Store) CommitCheckStates(ctx context.Context, owner, repo, sha string) 
 	if sha == "" {
 		return nil, nil
 	}
-	return s.q.ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{Owner: owner, Repo: repo, Sha: sha})
+	return s.qx(ctx).ListCommitCheckStates(ctx, dbgen.ListCommitCheckStatesParams{Owner: owner, Repo: repo, Sha: sha})
 }
 
 // ForceCheckRollup replaces the aggregated verdict with GitHub's directly
@@ -87,12 +88,12 @@ func (s *Store) ForceCheckRollup(ctx context.Context, owner, repo, sha string, r
 	if sha == "" {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	if err := q.DeleteCommitChecksBySha(ctx, dbgen.DeleteCommitChecksByShaParams{Owner: owner, Repo: repo, Sha: sha}); err != nil {
 		return err
@@ -110,7 +111,7 @@ func (s *Store) ForceCheckRollup(ctx context.Context, owner, repo, sha string, r
 
 // SetRepoDefaultBranchStatus sets a directly fetched answer including NULL; the repo upsert's COALESCE can never clear it.
 func (s *Store) SetRepoDefaultBranchStatus(ctx context.Context, owner, name string, status sql.NullString) error {
-	return s.q.SetRepoDefaultBranchStatus(ctx, dbgen.SetRepoDefaultBranchStatusParams{
+	return s.qx(ctx).SetRepoDefaultBranchStatus(ctx, dbgen.SetRepoDefaultBranchStatusParams{
 		DefaultBranchStatus: status,
 		Owner:               owner,
 		Name:                name,
@@ -119,7 +120,7 @@ func (s *Store) SetRepoDefaultBranchStatus(ctx context.Context, owner, name stri
 
 // SetPRAutoMergeMethod sets a directly fetched answer including NULL; a missed auto_merge_disabled delivery is only cleared here.
 func (s *Store) SetPRAutoMergeMethod(ctx context.Context, owner, repo string, number int64, method sql.NullString) error {
-	return s.q.SetPRAutoMergeMethod(ctx, dbgen.SetPRAutoMergeMethodParams{
+	return s.qx(ctx).SetPRAutoMergeMethod(ctx, dbgen.SetPRAutoMergeMethodParams{
 		AutoMergeMethod: method,
 		Owner:           owner,
 		Repo:            repo,

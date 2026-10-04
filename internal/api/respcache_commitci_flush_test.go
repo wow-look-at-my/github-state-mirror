@@ -103,9 +103,11 @@ func TestStatusPublishPassthrough(t *testing.T) {
 //
 //	delivery that dropped all was re-fetching answers it could not
 //
-// have changed. - A `status` delivery CARRIES the status, so the documents it can identify are rewritten and keep serving. The combined status names the sha it resolved to, which is what makes a branch-form row usable; the raw list is a bare array with no sha in it, so only the sha-form row is provably about.
-//
-// (Round made the CI-event grain per-ref: the payloads below all name "main" -- via the status branches array or the suite head_branch -- exactly like GitHub's real deliveries; a per-branch survival case lives in the dispatcher tests.)
+// have changed. - A `status` delivery CARRIES the status, so the documents it
+// can identify are rewritten and keep serving. The combined status names the
+// sha it resolved to, which is what makes a branch-form row usable; the raw
+// list is a bare array with no sha in it, so only the sha-form row is
+// provably about.
 func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	statusTarget := "/repos/org1/repo1/commits/main/status"

@@ -31,7 +31,7 @@ func (s *Store) ClaimEventOrder(ctx context.Context, subject string, at time.Tim
 		return OrderVerdict{}, nil // unorderable: applies, as it always did
 	}
 	previous, previousDelivery := time.Time{}, ""
-	if row, err := s.q.GetWebhookWatermark(ctx, subject); err == nil {
+	if row, err := s.qx(ctx).GetWebhookWatermark(ctx, subject); err == nil {
 		if prev, perr := time.Parse(time.RFC3339, row.EventTime); perr == nil {
 			previous, previousDelivery = prev, row.DeliveryID
 		}
@@ -39,14 +39,14 @@ func (s *Store) ClaimEventOrder(ctx context.Context, subject string, at time.Tim
 		return OrderVerdict{}, err
 	}
 
-	_, err := s.q.ClaimWebhookWatermark(ctx, dbgen.ClaimWebhookWatermarkParams{
+	_, err := s.qx(ctx).ClaimWebhookWatermark(ctx, dbgen.ClaimWebhookWatermarkParams{
 		Subject: subject, EventTime: rfc3339(at.UTC()), DeliveryID: deliveryID,
 		EventType: eventType, UpdatedAt: rfc3339(now),
 	})
 	switch {
 	case err == nil:
 		// Won the claim: this is the newest view of the subject.
-		_ = s.q.PruneWebhookWatermarks(ctx, rfc3339(now.Add(-WatermarkRetention)))
+		_ = s.qx(ctx).PruneWebhookWatermarks(ctx, rfc3339(now.Add(-WatermarkRetention)))
 		return OrderVerdict{Previous: previous, PreviousDelivery: previousDelivery}, nil
 	case errors.Is(err, sql.ErrNoRows):
 		// The stored watermark is equal or newer; equal is not superseded since both truncate to the same footing.

@@ -17,7 +17,7 @@ const UserReposCacheTTL = 5 * time.Minute
 // GetCachedUserRepos returns page's cached document, or (empty, false)
 // on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedUserRepos(ctx context.Context, tokenFP, sort string, perPage, page int64, now time.Time) (string, bool, error) {
-	row, err := s.q.GetUserReposCache(ctx, dbgen.GetUserReposCacheParams{
+	row, err := s.qx(ctx).GetUserReposCache(ctx, dbgen.GetUserReposCacheParams{
 		TokenFp: tokenFP, Sort: sort, PerPage: perPage, Page: page,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -29,7 +29,7 @@ func (s *Store) GetCachedUserRepos(ctx context.Context, tokenFP, sort string, pe
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchUserReposCache(ctx, dbgen.TouchUserReposCacheParams{
+	_ = s.qx(ctx).TouchUserReposCache(ctx, dbgen.TouchUserReposCacheParams{
 		LastUsedAt: rfc3339(now), TokenFp: tokenFP, Sort: sort, PerPage: perPage, Page: page,
 	})
 	return row.Doc, true, nil
@@ -38,14 +38,14 @@ func (s *Store) GetCachedUserRepos(ctx context.Context, tokenFP, sort string, pe
 // PutCachedUserRepos stores page, then prunes (expired rows + LRU beyond
 // the cap).
 func (s *Store) PutCachedUserRepos(ctx context.Context, tokenFP, sort string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertUserReposCache(ctx, dbgen.UpsertUserReposCacheParams{
+	if err := s.qx(ctx).UpsertUserReposCache(ctx, dbgen.UpsertUserReposCacheParams{
 		TokenFp: tokenFP, Sort: sort, PerPage: perPage, Page: page, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredUserReposCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredUserReposCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneUserReposCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneUserReposCacheLRU(ctx, CacheMaxRows)
 }

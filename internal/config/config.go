@@ -28,12 +28,6 @@ const (
 	maxPassthroughDebounce     = 30 * time.Second
 )
 
-// maxWebhookReorderWindow stays under GitHub's single-digit- delivery timeout.
-const (
-	defaultWebhookReorderWindow = 2 * time.Second
-	maxWebhookReorderWindow     = 5 * time.Second
-)
-
 type Config struct {
 	ListenAddr    string
 	DBPath        string
@@ -46,9 +40,6 @@ type Config struct {
 
 	// PassthroughDebounce holds an eligible uncacheable read so concurrent
 	PassthroughDebounce time.Duration
-
-	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-; skips straight to the watermark gate.
-	WebhookReorderWindow time.Duration
 
 	// WebhookRelayURLs get a copy of every verified delivery; empty relays nothing. See docs/webhooks/relay.md.
 	WebhookRelayURLs []string
@@ -90,10 +81,6 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	reorderWindow, err := parseWebhookReorderWindow(os.Getenv("WEBHOOK_REORDER_WINDOW"))
-	if err != nil {
-		return Config{}, err
-	}
 	relayURLs, err := parseRelayURLs(os.Getenv("WEBHOOK_RELAY_URLS"))
 	if err != nil {
 		return Config{}, err
@@ -108,7 +95,6 @@ func Load() (Config, error) {
 		RefreshInterval:      refreshInterval,
 		ReplayInterval:       replayInterval,
 		PassthroughDebounce:  debounce,
-		WebhookReorderWindow: reorderWindow,
 		CacheMaxRows:         cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
@@ -165,24 +151,6 @@ func parseReplayInterval(s string) (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: must not be negative", s)
-	}
-	return d, nil
-}
-
-// parseWebhookReorderWindow parses WEBHOOK_REORDER_WINDOW; the ceiling bounds risking GitHub's own delivery timeout.
-func parseWebhookReorderWindow(s string) (time.Duration, error) {
-	if s == "" {
-		return defaultWebhookReorderWindow, nil
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: %w", s, err)
-	}
-	if d < 0 {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must not be negative (0 dispatches on arrival)", s)
-	}
-	if d > maxWebhookReorderWindow {
-		return 0, fmt.Errorf("invalid WEBHOOK_REORDER_WINDOW %q: must be <= %s (every delivery waits it, and GitHub times deliveries out)", s, maxWebhookReorderWindow)
 	}
 	return d, nil
 }

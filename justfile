@@ -1,19 +1,22 @@
-# Compile internal/api/web/src/*.ts to the gitignored assets/*.js that the Go build embeds.
+# The package's own binaries come first on PATH, as npm run puts them.
+export PATH := justfile_directory() + "/node_modules/.bin:" + env_var("PATH")
+
+# The npm script build.
 build:
-	npx tsc -p tsconfig.json
+	tsc -p tsconfig.json
 
-# Type-check the dashboard sources without writing output.
+# The npm script check.
 check:
-	npx tsc -p tsconfig.json --noEmit
+	tsc -p tsconfig.json --noEmit
 
-# Type-check the browser and image test harnesses.
+# The npm script check:harness.
 check-harness:
-	npx tsc -p tsconfig.harness.json
+	tsc -p tsconfig.harness.json
 
-# Start the built image and require it to serve. Needs docker and build/server.
+# The npm script test:image.
 test-image:
 	node --test docker/imagecheck.test.ts
 
-# Drive the built dashboard in a browser.
+# The npm script test:dashboard.
 test-dashboard:
 	node --test internal/api/testdata/dashboardcheck.test.ts

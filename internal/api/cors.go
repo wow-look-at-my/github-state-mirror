@@ -9,9 +9,10 @@ import (
 //
 // The mirror's security boundary is the per-token fingerprint, not the request origin, so a permissive default is safe: a cross-origin caller still must present a valid GitHub token, which a browser cannot read from another origin.
 //
-// allowed is the set of permitted origins. When it is empty or contains "*", any origin is allowed (Access-Control-Allow-Origin: *). Otherwise only an exact-match Origin is echoed back; a non-matching Origin gets no ACAO header and the browser blocks the response.
-//
-// Preflight OPTIONS requests are answered here with and never reach requireAuth, because browsers do not send the Authorization header on preflight. chi runs r.Use middleware before route matching, so this also intercepts preflight for method-specific routes like POST /graphql.
+// allowed is the set of permitted origins. When it is empty or contains "*",
+// any origin is allowed (Access-Control-Allow-Origin: *). Otherwise only an
+// exact-match Origin is echoed back; a non-matching Origin gets no ACAO header
+// and the browser blocks the response.
 func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 	wildcard := len(allowed) == 0
 	allowSet := set.Of(allowed...)

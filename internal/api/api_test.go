@@ -27,6 +27,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/inbox"
 	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
@@ -43,7 +44,7 @@ var schemaTemplate struct {
 }
 
 func TestMain(m *testing.M) {
-	code := m.Run()
+	code := database.RunWithTxGuard(m)
 	if schemaTemplate.dir != "" {
 		_ = os.RemoveAll(schemaTemplate.dir)
 	}
@@ -137,6 +138,7 @@ type testStack struct {
 	timeline *reqtimeline.Recorder
 	// debouncer is nil unless the test asked for passthrough coalescing via
 	debouncer *Debouncer
+	queue     *webhook.Queue
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
@@ -188,8 +190,38 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
 	debouncer := NewDebouncer(window)
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, latency.New(), nil)
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer}
+	lat := latency.New()
+	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, nil)
+	webhookQueues.Store(router, queue)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
+}
+
+// webhookQueues maps each test router to its webhook queue, so a test can wait for what it posted to apply.
+var webhookQueues sync.Map
+
+// newTestQueue runs a webhook queue over a throwaway inbox until the test ends.
+func newTestQueue(t *testing.T, dispatcher webhook.Dispatcher, rec webhook.DeliveryRecorder, notifiers ...webhook.IngestNotifier) *webhook.Queue {
+	t.Helper()
+	journal, err := inbox.Open(filepath.Join(t.TempDir(), "inbox.db"))
+	require.NoError(t, err)
+	q := webhook.NewQueue(journal, dispatcher, rec, notifiers...)
+	ctx, cancel := context.WithCancel(context.Background())
+	go q.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		q.Stopped(5 * time.Second)
+		journal.Close()
+	})
+	return q
+}
+
+// awaitWebhooks waits until every delivery posted to router has been applied.
+func awaitWebhooks(t *testing.T, router http.Handler) {
+	t.Helper()
+	q, ok := webhookQueues.Load(router)
+	require.True(t, ok, "router was not built by a test stack")
+	require.True(t, q.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
@@ -340,8 +372,8 @@ func TestRevealPublicFastPath(t *testing.T) {
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
-// a bearer token (it is authenticated by HMAC signature instead). A ping is an
-// untracked event, so it is accepted as a no-op (), not rejected (/).
+// a bearer token (it is authenticated by HMAC signature instead): the delivery
+// is recorded and answered, not rejected.
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -353,5 +385,6 @@ func TestWebhook_NoAuthRequired(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusAccepted, w.Code)
-	assert.Equal(t, webhook.DispIgnored, w.Header().Get("X-GSM-Disposition"))
+	assert.Equal(t, webhook.DispQueued, w.Header().Get("X-GSM-Disposition"))
+	awaitWebhooks(t, router)
 }

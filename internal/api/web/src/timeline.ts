@@ -565,7 +565,8 @@ class GsmTimeline extends HTMLElement {
     private async merge(tl: TimelineViewElement, page: DecodedPage,
                         coverage: { start: number; end: number }): Promise<void> {
 
-        // Declare every lane this page carries BEFORE the first feed.
+        // Declare every lane this page carries BEFORE the first feed: a lane
+        // appearing later is a structural change that costs the component.
         for (const { lane, kind } of laneKindsOf(page.c)) {
             if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
         }

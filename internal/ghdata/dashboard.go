@@ -24,7 +24,7 @@ type DataCounts struct {
 // only the principal key.
 func (s *Store) RecordActorIdentity(ctx context.Context, principal, login string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	return s.q.UpsertActorIdentity(ctx, dbgen.UpsertActorIdentityParams{
+	return s.qx(ctx).UpsertActorIdentity(ctx, dbgen.UpsertActorIdentityParams{
 		Actor:     principal,
 		Login:     login,
 		FirstSeen: now,
@@ -34,34 +34,34 @@ func (s *Store) RecordActorIdentity(ctx context.Context, principal, login string
 
 // ListActorIdentities returns every known (principal -> login) mapping.
 func (s *Store) ListActorIdentities(ctx context.Context) ([]dbgen.ActorIdentity, error) {
-	return s.q.ListActorIdentities(ctx)
+	return s.qx(ctx).ListActorIdentities(ctx)
 }
 
 // Attributes even principals with no identity row (e.g. app-installation sessions).
 func (s *Store) KnownPrincipals(ctx context.Context) ([]string, error) {
-	return s.q.ListKnownPrincipals(ctx)
+	return s.qx(ctx).ListKnownPrincipals(ctx)
 }
 
 // GlobalDataCounts returns the truth store's per-table row counts.
 func (s *Store) GlobalDataCounts(ctx context.Context) (DataCounts, error) {
 	var c DataCounts
 	var err error
-	if c.Repos, err = s.q.CountRepos(ctx); err != nil {
+	if c.Repos, err = s.qx(ctx).CountRepos(ctx); err != nil {
 		return c, err
 	}
-	if c.PullRequests, err = s.q.CountPullRequests(ctx); err != nil {
+	if c.PullRequests, err = s.qx(ctx).CountPullRequests(ctx); err != nil {
 		return c, err
 	}
-	if c.CommitChecks, err = s.q.CountCommitChecks(ctx); err != nil {
+	if c.CommitChecks, err = s.qx(ctx).CountCommitChecks(ctx); err != nil {
 		return c, err
 	}
-	if c.Contents, err = s.q.CountContentsCache(ctx); err != nil {
+	if c.Contents, err = s.qx(ctx).CountContentsCache(ctx); err != nil {
 		return c, err
 	}
-	if c.GitCommits, err = s.q.CountGitCommitsCache(ctx); err != nil {
+	if c.GitCommits, err = s.qx(ctx).CountGitCommitsCache(ctx); err != nil {
 		return c, err
 	}
-	if c.Grants, err = s.q.CountAccessGrants(ctx); err != nil {
+	if c.Grants, err = s.qx(ctx).CountAccessGrants(ctx); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -71,14 +71,14 @@ func (s *Store) GlobalDataCounts(ctx context.Context) (DataCounts, error) {
 // live access only, matching CountLiveGrants (an expired row awaiting the
 // opportunistic prune is not access).
 func (s *Store) GrantsByPrincipal(ctx context.Context, principal string, now time.Time) ([]dbgen.AccessGrant, error) {
-	return s.q.ListGrantsByPrincipal(ctx, dbgen.ListGrantsByPrincipalParams{
+	return s.qx(ctx).ListGrantsByPrincipal(ctx, dbgen.ListGrantsByPrincipalParams{
 		Principal: principal, ExpiresAt: rfc3339(now),
 	})
 }
 
 // CountLiveGrants returns how many unexpired grants a principal holds.
 func (s *Store) CountLiveGrants(ctx context.Context, principal string, now time.Time) (int64, error) {
-	return s.q.CountGrantsByPrincipal(ctx, dbgen.CountGrantsByPrincipalParams{
+	return s.qx(ctx).CountGrantsByPrincipal(ctx, dbgen.CountGrantsByPrincipalParams{
 		Principal: principal, ExpiresAt: rfc3339(now),
 	})
 }
@@ -86,17 +86,17 @@ func (s *Store) CountLiveGrants(ctx context.Context, principal string, now time.
 // FreshnessByKind returns cache_metadata for actor (a principal, or
 // 'global' truth markers) grouped by resource kind and fetch state.
 func (s *Store) FreshnessByKind(ctx context.Context, actorKey string) ([]dbgen.ActorFreshnessByKindRow, error) {
-	return s.q.ActorFreshnessByKind(ctx, actorKey)
+	return s.qx(ctx).ActorFreshnessByKind(ctx, actorKey)
 }
 
 // Failure reasons for actor's erroring resources; explains WHY, not that.
 func (s *Store) ErrorMessagesByKind(ctx context.Context, actorKey string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
-	return s.q.ActorErrorMessagesByKind(ctx, actorKey)
+	return s.qx(ctx).ActorErrorMessagesByKind(ctx, actorKey)
 }
 
 // RecentRefreshes returns the most recent refresh-log entries for actor.
 func (s *Store) RecentRefreshes(ctx context.Context, actorKey string, limit int64) ([]dbgen.CacheRefreshLog, error) {
-	return s.q.ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorKey, Limit: limit})
+	return s.qx(ctx).ActorRecentRefreshes(ctx, dbgen.ActorRecentRefreshesParams{Actor: actorKey, Limit: limit})
 }
 
 // WebhookDelivery is recorded webhook delivery and what the dispatcher did
@@ -121,7 +121,7 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 	if receivedAt == "" {
 		receivedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if err := s.q.InsertWebhookDelivery(ctx, dbgen.InsertWebhookDeliveryParams{
+	if err := s.qx(ctx).InsertWebhookDelivery(ctx, dbgen.InsertWebhookDeliveryParams{
 		DeliveryID:  d.DeliveryID,
 		EventType:   d.EventType,
 		Action:      d.Action,
@@ -132,7 +132,7 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 	}); err != nil {
 		return err
 	}
-	return s.q.PruneWebhookDeliveries(ctx, webhookDeliveryKeep)
+	return s.qx(ctx).PruneWebhookDeliveries(ctx, webhookDeliveryKeep)
 }
 
 // RequiredWebhookEvents is the set of GitHub App event subscriptions the
@@ -164,7 +164,7 @@ var RequiredWebhookEvents = []struct {
 
 // RecentWebhookDeliveries returns the most recent webhook deliveries, newest.
 func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]WebhookDelivery, error) {
-	rows, err := s.q.ListRecentWebhookDeliveries(ctx, limit)
+	rows, err := s.qx(ctx).ListRecentWebhookDeliveries(ctx, limit)
 	if err != nil {
 		return nil, err
 	}

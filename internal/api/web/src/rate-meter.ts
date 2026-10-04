@@ -1,9 +1,14 @@
-// <rate-meter> — one GitHub rate-limit bucket rendered as a self-contained web component (custom element + shadow DOM owning its markup and styles). Used by the admin "Rate limit" tab; self-registers on load, so index.html adds <script type="module" src="assets/rate-meter.js"></script> and app.ts creates <rate-meter> elements with plain attributes:
+// <rate-meter> — one GitHub rate-limit bucket rendered as a self-contained
+// web component (custom element + shadow DOM owning its markup and styles).
+// Used by the admin "Rate limit" tab; self-registers on load, so index.html
+// adds <script type="module" src="assets/rate-meter.js"></script> and app.ts
+// creates <rate-meter> elements with plain attributes:
 //
 //   <rate-meter name="core" limit="15000" remaining="14231" used="769"
 //               reset="1767225600"></rate-meter>
 //
-// reset is Unix epoch seconds. The bar fills with USAGE (used/limit): a fresh bucket is empty, a nearly-exhausted one is full. While connected, a 1s interval keeps the "resets in …" countdown ticking between the dashboard's 5s refetches (and in the static preview, which never refetches); the tab rebuild replaces these elements every 5s, so disconnectedCallback must — and does — clear the timer.
+// reset is Unix epoch seconds. The bar fills with USAGE (used/limit): a fresh
+// bucket is empty, a nearly-exhausted one is full.
 
 const STYLE = `
 :host {

@@ -13,7 +13,7 @@ import (
 )
 
 // This file holds the machinery every cached REST route shares — the
-// upstream fetch, the verbatim replay.
+// upstream fetch, the verbatim replay, the rebuild writer.
 
 const (
 	// contentsCacheTTL is the TTL backstop on cached contents rows. Webhooks

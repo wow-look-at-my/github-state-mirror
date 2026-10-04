@@ -6,7 +6,12 @@ Correctness here is THIS SERVICE's problem. A consumer cannot notice a delivery 
 
 ## What happened (xml-validator#10)
 
-`wow-look-at-my/xml-validator` merged PR #11 into `master` at 15:35:26 on 2026-08-14, moving the branch from `2fa82e7a` to `d197a949`. The stored answer for `heads/master` never moved: an hour later it was still serving `2fa82e7a` as a cache HIT, under a 24h TTL. This is with nothing else able to correct it. Pushes APPLY their own tip. As a result, a delivered push will have. Nothing else writes the row.
+`wow-look-at-my/xml-validator` merged PR #11 into `master` at 15:35:26 on
+2026-08-14, moving the branch from `2fa82e7a` to `d197a949`. The stored answer
+for `heads/master` never moved: an hour later it was still serving `2fa82e7a`
+as a cache HIT, under a 24h TTL, with nothing else able to correct it — pushes
+APPLY their own tip, so a delivered push would have, and nothing else writes
+the row.
 
 pr-minder read that tip and computed the PR's diff against it:
 

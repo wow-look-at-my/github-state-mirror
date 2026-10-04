@@ -68,7 +68,7 @@ func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 }
 
 // TestOnPush_MergeInvalidationSurvivesPushedAtFailure: the merge-field
-// un-resolve must run even when a later step of the handler fails. the
+// un-resolve must run even when a later step of the handler fails. The
 // handler ordered SetRepoPushedAt and returned on its error, so a transient
 // DB failure skipped the invalidation entirely and the pre-push answer kept
 // serving as a hit. The repos table is broken here (renamed) so

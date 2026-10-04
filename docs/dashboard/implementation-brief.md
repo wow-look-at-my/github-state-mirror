@@ -41,7 +41,7 @@ The checklist is carried WITH the data on purpose: the output has to be actionab
 
 The JSON payload carries the same structure alongside the Markdown. As a result, the endpoint is usable programmatically.
 
-The document itself is a `text/template` in `internal/api/brief.md.tmpl`, embedded and parsed once at init (`template.Must`, so a syntax error is a startup panic rather than a broken response some Tuesday). It lives in its own file so editing a heading or a bullet is editing Markdown. Everything computed — percentages, counted-name lists, the debounce verdict — comes from the FuncMap in `brief.go`. The template renders rather than decides. It is `text/template`, never `html/template`: the output is Markdown for a human and a model to read. HTML-escaping will mangle every `<`, `&`, and quote in a captured path or skeleton.
+The document itself is a `text/template` in `internal/api/brief.md.tmpl`, embedded and parsed once at init (`template.Must`, so a syntax error is a startup panic rather than a broken response some Tuesday). It lives in its own file so editing a heading or a bullet is editing Markdown. Everything computed — percentages, counted-name lists, the debounce verdict — comes from the FuncMap in `brief.go`. The template renders rather than decides. It is `text/template`, not `html/template`: the output is Markdown for a human and a model to read. HTML-escaping will mangle every `<`, `&`, and quote in a captured path or skeleton.
 
 ## Compressed samples
 

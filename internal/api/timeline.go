@@ -105,7 +105,7 @@ type deliveryTimeline struct {
 	lat *latency.Recorder
 }
 
-// KindWebhook is the Latency tab's name for a dispatched delivery's handling time, receipt to response.
+// KindWebhook is the Latency tab's name for a delivery's time from receipt to applied.
 const KindWebhook = "webhook.handle"
 
 func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.DispatchResult, receivedAt time.Time, duration time.Duration) {
@@ -114,6 +114,11 @@ func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.Dis
 		// Untrusted; fixed lane, claimed metadata rides as clamped detail.
 		if d.tl != nil {
 			d.tl.RecordWebhookRejected(receivedAt, duration, result.Disposition, event.Type, event.DeliveryID)
+		}
+	case webhook.DispDuplicate:
+		// Answered and never applied, so it has no receipt-to-applied time.
+		if d.tl != nil {
+			d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
 		}
 	default:
 		d.lat.Observe(KindWebhook, duration)
@@ -138,9 +143,9 @@ func TimelineExchangeObserver(tl *reqtimeline.Recorder) ghclient.ExchangeObserve
 	}
 }
 
-// timelineDeliveryRecorder wraps a recorder for webhook.Handler, keeping the
-// handler's nil fast-path when no recorder is configured.
-func timelineDeliveryRecorder(tl *reqtimeline.Recorder, lat *latency.Recorder) webhook.DeliveryRecorder {
+// DeliveryRecorder puts every webhook delivery on the Timeline and its
+// receipt-to-applied time on the Latency tab; nil when both are nil.
+func DeliveryRecorder(tl *reqtimeline.Recorder, lat *latency.Recorder) webhook.DeliveryRecorder {
 	if tl == nil && lat == nil {
 		return nil
 	}
@@ -182,7 +187,9 @@ type timelineResponse struct {
 //
 // hour of it
 //
-// since and from/to are mutually exclusive: they answer different questions (what is NEW vs what was HAPPENING), and silently ANDing them would let a history request come back empty because the live cursor had moved past it.
+// since and from/to are mutually exclusive: they answer different questions
+// (what is NEW vs what was HAPPENING), and silently ANDing them would let a
+// history request come back empty because the live cursor had moved past it.
 func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return

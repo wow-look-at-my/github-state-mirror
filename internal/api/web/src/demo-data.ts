@@ -1,4 +1,4 @@
-// Canned data for the standalone styling preview ONLY. Compiled by `just
+// Canned data for the standalone styling preview ONLY. Compiled by `npm run
 // build` (tsc) to ../assets/demo-data.js.
 
 import type {
@@ -102,9 +102,8 @@ const demoWebhooks: WebhooksResponse = {
         { delivery_id: "d607e048-6ce9-11f1-9529-df37c1489e44", event_type: "repository", action: "renamed", repo: "wow-look-at-my/old-name", received_at: ago(40), disposition: "applied", detail: "renamed to wow-look-at-my/new-name" },
         { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at; un-resolved mergeable on branch master" },
     ],
-    // Ordering: mostly in order, a handful sorted back into place by the
-    // window, a few too late for it and refused. Shaped like real traffic --
-    // out-of-order deliveries are a steady trickle, not an incident.
+    // Ordering: mostly in order, a few older than a view already applied and
+    // refused. Out-of-order deliveries are a steady trickle, not an incident.
     relay: [
         {
             target: "https://api-mirror.example.com/webhook", queued: 0, queue_capacity: 1000, in_flight: 0,
@@ -123,10 +122,6 @@ const demoWebhooks: WebhooksResponse = {
         worst_lateness_seconds: 214,
         mean_lateness_seconds: 27.5,
         by_event: { pull_request: 8, status: 4, push: 2 },
-        held: 1807,
-        reordered: 23,
-        mean_hold_seconds: 2,
-        reorder_window_seconds: 2,
         recent: [
             {
                 at: ago(7), event_type: "pull_request", action: "synchronize", repo: "wow-look-at-my/buildhost",
@@ -289,7 +284,7 @@ const demoRateLimit: RateLimitResponse = {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
                 graphql: { limit: 5000, remaining: 392, used: 4608, reset: resetIn(540) },
                 search: { limit: 30, remaining: 30, used: 0, reset: resetIn(60) },
-                // Long resource names (real GitHub /rate_limit fields).
+                // Long resource names (real GitHub /rate_limit fields) that used to force the "X / Y left" count to wrap word-by-word.
                 code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
                 actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3540) },
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },

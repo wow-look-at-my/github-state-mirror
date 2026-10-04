@@ -10,7 +10,7 @@ GitHub REST + GraphQL API client. Includes the in-memory token→identity cache 
 
 `doJSON` — the shared HTTP exchange behind the REST/GraphQL helpers (`GetOrgData`, `GetOwnerData(WithProgress)`, `OwnerRepoVisibilities`, `Installations`, `InstallationToken`, `GetRateLimit`) — **retries transient failures**: 502/503/504/429 and network errors, attempts total with a short backoff (500ms/2s. A parseable `Retry-After` raises the floor but is capped at 10s so a huge value cannot wedge a deadline-bounded fetch. Bodies are buffered once so retries resend them).
 
-Deliberately NOT retried: authoritative 4xx answers (the reveal layer and deny-cache semantics depend on them), the caller's own context cancellation/deadline, and GraphQL-level `errors[]` bodies (HTTP multiple semantic answers, checked by the callers). The passthrough proxy does not go through `doJSON` and is untouched.
+Deliberately NOT retried: authoritative 4xx answers (the reveal layer and deny-cache semantics depend on them), the caller's own context cancellation/deadline, and GraphQL-level `errors[]` bodies (HTTP 200 semantic answers, checked by the callers). The passthrough proxy does not go through `doJSON` and is untouched.
 
 ## The two GraphQL fetch families
 
@@ -22,7 +22,19 @@ The identity-locked `GetOrgData` (`organization(login:)`, the lazy /graphql rout
 
 Both owner queries pin **`ownerAffiliations: OWNER`** — the connection's default `[OWNER, COLLABORATOR]` made a User's listing include repos the login merely *collaborates* on, under their real owners. This `convertRepo`/`convertPR` then keyed by the QUERY login (the collaborator-repo bleed: junk `<user>/<name>` truth rows with foreign `name_with_owner`/`url`, double-counted PRs).
 
-Belt-and-braces, every repo-conversion loop (org and owner alike, plus the visibility loop) also **DROPS any node whose real owner** (`nameWithOwner` prefix, else `owner.login`) **differs case-insensitively from the queried login**. This is logging each drop (`dropForeignRepoNode` in `queries.go`) — drop, never re-key, so one owner's sync can never absorb truth rows or mint grants across owners. This also covers the identity-locked org query with zero query-text change (`TestOrgQueryUntouched` still passes) and kills the visibility map's bare-name collision hazard (a same-named foreign node clobbering an owned repo's visibility entry). A deploy-time nuke (schema history, entry 14) cleaned up the junk rows a corrected re-run can never delete (sync never deletes repo rows. The PR reconcile only visits fetched repos). Reconcile, not a nuke, is the tool for that today — the DB is rebuilt only by a schema change now. As a result, there is no version to bump for a data problem.
+Belt-and-braces, every repo-conversion loop (org and owner alike, plus the
+visibility loop) also **DROPS any node whose real owner** (`nameWithOwner`
+prefix, else `owner.login`) **differs case-insensitively from the queried
+login**, logging each drop (`dropForeignRepoNode` in `queries.go`) — drop,
+never re-key, so one owner's sync can never absorb truth rows or mint grants
+across owners; this also covers the identity-locked org query with zero
+query-text change (`TestOrgQueryUntouched` still passes) and kills the
+visibility map's bare-name collision hazard (a same-named foreign node
+clobbering an owned repo's visibility entry). A deploy-time nuke (schema
+history, entry 14) cleaned up the junk rows a corrected re-run could never
+delete (sync never deletes repo rows; the PR reconcile only visits fetched
+repos). Reconcile, not a nuke, is the tool for that today — the DB is rebuilt
+only by a schema change now, so there is no version to bump for a data problem.
 
 ## Query shapes and conversion (`queries.go`)
 
@@ -44,10 +56,14 @@ Belt-and-braces, every repo-conversion loop (org and owner alike, plus the visib
 
 ## Verified display names (`internal/actor`)
 
-`actor.WithName` carries the actor's VERIFIED display name (a user's login, an app's slug, or an installation's account login) as display-only metadata alongside the partition key, never a key itself. Only set names proven by GitHub's own answers (`ResolveTokenIdentity`, `VerifyAppIdentity`, an installations listing). Never a name derived from an unverified header.
+`actor.WithName` carries the actor's VERIFIED display name (a user's login, an app's slug, or an installation's account login) as display-only metadata alongside the partition key, not a key itself. Only set names proven by GitHub's own answers (`ResolveTokenIdentity`, `VerifyAppIdentity`, an installations listing). Never a name derived from an unverified header.
 
-`actor.Short` abbreviates an actor for display and logs. Only opaque hex token fingerprints (longer than multiple chars) are shortened, to their first 12 hex chars. Structured actors — `user:<id>`, `app:<id>`, `app-installation:<id>` — are short and meaningful already, and truncating them will drop significant digits, so they are returned whole.
+`actor.Short` abbreviates an actor for display and logs. Only opaque hex token
+fingerprints (longer than 12 chars) are shortened, to their first 12 hex
+chars; structured actors — `user:<id>`, `app:<id>`, `app-installation:<id>`
+— are short and meaningful already, and truncating them would drop
+significant digits, so they are returned whole.
 
 ## `RateLimitResponse` (`ratelimit.go`)
 
-`Rate` is GitHub's deprecated top-level alias for `resources.core`. GitHub still sends it on every answer, so the mirror's own rebuild of this endpoint (`internal/api/respcache_ratelimit.go`) sends it too. A caller that reads it must not silently start reading nothing the day it points at the mirror. Omitted when core is not known, never guessed.
+`Rate` is GitHub's deprecated top-level alias for `resources.core`. GitHub still sends it on every answer, so the mirror's own rebuild of this endpoint (`internal/api/respcache_ratelimit.go`) sends it too. A caller that reads it must not silently start reading nothing the day it points at the mirror. Omitted when core is not known, not guessed.

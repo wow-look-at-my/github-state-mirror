@@ -20,9 +20,12 @@ import (
 
 // requireAuth enforces that every data request carries a usable GitHub token. It resolves the token's identity against GitHub, rejects an absent, malformed or revoked credential, injects the token into the request context, and records the caller's PRINCIPAL.
 //
-// The principal is "user:<numeric GitHub user id>". It says who is asking, so it gates what reveal.go REVEALS; it never partitions what the cache STORES. The numeric id keys it because an id survives a login rename and is never recycled, so a user keeps the grants they earned across rotating tokens. A request must never fall through to the service's own App credential, which can read far more than the caller.
-//
-// When the identity cannot be resolved at all (network error, 5xx, rate limit) and no verdict is cached, the request fails: a wrong principal reveals another caller's repos, so there is no silent fingerprint fallback for a token that might belong to a user.
+// The principal is "user:<numeric GitHub user id>". It says who is asking, so
+// it gates what reveal.go REVEALS; it never partitions what the cache STORES.
+// The numeric id keys it because an id survives a login rename and is never
+// recycled, so a user keeps the grants they earned across rotating tokens.
+// A request must never fall through to the service's own App credential, which
+// can read far more than the caller.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

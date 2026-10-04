@@ -2,13 +2,17 @@
 
 A request nobody can see is a request nobody can account for. It spends rate-limit budget the operator is trying to explain. It can be slow. It can fail, and none of that reaches the chart they are looking at to answer "what is this thing doing right now?".
 
-This is an operator ruling, not a preference (restated): **everything the mirror exchanges is on the Timeline chart. A gap is a bug.** The first cut of the chart scoped out ghclient's background traffic as "deliberately not recorded" and. Never reintroduce an observability exclusion.
+This is an operator ruling, not a preference (restated): **everything the mirror exchanges is on the Timeline chart. A gap is a bug.** The first cut of the chart scoped out ghclient's background traffic as "deliberately not recorded" and was reverted for it. Never reintroduce an observability exclusion.
 
 ## Why call-site instrumentation is not enough
 
 Recording at the call site covers the calls you thought of. The ones that go missing are the ones nobody thought of. That includes every call site added later by someone who did not know the rule.
 
-The mirror had a live example. `internal/auth` built its own `http.Client` for the OAuth handshake. As a result, every dashboard sign-in made two real GitHub calls that appeared nowhere** — on the very page they were serving. Nothing was wrong with the code that made them. Nobody had written the recording line. Nothing can have told them to.
+The mirror had a live example. `internal/auth` built its own `http.Client` for
+the OAuth handshake, so **every dashboard sign-in made two real GitHub calls
+that appeared nowhere** — on the very page they were serving. Nothing was
+wrong with the code that made them; nobody had written the recording line, and
+nothing could have told them to.
 
 So the property is held at the **client**, not the call. An outbound HTTP client either reports what it sends, from its transport, or it is a hole. `internal/httpobs` is the wrapper. Four of the senders below use it or an equivalent transport hook.
 

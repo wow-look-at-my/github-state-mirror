@@ -6,22 +6,23 @@ import (
 	"errors"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
 // ---- Pull Requests ----
 
 func (s *Store) GetPullRequest(ctx context.Context, owner, repo string, number int64) (dbgen.PullRequest, error) {
-	return s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{Owner: owner, Repo: repo, Number: number})
+	return s.qx(ctx).GetPullRequest(ctx, dbgen.GetPullRequestParams{Owner: owner, Repo: repo, Number: number})
 }
 
 func (s *Store) ListOpenPRsByRepo(ctx context.Context, owner, repo string) ([]dbgen.PullRequest, error) {
-	return s.q.ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Owner: owner, Repo: repo})
+	return s.qx(ctx).ListOpenPullRequestsByRepo(ctx, dbgen.ListOpenPullRequestsByRepoParams{Owner: owner, Repo: repo})
 }
 
 // UpsertPR merges source's view of a PR into truth, stamping touched_at; a view that cannot prove it postdates a recorded close is refused.
 func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Time) error {
-	_, err := upsertPRTx(ctx, s.q, pr, rfc3339(now))
+	_, err := upsertPRTx(ctx, s.qx(ctx), pr, rfc3339(now))
 	return err
 }
 
@@ -32,12 +33,12 @@ func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Tim
 // stay NULL until a later check event. When no checks are recorded the
 // (COALESCE-preserved) status is left untouched.
 func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	applied, err := upsertPRTx(ctx, q, pr, rfc3339(now))
 	if err != nil {
@@ -76,12 +77,12 @@ func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, la
 // absent loses to a later write carrying OLDER state: the PR comes back open
 // and nothing restates the close.
 func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, closedUpdatedAt string, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: owner, Repo: repo, PrNumber: number}); err != nil {
 		return err
@@ -95,7 +96,7 @@ func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.q.PrunePRClosures(ctx, rfc3339(now.Add(-PRClosureRetention)))
+	return s.qx(ctx).PrunePRClosures(ctx, rfc3339(now.Add(-PRClosureRetention)))
 }
 
 // zeroSHA is git's null object id for a deleted ref; it never names a real tip.
@@ -112,7 +113,7 @@ func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch
 		staleRef = sql.NullString{String: branch, Valid: true}
 		staleAfter = sql.NullString{String: after, Valid: true}
 	}
-	return s.q.NullPRMergeableByBranch(ctx, dbgen.NullPRMergeableByBranchParams{
+	return s.qx(ctx).NullPRMergeableByBranch(ctx, dbgen.NullPRMergeableByBranchParams{
 		StaleAt:  rfc3339(now),
 		StaleRef: staleRef, StaleAfter: staleAfter,
 		Owner: owner, Repo: repo,
@@ -124,7 +125,7 @@ func (s *Store) NullPRMergeableByBranch(ctx context.Context, owner, repo, branch
 // NullPRMergeableOnTipMove un-resolves PR's merge fields when the incoming webhook doc reports a moved tip against the stored row.
 // see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.PullRequest, now time.Time) (bool, error) {
-	existing, err := s.q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
+	existing, err := s.qx(ctx).GetPullRequest(ctx, dbgen.GetPullRequestParams{
 		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +151,7 @@ func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.Pul
 		// No usable proof tip: stamp without proof columns (TTL backstop still bounds it), never half-filled.
 		ref, after = sql.NullString{}, sql.NullString{}
 	}
-	return true, s.q.NullPRMergeableForPR(ctx, dbgen.NullPRMergeableForPRParams{
+	return true, s.qx(ctx).NullPRMergeableForPR(ctx, dbgen.NullPRMergeableForPRParams{
 		StaleAt: rfc3339(now), StaleRef: ref, StaleAfter: after,
 		Owner: incoming.Owner, Repo: incoming.Repo, Number: incoming.Number,
 	})
@@ -159,7 +160,7 @@ func (s *Store) NullPRMergeableOnTipMove(ctx context.Context, incoming dbgen.Pul
 // NullPRMergeableByRepo un-resolves merge fields on ALL the repo's open PRs, deliberately marker-less -- the conservative fallback for an unparseable push.
 // see docs/cache/rest-routes.md
 func (s *Store) NullPRMergeableByRepo(ctx context.Context, owner, repo string) error {
-	return s.q.NullPRMergeableByRepo(ctx, dbgen.NullPRMergeableByRepoParams{
+	return s.qx(ctx).NullPRMergeableByRepo(ctx, dbgen.NullPRMergeableByRepoParams{
 		Owner: owner, Repo: repo,
 	})
 }
@@ -170,7 +171,7 @@ func (s *Store) NullPRMergeableStateByHeadSHA(ctx context.Context, owner, repo, 
 	if headSHA == "" {
 		return nil
 	}
-	return s.q.NullPRMergeableStateByHeadSHA(ctx, dbgen.NullPRMergeableStateByHeadSHAParams{
+	return s.qx(ctx).NullPRMergeableStateByHeadSHA(ctx, dbgen.NullPRMergeableStateByHeadSHAParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		HeadRefOid: sql.NullString{String: headSHA, Valid: true},
 	})
@@ -179,12 +180,12 @@ func (s *Store) NullPRMergeableStateByHeadSHA(ctx context.Context, owner, repo, 
 // ---- PR Labels ----
 
 func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber int64, labels []dbgen.PrLabel) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	if err := replacePRLabelsTx(ctx, q, owner, repo, prNumber, labels); err != nil {
 		return err
 	}
@@ -192,24 +193,24 @@ func (s *Store) SetPRLabels(ctx context.Context, owner, repo string, prNumber in
 }
 
 func (s *Store) ListPRLabels(ctx context.Context, owner, repo string, prNumber int64) ([]dbgen.PrLabel, error) {
-	return s.q.ListPRLabels(ctx, dbgen.ListPRLabelsParams{Owner: owner, Repo: repo, PrNumber: prNumber})
+	return s.qx(ctx).ListPRLabels(ctx, dbgen.ListPRLabelsParams{Owner: owner, Repo: repo, PrNumber: prNumber})
 }
 
 // RecolorPRLabel updates the color of a label across all PRs in a repo.
 func (s *Store) RecolorPRLabel(ctx context.Context, owner, repo, name, color string) error {
-	return s.q.SetPRLabelColorByName(ctx, dbgen.SetPRLabelColorByNameParams{
+	return s.qx(ctx).SetPRLabelColorByName(ctx, dbgen.SetPRLabelColorByNameParams{
 		Color: color, Owner: owner, Repo: repo, Name: name,
 	})
 }
 
 // DeletePRLabelByName removes a label from all PRs in a repo.
 func (s *Store) DeletePRLabelByName(ctx context.Context, owner, repo, name string) error {
-	return s.q.DeletePRLabelsByName(ctx, dbgen.DeletePRLabelsByNameParams{Owner: owner, Repo: repo, Name: name})
+	return s.qx(ctx).DeletePRLabelsByName(ctx, dbgen.DeletePRLabelsByNameParams{Owner: owner, Repo: repo, Name: name})
 }
 
 // SetRepoPushedAt updates a repo's pushed_at.
 func (s *Store) SetRepoPushedAt(ctx context.Context, owner, repo, pushedAt string) error {
-	return s.q.SetRepoPushedAt(ctx, dbgen.SetRepoPushedAtParams{
+	return s.qx(ctx).SetRepoPushedAt(ctx, dbgen.SetRepoPushedAtParams{
 		PushedAt: sql.NullString{String: pushedAt, Valid: pushedAt != ""},
 		Owner:    owner, Name: repo,
 	})

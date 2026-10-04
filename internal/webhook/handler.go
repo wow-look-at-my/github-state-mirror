@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +22,7 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, event Event) DispatchResult
 }
 
-// IngestNotifier is told about a delivery AFTER the synchronous dispatch has
+// IngestNotifier is told about each delivery after the queue's worker applied it.
 type IngestNotifier interface {
 	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
 }
@@ -47,12 +48,119 @@ type Relayer interface {
 	RelayDelivery(header http.Header, body []byte)
 }
 
-// Handler returns an http.Handler that receives GitHub webhook POSTs.
-func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers ...IngestNotifier) http.HandlerFunc {
-	return HandlerWithRelay(secret, dispatcher, recorder, nil, notifiers...)
+// Handler returns an http.Handler that receives GitHub webhook POSTs. A
+// verified delivery is answered once q's journal holds it; q's worker applies
+// it. A delivery id already in the journal is answered without recording it twice.
+func Handler(secret string, q *Queue) http.HandlerFunc {
+	return handlerWithRelayQueue(secret, q, nil)
 }
 
-// HandlerWithRelay is Handler plus a relay that gets each verified delivery.
+// HandlerWithRelayQueue is Handler plus a relay that gets each verified
+// delivery before it is journaled, whatever its outcome. A nil relay relays
+// nothing.
+func HandlerWithRelayQueue(secret string, q *Queue, relay Relayer) http.HandlerFunc {
+	return handlerWithRelayQueue(secret, q, relay)
+}
+
+// handlerWithRelayQueue verifies the delivery, relays it, journals it, and
+// answers; the queue's worker applies it.
+func handlerWithRelayQueue(secret string, q *Queue, relay Relayer) http.HandlerFunc {
+	recorder := q.recorder
+	return func(w http.ResponseWriter, r *http.Request) {
+		// The handling clock starts at receipt, so EVERY outcome — rejected,
+		receivedAt := time.Now()
+		reject := func(disposition, detail string) {
+			if recorder == nil {
+				return
+			}
+			recorder.RecordDelivery(
+				Event{Type: r.Header.Get("X-GitHub-Event"), DeliveryID: r.Header.Get("X-GitHub-Delivery")},
+				DispatchResult{Disposition: disposition, Detail: detail},
+				receivedAt, time.Since(receivedAt),
+			)
+		}
+
+		if r.Method != http.MethodPost {
+			reject(DispRejected, "method not allowed")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			reject(DispRejected, "unreadable body")
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		// Fail closed: without a configured secret we cannot verify that a webhook
+		// came from GitHub, and an unauthenticated endpoint
+		if secret == "" {
+			slog.Error("webhook rejected: WEBHOOK_SECRET is not set")
+			reject(DispUnverified, "webhook secret not configured")
+			http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if !verifySignature(secret, sig, body) {
+			slog.Warn("webhook signature verification failed")
+			reject(DispUnverified, "signature verification failed")
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		if relay != nil {
+			relay.RelayDelivery(r.Header, body)
+		}
+
+		eventType := r.Header.Get("X-GitHub-Event")
+		if eventType == "" {
+			// Verified (GitHub-signed) but undispatched: no event type.
+			if recorder != nil {
+				recorder.RecordDelivery(
+					Event{DeliveryID: r.Header.Get("X-GitHub-Delivery")},
+					DispatchResult{Disposition: DispUnparseable, Detail: "missing event type"},
+					receivedAt, time.Since(receivedAt),
+				)
+			}
+			http.Error(w, "missing event type", http.StatusBadRequest)
+			return
+		}
+
+		deliveryID := r.Header.Get("X-GitHub-Delivery")
+		if deliveryID == "" {
+			deliveryID = localDeliveryID()
+		}
+		event := ParseEvent(eventType, body)
+		event.DeliveryID = deliveryID
+
+		// Recorded under its own context: a sender that hangs up mid-write must not leave a half-kept promise.
+		fresh, err := q.enqueue(context.WithoutCancel(r.Context()), Stored{
+			DeliveryID: deliveryID, EventType: eventType, Body: body, ReceivedAt: receivedAt,
+		})
+		result := DispatchResult{Event: event.Type, Action: event.Action, Repo: event.RepoFullName()}
+		switch {
+		case err != nil:
+			slog.Error("webhook: recording a delivery failed; GitHub is told so it can be sent again", "type", eventType, "delivery", deliveryID, "error", err)
+			result.Disposition, result.Detail = DispError, "recording the delivery failed"
+			if recorder != nil {
+				recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+			}
+		case !fresh:
+			result.Disposition, result.Detail = DispDuplicate, "delivery id already recorded"
+			if recorder != nil {
+				recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+			}
+		default:
+			result.Disposition = DispQueued
+		}
+		writeResult(w, result)
+	}
+}
+
+// HandlerWithRelay is the relay-aware form of the webhook endpoint that
+// dispatches synchronously: it hands every verified delivery to relay before
+// dispatch, whatever the outcome, and answers with the dispatch result itself.
 // A nil relay relays nothing.
 func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, relay Relayer, notifiers ...IngestNotifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +246,15 @@ func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRec
 
 		writeResult(w, result)
 	}
+}
+
+// localDeliveryID names a delivery that arrived without X-GitHub-Delivery, so it is never taken for a repeat.
+func localDeliveryID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("webhook: read random: " + err.Error())
+	}
+	return "local-" + hex.EncodeToString(b[:])
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
