@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -118,22 +119,77 @@ func (s *Store) ListWorkflowRuns(ctx context.Context, owner, repo string, f Work
 	return out, total, nil
 }
 
+// WorkflowRunListingLag bounds how far GitHub's runs listing trails the deliveries about the same runs.
+const WorkflowRunListingLag = time.Minute
+
+// workflowRunsScanPage is the page size ReconcileWorkflowRuns reads truth in.
+const workflowRunsScanPage = 500
+
 // ReconcileWorkflowRuns drops rows a complete response contradicts: a run
 // that still MATCHES the filter in truth but was absent from a short page-
 // answer for that same filter has provably moved, and the answer did not say
 // where to. Deleting it is the honest correction -- the next read re-absorbs
 // the run under whatever state it now has.
-func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f WorkflowRunFilter, kept []int64) error {
+//
+// A row touched within WorkflowRunListingLag of fetchedAt (the instant the
+// fetch began) is newer than the answer can be trusted to reflect, so it is
+// kept. Its id is returned: a non-empty result means the answer is behind
+// truth and must not be stored as a complete picture.
+func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f WorkflowRunFilter, kept []int64, fetchedAt time.Time) ([]int64, error) {
+	ahead, err := s.workflowRunsTouchedSince(ctx, owner, repo, f, fetchedAt.Add(-WorkflowRunListingLag), kept)
+	if err != nil {
+		return nil, err
+	}
+	spared := make([]int64, 0, len(kept)+len(ahead)+1)
+	spared = append(spared, kept...)
+	spared = append(spared, ahead...)
 	// NOT IN () is a syntax error in SQLite and an empty response means every
 	// matching row is stale, so pass a sentinel that can never be a run id.
-	if len(kept) == 0 {
-		kept = []int64{-1}
+	if len(spared) == 0 {
+		spared = append(spared, -1)
 	}
-	return s.qx(ctx).DeleteWorkflowRunsNotIn(ctx, dbgen.DeleteWorkflowRunsNotInParams{
+	return ahead, s.qx(ctx).DeleteWorkflowRunsNotIn(ctx, dbgen.DeleteWorkflowRunsNotInParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: strings.ToLower(f.HeadSHA),
-		Kept: kept,
+		Kept: spared,
 	})
+}
+
+// workflowRunsTouchedSince returns the ids of rows matching f, absent from
+// listed, and touched at or after since.
+func (s *Store) workflowRunsTouchedSince(ctx context.Context, owner, repo string, f WorkflowRunFilter, since time.Time, listed []int64) ([]int64, error) {
+	inAnswer := make(map[int64]bool, len(listed))
+	for _, id := range listed {
+		inAnswer[id] = true
+	}
+	// touched_at is stored at second precision.
+	floor := since.UTC().Truncate(time.Second)
+	var out []int64
+	for offset := int64(0); ; offset += workflowRunsScanPage {
+		rows, err := s.qx(ctx).ListWorkflowRuns(ctx, dbgen.ListWorkflowRunsParams{
+			Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
+			Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: strings.ToLower(f.HeadSHA),
+			PageSize: workflowRunsScanPage, PageOffset: offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if inAnswer[row.RunID] {
+				continue
+			}
+			touched, err := time.Parse(time.RFC3339, row.TouchedAt)
+			if err != nil {
+				return nil, fmt.Errorf("workflow run %d: touched_at %q: %w", row.RunID, row.TouchedAt, err)
+			}
+			if !touched.Before(floor) {
+				out = append(out, row.RunID)
+			}
+		}
+		if len(rows) < workflowRunsScanPage {
+			return out, nil
+		}
+	}
 }
 
 // WorkflowRunsListComplete reports whether truth provably holds every run
