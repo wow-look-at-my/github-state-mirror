@@ -80,17 +80,19 @@ func createFresh(path string, obs Observer) (*sql.DB, error) {
 	return db, nil
 }
 
+const maxIdleConns = 8
+
+// OpenDSN opens dsn with every write admitted through one write gate (gate.go)
+// and every call timed into obs (nil times nothing). It does no schema check.
+func OpenDSN(dsn string, obs Observer) *sql.DB {
+	db := sql.OpenDB(observedConnector{dsn: dsn, drv: baseDriver(), obs: obs, gate: newWriteGate()})
+	db.SetMaxIdleConns(maxIdleConns)
+	return db
+}
+
 func openAndConfigure(path string, obs Observer) (*sql.DB, error) {
-	var db *sql.DB
-	if obs == nil {
-		var err error
-		if db, err = sql.Open("sqlite", DSN(path)); err != nil {
-			return nil, fmt.Errorf("open db: %w", err)
-		}
-	} else {
-		db = sql.OpenDB(observedConnector{dsn: DSN(path), drv: baseDriver(), obs: obs})
-	}
-	// sql.Open is lazy; Ping opens a connection, so a bad file fails here and gets nuked.
+	db := OpenDSN(DSN(path), obs)
+	// sql.OpenDB is lazy; Ping opens a connection, so a bad file fails here and gets nuked.
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("configure db: %w", err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -17,6 +18,34 @@ type WebhookDispatcher struct {
 	store    *ghdata.Store
 	ordering *OrderingStats
 	reorder  *reorderBuffer
+
+	// inflight counts running dispatches, so shutdown can wait for them before the DB closes.
+	inflightMu sync.Mutex
+	inflight   sync.WaitGroup
+}
+
+// Drain waits for every running dispatch to finish, or for timeout; true when all finished.
+func (d *WebhookDispatcher) Drain(timeout time.Duration) bool {
+	d.inflightMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		d.inflight.Wait()
+		close(done)
+	}()
+	d.inflightMu.Unlock()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func (d *WebhookDispatcher) track() func() {
+	d.inflightMu.Lock()
+	d.inflight.Add(1)
+	d.inflightMu.Unlock()
+	return d.inflight.Done
 }
 
 // invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
@@ -53,6 +82,7 @@ func errored(detail string) outcome { return outcome{disposition: webhook.DispEr
 // what it did. It also records the delivery in the global webhook log so the
 // dashboard can show whether data was preserved.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
+	defer d.track()()
 	// A delivery whose subject already has a reorder batch open joins it and dispatches in clock order.
 	if order, ok := webhook.OrderOf(event); ok {
 		if res, buffered := d.reorder.admit(ctx, order.Subject, order.At, event, d.dispatchNow); buffered {

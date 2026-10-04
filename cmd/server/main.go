@@ -159,6 +159,10 @@ func main() {
 
 	// Drain fetches before closing the DB.
 	debouncer.Drain(30 * time.Second)
+	// A delivery keeps applying after its sender hangs up, so it can outlive the server.
+	if !dispatcher.Drain(30 * time.Second) {
+		slog.Warn("shutdown: in-flight webhook deliveries did not drain in time; closing DB anyway")
+	}
 	if !mgr.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
 	}

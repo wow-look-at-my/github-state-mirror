@@ -50,11 +50,8 @@ type Store struct {
 // there is no version check and no nuke path: the schema is applied
 // idempotently and existing rows are always kept.
 func Open(path string) (*Store, error) {
-	// The main DB's connection settings, applied to every pooled connection.
-	db, err := sql.Open("sqlite", database.DurableDSN(path))
-	if err != nil {
-		return nil, fmt.Errorf("open subscriptions db: %w", err)
-	}
+	// The main DB's connection settings and write gate, applied to every pooled connection.
+	db := database.OpenDSN(database.DurableDSN(path), nil)
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("subscriptions db: apply schema: %w", err)
