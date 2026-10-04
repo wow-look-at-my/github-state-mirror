@@ -190,7 +190,7 @@ func pushedAtDrift(cached, github sql.NullString) (time.Duration, bool) {
 }
 
 // racedDuringCheck reports whether a GitHub-side RFC3339 timestamp is at or
-// after the check's start: the resource provably moved WHILE the check ran, so
+// after the check's start: the resource provably moved WHILE the check ran.
 func racedDuringCheck(github string, checkStart time.Time) bool {
 	if checkStart.IsZero() || github == "" {
 		return false
@@ -230,8 +230,7 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	// explicit github value: GraphQL's defaultBranchRef is null for a repo with
 	// no commits (REST still reports the CONFIGURED default_branch name, which
 	// is what the webhook/REST absorb paths cache), and the bare add() rendered
-	// that as "" -- dropped from the JSON by omitempty, leaving a -sided
-	// entry.
+	// that as "" -- dropped from the JSON by omitempty, leaving a -sided entry.
 	if ns(c.DefaultBranch) != ns(g.DefaultBranch) {
 		d := Discrepancy{
 			Kind: "repo", Repo: repoKey, Issue: "field_mismatch", Field: "default_branch",
@@ -310,12 +309,12 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 }
 
 // prFieldDiffs compares the webhook-fed / refreshed PR fields. created_at and
-// updated_at are intentionally not compared (updated_at churns constantly and is
-// not a correctness signal); mergeable is skipped (see the report notes).
+// updated_at are intentionally not compared (updated_at churns constantly and
+// is not a correctness signal); mergeable is skipped (see the report notes).
 // checkStart gates head_ref_oid's raced_during_check classification: the
-// in-flight-movement proof is the PR's own GitHub-side updated_at (a head push
-// bumps it, and it is the timestamp the owner-query snapshot actually carries
-// -- the repo's pushed_at is not threaded down here).
+// in-flight-movement proof is the PR's own GitHub-side updated_at (a head
+// push bumps it, and it is the timestamp the owner-query snapshot carries --
+// the repo's pushed_at is not threaded down here).
 func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest, checkStart time.Time) []Discrepancy {
 	var out []Discrepancy
 	add := func(field, cv, gv string) {
@@ -328,8 +327,8 @@ func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest, checkStart 
 	add("last_commit_status", ns(c.LastCommitStatus), ns(g.LastCommitStatus))
 
 	// head_ref_oid: a differing head sha whose PR was updated at/after the
-	// check's start moved WHILE the check ran (the push's webhook simply had no
-	// time to land) -- raced_during_check, not drift.
+	// check's start moved WHILE the check ran (the push's webhook had no time to
+	// land) -- raced_during_check, not drift.
 	if ns(c.HeadRefOid) != ns(g.HeadRefOid) {
 		if racedDuringCheck(g.UpdatedAt, checkStart) {
 			out = append(out, Discrepancy{

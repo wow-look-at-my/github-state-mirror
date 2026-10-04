@@ -119,12 +119,12 @@ func compareCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 	return router, store, db, u
 }
 
-// TestCachedCompare_MissAbsorbHit covers the core flow: the read fetches
-// + absorbs (miss), the serves the identical trimmed body from state
-// (hit, upstream calls), the rebuild drops every URL field, the full
-// base_commit object, the user-object clutter, and the per-file patch -- and
-// the compare's commits land in the SAME global git_commits_cache rows the
-// single git-commit route serves.
+// TestCachedCompare_MissAbsorbHit covers the core flow: the read fetches +
+// absorbs (miss), the serves the identical trimmed body from state (hit,
+// upstream calls), the rebuild drops every URL field, the full base_commit
+// object, the user-object clutter, and the per-file patch -- and the
+// compare's commits land in the SAME global git_commits_cache rows the
+// git-commit route serves.
 func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 	target := "/repos/org1/repo1/compare/main...dev"
@@ -167,17 +167,17 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits), "hit must not call upstream")
 
-	// Absorb synergy: the compare's commits are global git_commits_cache rows, so the single git-commit route hits though this fake 404s it.
+	// Absorb synergy: the compare's commits are global git_commits_cache rows.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaCommit, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "compare-absorbed commits must serve the single git-commit route")
 }
 
 // TestCachedCompare_ChangedFilesPreserved pins the field whose loss got the
-// old /compare cache REMOVED: pr-minder reads changed_files = files.length,
-// where an EMPTY array means a -diff branch (close/skip -- the empty-PR
-// gate) and an ABSENT array means unknown (fail open, never close). Both
-// forms must survive the rebuild exactly, on the miss and on the hit.
+// /compare cache REMOVED: pr-minder reads changed_files = files.length, where
+// an EMPTY array means a -diff branch (close/skip -- the empty-PR gate) and
+// an ABSENT array means unknown (fail open, never close). Both forms must
+// survive the rebuild exactly, on the miss and on the hit.
 func TestCachedCompare_ChangedFilesPreserved(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 
@@ -284,8 +284,7 @@ func TestCachedCompare_BaseheadKeying(t *testing.T) {
 // TestCachedCompare_PassthroughShapes: shapes the cache does not model pass
 // through verbatim, uncached, every time -- query params, the diff/patch
 // media types, the cross-fork owner:branch form (whose fork side this repo's
-// webhooks can never invalidate), and a basehead without the -dot
-// separator.
+// webhooks can never invalidate), and a basehead without the -dot separator.
 func TestCachedCompare_PassthroughShapes(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 

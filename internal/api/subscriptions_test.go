@@ -269,7 +269,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	stack.router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 
-	// Admin: the operator view — counters, recent, ALL subscriptions with
+	// Admin: the operator view — counters, recent.
 	req = httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()

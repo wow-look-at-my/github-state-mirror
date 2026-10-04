@@ -146,7 +146,7 @@ func TestCachedContents_QueryStringDistinct(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "both refs served from their own entries")
 }
 
-// TestCachedContents_GlobalTruthSharedViaReveal: global truth store — a
+// TestCachedContents_GlobalTruthSharedViaReveal.
 //
 //	user's read of the same private resource is answered from the state
 //
@@ -362,10 +362,10 @@ func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
 }
 
 // TestRespCache_NonDefaultAcceptPassthrough: media types that change the
-// response shape in ways this package does not model at all (html/object,
-// or an ambiguous mixed Accept) are not modeled — the route must forward
-// them verbatim, uncached. Raw (application/vnd.github.raw) is NOT of
-// these anymore -- see TestRespCache_RawAcceptServedFromCache.
+// response shape in ways this package does not model at all (html/object, or
+// an ambiguous mixed Accept) are not modeled — the route must forward them
+// verbatim, uncached. Raw (application/vnd.github.raw) is NOT of these -- see
+// TestRespCache_RawAcceptServedFromCache.
 func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	raw := []byte("plain html bytes, not json")

@@ -70,9 +70,8 @@ func (b *reorderBuffer) admit(ctx context.Context, subject string, at time.Time,
 	case res := <-item.done:
 		return res, true
 	case <-ctx.Done():
-		// The caller gave up (a disconnect, or the handler's own deadline).
-		// The batch still dispatches on its own context; there is simply
-		// nobody left to tell.
+		// The caller gave up (a disconnect, or the handler's own deadline). The
+		// batch still dispatches on its own context; there is nobody left to tell.
 		return webhook.DispatchResult{
 			Event: event.Type, Action: event.Action, Repo: event.RepoFullName(),
 			Disposition: webhook.DispIgnored, Detail: "caller went away while the delivery was held for reordering",

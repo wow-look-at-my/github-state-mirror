@@ -113,11 +113,11 @@ func commitsCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 	return router, store, db, u
 }
 
-// TestCachedCommitsList_MissAbsorbHit covers the core flow: the read
-// fetches + absorbs (miss), the serves the identical trimmed body from
-// state (hit, upstream calls), the rebuild drops every URL field and the
-// user-object clutter -- and the absorbed commits land in the SAME global
-// git_commits_cache rows the single git-commit route serves.
+// TestCachedCommitsList_MissAbsorbHit covers the core flow: the read fetches
+// + absorbs (miss), the serves the identical trimmed body from state (hit,
+// upstream calls), the rebuild drops every URL field and the user-object
+// clutter -- and the absorbed commits land in the SAME global
+// git_commits_cache rows the git-commit route serves.
 func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 	target := "/repos/org1/repo1/commits?sha=main&per_page=100&page=1"

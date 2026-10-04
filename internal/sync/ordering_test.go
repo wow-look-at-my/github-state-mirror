@@ -135,7 +135,7 @@ func TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther(t *testing.T) {
 // The thing a reordering buffer would have bought: a push carries commit
 // objects the newer push never restates. They are immutable and
 // content-addressed, so absorbing them out of order is not a stale write --
-// dropping them would just mean fetching them back later.
+// dropping them would mean fetching them back later.
 func TestOrdering_SupersededPushStillAbsorbsItsCommits(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

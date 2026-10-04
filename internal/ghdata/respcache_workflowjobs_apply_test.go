@@ -68,8 +68,7 @@ func TestApplyWorkflowJob_RewritesOneEntry(t *testing.T) {
 // them unreported. A queued job has no steps yet, so a rewritten entry is
 // exactly right and earns the longer live clock; a running does not.
 func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
-	// The cases walk one page through its transitions, so each one reads the
-	// row the case before it wrote. They must run in order, one at a time.
+	// The cases walk one page through its transitions, so each reads the row the case before it wrote.
 	t.Serial()
 	ctx := context.Background()
 	s := testStore(t)

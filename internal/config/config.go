@@ -49,7 +49,7 @@ type Config struct {
 	// WebhookReorderWindow holds a delivery so same-subject deliveries sort and apply oldest-; skips straight to the watermark gate.
 	WebhookReorderWindow time.Duration
 
-	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) actually grows to it.
+	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) grows to it.
 	CacheMaxRows int64
 
 	// GitHub App credentials for background refreshes; the service holds no static user token otherwise.

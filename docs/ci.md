@@ -19,7 +19,7 @@ The dashboard front-end has exactly ONE source: TypeScript in `internal/api/web/
 
 This job is the type-check gate, because tsc exits non-zero on any error. It also enforces the no-committed-JS rule. A generated file thus never creeps back into the tree as a second, staleable source of truth.
 
-The test harnesses in `internal/api/testdata/` are TypeScript. `npm run check:harness` checks them against the dashboard source they drive. A changed export signature thus fails here, rather than at runtime inside a measurement. node runs the `.ts` files directly, so this step emits nothing.
+The test harnesses in `internal/api/testdata/` are TypeScript. `npm run check:harness` checks them against the dashboard source they drive. A changed export signature thus fails here, rather than at runtime inside a measurement. node runs the `.ts` files directly. As a result, this step emits nothing.
 
 ## `build`
 
@@ -41,6 +41,6 @@ Builds the Docker image and pushes `ghcr.io/wow-look-at-my/github-state-mirror:l
 
 ## `preview`
 
-Deploys a standalone, backend-free styling preview of the dashboard to buildhost, as a per-branch static site at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`. The preview injects `demo-data.js`, so the page renders canned login, user and admin views without a real server. OIDC handles auth, and no static token is necessary.
+Deploys a standalone, backend-free styling preview of the dashboard to buildhost, as a per-branch static site at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`. The preview injects `demo-data.js`. As a result, the page renders canned login, user and admin views without a real server. OIDC handles auth, and no static token is necessary.
 
 Its "Assemble the demo bundle" step injects the preview-only `demo-data.js` script tag before `app.js`. The page thus renders canned data instead of calling the absent backend. The step also flattens the branch name to buildhost's single-path-segment convention. Any character outside `[A-Za-z0-9._-]` becomes `-`, because buildhost serves a site under one path segment.

@@ -127,7 +127,7 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 
 // testStack is the full router assembly for tests that also need the
 // subscriber-notification pieces (the notifier for deterministic flushes) or
-// the timeline ring (for asserting timed traffic events).
+// the timeline ring.
 type testStack struct {
 	router   http.Handler
 	store    *ghdata.Store

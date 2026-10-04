@@ -146,7 +146,6 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 		}
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
 	}
-	// mergeable_state is the only field that says a strict up-to-date rule is
 	if gpr.MergeableState != "" && gpr.MergeableState != "unknown" {
 		pr.MergeableState = sql.NullString{String: gpr.MergeableState, Valid: true}
 	}
@@ -175,8 +174,7 @@ func ParsePRPayload(raw json.RawMessage) (PRPayload, error) {
 }
 
 // MergedPRBaseTip is what a merged pull_request delivery says about the BASE
-// BRANCH, as opposed to about the PR: merging created a commit on that
-// branch, and the payload names it.
+// BRANCH, as opposed to about the PR.
 type MergedPRBaseTip struct {
 	BaseRef        string    // the base branch's name ("master")
 	MergeCommitSHA string    // the commit merging put on it

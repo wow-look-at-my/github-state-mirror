@@ -332,8 +332,9 @@ func realNodeOwner(nameWithOwner, ownerLogin string) string {
 	return ownerLogin
 }
 
-// dropForeignRepoNode reports whether a node really belongs to a different owner than queried, and logs the drop.
-// see docs/ghclient.md ("ownerAffiliations: OWNER, and the foreign-node drop")
+// dropForeignRepoNode reports whether a node belongs to a different owner
+// than queried, and logs the drop. see docs/ghclient.md ("ownerAffiliations:
+// OWNER, and the foreign-node drop")
 func dropForeignRepoNode(queriedOwner, nameWithOwner, ownerLogin string) bool {
 	real := realNodeOwner(nameWithOwner, ownerLogin)
 	if real == "" || strings.EqualFold(real, queriedOwner) {

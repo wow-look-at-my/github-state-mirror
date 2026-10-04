@@ -72,7 +72,8 @@ func (h *handlers) cachedUserOrgs(w http.ResponseWriter, r *http.Request) {
 // identityAbsorber reports whether an upstream identity response is cacheable verbatim.
 type identityAbsorber func(status int, body []byte) (string, bool)
 
-// absorbVerbatimObject accepts a JSON object with a positive numeric id; the stored bytes are the original body.
+// absorbVerbatimObject accepts a JSON object with a positive numeric id; the
+// stored bytes are the body.
 func absorbVerbatimObject(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

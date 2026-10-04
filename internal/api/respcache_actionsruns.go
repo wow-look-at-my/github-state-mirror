@@ -16,8 +16,6 @@ import (
 )
 
 // Implements the cached workflow-runs route (tier of the cache contract).
-// See docs/cache/rest-routes.md for the request shapes, their invalidation
-// signals, and the completeness proof that gates the repo-wide listing.
 
 const (
 	// Backstop for run deletion (never webhooked) and missed deliveries.

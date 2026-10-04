@@ -26,9 +26,9 @@ func TestUpdateCheckEndpointsAnswerWithoutAToken(t *testing.T) {
 	}
 }
 
-// The distinction the test above rests on: an unregistered path really does
-// answer here rather than, so "it would have 'd anyway" is not a
-// reason to skip registering them.
+// The distinction the test above rests on: an unregistered path does answer
+// here rather than, so "it would have 'd anyway" is not a reason to skip
+// registering them.
 func TestUnregisteredPathAnswers401NotFound(t *testing.T) {
 	router, _ := setupTestRouter(t)
 

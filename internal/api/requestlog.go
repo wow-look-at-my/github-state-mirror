@@ -27,14 +27,7 @@ const (
 // Passthrough REASONS: WHY a read was forwarded to GitHub uncached. The
 // disposition alone says a route did not serve from state; the reason says
 // whether that is a caching GAP (a shape worth modeling) or the model working
-// as designed (a shape deliberately left uncacheable). Without it, reading the
-// dashboard's "Top uncached requests" table means going to the source — of
-// this repo AND of the calling service — to recover the query shape the log
-// threw away, which is exactly the archaeology this vocabulary replaces.
-//
-// The set is CLOSED and every value is a compile-time constant: reasons are
-// group-counter keys, so — like the timeline's lane names — they must never be
-// derived from a URL, a header, or anything else a caller controls.
+// as designed (a shape deliberately left uncacheable).
 const (
 	// PassAccept: a non-default Accept media type (raw/html/diff/patch) — a different response shape entirely.
 	PassAccept = "unmodeled-accept"
@@ -138,7 +131,6 @@ type requestEvent struct {
 
 // requestLog is an in-memory, bounded record of recent requests plus
 // per-disposition and per-route-shape counters (requestgroups.go).
-// see docs/dashboard/dashboard.md
 type requestLog struct {
 	mu     sync.Mutex
 	total  int64
@@ -219,7 +211,7 @@ type requestLogSnapshot struct {
 	ByDisposition map[string]int64       `json:"by_disposition"`
 	Groups        []requestGroupSnapshot `json:"groups"`
 	Recent        []requestEvent         `json:"recent"`
-	// The DB file's (and its -wal sidecar's) on-disk sizes, filled by the
+	// The DB file's (and its -wal sidecar's) on-disk sizes.
 	DBSizeBytes    int64 `json:"db_size_bytes,omitempty"`
 	DBWALSizeBytes int64 `json:"db_wal_size_bytes,omitempty"`
 }
@@ -247,13 +239,13 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 	}
 }
 
-// recordPassthrough wraps the GitHub reverse proxy so every request it serves is
-// recorded as a passthrough — with the upstream HTTP status GitHub returned, so
-// the dashboard shows whether the forwarded call actually succeeded. Used both as
-// the router's NotFound/MethodNotAllowed fallback and as the GraphQL handler's
-// forward target, so each proxied request is counted exactly regardless of
-// entry path. observeStatus also times it end-to-end (upstream round-trip plus
-// response streaming) into the timeline ring.
+// recordPassthrough wraps the GitHub reverse proxy so every request it serves
+// is recorded as a passthrough — with the upstream HTTP status GitHub
+// returned, so the dashboard shows whether the forwarded call succeeded. Used
+// both as the router's NotFound/MethodNotAllowed fallback and as the GraphQL
+// handler's forward target, so each proxied request is counted exactly
+// regardless of entry path. observeStatus also times it end-to-end (upstream
+// round-trip plus response streaming) into the timeline ring.
 func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}

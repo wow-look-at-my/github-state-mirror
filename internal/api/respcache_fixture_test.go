@@ -370,12 +370,11 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key
 // the trimmed contract bans: url, *_url, or _links. `allowed` names EXACT key
-// names exempted for that route -- pinned exceptions for consumer-read
-// link fields (the required-builds hook renders per-status `target_url` and
+// names exempted for that route -- pinned exceptions for consumer-read link
+// fields (the required-builds hook renders per-status `target_url` and
 // per-run `details_url`/`html_url`, and reads the workflow-run `html_url`;
-// consumer survey --). Adding an exception requires a fresh consumer
-// survey, per CLAUDE.md; with no allowlist the ban is total, exactly as
-// before.
+// consumer survey --). Adding an exception requires a fresh consumer survey,
+// per CLAUDE.md; with no allowlist the ban is total, exactly as before.
 func assertNoURLKeys(t *testing.T, body []byte, allowed ...string) {
 	t.Helper()
 	allow := set.New[string](len(allowed))

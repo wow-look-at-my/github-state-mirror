@@ -24,9 +24,9 @@ func restPRState(number int64, mergeable, state, sha string) dbgen.PullRequest {
 
 // TestUpsertKeepsMergeAndStateTogether pins the duplicated stale-guard
 // predicate in UpsertPullRequest: a SET clause reads the PRE-update row, so
-// mergeable_state cannot be derived from what mergeable just became and each
-// facet carries its own copy of the condition. Edit both branches or neither
-// -- this test is what catches editing.
+// mergeable_state cannot be derived from what mergeable became and each facet
+// carries its own copy of the condition. Edit both branches or neither --
+// this test is what catches editing.
 func TestUpsertKeepsMergeAndStateTogether(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -94,7 +94,7 @@ func TestAbsorbSinglePullKeepsMergeAndStateTogether(t *testing.T) {
 }
 
 // TestNullPRMergeableStateByHeadSHA: a check/status result is the ONLY thing
-// that flips unstable/blocked <-> clean, and it moves no tip -- so this is the
+// that flips unstable/blocked <-> clean.
 //
 //	merge facet with no other invalidator. It must null exactly that facet:
 //

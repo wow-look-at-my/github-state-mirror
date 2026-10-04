@@ -138,22 +138,7 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 // ---- Org truth sync (the fetch write path) ----
 
 // SyncOrgTruth merges an org-repos fetch into global truth and replace-syncs
-// the fetching principal's grants for the owner. It is UPSERT-plus-guarded-
-// reconcile, never delete-then-insert:
-//
-//   - Repo rows are only ever upserted. A fetch is principal's PARTIAL
-//     view (it omits repos that principal cannot see, and archived repos), so
-//     absence from a fetch can never prove a repo is gone; deletion authority
-//     belongs to repository webhooks (DeleteRepoCascade).
-//   - Open-PR rows are reconciled per FETCHED repo (the fetch's open-PR list
-//     for a repo it returned is complete): rows absent from the snapshot are
-//     deleted, EXCEPT rows touched after fetchStart - reconcileGrace, so a
-//     webhook racing the fetch's eventual consistency is never clobbered.
-//   - Every repo the fetch returned earns the principal a list_sync grant
-//     (replace-synced: absence from the new list revokes the old list_sync
-//     grant); the principal's deny verdicts for the owner are cleared.
-//
-// fetchStart is when the fetch began (grace-window anchor); now stamps rows.
+// the fetching principal's grants for the owner.
 func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData, principal string, fetchStart, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -209,7 +194,6 @@ func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData
 			if err := q.DeletePRLabels(ctx, dbgen.DeletePRLabelsParams{Owner: r.Owner, Repo: r.Name, PrNumber: row.Number}); err != nil {
 				return err
 			}
-			// No closure recorded: this delete is inferred from ABSENCE.
 		}
 	}
 

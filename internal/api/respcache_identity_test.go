@@ -10,7 +10,6 @@ import (
 
 // Identity/self route tests: GET /app, GET /user, GET /user/orgs. These
 //  deliberately do NOT follow the trimmed-rebuild contract every other
-// file in this package tests against -- see the file header in
 
 func defaultUserOrgsUpstream(w http.ResponseWriter, r *http.Request) {
 	writeGitHubJSON(w, []any{
@@ -129,7 +128,6 @@ func TestCachedApp_UnauthorizedForwards(t *testing.T) {
 	bad := authedReq("GET", "/app", nil)
 	bad.Header.Set("Authorization", "Bearer wrong-jwt")
 	w2 := do(t, router, bad)
-	// An unverifiable JWT falls to the plain passthrough proxy (like the
 	require.Equal(t, http.StatusUnauthorized, w2.Code)
 	assert.Empty(t, w2.Header().Get(cacheHeader))
 	assert.Greater(t, u.appHits, before)

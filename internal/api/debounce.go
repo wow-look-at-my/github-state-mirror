@@ -36,10 +36,8 @@ const (
 // DebounceMaxWindow caps PASSTHROUGH_DEBOUNCE; exported so config validation matches this cap.
 const DebounceMaxWindow = 30 * time.Second
 
-// Debouncer coalesces identical in-flight passthrough reads. The value is
-// not usable; construct with NewDebouncer. A nil *Debouncer is inert (Wrap
-// returns the handler unchanged), so tests and disabled deployments need no
-// special casing.
+// Debouncer coalesces identical in-flight passthrough reads. The value is not
+// usable; construct with NewDebouncer.
 type Debouncer struct {
 	window   time.Duration
 	reqlog   *requestLog
@@ -89,8 +87,7 @@ func (d *Debouncer) Window() time.Duration {
 }
 
 // debounceBatch is held request: the waiters share whatever res the fetch
-// produces. res is written before done is closed, so a waiter that has
-// received from done reads it safely.
+// produces. res is written before done is closed.
 type debounceBatch struct {
 	done    chan struct{}
 	joined  int // waiters that attached before the window closed; guarded by Debouncer.mu
@@ -167,7 +164,7 @@ func (d *Debouncer) join(key string, r *http.Request, next http.Handler) *deboun
 	return b
 }
 
-// run waits out the window, closes the batch to new arrivals, makes the single
+// run waits out the window, closes the batch to new arrivals, makes the
 // upstream call, and publishes the result to every waiter.
 func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel context.CancelFunc, next http.Handler) {
 	defer d.inflight.Done()
