@@ -12,9 +12,8 @@ import (
 // This file is the storage layer for the single-PR diff read's verdicts (GET.../pulls/{number} with the diff media type).
 // see docs/cache/rest-routes.md
 
-// GetCachedPullDiff406 returns the cached body for a PR, or ("", false)
-// on a miss (no verdict, or an expired). A hit refreshes the row's LRU
-// timestamp.
+// GetCachedPullDiff406 returns the cached body for a PR, or ("", false) on a
+// miss (no verdict, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedPullDiff406(ctx context.Context, owner, repo string, number int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	row, err := s.q.GetPullDiff406Cache(ctx, dbgen.GetPullDiff406CacheParams{

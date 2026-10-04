@@ -33,9 +33,9 @@ type briefCandidate struct {
 }
 
 // buildBrief joins the route groups to the captured shapes, keeping only
-// routes that actually forward reads uncached (passthrough >) — a fully
-// cached route has nothing to implement. Ranked by passthrough volume: the
-// brief's whole job is to name the next thing worth modeling.
+// routes that forward reads uncached (passthrough >) — a fully cached route
+// has nothing to implement. Ranked by passthrough volume: the brief's whole
+// job is to name the next thing worth modeling.
 func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, limit int) []briefCandidate {
 	out := make([]briefCandidate, 0, len(snap.Groups))
 	for _, g := range snap.Groups {
@@ -61,9 +61,7 @@ func buildBrief(snap requestLogSnapshot, shapes map[string]routeShapeSnapshot, l
 	return out
 }
 
-// briefView is the template's data. It is a flat, already-computed view: the
-// template renders, it does not decide (the exception is the trivial
-// per-candidate arithmetic the FuncMap covers).
+// briefView is the template's data.
 type briefView struct {
 	GeneratedAt string
 	Total       int64

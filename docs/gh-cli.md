@@ -4,13 +4,13 @@
 
 ## What gh does with a host that is not github.com
 
-gh classifies such a host as GitHub Enterprise Server. That changes three things.
+gh classifies such a host as GitHub Enterprise Server. That changes multiple things.
 
 1. REST gains an `/api/v3` prefix. `gh api user` requests `https://<host>/api/v3/user`.
 2. GraphQL moves to `/api/graphql`, not `/graphql`.
-3. The token comes from `GH_ENTERPRISE_TOKEN`. gh reads `GH_TOKEN` and `GITHUB_TOKEN` for github.com only. A call with only `GH_TOKEN` set thus arrives with no `Authorization` header, and the mirror answers 401.
+3. The token comes from `GH_ENTERPRISE_TOKEN`. gh reads `GH_TOKEN` and `GITHUB_TOKEN` for github.com only. A call with only `GH_TOKEN` set thus arrives with no `Authorization` header. The mirror answers 401.
 
-`internal/api/ghecompat.go` answers the first two points. It is a middleware mounted ahead of the router. It canonicalises `/api/v3/<path>` to `/<path>`, and `/api/graphql` to `/graphql`, before the router sees the request.
+`internal/api/ghecompat.go` answers the first points. It is a middleware mounted ahead of the router. It canonicalises `/api/v3/<path>` to `/<path>`, and `/api/graphql` to `/graphql`, before the router sees the request.
 
 The cached routes, the reveal layer, the request log and the passthrough proxy thus keep working in api.github.com paths. The proxy forwards the canonical path upstream. `/api/v3` and `/api/v3/` map to `/`, which is the root probe gh makes to check a host.
 
@@ -30,7 +30,7 @@ gh pr list -R OWNER/REPO
 
 Pass `-R OWNER/REPO`. gh resolves a bare command's repository from the git remote, and a github.com remote does not belong to the host you selected.
 
-The `gh` shim in `claude-code-web-config` does the two awkward parts inside a Claude Code web session. It accepts `GH_HOST=https://github-state-mirror.pazer.io`, and it copies the session's PAT into `GH_ENTERPRISE_TOKEN`.
+The `gh` shim in `claude-code-web-config` does the awkward parts inside a Claude Code web session. It accepts `GH_HOST=https://github-state-mirror.pazer.io`, and it copies the session's PAT into `GH_ENTERPRISE_TOKEN`.
 
 ## Verified
 

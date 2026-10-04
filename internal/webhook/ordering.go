@@ -91,8 +91,8 @@ func OrderOf(e Event) (EventOrder, bool) {
 
 	switch e.Type {
 	case "push":
-		// The ref is the subject: a push moves exactly, and pushes to
-		// different branches are unordered with respect to each other.
+		// The ref is the subject: a push moves exactly, and pushes to different
+		// branches are unordered each other.
 		if repo == "" || p.Ref == "" {
 			return EventOrder{}, false
 		}

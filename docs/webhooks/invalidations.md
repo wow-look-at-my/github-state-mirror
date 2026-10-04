@@ -2,9 +2,9 @@
 
 CLAUDE.md's rule: **apply the payload. Invalidation is the last resort.** A delivery is the answer, not a cache-busting ping. Dropping a row and buying the same fact back over HTTP is a bug report, not a design.
 
-This file is the complete inventory of the places this service still drops a row instead of writing one. Each place names what the payload actually carries, and a verdict. It exists so the count can only go down. An entry here is either justified with a reason that survives reading, or it is named as owed work.
+This file is the complete inventory of the places this service still drops a row instead of writing one. Each place names what the payload carries, and a verdict. It exists so the count can only go down. An entry here is either justified with a reason that survives reading, or it is named as owed work.
 
-Two things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers whole HANDLERS that consume no payload at all, and is a build gate (`TestWebhookHandlersConsumeTheirPayload`). This file covers the response-cache flushes in `internal/sync/webhook_invalidate.go`. Those flushes are disposition-neutral bookkeeping, and no test can classify them for you.
+Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers whole HANDLERS that consume no payload at all, and is a build gate (`TestWebhookHandlersConsumeTheirPayload`). This file covers the response-cache flushes in `internal/sync/webhook_invalidate.go`. Those flushes are disposition-neutral bookkeeping, and no test can classify them for you.
 
 ## Legend
 
@@ -29,7 +29,7 @@ Two things are deliberately NOT in this file. `docs/webhooks/payload-unused/` co
 
 ## create / delete (`onRefLifecycle`)
 
-A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about the ref. A tag creation reaches the mirror through this event alone, never through a push.
+A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about the ref. A tag creation reaches the mirror through this event alone, not through a push.
 
 | row family | verdict | why |
 | --- | --- | --- |
@@ -71,7 +71,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 
 ## repository
 
-Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows WRONG rather than stale. They are keyed by a name that no longer means what it did. They also hold data a now-private repo must not serve. The payload states the repo's new identity, never the new content of every answer keyed by the old one.
+Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows WRONG rather than stale. They are keyed by a name that no longer means what it did. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
 
@@ -81,11 +81,11 @@ Everything repo-wide. **Justified**: a rename, delete or visibility change makes
 
 ## label
 
-Repo-wide on every action. **Justified**: an `edited` action can RENAME a label, which puts two names in one delivery. One label also answers under every spelling a caller can request. Matching the payload's name therefore misses rows. The grain is the repo because the key space is unbounded, not because the payload is thin.
+Repo-wide on every action. **Justified**: an `edited` action can RENAME a label, which puts names in one delivery. One label also answers under every spelling a caller can request. Matching the payload's name therefore misses rows. The grain is the repo because the key space is unbounded, not because the payload is thin.
 
 ## The status rewrite
 
-Rewriting a stored document from a payload is only correct if the result matches a fetch byte for byte. A hit replays the stored bytes. For the two status-shaped documents that came down to their ORDERING, which the REST docs do not state. It was measured instead, on `kubernetes/kubernetes` at `a231bf3f`, across 53 raw statuses over 22 contexts:
+Rewriting a stored document from a payload is only correct if the result matches a fetch byte for byte. A hit replays the stored bytes. For the status-shaped documents that came down to their ORDERING, which the REST docs do not state. It was measured instead, on `kubernetes/kubernetes` at `a231bf3f`, across multiple raw statuses over multiple contexts:
 
 - Statuses are **append-only**. Re-posting a context creates a new status object with a new id and a new `created_at`. Nothing is mutated in place. That is why the raw list keeps every one of them. The combined status keeps one per context.
 - `/statuses` is **newest-first**. A new status is PREPENDED, and the context's older entries stay.
@@ -94,7 +94,7 @@ Rewriting a stored document from a payload is only correct if the result matches
 
 Every rewrite refuses unless the stored page PROVES it can hold the result. It must be page 1, with the whole set present, with room for a new entry. The status must also be the newest on the commit, because an older one's position is unknown. A refusal drops the row, which is what happened to every one of these before the rewrite existed.
 
-What the payload can IDENTIFY decides which rows are reached. The ref spellings the delivery names do not. A combined status states the sha it resolved to, so a branch-form row is usable and a row about another commit is left alone. The raw list is a bare array with no sha in it. Only the sha-form row is provably about this commit, so the branch spellings still flush.
+What the payload can IDENTIFY decides which rows are reached. The ref spellings the delivery names do not. A combined status states the sha it resolved to, so a branch-form row is usable and a row about another commit is left alone. The raw list is a bare array with no sha in it. Only the sha-form row is provably about.
 
 `TestCachedCommitCI_StatusEventRewritesTheCombinedDoc` (internal/api) is the pin. It byte-compares a rewritten document against the fetch it saved.
 
@@ -102,11 +102,11 @@ What the payload can IDENTIFY decides which rows are reached. The ref spellings 
 
 A check run is not a status. A status is APPEND-ONLY, because re-posting a context mints a new object. A check run is UPDATED IN PLACE, because one id carries the run from queued through completed. The rewrite therefore never has to decide where an entry goes. It only has to know that the entry does not MOVE when it changes.
 
-That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one, which rules out completion ordering. The order was byte-identical across both samples while one run moved from in_progress to completed.
+That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one. This rules out completion ordering. The order was byte-identical across both samples while one run moved from in_progress to completed.
 
 Id ordering also fixes where a run the page does not list yet BELONGS. A creation is therefore an insert rather than a flush. This is the case that mattered. The last deliveries of a CI run are a new job's creation and a queued job's start. They land in the seconds where GitHub's own listing is furthest behind them. Flushing there sent the next reader upstream at exactly that moment. The answer it absorbed was OLDER than the payloads already in hand. A finished run then sends nothing more, so the stale page stood for its whole TTL. One measured instance held an `all-builds` gate pending for a day with every job green. The cached page still reported a job that had finished as `in_progress`, and omitted a job created a second later.
 
-Membership can therefore GROW from a payload, because a creation names the commit its run belongs to. What no delivery ever states is that a run went AWAY. That is what the TTL still bounds. The `workflow_jobs_cache` split has a fetch prove membership and deliveries maintain entries, with the one asymmetry that a creation is itself a membership statement.
+Membership can therefore GROW from a payload, because a creation names the commit its run belongs to. What no delivery ever states is that a run went AWAY. That is what the TTL still bounds. The `workflow_jobs_cache` split has a fetch prove membership and deliveries maintain entries, with the asymmetry that a creation is itself a membership statement.
 
 The caller flushes when a rewrite is refused. A rewrite is refused for:
 
@@ -119,7 +119,7 @@ A page carries no sha of its own. Every ENTRY does. That is what makes a page ab
 
 ## Live job state
 
-The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job had finished was stored, because a queued or running job is a live value the GHA runner coordinator provisions against. No TTL short enough to be safe there is long enough to be worth having.
+The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job had finished was stored, because a queued or running job is a live value. The GHA runner coordinator provisions against. No TTL short enough to be safe there is long enough to be worth having.
 
 That reasoning is right about a TTL and wrong about the only instrument available. A `workflow_job` delivery carries the whole job object. A stored answer therefore does not have to age toward the truth. It can be told. The split:
 
@@ -136,18 +136,18 @@ The TTL is then the lost-delivery bound, which is the mirror's quietest failure.
 | jobs WAITING to start | 60s | a queued job's steps are empty by construction, so a rewritten entry is exactly right |
 | a job RUNNING | 10s | its steps drift with nothing to report them |
 
-Read that table the other way. The one field webhooks cannot maintain is the one the shortest clock exists for. Pretending otherwise, by serving a running job's frozen step list for a minute, is the silent degradation this repo has a rule against.
+Read that table the other way. The field webhooks cannot maintain is the one the shortest clock exists for. Pretending otherwise, by serving a running job's frozen step list for a minute, is the silent degradation this repo has a rule against.
 
-What a delivery cannot answer drops the run's rows, so a fetch can settle them:
+What a delivery cannot answer drops the run's rows. As a result, a fetch can settle them:
 
 - A job the stored page does not list, which means the run's membership moved.
 - A delivery whose `run_attempt` differs from the stored entry's, because a re-run is a different set of jobs whether or not it reuses ids.
 
 ## Single source of truth (the compare rework)
 
-`compare_cache` exists because a three-dot compare is expensive to fetch. It must not exist at all. The mirror already stores commits in `git_commits_cache`, fed by every push and by fetch absorbs. A compare between two commits it holds is computable: walk to the merge base, then diff the trees. The happy path then needs no upstream call and no invalidation. The answer also stops being a second, separately-staleable copy of state the mirror already has.
+`compare_cache` exists because a three-dot compare is expensive to fetch. It must not exist at all. The mirror already stores commits in `git_commits_cache`, fed by every push and by fetch absorbs. A compare between multiple commits it holds is computable: walk to the merge base, then diff the trees. The happy path then needs no upstream call and no invalidation. The answer also stops being a second, separately-staleable copy of state the mirror already has.
 
-That is the largest owed item in this file, and it is not a cache change. It needs tree and blob storage, which the mirror does not have today. The mirror stores commit objects, never the trees they point at.
+That is the largest owed item in this file. It is not a cache change. It needs tree and blob storage, which the mirror does not have today. The mirror stores commit objects, not the trees they point at.
 
 ## Owed, in order
 
@@ -163,4 +163,4 @@ Already done:
 - A sha's runs pages on a `workflow_run` delivery.
 - The cross-kind flushing that had every CI delivery dropping every commit-CI kind.
 
-Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-identical to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove the entry does not move.
+Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-identical to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove. The entry does not move.

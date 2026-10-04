@@ -45,7 +45,7 @@ type OrderingStats struct {
 	worst       time.Duration
 	totalLate   time.Duration
 
-	// What the reorder window did: reordered counts BATCHES it actually re-sorted, not just held.
+	// What the reorder window did: reordered counts BATCHES it re-sorted, not held.
 	held      int64
 	reordered int64
 	totalHeld time.Duration
@@ -71,8 +71,8 @@ func (s *OrderingStats) recordHeld(d time.Duration) {
 
 func (s *OrderingStats) recordWindow(w time.Duration) { s.bump(func() { s.window = w }) }
 
-// recordReordered notes a batch the window actually re-sorted -- the only
-// evidence that holding deliveries changed any outcome.
+// recordReordered notes a batch the window re-sorted -- the only evidence
+// that holding deliveries changed any outcome.
 func (s *OrderingStats) recordReordered(subject string, size int) {
 	s.bump(func() { s.reordered++ })
 	slog.Info("webhook: reorder window re-sorted a batch into event order",

@@ -83,9 +83,9 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	h.passthrough(w, r, PassPath)
 }
 
-// statusesAlias serves the legacy /statuses/{ref} spelling of the raw
-// statuses list; POST falls to MethodNotAllowed and the passthrough proxy.
-// see docs/cache/rest-routes.md
+// statusesAlias serves the /statuses/{ref} spelling of the raw statuses list;
+// POST falls to MethodNotAllowed and the passthrough proxy. see
+// docs/cache/rest-routes.md
 func (h *handlers) statusesAlias(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "*")
 	if ref == "" {

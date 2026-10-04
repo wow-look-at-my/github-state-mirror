@@ -14,7 +14,7 @@ import (
 
 // Storage layer for the cached REST routes. Stores the STATE a GitHub
 
-// CacheMaxRows is the per-table row ceiling (see CACHE_MAX_ROWS in CLAUDE.md); only git_commits_cache actually grows to it.
+// CacheMaxRows is the per-table row ceiling (see CACHE_MAX_ROWS in CLAUDE.md); only git_commits_cache grows to it.
 var CacheMaxRows int64 = 1_000_000
 
 // rfc3339 is fixed-width so lexicographic SQL comparison matches chronological order.
@@ -123,9 +123,9 @@ func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref s
 
 // ---- Git commits (GET /repos/{owner}/{repo}/git/commits/{sha}) ----
 
-// CachedGitCommit is the absorbed state of git commit. Rows come from
-// sources -- an upstream fetch, or a push webhook payload -- and both rebuild to
-// the same trimmed shape, so the struct is the single source of truth.
+// CachedGitCommit is the absorbed state of git commit. Rows come from sources
+// -- an upstream fetch, or a push webhook payload -- and both rebuild to the
+// same trimmed shape, so the struct is the source of truth.
 type CachedGitCommit struct {
 	Owner          string // lowercased
 	Repo           string // lowercased

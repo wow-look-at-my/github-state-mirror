@@ -7,7 +7,6 @@ import (
 )
 
 // These clocks live here since both writers (fetch-on-miss and the rewriting delivery) need the same clock for a fresh answer.
-// see docs/cache/rest-routes.md
 const (
 	// WorkflowJobsCacheTTL backstops a missed re-run delivery on a settled (otherwise immutable) answer.
 	WorkflowJobsCacheTTL = 24 * time.Hour

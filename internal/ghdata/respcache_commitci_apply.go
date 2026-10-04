@@ -68,9 +68,6 @@ type storedStatusListItem struct {
 //   - kind "statuses_list" documents are bare arrays with no sha in them, so
 //     only the sha-form row is provably about this commit. The branch
 //     spellings the payload names are flushed, as before.
-//
-// The check-runs kind is not touched at all: a status never appears in a
-// check-runs listing (statuses and checks are separate surfaces upstream).
 func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string, branchRefs []string, up CommitStatusUpdate, now time.Time, ttl time.Duration) error {
 	if !IsFullHexSHA(up.SHA) || up.Context == "" || up.State == "" {
 		return nil
@@ -230,7 +227,7 @@ func listsUnfinishedJobOf(page *StoredCheckRunsPage, jobPath string) bool {
 	return false
 }
 
-// checkRunsPageDescribes reports whether a stored page is about this commit.
+// checkRunsPageDescribes reports whether a stored page is about.
 func checkRunsPageDescribes(doc, sha string) bool {
 	var page StoredCheckRunsPage
 	if err := json.Unmarshal([]byte(doc), &page); err != nil {
@@ -262,12 +259,6 @@ func pageDescribesSHA(page *StoredCheckRunsPage, sha string) bool {
 // moment GitHub's own listing is furthest behind these deliveries -- the
 // refetch then stores a view OLDER than what the payloads already carried,
 // and no further delivery for that commit ever arrives to correct it.
-//
-// Reports false -- the caller drops the row instead -- only for what a
-// delivery genuinely cannot answer: a later page, a page that
-// does not hold every run (total_count above its own length), an insert that
-// would not fit on the page, and an insert into a page whose commit this run
-// does not share.
 func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (string, bool) {
 	if page != 1 {
 		return "", false
@@ -284,9 +275,7 @@ func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (st
 		if stored.CheckRuns[i].ID != run.ID {
 			continue
 		}
-		// A queued run gaining a `started_at` is replaced like any other
-		// transition: the listing sorts on the id, which this delivery does
-		// not change, so filling a null field cannot move the entry.
+		// A queued run gaining a `started_at` is replaced like any other transition: the listing sorts on the id, which this delivery does not change.
 		stored.CheckRuns[i] = run
 		found = true
 	}

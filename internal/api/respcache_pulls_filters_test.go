@@ -18,10 +18,9 @@ import (
 func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 
-	// sort=created and sort=updated are MODELED now, and their coverage lives
-	// in respcache_pulls_sort_test.go. popularity and long-running still rank
-	// by a value the row does not carry, so they stand for an unmodeled order
-	// here.
+	// sort=created and sort=updated are MODELED now, and their coverage lives in
+	// respcache_pulls_sort_test.go. popularity and long-running still rank by a
+	// value the row does not carry, so they stand for an unmodeled order here.
 	for i, target := range []string{
 		"/repos/org1/repo1/pulls?sort=popularity",       // unmodeled ordering
 		"/repos/org1/repo1/pulls?state=closed",          // non-open state
@@ -115,9 +114,8 @@ func TestCachedPullsList_BaseFilter(t *testing.T) {
 }
 
 // TestCachedPullsList_GlobalSharedViaReveal: the absorbed list is GLOBAL
-// truth. A user pays reveal probe (their own token proving repo
-// access) and then reads the same rebuilt list -- the list itself is fetched
-// , ever.
+// truth. A user pays reveal probe (their own token proving repo access) and
+// then reads the same rebuilt list -- the list itself is fetched, ever.
 func TestCachedPullsList_GlobalSharedViaReveal(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"

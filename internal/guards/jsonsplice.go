@@ -12,14 +12,13 @@ import (
 
 // JSON TEXT IS PRODUCED BY MARSHALLING. FULL STOP.
 
-// splicePlaceholder marks where a non-literal operand joins a + chain. It is a
+// splicePlaceholder marks where a non-literal operand joins a + chain.
 const splicePlaceholder = '\x00'
 
 // verbPattern matches a printf verb. The letter is required, so % in a URL
 var verbPattern = regexp.MustCompile(`%[-+# 0-9.*\[\]]*[a-zA-Z]`)
 
-// Finding is place JSON text is built from something other than a
-// marshaller.
+// Finding is place JSON text is built from something other than a marshaller.
 type Finding struct {
 	File string
 	Line int
@@ -44,7 +43,7 @@ func CheckFile(fset *token.FileSet, name string, src []byte) ([]Finding, error) 
 			if node.Op != token.ADD {
 				return true
 			}
-			// Only the outermost + of a chain: an inner would report the
+			// Only the outermost + of a chain.
 			return !checkConcat(fset, node, &out)
 		case *ast.CallExpr:
 			checkFormatCall(fset, node, &out)
@@ -113,7 +112,7 @@ func checkFormatCall(fset *token.FileSet, call *ast.CallExpr, out *[]Finding) {
 	}
 }
 
-// formatArg finds the call's format string: the argument that is a
+// formatArg finds the call's format string.
 func formatArg(args []ast.Expr) (string, token.Pos, bool) {
 	for _, a := range args {
 		if s, ok := foldStringLit(a); ok {

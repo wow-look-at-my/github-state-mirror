@@ -65,7 +65,6 @@ func TestAppSessions(t *testing.T) {
 	assert.Equal(t, "Organization", sessions[0].AccountType)
 	assert.Equal(t, int64(123), sessions[0].InstallationID)
 
-	// The session is partitioned under the stable installation actor and
 	assert.Equal(t, "app-installation:123", actor.FromContext(sessions[0].Ctx))
 	assert.True(t, IsAppInstallationActor(actor.FromContext(sessions[0].Ctx)))
 	assert.Equal(t, "acme", actor.NameFromContext(sessions[0].Ctx))
@@ -73,7 +72,7 @@ func TestAppSessions(t *testing.T) {
 	// The principal->name mapping was recorded (so the dashboard can resolve
 	assert.Equal(t, []recorded{{"app-installation:123", "acme"}}, recordedIdentities)
 
-	// ...and carries the minted installation token, so API calls made with the
+	// ...and carries the minted installation token.
 	ident, err := gh.ResolveTokenIdentity(sessions[0].Ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", ident.Login)

@@ -52,7 +52,7 @@ func TestTimelineWireDumpPayloads(t *testing.T) {
 }
 
 // legacyTimelineJSON is the retired response shape, kept only as a bench
-// fixture (see above).
+// fixture (.
 type legacyTimelineJSON struct {
 	Events         []reqtimeline.Event `json:"events"`
 	MaxID          uint64              `json:"max_id"`

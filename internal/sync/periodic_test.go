@@ -35,10 +35,10 @@ func (f *recordingFetcher) calls() []string {
 }
 
 // TestPeriodicRefresher_SyncsFreshInstallation is the fleet-sync regression
-// guard: a brand-new installation session -- NO pre-seeded cache_metadata row,
-// which was exactly the production state -- must be fetched on the
+// guard: a brand-new installation session -- NO pre-seeded cache_metadata
+// row, which was exactly the production state -- must be fetched on the
 // cycle, and the fetch must create its freshness marker under the session's
-// actor. (The old RefreshAllOfKind shape only re-fetched rows that already
+// actor. (The RefreshAllOfKind shape only re-fetched rows that already
 // existed, and nothing ever created: a permanent no-op.)
 func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 	dir := t.TempDir()

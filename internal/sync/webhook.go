@@ -189,16 +189,13 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		}
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
-	// A branch push makes GitHub recompute mergeability for every open PR
-	// based on (or heading from) that branch, and no webhook ever carries the
+	// A branch push makes GitHub recompute mergeability for every open PR based
+	// on (or heading from) that branch, and no webhook ever carries the
 	// recomputed value -- so un-resolve the cached mergeable (remembering the
-	// invalidated test-merge sha: a refetch re-offering it is presumed
-	// pre-push -- plus the push's after tip, the proof by which an answer
-	// that already reflects this push is recognized and accepted) rather than
-	// let the single-PR cache keep serving the pre-push answer. This
-	// invalidation runs, before any other fallible step, so a transient
-	// error elsewhere in the handler can never skip it -- each step logs its
-	// own failure and the handler carries on.
+	// invalidated test-merge sha: a refetch re-offering it is presumed pre-push
+	// -- plus the push's after tip, the proof by which an answer that already
+	// reflects this push is recognized and accepted) rather than let the
+	// single-PR cache keep serving the pre-push answer.
 	if branch := payload.Branch(); branch != "" {
 		if err := d.store.NullPRMergeableByBranch(ctx, payload.Owner, payload.Repo, branch, payload.After, time.Now()); err != nil {
 			slog.Warn("webhook: un-resolve PR mergeable failed", "repo", payload.Owner+"/"+payload.Repo, "branch", branch, "error", err)
@@ -330,9 +327,9 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 		return applied("removed deleted repo " + owner + "/" + name)
 
 	case "renamed":
-		// The payload's repository object carries the NEW name (already
-		// upserted); changes.repository.name.from names the old row, whose
-		// dependents are now orphaned truth -- drop them.
+		// The payload's repository object carries the NEW name (already upserted);
+		// changes.repository.name.from names the row, whose dependents are now
+		// orphaned truth -- drop them.
 		if from := webhook.ParseRenameFrom(event.Raw); from != "" && from != name {
 			if err := d.store.DeleteRepoCascade(ctx, owner, from); err != nil {
 				slog.Warn("webhook: delete renamed-away repo failed", "repo", owner+"/"+from, "error", err)

@@ -29,14 +29,6 @@ import (
 // recycled, so a user keeps the grants they earned across rotating tokens.
 // A request must never fall through to the service's own App credential, which
 // can read far more than the caller.
-//
-// A token that is definitively not a user — GET /user answers 404, or a 403
-// that is not rate limiting (ghclient.ResolveTokenIdentity), for example
-// a GitHub App installation token — gets a per-token fingerprint principal, and
-// that verdict is cached per token. When the identity cannot be resolved at all
-// (network error, 5xx, rate limit) and no verdict is cached, the request fails:
-// a wrong principal reveals another caller's repos, so there is no silent
-// fingerprint fallback for a token that might belong to a user.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +86,6 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 				// The login came from GitHub's own GET /user answer: carry it
 				ctx = actor.WithName(ctx, ident.Login)
 			}
-			// Remember the actor->login mapping so the dashboard can group a
 			record(ctx, actorKey, ident.Login)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

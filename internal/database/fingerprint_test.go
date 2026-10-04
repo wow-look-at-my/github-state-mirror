@@ -48,7 +48,7 @@ func TestSchemaFingerprint_TracksStructureNotProse(t *testing.T) {
 		"inside a literal the bytes are the value, so normalizing there would hide a real change")
 }
 
-// And on the real file, which is the input that actually ships.
+// And on the real file, which is the input that ships.
 func TestSchemaFingerprint_OnTheRealSchema(t *testing.T) {
 	assert.Equal(t, schemaFingerprint(schemaSQL), schemaFingerprint(schemaSQL+"\n-- a note someone added later\n"))
 	assert.Equal(t, schemaFingerprint(schemaSQL), schemaFingerprint(strings.ReplaceAll(schemaSQL, "\n", "\n\t")))
@@ -67,7 +67,7 @@ func TestOpen_CommentOnlySchemaChangeKeepsTheCache(t *testing.T) {
 	_, err = db1.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.NoError(t, err)
 
-	// Simulates the previous binary's fingerprint after a comment-only schema.sql edit.
+	// Simulates the binary's fingerprint after a comment-only schema.sql edit.
 	_, err = db1.Exec("UPDATE schema_version SET fingerprint = ?", schemaFingerprint("-- reworded\n"+schemaSQL))
 	require.NoError(t, err)
 	require.NoError(t, db1.Close())

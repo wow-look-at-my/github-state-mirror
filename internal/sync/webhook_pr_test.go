@@ -243,8 +243,8 @@ func TestDispatch_Push_UpdatesPushedAt(t *testing.T) {
 
 // TestDispatch_Push_DefaultBranchNullsStatus: a push to the DEFAULT branch
 // un-resolves the repo's default_branch_status -- the stored rollup describes
-// the previous tip, and a tip with no CI would otherwise keep it forever (the
-// COALESCE upsert can never clear it). A non-default-branch push leaves it.
+// the tip, and a tip with no CI would otherwise keep it forever (the COALESCE
+// upsert can never clear it). A non-default-branch push leaves it.
 func TestDispatch_Push_DefaultBranchNullsStatus(t *testing.T) {
 	dispatcher, mgr, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -458,7 +458,7 @@ func TestDispatch_RepositoryLifecycle(t *testing.T) {
 	repo, _ = store.GetRepo(ctx, "my-org", "r1")
 	assert.Equal(t, ghdata.VisibilityPublic, repo.Visibility)
 
-	// renamed: the old row's truth is dropped, the new stands.
+	// renamed: the row's truth is dropped, the new stands.
 	dispatcher.Dispatch(ctx, mkEvent("renamed", repoObj("r1-new", "public", false),
 		map[string]interface{}{"changes": map[string]interface{}{"repository": map[string]interface{}{"name": map[string]interface{}{"from": "r1"}}}}))
 	_, err = store.GetRepo(ctx, "my-org", "r1")

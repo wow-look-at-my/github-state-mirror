@@ -9,7 +9,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the identity/self routes (GET /app, /user, /user/orgs): TTL is the
+// Storage for the identity/self routes (GET /app, /user, /user/orgs).
 
 // IdentityCacheTTL bounds how long a stale identity answer may be served.
 const IdentityCacheTTL = 30 * time.Minute

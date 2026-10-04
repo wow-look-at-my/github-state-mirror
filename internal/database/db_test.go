@@ -97,8 +97,8 @@ func TestOpen_NukesOnSchemaMismatch(t *testing.T) {
 
 }
 
-// The file every deployed instance is currently carrying: a schema_version
-// table from before fingerprinting, which cannot answer the question at all.
+// The file every deployed instance is carrying: a schema_version table from
+// before fingerprinting, which cannot answer the question at all.
 func TestOpen_NukesAFileThatPredatesFingerprinting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")

@@ -74,7 +74,6 @@ query($owner: String!, $repoCursor: String) {
 }
 `
 
-// ownerRepoPRsQuery paginates a single repository's open PRs past the
 //
 //	for GetOwnerData -- same shape as repoPRsQuery (repository(owner:,name:)
 //

@@ -89,7 +89,7 @@ func (s *Store) FreshnessByKind(ctx context.Context, actorKey string) ([]dbgen.A
 	return s.q.ActorFreshnessByKind(ctx, actorKey)
 }
 
-// Failure reasons for actor's erroring resources; explains WHY, not just that.
+// Failure reasons for actor's erroring resources; explains WHY, not that.
 func (s *Store) ErrorMessagesByKind(ctx context.Context, actorKey string) ([]dbgen.ActorErrorMessagesByKindRow, error) {
 	return s.q.ActorErrorMessagesByKind(ctx, actorKey)
 }
@@ -137,12 +137,12 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 
 // RequiredWebhookEvents is the set of GitHub App event subscriptions the
 // mirror's correctness depends on, each with what breaks without it. A
-// missing subscription degrades SILENTLY -- the affected caches simply
-// re-fetch forever, or serve within their TTL -- which is exactly the shape
-// of failure that never gets noticed, so the dashboard reports it instead.
+// missing subscription degrades SILENTLY -- the affected caches re-fetch
+// forever, or serve within their TTL -- which is exactly the shape of failure
+// that never gets noticed, so the dashboard reports it instead.
 //
-// Keep this list honest: an entry belongs here only when a handler actually
-// consumes the event and something is measurably worse without it.
+// Keep this list honest: an entry belongs here only when a handler consumes
+// the event and something is measurably worse without it.
 var RequiredWebhookEvents = []struct {
 	Event  string
 	Effect string

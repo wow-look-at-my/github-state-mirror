@@ -37,7 +37,7 @@ func (d *dashboard) streamCacheCheck(w http.ResponseWriter, r *http.Request, org
 	enc := json.NewEncoder(w)
 	writeLine := func(line checkStreamLine) {
 		// A failed write means the client is gone; the run is aborted by
-		// r.Context() shortly, so just stop writing.
+		// r.Context() shortly, so stop writing.
 		if err := enc.Encode(line); err != nil {
 			return
 		}

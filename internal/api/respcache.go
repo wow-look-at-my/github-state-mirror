@@ -12,12 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file holds the machinery every cached REST route shares — the upstream
-// fetch, the verbatim replay, the rebuild writer — plus the index of the
-// routes themselves. Each route family lives in its own respcache_*.go. The
-// contract (see CLAUDE.md,
-// "cache contract"): the mirror ABSORBS the state contained in a GitHub
-// response into structured tables (internal/ghdata/respcache.go) and REBUILDS
+// This file holds the machinery every cached REST route shares — the
+// upstream fetch, the verbatim replay, the rebuild writer.
 
 const (
 	// contentsCacheTTL is the TTL backstop on cached contents rows. Webhooks
@@ -37,7 +33,7 @@ const (
 )
 
 // refreshGrantOn2xx renews the caller's grant after a successful repo-scoped
-// fetch with their own token: GitHub just re-proved their access. Best-effort.
+// fetch with their own token: GitHub re-proved their access. Best-effort.
 func (h *handlers) refreshGrantOn2xx(r *http.Request, owner, repo string, status int) {
 	if status < 200 || status >= 300 {
 		return
@@ -149,7 +145,7 @@ func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *
 	_, _ = w.Write(body)
 	// A response larger than the absorb buffer streams its tail through.
 	_, _ = io.Copy(w, resp.Body)
-	// The REQUEST was modeled; the RESPONSE was not (an unexpected status, an
+	// The REQUEST was modeled; the RESPONSE was not (an unexpected status.
 	h.reqlog.observeStatus(r.WithContext(withPassthroughReason(r.Context(), PassResponse)), DispPassthrough, resp.StatusCode)
 	// This path never reaches recordPassthrough's sampler, and it is exactly
 	route := normalizeRoute(r.URL.Path)

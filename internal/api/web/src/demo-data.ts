@@ -1,7 +1,5 @@
 // Canned data for the standalone styling preview ONLY. Compiled by `npm run
-// build` (tsc) to ../assets/demo-data.js. The production site never loads this
-// file; the CI preview bundle injects a <script> tag for it so app.js renders
-// these payloads instead of calling the backend. Edit this .ts, not the .js.
+// build` (tsc) to ../assets/demo-data.js.
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
@@ -17,7 +15,7 @@ function inFuture(seconds: number): string {
     return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-// The one global truth store's row counts (same numbers on every view).
+// The global truth store's row counts (same numbers on every view).
 const globalTotals: Counts = {
     repos: 55, pull_requests: 119, commit_checks: 471, contents: 38, git_commits: 204, grants: 61,
 };
@@ -139,11 +137,11 @@ const demoWebhooks: WebhooksResponse = {
     },
 };
 
-// --- request activity log (admin "Requests" tab) ---
-// Keep every route and every pass_query shape REAL — a shape some consumer
-// actually sends. Invented ones read as genuine caching gaps to anyone
-// looking at the preview: a fabricated `/commits?author,since` here already
-// cost a real investigation into a filter no caller has ever sent.
+// --- request activity log (admin "Requests" tab) --- Keep every route and
+// every pass_query shape REAL — a shape some consumer sends. Invented ones
+// read as genuine caching gaps to anyone looking at the preview: a fabricated
+// `/commits?author,since` here already cost a real investigation into a
+// filter no caller has ever sent.
 const demoRequests: RequestsResponse = {
     total: 1842,
     by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
@@ -170,8 +168,7 @@ const demoRequests: RequestsResponse = {
         { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
         { actor: "user:583231", actor_name: "octocat", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
-        // Unresolved caller: a non-user token's fingerprint label has no name,
-        // so the Caller column falls back to the bare key.
+        // Unresolved caller: a non-user token's fingerprint label has no name, so the Caller column falls back to the bare key.
         { actor: "token:00ff11ee22dd", method: "GET", path: "/repos/wow-look-at-my/buildhost/branches", disposition: "passthrough", status: 200, at: ago(17) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
@@ -200,9 +197,7 @@ function demoTimelineEvents(): TimelineEvent[] {
             actor: actor ?? (actorName ? "app:3433933" : "token:00ff11ee22dd"), actor_name: actorName,
         });
     };
-    // Webhook pips across event-type lanes — plus a rejected delivery on
-    // the fixed unverified lane (bad signature; claimed type is untrusted
-    // tooltip detail only).
+    // Webhook pips across event-type lanes — plus a rejected delivery on the fixed unverified lane.
     wh(3480, 12, "push", "", "wow-look-at-my/buildhost");
     wh(3100, 9, "check_run", "completed", "wow-look-at-my/buildhost");
     wh(2900, 21, "pull_request", "synchronize", "wow-look-at-my/buildhost");
@@ -277,8 +272,7 @@ const demoLatency: LatencyResponse = {
     ],
 };
 
-// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
-// --- passively observed X-RateLimit-* readings per (identity, resource) ---
+// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus --- passively observed X-RateLimit-* readings.
 const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit: RateLimitResponse = {
     live: [
@@ -288,8 +282,7 @@ const demoRateLimit: RateLimitResponse = {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
                 graphql: { limit: 5000, remaining: 392, used: 4608, reset: resetIn(540) },
                 search: { limit: 30, remaining: 30, used: 0, reset: resetIn(60) },
-                // Long resource names (real GitHub /rate_limit fields) that used to
-                // force the "X / Y left" count to wrap word-by-word in the card.
+                // Long resource names (real GitHub /rate_limit fields) that used to force the "X / Y left" count to wrap word-by-word.
                 code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
                 actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3540) },
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
@@ -314,19 +307,13 @@ const demoRateLimit: RateLimitResponse = {
     ],
     observed: [
         // Sorted by identity then resource, matching the backend's snapshot.
-        // Resolved identities carry a display name; the token fingerprint and
-        // app-jwt rows stay nameless to demo the bare-key fallback.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
         { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
         { identity: "app:3433933", name: "pr-minder", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
         { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
-        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an
-        // identity that stopped calling). The server ages these out lazily, so
-        // the live dashboard should never show one; the backend-free preview
-        // keeps it visible to exercise the honest stale rendering
-        // ("reset 23h ago · stale", never "resets now").
+        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an identity that stopped calling).
         { identity: "token:44aa55bb66cc", resource: "core", limit: 5000, remaining: 4880, used: 120, reset: resetIn(-82800), observed_at: ago(86100) },
         { identity: "user:583231", name: "octocat", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
     ],
