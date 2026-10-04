@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // GitHub Actions run state: global truth, maintained by webhooks.
@@ -158,9 +159,9 @@ func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f
 // workflowRunsTouchedSince returns the ids of rows matching f, absent from
 // listed, and touched at or after since.
 func (s *Store) workflowRunsTouchedSince(ctx context.Context, owner, repo string, f WorkflowRunFilter, since time.Time, listed []int64) ([]int64, error) {
-	inAnswer := make(map[int64]bool, len(listed))
+	inAnswer := set.New[int64](len(listed))
 	for _, id := range listed {
-		inAnswer[id] = true
+		inAnswer.Add(id)
 	}
 	// touched_at is stored at second precision.
 	floor := since.UTC().Truncate(time.Second)
@@ -175,7 +176,7 @@ func (s *Store) workflowRunsTouchedSince(ctx context.Context, owner, repo string
 			return nil, err
 		}
 		for _, row := range rows {
-			if inAnswer[row.RunID] {
+			if inAnswer.Contains(row.RunID) {
 				continue
 			}
 			touched, err := time.Parse(time.RFC3339, row.TouchedAt)
