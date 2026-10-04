@@ -17,7 +17,7 @@ import (
 // a miss (no marker, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha string, now time.Time) (string, bool, error) {
 	ownerKey, repoKey, shaKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo), strings.ToLower(sha)
-	row, err := s.q.GetGitCommitMissCache(ctx, dbgen.GetGitCommitMissCacheParams{
+	row, err := s.qx(ctx).GetGitCommitMissCache(ctx, dbgen.GetGitCommitMissCacheParams{
 		Owner: ownerKey, Repo: repoKey, Sha: shaKey,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -29,7 +29,7 @@ func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha str
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchGitCommitMissCache(ctx, dbgen.TouchGitCommitMissCacheParams{
+	_ = s.qx(ctx).TouchGitCommitMissCache(ctx, dbgen.TouchGitCommitMissCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Sha: shaKey,
 	})
 	return row.Doc, true, nil
@@ -39,29 +39,29 @@ func (s *Store) GetCachedGitCommitMiss(ctx context.Context, owner, repo, sha str
 // table (expired rows + LRU beyond the cap). owner/repo/sha are normalized
 // here so callers can pass URL casing.
 func (s *Store) PutCachedGitCommitMiss(ctx context.Context, owner, repo, sha, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertGitCommitMissCache(ctx, dbgen.UpsertGitCommitMissCacheParams{
+	if err := s.qx(ctx).UpsertGitCommitMissCache(ctx, dbgen.UpsertGitCommitMissCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Sha: strings.ToLower(sha),
 		Doc:       doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredGitCommitMissCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredGitCommitMissCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitMissCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitMissCacheLRU(ctx, CacheMaxRows)
 }
 
 // ClearGitCommitMiss drops sha's marker; upsertGitCommit calls this on every real commit absorb.
 func (s *Store) ClearGitCommitMiss(ctx context.Context, owner, repo, sha string) error {
-	return s.q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
+	return s.qx(ctx).DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Sha: strings.ToLower(sha),
 	})
 }
 
 // InvalidateGitCommitMissCache is the repository-event flush: a renamed/recreated repo's old verdicts must not keep answering.
 func (s *Store) InvalidateGitCommitMissCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteGitCommitMissCacheByRepo(ctx, dbgen.DeleteGitCommitMissCacheByRepoParams{
+	return s.qx(ctx).DeleteGitCommitMissCacheByRepo(ctx, dbgen.DeleteGitCommitMissCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

@@ -28,6 +28,12 @@ func DurableDSN(path string) string {
 	return path + "?" + sharedPragmas + "&_pragma=synchronous(NORMAL)"
 }
 
+// JournalDSN is for a DB whose commit is a promise to someone else: the commit
+// returns only once the WAL frame is on disk.
+func JournalDSN(path string) string {
+	return path + "?" + sharedPragmas + "&_pragma=synchronous(FULL)"
+}
+
 // Open opens (or creates) the SQLite database at path.
 func Open(path string) (*sql.DB, error) { return OpenObserved(path, nil) }
 
@@ -79,8 +85,10 @@ const maxIdleConns = 8
 // OpenDSN opens dsn with every write admitted through one write gate (gate.go)
 // and every call timed into obs (nil times nothing). It does no schema check.
 func OpenDSN(dsn string, obs Observer) *sql.DB {
-	db := sql.OpenDB(observedConnector{dsn: dsn, drv: baseDriver(), obs: obs, gate: newWriteGate()})
+	gate := newWriteGate(obs)
+	db := sql.OpenDB(observedConnector{dsn: dsn, drv: baseDriver(), obs: obs, gate: gate})
 	db.SetMaxIdleConns(maxIdleConns)
+	gates.Store(db, gate)
 	return db
 }
 

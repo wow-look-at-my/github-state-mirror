@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -32,7 +33,7 @@ import (
 // lifetime like a single-read and the pair stays resident together.
 func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam string, perPage, page int, now time.Time) ([]CachedGitCommit, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetCommitsListCache(ctx, dbgen.GetCommitsListCacheParams{
+	row, err := s.qx(ctx).GetCommitsListCache(ctx, dbgen.GetCommitsListCacheParams{
 		Owner: ownerKey, Repo: repoKey, RefParam: refParam,
 		PerPage: int64(perPage), Page: int64(page),
 	})
@@ -60,7 +61,7 @@ func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam 
 		}
 		commits = append(commits, c)
 	}
-	_ = s.q.TouchCommitsListCache(ctx, dbgen.TouchCommitsListCacheParams{
+	_ = s.qx(ctx).TouchCommitsListCache(ctx, dbgen.TouchCommitsListCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey,
 		RefParam: refParam, PerPage: int64(perPage), Page: int64(page),
 	})
@@ -82,12 +83,12 @@ func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam 
 		return err
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	for _, c := range commits {
 		if err := s.upsertGitCommit(ctx, q, c, now); err != nil {
 			return err
@@ -104,32 +105,32 @@ func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam 
 		return err
 	}
 
-	if err := s.q.DeleteExpiredCommitsListCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredCommitsListCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	if err := s.q.PruneCommitsListCacheLRU(ctx, CacheMaxRows); err != nil {
+	if err := s.qx(ctx).PruneCommitsListCacheLRU(ctx, CacheMaxRows); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateCommitsListCache is the repo-wide flush; the immutable git_commits_cache rows stay.
 func (s *Store) InvalidateCommitsListCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteCommitsListCacheByRepo(ctx, dbgen.DeleteCommitsListCacheByRepoParams{
+	return s.qx(ctx).DeleteCommitsListCacheByRepo(ctx, dbgen.DeleteCommitsListCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
 // InvalidatePullCommitsSnapshots drops the synthetic "pull/<number>/commits" rows a push moves with no per-PR signal.
 func (s *Store) InvalidatePullCommitsSnapshots(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteCommitsListCachePullSnapshots(ctx, dbgen.DeleteCommitsListCachePullSnapshotsParams{
+	return s.qx(ctx).DeleteCommitsListCachePullSnapshots(ctx, dbgen.DeleteCommitsListCachePullSnapshotsParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
 // InvalidateCommitsListForRef is the per-ref push flush (refParam "" = default branch); other refs' snapshots survive.
 func (s *Store) InvalidateCommitsListForRef(ctx context.Context, owner, repo, refParam string) error {
-	return s.q.DeleteCommitsListCacheForRef(ctx, dbgen.DeleteCommitsListCacheForRefParams{
+	return s.qx(ctx).DeleteCommitsListCacheForRef(ctx, dbgen.DeleteCommitsListCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), RefParam: refParam,
 	})
 }

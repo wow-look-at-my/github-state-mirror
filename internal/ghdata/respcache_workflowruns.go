@@ -31,7 +31,7 @@ import (
 // ). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA string, perPage, page int, now time.Time) (string, bool, error) {
 	ownerKey, repoKey, shaKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo), strings.ToLower(headSHA)
-	row, err := s.q.GetWorkflowRunsCache(ctx, dbgen.GetWorkflowRunsCacheParams{
+	row, err := s.qx(ctx).GetWorkflowRunsCache(ctx, dbgen.GetWorkflowRunsCacheParams{
 		Owner: ownerKey, Repo: repoKey, HeadSha: shaKey,
 		PerPage: int64(perPage), Page: int64(page),
 	})
@@ -44,7 +44,7 @@ func (s *Store) GetCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchWorkflowRunsCache(ctx, dbgen.TouchWorkflowRunsCacheParams{
+	_ = s.qx(ctx).TouchWorkflowRunsCache(ctx, dbgen.TouchWorkflowRunsCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, HeadSha: shaKey,
 		PerPage: int64(perPage), Page: int64(page),
 	})
@@ -55,7 +55,7 @@ func (s *Store) GetCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 // (expired rows + LRU beyond the cap). owner/repo/sha are normalized here so
 // callers can pass URL casing.
 func (s *Store) PutCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA string, perPage, page int, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertWorkflowRunsCache(ctx, dbgen.UpsertWorkflowRunsCacheParams{
+	if err := s.qx(ctx).UpsertWorkflowRunsCache(ctx, dbgen.UpsertWorkflowRunsCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), HeadSha: strings.ToLower(headSHA),
 		PerPage: int64(perPage), Page: int64(page),
 		Doc:       doc,
@@ -63,10 +63,10 @@ func (s *Store) PutCachedWorkflowRuns(ctx context.Context, owner, repo, headSHA 
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredWorkflowRunsCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredWorkflowRunsCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneWorkflowRunsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneWorkflowRunsCacheLRU(ctx, CacheMaxRows)
 }
 
 // ApplyWorkflowRunToPages rewrites a run's entry in place; reports false when
@@ -77,7 +77,7 @@ func (s *Store) ApplyWorkflowRunToPages(ctx context.Context, owner, repo string,
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	rows, err := s.q.ListWorkflowRunsCacheForHeadSHA(ctx, dbgen.ListWorkflowRunsCacheForHeadSHAParams{
+	rows, err := s.qx(ctx).ListWorkflowRunsCacheForHeadSHA(ctx, dbgen.ListWorkflowRunsCacheForHeadSHAParams{
 		Owner: ownerKey, Repo: repoKey, HeadSha: run.HeadSHA,
 	})
 	if err != nil {
@@ -130,7 +130,7 @@ func patchWorkflowRunsPage(doc string, run StoredWorkflowRunItem) (string, bool)
 // payload carries no head sha. owner/repo are normalized here so callers can
 // pass payload casing.
 func (s *Store) InvalidateWorkflowRunsCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteWorkflowRunsCacheByRepo(ctx, dbgen.DeleteWorkflowRunsCacheByRepoParams{
+	return s.qx(ctx).DeleteWorkflowRunsCacheByRepo(ctx, dbgen.DeleteWorkflowRunsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
@@ -141,7 +141,7 @@ func (s *Store) InvalidateWorkflowRunsCache(ctx context.Context, owner, repo str
 // pages survive. owner/repo/sha are normalized here so callers can pass
 // payload casing.
 func (s *Store) InvalidateWorkflowRunsForHeadSHA(ctx context.Context, owner, repo, headSHA string) error {
-	return s.q.DeleteWorkflowRunsCacheForHeadSHA(ctx, dbgen.DeleteWorkflowRunsCacheForHeadSHAParams{
+	return s.qx(ctx).DeleteWorkflowRunsCacheForHeadSHA(ctx, dbgen.DeleteWorkflowRunsCacheForHeadSHAParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), HeadSha: strings.ToLower(headSHA),
 	})
 }

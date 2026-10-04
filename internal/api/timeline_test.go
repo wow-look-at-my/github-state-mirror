@@ -125,6 +125,7 @@ func TestTimeline_WebhookDeliveryRecorded(t *testing.T) {
 	req.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(body)))
 	w := do(t, s.router, req)
 	require.Less(t, w.Code, 300, "delivery must succeed: %s", w.Body.String())
+	awaitWebhooks(t, s.router)
 
 	snap := s.timeline.Snapshot(0)
 	require.Len(t, snap.Events, 1)
