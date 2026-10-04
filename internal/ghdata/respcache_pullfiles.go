@@ -28,7 +28,7 @@ import (
 // row's LRU timestamp.
 func (s *Store) GetCachedPullFiles(ctx context.Context, owner, repo string, number, perPage, page int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetPullFilesCache(ctx, dbgen.GetPullFilesCacheParams{
+	row, err := s.qx(ctx).GetPullFilesCache(ctx, dbgen.GetPullFilesCacheParams{
 		Owner: ownerKey, Repo: repoKey, Number: number, PerPage: perPage, Page: page,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -40,7 +40,7 @@ func (s *Store) GetCachedPullFiles(ctx context.Context, owner, repo string, numb
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchPullFilesCache(ctx, dbgen.TouchPullFilesCacheParams{
+	_ = s.qx(ctx).TouchPullFilesCache(ctx, dbgen.TouchPullFilesCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Number: number, PerPage: perPage, Page: page,
 	})
 	return row.Doc, true, nil
@@ -50,7 +50,7 @@ func (s *Store) GetCachedPullFiles(ctx context.Context, owner, repo string, numb
 // (expired rows + LRU beyond the cap). owner/repo are normalized here so
 // callers can pass URL casing.
 func (s *Store) PutCachedPullFiles(ctx context.Context, owner, repo string, number, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertPullFilesCache(ctx, dbgen.UpsertPullFilesCacheParams{
+	if err := s.qx(ctx).UpsertPullFilesCache(ctx, dbgen.UpsertPullFilesCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		Number: number, PerPage: perPage, Page: page,
 		Doc:       doc,
@@ -58,16 +58,16 @@ func (s *Store) PutCachedPullFiles(ctx context.Context, owner, repo string, numb
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredPullFilesCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredPullFilesCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PrunePullFilesCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PrunePullFilesCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidatePullFilesCache drops every cached files page for a repo (the push/repository flush).
 // see docs/webhooks/response-cache-invalidation.md
 func (s *Store) InvalidatePullFilesCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeletePullFilesCacheByRepo(ctx, dbgen.DeletePullFilesCacheByRepoParams{
+	return s.qx(ctx).DeletePullFilesCacheByRepo(ctx, dbgen.DeletePullFilesCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
@@ -77,7 +77,7 @@ func (s *Store) InvalidatePullFilesCache(ctx context.Context, owner, repo string
 // whose pushes we never see -- base retargets, reopens). owner/repo are
 // normalized here so callers can pass payload casing.
 func (s *Store) InvalidatePullFilesForPR(ctx context.Context, owner, repo string, number int64) error {
-	return s.q.DeletePullFilesCacheByPR(ctx, dbgen.DeletePullFilesCacheByPRParams{
+	return s.qx(ctx).DeletePullFilesCacheByPR(ctx, dbgen.DeletePullFilesCacheByPRParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Number: number,
 	})
 }

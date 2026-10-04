@@ -11,6 +11,10 @@ const (
 	DispError       = "error"       // an internal (store) failure — GitHub should retry
 	// DispSuperseded means a strictly newer view of the same subject already applied; a success, not a failure.
 	DispSuperseded = "superseded"
+	// DispQueued is the answer to a delivery the journal now holds; the worker applies it.
+	DispQueued = "queued"
+	// DispDuplicate is the answer to a delivery whose id the journal already holds.
+	DispDuplicate = "duplicate"
 )
 
 // DispatchResult summarizes what Dispatch did with webhook event. The

@@ -20,7 +20,7 @@ const BranchesCacheTTL = 24 * time.Hour
 // row's LRU timestamp.
 func (s *Store) GetCachedBranchesList(ctx context.Context, owner, repo string, perPage, page int64, now time.Time) (string, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetBranchesListCache(ctx, dbgen.GetBranchesListCacheParams{
+	row, err := s.qx(ctx).GetBranchesListCache(ctx, dbgen.GetBranchesListCacheParams{
 		Owner: ownerKey, Repo: repoKey, PerPage: perPage, Page: page,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -32,7 +32,7 @@ func (s *Store) GetCachedBranchesList(ctx context.Context, owner, repo string, p
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchBranchesListCache(ctx, dbgen.TouchBranchesListCacheParams{
+	_ = s.qx(ctx).TouchBranchesListCache(ctx, dbgen.TouchBranchesListCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, PerPage: perPage, Page: page,
 	})
 	return row.Doc, true, nil
@@ -42,7 +42,7 @@ func (s *Store) GetCachedBranchesList(ctx context.Context, owner, repo string, p
 // table (expired rows + LRU beyond the cap). owner/repo are normalized here
 // so callers can pass URL casing.
 func (s *Store) PutCachedBranchesList(ctx context.Context, owner, repo string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertBranchesListCache(ctx, dbgen.UpsertBranchesListCacheParams{
+	if err := s.qx(ctx).UpsertBranchesListCache(ctx, dbgen.UpsertBranchesListCacheParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		PerPage: perPage, Page: page,
 		Doc:       doc,
@@ -50,10 +50,10 @@ func (s *Store) PutCachedBranchesList(ctx context.Context, owner, repo string, p
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredBranchesListCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredBranchesListCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneBranchesListCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneBranchesListCacheLRU(ctx, CacheMaxRows)
 }
 
 type storedBranchListItem struct {
@@ -75,7 +75,7 @@ func (s *Store) ApplyPushedBranchTip(ctx context.Context, owner, repo, branch, a
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	rows, err := s.q.ListBranchesListCacheByRepo(ctx, dbgen.ListBranchesListCacheByRepoParams{
+	rows, err := s.qx(ctx).ListBranchesListCacheByRepo(ctx, dbgen.ListBranchesListCacheByRepoParams{
 		Owner: ownerKey, Repo: repoKey,
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func (s *Store) ApplyPushedBranchTip(ctx context.Context, owner, repo, branch, a
 // InvalidateBranchesListCache drops every cached branches page for a repo, the last resort behind ApplyPushedBranchTip's rewrite.
 // see docs/webhooks/dispatch.md
 func (s *Store) InvalidateBranchesListCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteBranchesListCacheByRepo(ctx, dbgen.DeleteBranchesListCacheByRepoParams{
+	return s.qx(ctx).DeleteBranchesListCacheByRepo(ctx, dbgen.DeleteBranchesListCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

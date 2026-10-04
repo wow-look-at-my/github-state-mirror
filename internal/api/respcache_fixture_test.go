@@ -366,6 +366,7 @@ func postWebhook(t *testing.T, router http.Handler, event, body string) {
 	req.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(body)))
 	w := do(t, router, req)
 	require.Less(t, w.Code, 300, "webhook delivery must succeed: %s", w.Body.String())
+	awaitWebhooks(t, router)
 }
 
 // assertNoURLKeys walks a rebuilt JSON body recursively and fails on any key

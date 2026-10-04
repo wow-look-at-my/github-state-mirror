@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/go-containers/set"
 )
@@ -110,7 +111,7 @@ func PRRowFresh(pr dbgen.PullRequest, now time.Time) bool {
 // expiry.
 func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time.Time) (bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
+	row, err := s.qx(ctx).GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
 		Owner: ownerKey, Repo: repoKey,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -122,7 +123,7 @@ func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return false, nil
 	}
-	_ = s.q.TouchPullsListMarker(ctx, dbgen.TouchPullsListMarkerParams{
+	_ = s.qx(ctx).TouchPullsListMarker(ctx, dbgen.TouchPullsListMarkerParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey,
 	})
 	return true, nil
@@ -133,7 +134,7 @@ func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time
 // consistency check (which must not mutate the cache), unlike PullsListFresh
 // whose hit refreshes last_used_at.
 func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, now time.Time) (bool, error) {
-	row, err := s.q.GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
+	row, err := s.qx(ctx).GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -151,13 +152,13 @@ func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, 
 // owner/repo are matched case-insensitively: rows carry GitHub's canonical
 // casing, the request URL may not.
 func (s *Store) RestPullsList(ctx context.Context, owner, repo string) ([]dbgen.PullRequest, map[int64][]dbgen.PrLabel, error) {
-	prs, err := s.q.ListOpenPullRequestsByRepoNoCase(ctx, dbgen.ListOpenPullRequestsByRepoNoCaseParams{
+	prs, err := s.qx(ctx).ListOpenPullRequestsByRepoNoCase(ctx, dbgen.ListOpenPullRequestsByRepoNoCaseParams{
 		Owner: owner, Repo: repo,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	labels, err := s.q.ListPRLabelsByRepoNoCase(ctx, dbgen.ListPRLabelsByRepoNoCaseParams{
+	labels, err := s.qx(ctx).ListPRLabelsByRepoNoCase(ctx, dbgen.ListPRLabelsByRepoNoCaseParams{
 		Owner: owner, Repo: repo,
 	})
 	if err != nil {
@@ -173,7 +174,7 @@ func (s *Store) RestPullsList(ctx context.Context, owner, repo string) ([]dbgen.
 // RestSinglePull returns the row for OPEN PR plus its labels, or ok=false
 // when no open row exists.
 func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number int64) (dbgen.PullRequest, []dbgen.PrLabel, bool, error) {
-	pr, err := s.q.GetOpenPullRequestNoCase(ctx, dbgen.GetOpenPullRequestNoCaseParams{
+	pr, err := s.qx(ctx).GetOpenPullRequestNoCase(ctx, dbgen.GetOpenPullRequestNoCaseParams{
 		Owner: owner, Repo: repo, Number: number,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,7 +183,7 @@ func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number i
 	if err != nil {
 		return dbgen.PullRequest{}, nil, false, err
 	}
-	labels, err := s.q.ListPRLabelsNoCase(ctx, dbgen.ListPRLabelsNoCaseParams{
+	labels, err := s.qx(ctx).ListPRLabelsNoCase(ctx, dbgen.ListPRLabelsNoCaseParams{
 		Owner: owner, Repo: repo, PrNumber: number,
 	})
 	if err != nil {
@@ -203,12 +204,12 @@ func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number i
 // response's own (canonical) owner/repo casing so they collide with
 // webhook/GraphQL-written rows.
 func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, complete bool, fetchStart, now time.Time, ttl time.Duration) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	touched := rfc3339(now)
 	fetched := set.New[int64](len(prs))
@@ -259,10 +260,10 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredPullsListMarkers(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredPullsListMarkers(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PrunePullsListMarkersLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PrunePullsListMarkersLRU(ctx, CacheMaxRows)
 }
 
 // AbsorbSinglePull upserts fetched OPEN PR into global truth. Unlike the
@@ -271,12 +272,12 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // upsert: a null answer must keep the single-PR route missing (and
 // re-fetching) until GitHub resolves it, never resurrect a stale value.
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	existing, err := q.GetPullRequest(ctx, dbgen.GetPullRequestParams{
 		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number,
@@ -324,7 +325,7 @@ func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labe
 // structural-event flush (repository renamed/deleted/etc.), NOT something
 // pull_request events do (those maintain rows and leave the marker).
 func (s *Store) InvalidatePullsListMarkers(ctx context.Context, owner, repo string) error {
-	return s.q.DeletePullsListMarkersByRepo(ctx, dbgen.DeletePullsListMarkersByRepoParams{
+	return s.qx(ctx).DeletePullsListMarkersByRepo(ctx, dbgen.DeletePullsListMarkersByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

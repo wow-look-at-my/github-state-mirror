@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Kinds the observed driver reports. With _txlock=immediate, db.begin is the
-// wait for the write lock.
+// Kinds the observed driver reports. Each is SQLite's own time; the wait for
+// the write lock is reported apart, as KindWriteWait.
 const (
 	KindBegin  = "db.begin"
 	KindExec   = "db.exec"
@@ -65,12 +65,21 @@ func (c *observedConn) timed(kind string, start time.Time) {
 	}
 }
 
-// BeginTx holds the gate until Commit or Rollback; db.begin's time includes the wait for it.
+// admit takes the gate for a write on this connection. A context whose own
+// transaction already holds it is refused rather than left to wait on itself.
+func (c *observedConn) admit(ctx context.Context) error {
+	if heldByContext(ctx, c.gate) {
+		return ErrWriteOutsideTx
+	}
+	return c.gate.acquire(ctx)
+}
+
+// BeginTx holds the gate until Commit or Rollback.
 func (c *observedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	defer c.timed(KindBegin, time.Now())
-	if err := c.gate.acquire(ctx); err != nil {
+	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
+	defer c.timed(KindBegin, time.Now())
 	tx, err := c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 	if err != nil {
 		c.gate.release()
@@ -82,26 +91,27 @@ func (c *observedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driv
 
 // ExecContext outside a transaction is an autocommit write, admitted through the gate for its duration.
 func (c *observedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	defer c.timed(KindExec, time.Now())
 	if !c.inTx {
-		if err := c.gate.acquire(ctx); err != nil {
+		if err := c.admit(ctx); err != nil {
 			return nil, err
 		}
 		defer c.gate.release()
 	}
+	defer c.timed(KindExec, time.Now())
 	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
 }
 
 // QueryContext admits an autocommit write (INSERT ... RETURNING) through the
 // gate, held until its rows close; reads never wait for it.
 func (c *observedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	defer c.timed(KindQuery, time.Now())
 	if c.inTx || !isWriteSQL(query) {
+		defer c.timed(KindQuery, time.Now())
 		return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 	}
-	if err := c.gate.acquire(ctx); err != nil {
+	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
+	defer c.timed(KindQuery, time.Now())
 	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 	if err != nil {
 		c.gate.release()

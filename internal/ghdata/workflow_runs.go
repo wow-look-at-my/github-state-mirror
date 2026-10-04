@@ -49,7 +49,7 @@ type WorkflowRunFilter struct {
 // own updated_at, so a replayed delivery or a listing absorbed while a
 // fresher delivery was in flight cannot roll the run's state backwards.
 func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Time) error {
-	if err := s.q.UpsertWorkflowRunFull(ctx, dbgen.UpsertWorkflowRunFullParams{
+	if err := s.qx(ctx).UpsertWorkflowRunFull(ctx, dbgen.UpsertWorkflowRunFullParams{
 		Owner: NormalizeRepoKey(r.Owner), Repo: NormalizeRepoKey(r.Repo),
 		RunID: r.RunID, RunAttempt: r.RunAttempt,
 		Name:    r.Name,
@@ -60,7 +60,7 @@ func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Ti
 	}); err != nil {
 		return err
 	}
-	return s.q.PruneSettledWorkflowRuns(ctx, rfc3339(now.Add(-workflowRunRetention)))
+	return s.qx(ctx).PruneSettledWorkflowRuns(ctx, rfc3339(now.Add(-workflowRunRetention)))
 }
 
 // ApplyWorkflowRunFromJob never settles or regresses a run; it only raises
@@ -74,7 +74,7 @@ func (s *Store) ApplyWorkflowRunFromJob(ctx context.Context, j WorkflowJob, now 
 	if j.Status == "in_progress" {
 		status = "in_progress"
 	}
-	return s.q.UpsertWorkflowRunFromJob(ctx, dbgen.UpsertWorkflowRunFromJobParams{
+	return s.qx(ctx).UpsertWorkflowRunFromJob(ctx, dbgen.UpsertWorkflowRunFromJobParams{
 		Owner: NormalizeRepoKey(j.Owner), Repo: NormalizeRepoKey(j.Repo),
 		RunID: j.RunID, RunAttempt: j.RunAttempt,
 		Name:    j.WorkflowName,
@@ -91,14 +91,14 @@ func (s *Store) ApplyWorkflowRunFromJob(ctx context.Context, j WorkflowJob, now 
 func (s *Store) ListWorkflowRuns(ctx context.Context, owner, repo string, f WorkflowRunFilter, perPage, page int) ([]WorkflowRun, int64, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
 	shaKey := strings.ToLower(f.HeadSHA)
-	total, err := s.q.CountWorkflowRuns(ctx, dbgen.CountWorkflowRunsParams{
+	total, err := s.qx(ctx).CountWorkflowRuns(ctx, dbgen.CountWorkflowRunsParams{
 		Owner: ownerKey, Repo: repoKey,
 		Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: shaKey,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.q.ListWorkflowRuns(ctx, dbgen.ListWorkflowRunsParams{
+	rows, err := s.qx(ctx).ListWorkflowRuns(ctx, dbgen.ListWorkflowRunsParams{
 		Owner: ownerKey, Repo: repoKey,
 		Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: shaKey,
 		PageSize: int64(perPage), PageOffset: int64((page - 1) * perPage),
@@ -129,7 +129,7 @@ func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f
 	if len(kept) == 0 {
 		kept = []int64{-1}
 	}
-	return s.q.DeleteWorkflowRunsNotIn(ctx, dbgen.DeleteWorkflowRunsNotInParams{
+	return s.qx(ctx).DeleteWorkflowRunsNotIn(ctx, dbgen.DeleteWorkflowRunsNotInParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		Status: f.Status, HeadBranch: f.HeadBranch, HeadSha: strings.ToLower(f.HeadSHA),
 		Kept: kept,
@@ -140,7 +140,7 @@ func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f
 // matching this filter -- i.e. a short page- answer for exactly this filter
 // was absorbed recently enough that the marker has not expired.
 func (s *Store) WorkflowRunsListComplete(ctx context.Context, owner, repo, filters string, now time.Time) (bool, error) {
-	row, err := s.q.GetWorkflowRunsListMarker(ctx, dbgen.GetWorkflowRunsListMarkerParams{
+	row, err := s.qx(ctx).GetWorkflowRunsListMarker(ctx, dbgen.GetWorkflowRunsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Filters: filters,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -157,13 +157,13 @@ func (s *Store) WorkflowRunsListComplete(ctx context.Context, owner, repo, filte
 // set. Only a short page- absorb may call this; a run DELIVERY must never
 // touch it, because deliveries maintain the rows the marker vouches for.
 func (s *Store) MarkWorkflowRunsListComplete(ctx context.Context, owner, repo, filters string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertWorkflowRunsListMarker(ctx, dbgen.UpsertWorkflowRunsListMarkerParams{
+	if err := s.qx(ctx).UpsertWorkflowRunsListMarker(ctx, dbgen.UpsertWorkflowRunsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Filters: filters,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)),
 	}); err != nil {
 		return err
 	}
-	return s.q.DeleteExpiredWorkflowRunsListMarkers(ctx, rfc3339(now))
+	return s.qx(ctx).DeleteExpiredWorkflowRunsListMarkers(ctx, rfc3339(now))
 }
 
 // InvalidateWorkflowRunsTruth drops a repo's run rows AND its completeness
@@ -171,12 +171,12 @@ func (s *Store) MarkWorkflowRunsListComplete(ctx context.Context, owner, repo, f
 // change) -- the only event that invalidates rather than maintains.
 func (s *Store) InvalidateWorkflowRunsTruth(ctx context.Context, owner, repo string) error {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	if err := s.q.DeleteWorkflowRunsByRepo(ctx, dbgen.DeleteWorkflowRunsByRepoParams{
+	if err := s.qx(ctx).DeleteWorkflowRunsByRepo(ctx, dbgen.DeleteWorkflowRunsByRepoParams{
 		Owner: ownerKey, Repo: repoKey,
 	}); err != nil {
 		return err
 	}
-	return s.q.DeleteWorkflowRunsListMarkers(ctx, dbgen.DeleteWorkflowRunsListMarkersParams{
+	return s.qx(ctx).DeleteWorkflowRunsListMarkers(ctx, dbgen.DeleteWorkflowRunsListMarkersParams{
 		Owner: ownerKey, Repo: repoKey,
 	})
 }

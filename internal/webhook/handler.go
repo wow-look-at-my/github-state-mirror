@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +19,7 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, event Event) DispatchResult
 }
 
-// IngestNotifier is told about a delivery AFTER the synchronous dispatch has
+// IngestNotifier is told about each delivery after the queue's worker applied it.
 type IngestNotifier interface {
 	NotifyIngest(event Event, result DispatchResult, ingestedAt time.Time)
 }
@@ -39,11 +40,10 @@ type DeliveryRecorder interface {
 }
 
 // Handler returns an http.Handler that receives GitHub webhook POSTs. A
-// non-nil recorder is told about each verified delivery with its measured
-// handling duration; any non-nil notifiers are invoked (non-blocking) after
-// each dispatch with the dispatch outcome — the variadic keeps notifier-less
-// call sites unchanged.
-func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers ...IngestNotifier) http.HandlerFunc {
+// verified delivery is answered once q's journal holds it; q's worker applies
+// it. A delivery id already in the journal is answered without recording it twice.
+func Handler(secret string, q *Queue) http.HandlerFunc {
+	recorder := q.recorder
 	return func(w http.ResponseWriter, r *http.Request) {
 		// The handling clock starts at receipt, so EVERY outcome — rejected,
 		receivedAt := time.Now()
@@ -101,38 +101,44 @@ func Handler(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, no
 			return
 		}
 
-		event := ParseEvent(eventType, body)
-		event.DeliveryID = r.Header.Get("X-GitHub-Delivery")
-
-		done := make(chan DispatchResult, 1)
-		go func() {
-			done <- apply(context.WithoutCancel(r.Context()), dispatcher, recorder, notifiers, event, receivedAt)
-		}()
-		select {
-		case result := <-done:
-			writeResult(w, result)
-		case <-r.Context().Done():
-			slog.Warn("webhook: sender went away before the delivery finished applying; it is still being applied",
-				"type", event.Type, "delivery", event.DeliveryID, "after", time.Since(receivedAt))
+		deliveryID := r.Header.Get("X-GitHub-Delivery")
+		if deliveryID == "" {
+			deliveryID = localDeliveryID()
 		}
+		event := ParseEvent(eventType, body)
+		event.DeliveryID = deliveryID
+
+		// Recorded under its own context: a sender that hangs up mid-write must not leave a half-kept promise.
+		fresh, err := q.enqueue(context.WithoutCancel(r.Context()), Stored{
+			DeliveryID: deliveryID, EventType: eventType, Body: body, ReceivedAt: receivedAt,
+		})
+		result := DispatchResult{Event: event.Type, Action: event.Action, Repo: event.RepoFullName()}
+		switch {
+		case err != nil:
+			slog.Error("webhook: recording a delivery failed; GitHub is told so it can be sent again", "type", eventType, "delivery", deliveryID, "error", err)
+			result.Disposition, result.Detail = DispError, "recording the delivery failed"
+			if recorder != nil {
+				recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+			}
+		case !fresh:
+			result.Disposition, result.Detail = DispDuplicate, "delivery id already recorded"
+			if recorder != nil {
+				recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+			}
+		default:
+			result.Disposition = DispQueued
+		}
+		writeResult(w, result)
 	}
 }
 
-// apply dispatches one verified delivery, then records it and notifies subscribers.
-func apply(ctx context.Context, dispatcher Dispatcher, recorder DeliveryRecorder, notifiers []IngestNotifier, event Event, receivedAt time.Time) DispatchResult {
-	result := dispatcher.Dispatch(ctx, event)
-
-	if recorder != nil {
-		recorder.RecordDelivery(event, result, receivedAt, time.Since(receivedAt))
+// localDeliveryID names a delivery that arrived without X-GitHub-Delivery, so it is never taken for a repeat.
+func localDeliveryID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("webhook: read random: " + err.Error())
 	}
-
-	ingestedAt := time.Now()
-	for _, n := range notifiers {
-		if n != nil {
-			n.NotifyIngest(event, result, ingestedAt)
-		}
-	}
-	return result
+	return "local-" + hex.EncodeToString(b[:])
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
