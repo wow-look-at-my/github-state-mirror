@@ -49,7 +49,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 	slog.Info("webhook dispatch", "type", event.Type, "action", event.Action, "repo", event.RepoFullName())
 
 	var out outcome
-	err := d.store.InTx(ctx, func(ctx context.Context) error {
+	ran := false
+	apply := func(ctx context.Context) error {
+		ran = true
 		out = d.handle(ctx, event)
 		// Best-effort: a delivery is never failed over its log row.
 		if err := d.store.RecordWebhookDelivery(ctx, ghdata.WebhookDelivery{
@@ -63,8 +65,15 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event webhook.Event) w
 			slog.Warn("webhook: record delivery failed", "error", err)
 		}
 		return nil
-	})
-	if err != nil {
+	}
+	err := d.store.InTx(ctx, apply)
+	switch {
+	case err == nil:
+	case !ran:
+		// The transaction never opened; each write still gets its own chance rather than the delivery being dropped.
+		slog.Warn("webhook: delivery transaction did not open; applying statement by statement", "type", event.Type, "delivery", event.DeliveryID, "error", err)
+		apply(ctx)
+	default:
 		slog.Warn("webhook: delivery transaction failed", "type", event.Type, "delivery", event.DeliveryID, "error", err)
 		out = errored("delivery transaction failed: " + err.Error())
 	}
