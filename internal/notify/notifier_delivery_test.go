@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/inbox"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
@@ -95,7 +97,17 @@ func TestWebhookHandlerNonBlocking(t *testing.T) {
 	require.NoError(t, err)
 
 	const ghSecret = "gh-webhook-secret"
-	handler := webhook.Handler(ghSecret, staticDispatcher{result: applied()}, nil, n)
+	journal, err := inbox.Open(filepath.Join(t.TempDir(), "inbox.db"))
+	require.NoError(t, err)
+	defer journal.Close()
+	q := webhook.NewQueue(journal, staticDispatcher{result: applied()}, nil, n)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		q.Stopped(5 * time.Second)
+	}()
+	go q.Run(ctx)
+	handler := webhook.Handler(ghSecret, q)
 
 	body := `{"action":"opened","pull_request":{"number":9,"head":{"sha":"beef"}},"repository":{"name":"repo1","owner":{"login":"my-org"}}}`
 	mac := hmac.New(sha256.New, []byte(ghSecret))
@@ -107,7 +119,8 @@ func TestWebhookHandlerNonBlocking(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req) // must return with the receiver still blocked
-	assert.Equal(t, http.StatusOK, w.Code, "the webhook response reflects the dispatch, not the subscriber")
+	assert.Equal(t, http.StatusAccepted, w.Code, "the webhook is answered once recorded, not once the subscriber answers")
+	require.True(t, q.Idle(5*time.Second), "the apply finishes while the subscriber still hangs")
 
 	select {
 	case <-arrived:

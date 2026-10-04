@@ -639,25 +639,16 @@ function missingSubscriptionsBanner(missing: MissingSubscription[]): HTMLElement
 // ---- delivery ordering ----
 //
 // GitHub orders nothing it sends, so a non-zero "out of order" count is normal
-// rather than an alarm. What matters is the SHAPE: how many the reorder window
-// fixed by sorting, how many arrived too late for it and were refused, and how
-// far behind those were. Without this the whole mechanism is invisible, which
-// is how out-of-order deliveries went years without a number attached.
+// rather than an alarm. What matters is the SHAPE: how many arrived older than a
+// view already applied and were refused, and how far behind those were.
 function orderingPanel(o: OrderingSnapshot): HTMLElement {
     const grid = el("div", { class: "stat-grid" });
     grid.appendChild(statCard(o.ordered, "In order"));
-    grid.appendChild(statCard(o.reordered, "Batches re-sorted"));
     grid.appendChild(statCard(o.superseded, "Refused as stale"));
     grid.appendChild(statCard(o.unorderable, "No clock"));
     if (o.failed > 0) grid.appendChild(statCard(o.failed, "Gate errors"));
 
     const bits: string[] = [];
-    if (o.reorder_window_seconds > 0) {
-        bits.push("window " + fmtSecs(o.reorder_window_seconds) + ", held " + o.held +
-            (o.held > 0 ? " (mean " + fmtSecs(o.mean_hold_seconds) + ")" : ""));
-    } else {
-        bits.push("reorder window off — deliveries dispatch on arrival");
-    }
     if (o.superseded > 0) {
         bits.push(o.superseded_within_grace + " within " + fmtSecs(o.grace_seconds) + " (delivery jitter), " +
             o.superseded_beyond_grace + " beyond it");
@@ -670,7 +661,7 @@ function orderingPanel(o: OrderingSnapshot): HTMLElement {
         el("summary", { text: "Delivery ordering" }),
         el("p", {
             class: "grp-caption",
-            text: "GitHub sends deliveries in no particular order. Views arriving close together are sorted by the payload's own clock and applied oldest-first; anything older than a view already applied is refused rather than written over it. " + bits.join(" · "),
+            text: "GitHub sends deliveries in no particular order. Each is applied on arrival; one older, by the payload's own clock, than a view already applied is refused rather than written over it. " + bits.join(" · "),
         }),
         grid,
     );
@@ -861,8 +852,8 @@ function formatBytes(n: number): string {
     return v.toFixed(1) + " " + units[i];
 }
 
-// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g. "DB.4 GB
-// (+. MB WAL)".
+// dbSizeLabel renders the SQLite DB's on-disk footprint, e.g. "DB 1.4 GB
+// (+125.8 MB WAL)".
 function dbSizeLabel(db?: number, wal?: number): string {
     if (!db) return "";
     return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
@@ -1335,8 +1326,10 @@ async function loadRateLimits(silent = false): Promise<void> {
 
 // The kinds the server reports, in display order, with what each measures.
 const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
-    ["webhook.handle", "Webhook handling", "receipt to response, per dispatched delivery"],
-    ["db.begin", "SQLite write-lock wait", "BEGIN IMMEDIATE: the time spent waiting for the write lock"],
+    ["webhook.handle", "Webhook handling", "receipt to applied, per delivery; GitHub is answered once the delivery is recorded"],
+    ["db.write_wait", "Write-lock wait", "the time a writer queued for the write lock"],
+    ["db.write_hold", "Write-lock hold", "the time one writer kept the write lock: a transaction, or one autocommit write"],
+    ["db.begin", "SQLite begin", "BEGIN IMMEDIATE, once the write lock is ours"],
     ["db.exec", "SQLite exec", "one write statement, or a read-free statement"],
     ["db.query", "SQLite query", "one read, to its first row"],
     ["db.commit", "SQLite commit", "one transaction commit"],

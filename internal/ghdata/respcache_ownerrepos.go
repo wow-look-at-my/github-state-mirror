@@ -46,7 +46,7 @@ func (k OwnerReposKey) norm() OwnerReposKey {
 // refreshes the row's LRU stamp.
 func (s *Store) GetCachedOwnerRepos(ctx context.Context, k OwnerReposKey, now time.Time) (CachedOwnerRepos, bool, error) {
 	k = k.norm()
-	row, err := s.q.GetOwnerReposCache(ctx, dbgen.GetOwnerReposCacheParams{
+	row, err := s.qx(ctx).GetOwnerReposCache(ctx, dbgen.GetOwnerReposCacheParams{
 		TokenFp: k.TokenFP, Scope: k.Scope, Owner: k.Owner,
 		Sort: k.Sort, Direction: k.Direction, PerPage: k.PerPage, Page: k.Page,
 	})
@@ -59,7 +59,7 @@ func (s *Store) GetCachedOwnerRepos(ctx context.Context, k OwnerReposKey, now ti
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return CachedOwnerRepos{}, false, nil
 	}
-	_ = s.q.TouchOwnerReposCache(ctx, dbgen.TouchOwnerReposCacheParams{
+	_ = s.qx(ctx).TouchOwnerReposCache(ctx, dbgen.TouchOwnerReposCacheParams{
 		LastUsedAt: rfc3339(now), TokenFp: k.TokenFP, Scope: k.Scope, Owner: k.Owner,
 		Sort: k.Sort, Direction: k.Direction, PerPage: k.PerPage, Page: k.Page,
 	})
@@ -70,7 +70,7 @@ func (s *Store) GetCachedOwnerRepos(ctx context.Context, k OwnerReposKey, now ti
 // the LRU tail beyond the cap.
 func (s *Store) PutCachedOwnerRepos(ctx context.Context, k OwnerReposKey, c CachedOwnerRepos, now time.Time, ttl time.Duration) error {
 	k = k.norm()
-	if err := s.q.UpsertOwnerReposCache(ctx, dbgen.UpsertOwnerReposCacheParams{
+	if err := s.qx(ctx).UpsertOwnerReposCache(ctx, dbgen.UpsertOwnerReposCacheParams{
 		TokenFp: k.TokenFP, Scope: k.Scope, Owner: k.Owner,
 		Sort: k.Sort, Direction: k.Direction, PerPage: k.PerPage, Page: k.Page,
 		Status: int64(c.Status), Doc: c.Doc,
@@ -78,14 +78,14 @@ func (s *Store) PutCachedOwnerRepos(ctx context.Context, k OwnerReposKey, c Cach
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredOwnerReposCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredOwnerReposCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneOwnerReposCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneOwnerReposCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateOwnerReposCache drops an owner's listings across every credential:
 // a created or renamed repo moves all of them, and the delivery names no token.
 func (s *Store) InvalidateOwnerReposCache(ctx context.Context, owner string) error {
-	return s.q.DeleteOwnerReposCacheByOwner(ctx, NormalizeRepoKey(owner))
+	return s.qx(ctx).DeleteOwnerReposCacheByOwner(ctx, NormalizeRepoKey(owner))
 }

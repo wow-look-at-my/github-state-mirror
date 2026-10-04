@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -29,7 +30,7 @@ type CachedCompare struct {
 // (no row, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedCompare(ctx context.Context, owner, repo, basehead string, now time.Time) (CachedCompare, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetCompareCache(ctx, dbgen.GetCompareCacheParams{
+	row, err := s.qx(ctx).GetCompareCache(ctx, dbgen.GetCompareCacheParams{
 		Owner: ownerKey, Repo: repoKey, Basehead: basehead,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -46,7 +47,7 @@ func (s *Store) GetCachedCompare(ctx context.Context, owner, repo, basehead stri
 	} else if moved {
 		return CachedCompare{}, false, nil
 	}
-	_ = s.q.TouchCompareCache(ctx, dbgen.TouchCompareCacheParams{
+	_ = s.qx(ctx).TouchCompareCache(ctx, dbgen.TouchCompareCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Basehead: basehead,
 	})
 	return CachedCompare{
@@ -70,12 +71,12 @@ func (s *Store) baseBranchMoved(ctx context.Context, owner, repo, baseRef, baseT
 
 // PutCachedCompare absorbs comparison plus its commits, in transaction; c and commits must carry normalized owner/repo and lowercased shas.
 func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits []CachedGitCommit, now time.Time, ttl time.Duration) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	for _, commit := range commits {
 		if err := s.upsertGitCommit(ctx, q, commit, now); err != nil {
 			return err
@@ -94,25 +95,25 @@ func (s *Store) PutCachedCompare(ctx context.Context, c CachedCompare, commits [
 		return err
 	}
 
-	if err := s.q.DeleteExpiredCompareCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredCompareCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	if err := s.q.PruneCompareCacheLRU(ctx, CacheMaxRows); err != nil {
+	if err := s.qx(ctx).PruneCompareCacheLRU(ctx, CacheMaxRows); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateCompareCache drops every cached comparison for a repo; see docs/cache/rest-routes.md.
 func (s *Store) InvalidateCompareCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteCompareCacheByRepo(ctx, dbgen.DeleteCompareCacheByRepoParams{
+	return s.qx(ctx).DeleteCompareCacheByRepo(ctx, dbgen.DeleteCompareCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
 // InvalidateCompareForRef drops every cached comparison naming ref on either side; see docs/cache/rest-routes.md.
 func (s *Store) InvalidateCompareForRef(ctx context.Context, owner, repo, ref string) error {
-	return s.q.DeleteCompareCacheForRef(ctx, dbgen.DeleteCompareCacheForRefParams{
+	return s.qx(ctx).DeleteCompareCacheForRef(ctx, dbgen.DeleteCompareCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		BaseRef: ref, HeadRef: ref,
 	})

@@ -39,16 +39,9 @@ The `pull_request_review` row keys on the REVIEW, not the PR: two reviews on one
 
 `label` (no timestamp anywhere in the payload), `organization`, and `membership` are unorderable and apply as they always did — reported, not guessed at.
 
-## Two mechanisms, different distances
+## The watermark
 
-**1. The reorder window** (`internal/sync/reorder.go`, `WEBHOOK_REORDER_WINDOW`, 2s). The first delivery for a subject opens a window. Later deliveries for that same subject join it. When it closes the batch is sorted by the payload clock and dispatched oldest-first. Inside the window nothing is refused — both views apply, in the order they happened.
-
-It has to be a WINDOW, not a delay. Holding every delivery for a fixed 2s preserves arrival order exactly, so the case worth fixing — the older view arriving second — comes out. This is in the same wrong order it went in. Batching per subject is also what keeps the cost off unrelated events: a busy repo's PR deliveries never wait behind another repo's push.
-
-The window is small on purpose and capped at 5s. Every delivery pays it in latency, and GitHub's own delivery timeout is single-digit seconds. A hold long enough to catch a redelivery will start failing deliveries, which is the failure ordering exists to reduce.
-
-**2. The watermark** (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). Past the window, the newest applied view of each subject is recorded, and a delivery older than it is refused. This is with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone. The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
-
+Every delivery is applied the moment it arrives. Nothing is held. Ordering is the watermark's job (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone. The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
 Refusing is not a lesser outcome for a snapshot. GitHub payloads are full views, not deltas, so applying only the newest lands on the same final state ordering them will have.
 
 ### The exception: facts the newer view never restates
@@ -57,10 +50,7 @@ A push carries up to 2,048 commit objects, and a later push to the same branch d
 
 ## What is reported
 
-The Webhooks tab carries a Delivery ordering panel: in-order count, batches the window re-sorted. Refusals split into within-grace (≤10s, ordinary delivery jitter) and beyond-grace (something held the delivery — a redelivery, a restart drain), mean and worst lateness, a per-event breakdown, and the last refusals in full. Both clocks, both delivery ids, which payload field the clock came from, and whether immutable facts were still taken.
-
-`held` with a zero `reordered` is the window costing latency and buying nothing. That is the number to watch before changing `WEBHOOK_REORDER_WINDOW`.
-
+The Webhooks tab carries a Delivery ordering panel: the in-order count and the refusals. Refusals split into within-grace (≤10s, ordinary delivery jitter) and beyond-grace (something held the delivery — a redelivery, a restart drain), mean and worst lateness, a per-event breakdown, and the last refusals in full. Both clocks, both delivery ids, which payload field the clock came from, and whether immutable facts were still taken.
 ## What this does not cover
 
 The gate only sees DELIVERIES. A row written by a fetch absorb — the single-PR route, a list page, the consistency reconcile — passes no watermark. As a result, write-side guards remain load-bearing and independent: `pr_closures` refuses an open-PR view that cannot prove it postdates a recorded close. `NullPRMergeableOnTipMove` refuses retained pre-move merge fields. Guards, one shared failure. `TestDispatch_ClosureRecordStillRefusesAPreCloseViewWithoutTheGate` pins that the second one is not made redundant by the first.

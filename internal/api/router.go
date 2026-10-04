@@ -24,6 +24,7 @@ func NewRouter(
 	store *ghdata.Store,
 	webhookSecret string,
 	dispatcher *syncpkg.WebhookDispatcher,
+	queue *webhook.Queue,
 	gh *ghclient.Client,
 	allowedOrigins []string,
 	authSvc *auth.Service,
@@ -78,7 +79,7 @@ func NewRouter(
 	dash.routes(r)
 
 	// Webhook endpoint: HMAC-signed, outside requireAuth; see docs/webhooks/dispatch.md.
-	r.Post("/webhook", webhook.Handler(webhookSecret, dispatcher, timelineDeliveryRecorder(timeline, lat), notifier))
+	r.Post("/webhook", webhook.Handler(webhookSecret, queue))
 
 	// Update-liveness probes, outside requireAuth; see CLAUDE.md's "Update-check endpoints".
 	registerUpdateChecks(r, store, mgr)

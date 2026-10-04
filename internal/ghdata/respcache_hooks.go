@@ -46,7 +46,7 @@ func OrgHooksTarget(org string) HooksTarget {
 // GetCachedHooks returns the stored answer and the status to replay it under.
 // A miss is a missing or expired row. A hit refreshes the LRU stamp.
 func (s *Store) GetCachedHooks(ctx context.Context, tokenFP string, t HooksTarget, perPage, page int64, now time.Time) (string, int64, bool, error) {
-	row, err := s.q.GetHooksCache(ctx, dbgen.GetHooksCacheParams{
+	row, err := s.qx(ctx).GetHooksCache(ctx, dbgen.GetHooksCacheParams{
 		TokenFp: tokenFP, Scope: t.Scope, Owner: t.Owner, Repo: t.Repo, HookID: t.HookID,
 		PerPage: perPage, Page: page,
 	})
@@ -59,7 +59,7 @@ func (s *Store) GetCachedHooks(ctx context.Context, tokenFP string, t HooksTarge
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", 0, false, nil
 	}
-	_ = s.q.TouchHooksCache(ctx, dbgen.TouchHooksCacheParams{
+	_ = s.qx(ctx).TouchHooksCache(ctx, dbgen.TouchHooksCacheParams{
 		LastUsedAt: rfc3339(now), TokenFp: tokenFP, Scope: t.Scope, Owner: t.Owner, Repo: t.Repo,
 		HookID: t.HookID, PerPage: perPage, Page: page,
 	})
@@ -69,24 +69,24 @@ func (s *Store) GetCachedHooks(ctx context.Context, tokenFP string, t HooksTarge
 // PutCachedHooks records fetched listing page, then prunes the table
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedHooks(ctx context.Context, tokenFP string, t HooksTarget, perPage, page int64, status int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertHooksCache(ctx, dbgen.UpsertHooksCacheParams{
+	if err := s.qx(ctx).UpsertHooksCache(ctx, dbgen.UpsertHooksCacheParams{
 		TokenFp: tokenFP, Scope: t.Scope, Owner: t.Owner, Repo: t.Repo, HookID: t.HookID,
 		PerPage: perPage, Page: page, Status: status, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredHooksCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredHooksCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneHooksCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneHooksCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateHooksForTarget drops target's listings across EVERY
 // credential. Rows are per-credential but a hook change is not: a hook created
 // through the mirror by caller changes the answer every other caller gets.
 func (s *Store) InvalidateHooksForTarget(ctx context.Context, t HooksTarget) error {
-	return s.q.DeleteHooksCacheForTarget(ctx, dbgen.DeleteHooksCacheForTargetParams{
+	return s.qx(ctx).DeleteHooksCacheForTarget(ctx, dbgen.DeleteHooksCacheForTargetParams{
 		Scope: t.Scope, Owner: t.Owner, Repo: t.Repo,
 	})
 }

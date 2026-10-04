@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/go-containers/set"
 )
@@ -21,6 +22,19 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, q: dbgen.New(db)}
+}
+
+// qx returns the queries bound to the transaction ctx carries (database.InTx), or to the pool.
+func (s *Store) qx(ctx context.Context) *dbgen.Queries {
+	if tx := database.TxFrom(ctx, s.db); tx != nil {
+		return s.q.WithTx(tx)
+	}
+	return s.q
+}
+
+// InTx runs fn with every store write it makes inside one transaction.
+func (s *Store) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return database.InTx(ctx, s.db, fn)
 }
 
 // Ping reports whether the cache database still answers. The update-liveness
@@ -53,23 +67,23 @@ const (
 // ---- Repos ----
 
 func (s *Store) GetRepo(ctx context.Context, owner, name string) (dbgen.Repo, error) {
-	return s.q.GetRepo(ctx, dbgen.GetRepoParams{Owner: owner, Name: name})
+	return s.qx(ctx).GetRepo(ctx, dbgen.GetRepoParams{Owner: owner, Name: name})
 }
 
 // GetRepoInsensitive looks a repo up by URL-supplied casing (truth rows keep
 // GitHub's canonical casing; GitHub treats URLs case-insensitively).
 func (s *Store) GetRepoInsensitive(ctx context.Context, owner, name string) (dbgen.Repo, error) {
-	return s.q.GetRepoInsensitive(ctx, dbgen.GetRepoInsensitiveParams{Owner: owner, Name: name})
+	return s.qx(ctx).GetRepoInsensitive(ctx, dbgen.GetRepoInsensitiveParams{Owner: owner, Name: name})
 }
 
 func (s *Store) ListReposByOwner(ctx context.Context, owner string) ([]dbgen.Repo, error) {
-	return s.q.ListReposByOwner(ctx, owner)
+	return s.qx(ctx).ListReposByOwner(ctx, owner)
 }
 
 // ListVisibleReposByOwner returns the owner's repos the reveal layer permits
 // for principal: public repos plus repos with an unexpired grant.
 func (s *Store) ListVisibleReposByOwner(ctx context.Context, owner, principal string, now time.Time) ([]dbgen.Repo, error) {
-	return s.q.ListVisibleReposByOwner(ctx, dbgen.ListVisibleReposByOwnerParams{
+	return s.qx(ctx).ListVisibleReposByOwner(ctx, dbgen.ListVisibleReposByOwnerParams{
 		Owner:     owner,
 		Principal: principal,
 		ExpiresAt: rfc3339(now),
@@ -77,19 +91,19 @@ func (s *Store) ListVisibleReposByOwner(ctx context.Context, owner, principal st
 }
 
 func (s *Store) UpsertRepo(ctx context.Context, r dbgen.Repo) error {
-	return s.q.UpsertRepo(ctx, repoToParams(r))
+	return s.qx(ctx).UpsertRepo(ctx, repoToParams(r))
 }
 
 // DeleteRepoCascade removes a repo and everything hanging off it: PRs, labels,
 // commit checks, cached contents, and every principal's grants for it. Used
 // when a repository webhook reports the repo deleted (or renamed away).
 func (s *Store) DeleteRepoCascade(ctx context.Context, owner, name string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	if err := q.DeleteRepo(ctx, dbgen.DeleteRepoParams{Owner: owner, Name: name}); err != nil {
 		return err
@@ -122,7 +136,7 @@ func (s *Store) DeleteRepoCascade(ctx context.Context, owner, name string) error
 }
 
 func (s *Store) SetRepoVisibility(ctx context.Context, owner, name, visibility string) error {
-	return s.q.SetRepoVisibility(ctx, dbgen.SetRepoVisibilityParams{
+	return s.qx(ctx).SetRepoVisibility(ctx, dbgen.SetRepoVisibilityParams{
 		Visibility: visibility, Owner: owner, Name: name,
 	})
 }
@@ -132,7 +146,7 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 	if archived {
 		v = 1
 	}
-	return s.q.SetRepoArchived(ctx, dbgen.SetRepoArchivedParams{IsArchived: v, Owner: owner, Name: name})
+	return s.qx(ctx).SetRepoArchived(ctx, dbgen.SetRepoArchivedParams{IsArchived: v, Owner: owner, Name: name})
 }
 
 // ---- Org truth sync (the fetch write path) ----
@@ -140,12 +154,12 @@ func (s *Store) SetRepoArchived(ctx context.Context, owner, name string, archive
 // SyncOrgTruth merges an org-repos fetch into global truth and replace-syncs
 // the fetching principal's grants for the owner.
 func (s *Store) SyncOrgTruth(ctx context.Context, owner string, data OrgSyncData, principal string, fetchStart, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 
 	touched := rfc3339(now)
 	cutoff := rfc3339(fetchStart.Add(-reconcileGrace))
@@ -245,12 +259,12 @@ type OrgSyncData struct {
 // grant supersedes a stale "no"). owner/repo are normalized here.
 func (s *Store) RecordGrant(ctx context.Context, principal, owner, repo, source string, now time.Time) error {
 	owner, repo = NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	if err := q.UpsertAccessGrant(ctx, dbgen.UpsertAccessGrantParams{
 		Principal: principal, Owner: owner, Repo: repo,
 		GrantedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(GrantTTL)), Source: source,
@@ -271,7 +285,7 @@ func (s *Store) RecordGrant(ctx context.Context, principal, owner, repo, source 
 
 // HasGrant reports whether the principal holds an unexpired grant for the repo.
 func (s *Store) HasGrant(ctx context.Context, principal, owner, repo string, now time.Time) (bool, error) {
-	g, err := s.q.GetAccessGrant(ctx, dbgen.GetAccessGrantParams{
+	g, err := s.qx(ctx).GetAccessGrant(ctx, dbgen.GetAccessGrantParams{
 		Principal: principal, Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 	if err == sql.ErrNoRows {
@@ -286,7 +300,7 @@ func (s *Store) HasGrant(ctx context.Context, principal, owner, repo string, now
 // RevokeGrant deletes a principal's grant for a repo (an authoritative
 // said their access is gone).
 func (s *Store) RevokeGrant(ctx context.Context, principal, owner, repo string) error {
-	return s.q.DeleteAccessGrant(ctx, dbgen.DeleteAccessGrantParams{
+	return s.qx(ctx).DeleteAccessGrant(ctx, dbgen.DeleteAccessGrantParams{
 		Principal: principal, Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
@@ -301,7 +315,7 @@ type DenyVerdict struct {
 // RecordDenyVerdict caches GitHub's authoritative / answer to
 // principal's probe of resource, for DenyTTL.
 func (s *Store) RecordDenyVerdict(ctx context.Context, principal, kind, key, owner, repo string, status int, message string, now time.Time) error {
-	return s.q.UpsertDenyVerdict(ctx, dbgen.UpsertDenyVerdictParams{
+	return s.qx(ctx).UpsertDenyVerdict(ctx, dbgen.UpsertDenyVerdictParams{
 		Principal: principal, ResourceKind: kind, ResourceKey: key,
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 		Status: int64(status), Message: message,
@@ -312,7 +326,7 @@ func (s *Store) RecordDenyVerdict(ctx context.Context, principal, kind, key, own
 // GetDenyVerdict returns the unexpired deny verdict for principal's
 // resource, or (, false) when none applies.
 func (s *Store) GetDenyVerdict(ctx context.Context, principal, kind, key string, now time.Time) (DenyVerdict, bool, error) {
-	row, err := s.q.GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{
+	row, err := s.qx(ctx).GetDenyVerdict(ctx, dbgen.GetDenyVerdictParams{
 		Principal: principal, ResourceKind: kind, ResourceKey: key,
 	})
 	if err == sql.ErrNoRows {
@@ -331,10 +345,10 @@ func (s *Store) GetDenyVerdict(ctx context.Context, principal, kind, key string,
 // opportunistically from the write paths (SyncOrgTruth, RecordGrant) via
 // maybePruneAccessControl; cheap either way.
 func (s *Store) PruneAccessControl(ctx context.Context, now time.Time) error {
-	if err := s.q.DeleteExpiredGrants(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredGrants(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.DeleteExpiredDenials(ctx, rfc3339(now))
+	return s.qx(ctx).DeleteExpiredDenials(ctx, rfc3339(now))
 }
 
 // pruneInterval throttles the opportunistic prune: the grant-writing paths

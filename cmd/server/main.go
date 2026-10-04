@@ -16,11 +16,13 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/inbox"
 	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 func main() {
@@ -77,7 +79,7 @@ func main() {
 	app := buildAppAuthenticator(cfg, gh)
 
 	// see docs/webhooks/ordering.md
-	dispatcher := syncpkg.NewWebhookDispatcherWindowed(mgr, store, cfg.WebhookReorderWindow)
+	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// see docs/notifications.md
 	notifier := notify.New(notify.Config{Store: subsStore, Access: store, Timeline: timeline})
@@ -126,11 +128,23 @@ func main() {
 		slog.Info("passthrough debouncing disabled; uncacheable reads forward immediately")
 	}
 
+	// Outside the cache DB's rebuild lifecycle: it holds deliveries GitHub was told were kept.
+	journal, err := inbox.Open(inbox.DeriveDBPath(cfg.DBPath))
+	if err != nil {
+		slog.Error("open webhook inbox", "error", err)
+		os.Exit(1)
+	}
+	// see docs/webhooks/dispatch.md
+	queue := webhook.NewQueue(journal, dispatcher, api.DeliveryRecorder(timeline, lat), notifier)
+
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Deliveries left recorded by the last process are applied first.
+	go queue.Run(ctx)
 
 	// Start periodic refresher.
 	go refresher.Start(ctx)
@@ -156,9 +170,14 @@ func main() {
 
 	slog.Info("starting server", "addr", cfg.ListenAddr)
 	err = srv.ListenAndServe()
+	cancel()
 
 	// Drain fetches before closing the DB.
 	debouncer.Drain(30 * time.Second)
+	// The worker finishes the delivery in hand; the rest stay in the inbox for the next start.
+	if !queue.Stopped(30 * time.Second) {
+		slog.Warn("shutdown: the webhook worker did not finish its delivery in time; closing DB anyway")
+	}
 	if !mgr.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight fetches did not drain in time; closing DB anyway")
 	}
@@ -171,6 +190,9 @@ func main() {
 	}
 	if cerr := subsStore.Close(); cerr != nil {
 		slog.Warn("close subscriptions database", "error", cerr)
+	}
+	if cerr := journal.Close(); cerr != nil {
+		slog.Warn("close webhook inbox", "error", cerr)
 	}
 
 	if err != http.ErrServerClosed {

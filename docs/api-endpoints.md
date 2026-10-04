@@ -85,19 +85,18 @@ GitHub's login endpoints live on `github.com` — not `api.github.com` — and s
 
 ## Webhook
 
-- `POST /webhook` — receives GitHub webhook events and applies them to the cache. The handler processes each delivery **synchronously** (the cache writes are small, idempotent upserts that finish well within GitHub's delivery deadline) and the HTTP response reflects what happened, so a "successful" delivery actually means data was preserved:
-  - `200 OK` — applied: webhook data was written to global truth
-  - `202 Accepted` — received but nothing applied (an untracked event/action, or a fallback invalidation)
-  - `500` — an internal error. GitHub retries (and the re-applied upsert is idempotent)
+- `POST /webhook` - receives GitHub webhook events. The handler writes each verified delivery to the inbox, synced to disk, and answers. A worker applies it to the cache in arrival order (docs/webhooks/dispatch.md, "Receipt and apply"). A success means the delivery is kept, and will be applied across a restart:
+  - `202 Accepted`, `queued` - recorded. The worker applies it
+  - `202 Accepted`, `duplicate` - this `X-GitHub-Delivery` is already recorded, and is not applied twice
+  - `500`, `error` - the inbox can not record it. It lands in GitHub's failure log, and the replayer asks for it again
 
-  The disposition and detail are returned in the JSON body and an `X-GSM-Disposition` header, and every delivery is recorded in the dashboard's webhook log (see below).
+  The disposition is returned in the JSON body and an `X-GSM-Disposition` header. What the apply did is recorded in the dashboard's webhook log (see below).
 
-  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one cheap synchronous SQLite upsert.
+  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one inbox row and one short transaction.
 
 ## Subscriber notifications (`/_mirror/subscriptions`)
 
-Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**. Their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its synchronous dispatcher has applied the delivery. This is to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
-
+Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**. Their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its worker has applied the delivery. This is to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
 The top-level **`/_mirror/*` prefix is the reserved mirror-native namespace**: GitHub's API has no underscore-prefixed top-level paths. GitHub's API registered routes always win over the passthrough proxy. As a result, nothing under `/_mirror/*` can ever collide with proxied GitHub traffic.
 
 **Registering** (same bearer-token auth as every data route. Subscriptions are owned by the principal your token resolves to, so an app using `X-Mirror-Identity` keeps its subscriptions across token rotations):
