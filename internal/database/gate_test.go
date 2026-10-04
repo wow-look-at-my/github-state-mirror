@@ -23,8 +23,7 @@ func TestWriteGate_AdmitsWritersInArrivalOrder(t *testing.T) {
 	order := make(chan int, writers)
 	for i := range writers {
 		go func() {
-			if err := g.acquire(context.Background()); err != nil {
-				t.Errorf("writer %d: %v", i, err)
+			if !assert.NoError(t, g.acquire(context.Background()), "writer %d", i) {
 				return
 			}
 			order <- i
