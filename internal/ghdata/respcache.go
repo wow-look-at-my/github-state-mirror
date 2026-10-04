@@ -211,7 +211,7 @@ func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedG
 	})
 }
 
-// joinParents encodes a parent-sha list as "sha1,sha2" (” = no parents); hex shas make the comma join unambiguous.
+// joinParents encodes a parent-sha list as "sha1,sha2" ('' = no parents); hex shas make the comma join unambiguous.
 func joinParents(parents []string) string { return strings.Join(parents, ",") }
 
 func splitParents(s string) []string {

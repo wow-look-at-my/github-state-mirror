@@ -108,7 +108,7 @@ func TestCachedReadme_RefsAreDistinctRows(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.readmeHits))
 }
 
-// A push to the default branch flushes the empty-ref rows, since ” means "the
+// A push to the default branch flushes the empty-ref rows, since '' means "the
 // default branch" to this route exactly as it does to contents.
 func TestCachedReadme_PushToDefaultBranchFlushes(t *testing.T) {
 	router, _, _, u := respCacheStack(t)

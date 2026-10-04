@@ -68,7 +68,7 @@ func (h *handlers) cachedUserRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseUserReposShape reports the modeled shape: sort (of GitHub's
-// documented values, ” = default) + paging. Every other parameter
+// documented values, '' = default) + paging. Every other parameter
 // (affiliation, visibility, type, direction, since, before) is deliberately
 // unmodeled and passes through -- the surveyed caller (see the brief) sends
 // only page/per_page/sort.
