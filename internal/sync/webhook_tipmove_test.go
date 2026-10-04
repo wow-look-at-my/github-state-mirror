@@ -12,14 +12,14 @@ import (
 
 // The fork-head freeze, end to end through the dispatcher: a synchronize
 // delivery carries the NEW head sha next to RETAINED pre-move merge fields
-// (mergeable true + the old test-merge sha). Fork heads emit no push webhook
-// to un-resolve the row first, so without the tip-move un-resolve the upsert
-// preserved the stale resolved answer and served it frozen.
+// (mergeable true + the test-merge sha). Fork heads emit no push webhook to
+// un-resolve the row, so without the tip-move un-resolve the upsert preserved
+// the stale resolved answer and served it frozen.
 func TestDispatch_PullRequestSynchronize_UnresolvesMergeFields(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
 
-	// Seed: the PR as first delivered (head abc123, resolved MERGEABLE).
+	// Seed: the PR as delivered (head abc123, resolved MERGEABLE).
 	seeded := makePRPayload(t, "opened", "open", "my-org", "my-repo", 42, "PR")
 	require.Equal(t, webhook.DispApplied,
 		dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", seeded)).Disposition)
@@ -28,8 +28,7 @@ func TestDispatch_PullRequestSynchronize_UnresolvesMergeFields(t *testing.T) {
 	require.Equal(t, "MERGEABLE", row.Mergeable.String, "seed must be resolved")
 	require.Equal(t, "abc123", row.HeadRefOid.String)
 
-	// A fork-head synchronize: new head sha, mergeable retained true (the
-	// pre-move answer GitHub redelivers before its recompute finishes).
+	// New head sha, mergeable retained true (GitHub's pre-move redelivery).
 	moved := prPayloadWithHead(t, "synchronize", 42, "def789")
 	require.Equal(t, webhook.DispApplied,
 		dispatcher.Dispatch(ctx, webhook.ParseEvent("pull_request", moved)).Disposition)

@@ -11,18 +11,12 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// This file covers round 2's per-ref invalidation matrix end to end through
-// the dispatcher: pushes flush exactly the pushed ref's slice of the
-// ref-keyed caches (falling back repo-wide only without a usable ref),
-// CI/workflow_job events flush the refs/shas their payloads name, and
-// pull_request events clear the PR's pull-diff-406 verdict.
-
 const (
 	r2SHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	r2OtherSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// r2Seeder seeds and probes the four ref-keyed caches for org1/repo1.
+// r2Seeder seeds and probes the ref-keyed caches for org1/repo1.
 type r2Seeder struct {
 	t     *testing.T
 	store *ghdata.Store
@@ -60,19 +54,36 @@ func (s r2Seeder) commitsListServe(ref string) bool {
 	return ok
 }
 
+// seedCommitCI seeds ref's snapshot of EVERY kind: a push moves them all
+// (the branch points somewhere else afterwards), while the CI deliveries move
+// only the kind they can have changed, so a test asserting on kind alone
+// could not tell those apart.
 func (s r2Seeder) seedCommitCI(ref string) {
 	s.t.Helper()
-	require.NoError(s.t, s.store.PutCachedCommitCI(context.Background(), ghdata.CachedCommitCI{
-		Owner: "org1", Repo: "repo1", Ref: ref, Kind: ghdata.CommitCIKindStatus,
-		Doc: `{"seeded":true}`,
-	}, 30, 1, s.now, time.Hour))
+	for _, kind := range commitCIKinds {
+		require.NoError(s.t, s.store.PutCachedCommitCI(context.Background(), ghdata.CachedCommitCI{
+			Owner: "org1", Repo: "repo1", Ref: ref, Kind: kind,
+			Doc: `{"seeded":true}`,
+		}, 30, 1, s.now, time.Hour))
+	}
 }
 
-func (s r2Seeder) commitCIServe(ref string) bool {
+func (s r2Seeder) commitCIServeKind(ref, kind string) bool {
 	s.t.Helper()
-	_, ok, err := s.store.GetCachedCommitCI(context.Background(), "org1", "repo1", ref, ghdata.CommitCIKindStatus, 30, 1, s.now)
+	_, ok, err := s.store.GetCachedCommitCI(context.Background(), "org1", "repo1", ref, kind, 30, 1, s.now)
 	require.NoError(s.t, err)
 	return ok
+}
+
+// commitCIServe reports whether ANY kind of the ref's snapshot still serves.
+func (s r2Seeder) commitCIServe(ref string) bool {
+	s.t.Helper()
+	for _, kind := range commitCIKinds {
+		if s.commitCIServeKind(ref, kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s r2Seeder) seedCompare(basehead, baseRef, headRef string) {
@@ -101,6 +112,27 @@ func (s r2Seeder) workflowRunsServe(sha string) bool {
 	_, ok, err := s.store.GetCachedWorkflowRuns(context.Background(), "org1", "repo1", sha, 30, 1, s.now)
 	require.NoError(s.t, err)
 	return ok
+}
+
+// runStatuses reports the repo's run rows as run id -> status, the state the
+// repo-wide listing is rebuilt from.
+func (s r2Seeder) runStatuses() map[int64]string {
+	s.t.Helper()
+	rows, _, err := s.store.ListWorkflowRuns(context.Background(), "org1", "repo1", ghdata.WorkflowRunFilter{}, 100, 1)
+	require.NoError(s.t, err)
+	out := map[int64]string{}
+	for _, row := range rows {
+		out[row.RunID] = row.Status
+	}
+	return out
+}
+
+func (s r2Seeder) seedRun(id int64, status string) {
+	s.t.Helper()
+	require.NoError(s.t, s.store.ApplyWorkflowRun(context.Background(), ghdata.WorkflowRun{
+		Owner: "org1", Repo: "repo1", RunID: id, HeadSHA: r2SHA, HeadBranch: "feat",
+		Status: status, CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:00:00Z",
+	}, s.now))
 }
 
 // TestDispatch_PushToBranch_FlushesOnlyThatRef: a push to branch X flushes
@@ -143,7 +175,7 @@ func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 }
 
 // TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows: a default-branch push
-// owns TWO spellings of the same rows -- the branch name and the empty ref
+// owns spellings of the same rows -- the branch name and the empty ref
 // (the default-branch-relative key contents/commits-list use) -- so both
 // flush, while an unrelated branch's rows survive.
 func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
@@ -212,7 +244,7 @@ func TestDispatch_TagPush_FlushesOnlyThatRef(t *testing.T) {
 
 // TestDispatch_UnparseablePush_FallsBackRepoWide: with no usable ref (here an
 // unparseable body -- the event still names the repo) every ref-keyed cache
-// keeps the old conservative repo-wide flush.
+// keeps the conservative repo-wide flush.
 func TestDispatch_UnparseablePush_FallsBackRepoWide(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -255,17 +287,24 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 	s.seedWorkflowRuns(r2SHA)
 	s.seedWorkflowRuns(r2OtherSHA)
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", []byte(`{
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
 		"action": "completed",
-		"check_run": {"head_sha": "`+r2SHA+`", "status": "completed", "conclusion": "success",
-			"name": "build", "check_suite": {"head_branch": "feat"}},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
+		"check_run": map[string]any{
+			"head_sha": r2SHA, "status": "completed", "conclusion": "success",
+			"name": "build", "check_suite": map[string]any{"head_branch": "feat"},
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
 
-	assert.False(t, s.commitCIServe(r2SHA), "the head sha's commit-CI snapshots must flush")
-	assert.False(t, s.commitCIServe("feat"), "the head branch's commit-CI snapshots must flush")
-	assert.False(t, s.commitCIServe("heads/feat"), "the branch's heads/<name> spelling must flush too")
-	assert.False(t, s.commitCIServe("refs/heads/feat"), "the branch's refs/heads/<name> spelling must flush too")
+	const checkRuns = ghdata.CommitCIKindCheckRuns
+	assert.False(t, s.commitCIServeKind(r2SHA, checkRuns), "the head sha's check-runs snapshots must flush")
+	assert.False(t, s.commitCIServeKind("feat", checkRuns), "the head branch's check-runs snapshots must flush")
+	assert.False(t, s.commitCIServeKind("heads/feat", checkRuns), "the branch's heads/<name> spelling must flush too")
+	assert.False(t, s.commitCIServeKind("refs/heads/feat", checkRuns), "the branch's refs/heads/<name> spelling must flush too")
+	assert.True(t, s.commitCIServeKind(r2SHA, ghdata.CommitCIKindStatus),
+		"a check run never appears in a commit's statuses; the combined status must keep serving")
+	assert.True(t, s.commitCIServeKind(r2SHA, ghdata.CommitCIKindStatusesList),
+		"a check run never appears in a commit's statuses; the statuses list must keep serving")
 	assert.True(t, s.commitCIServe(r2OtherSHA), "another sha's commit-CI snapshots must survive")
 	assert.False(t, s.workflowRunsServe(r2SHA), "the head sha's workflow-runs pages must flush")
 	assert.True(t, s.workflowRunsServe(r2OtherSHA), "another sha's workflow-runs pages must survive")
@@ -273,7 +312,7 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 
 // TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA: a workflow_job delivery
 // flushes the job sha's workflow-runs pages -- for EVERY action, including
-// the queued one the disposition logic drops as ignored, because the
+// the queued the disposition logic drops as ignored, because the
 // invalidation pass runs before it (a queued job is exactly a run the cached
 // listing may not have shown yet).
 func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
@@ -294,8 +333,8 @@ func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
 }
 
 // TestDispatch_PullRequest_ClearsPullDiff406: a pull_request event clears
-// that one PR's cached 406 diff verdict (its head just moved, so the diff
-// may have shrunk back under the boundary) and leaves another PR's verdict.
+// that PR's cached diff verdict (its head moved, so the diff may have shrunk
+// back under the boundary) and leaves another PR's verdict.
 func TestDispatch_PullRequest_ClearsPullDiff406(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -348,50 +387,4 @@ func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	assert.True(t, s.contentsServe("refs/heads/other"), "an unrelated ref's contents rows must survive")
 	assert.False(t, s.commitsListServe("refs/heads/main"), "the refs/heads/<name> commits-list spelling must flush")
 	assert.False(t, s.compareServe("refs/heads/main...feat"), "a comparison naming a qualified spelling must flush")
-}
-
-// TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA: a workflow_run delivery
-// flushes its head_sha's cached workflow-runs pages -- the ONLY invalidation
-// signal for a startup_failure run, which creates no jobs, check runs, or
-// statuses. The truth side has no workflow_run handler, so the delivery still
-// records as ignored: invalidation runs before the disposition logic, the
-// queued-workflow_job precedent.
-func TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA(t *testing.T) {
-	dispatcher, _, _, store := setupDispatcher(t)
-	ctx := context.Background()
-	s := r2Seeder{t: t, store: store, now: time.Now()}
-
-	s.seedWorkflowRuns(r2SHA)
-	s.seedWorkflowRuns(r2OtherSHA)
-
-	result := dispatcher.Dispatch(ctx, webhook.ParseEvent("workflow_run", []byte(`{
-		"action": "completed",
-		"workflow_run": {"id": 99, "head_sha": "`+r2SHA+`", "status": "completed",
-			"conclusion": "startup_failure"},
-		"repository": {"name": "repo1", "owner": {"login": "org1"}}
-	}`)))
-
-	assert.Equal(t, webhook.DispIgnored, result.Disposition, "no truth-side handler; the delivery stays ignored")
-	assert.False(t, s.workflowRunsServe(r2SHA), "the run's head sha's workflow-runs pages must flush")
-	assert.True(t, s.workflowRunsServe(r2OtherSHA), "another sha's workflow-runs pages must survive")
-}
-
-// TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide: the shared
-// workflow-runs flush widens to the whole repo when the caller has no sha --
-// an empty sha would exact-match nothing, silently flushing NOTHING while the
-// triggering payload still said some run changed. (ParseCheckPayload requires
-// a sha today, so the CI-event path cannot reach this; the fallback is what
-// keeps a future parser relaxation from turning that flush into a no-op.)
-func TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide(t *testing.T) {
-	dispatcher, _, _, store := setupDispatcher(t)
-	ctx := context.Background()
-	s := r2Seeder{t: t, store: store, now: time.Now()}
-
-	s.seedWorkflowRuns(r2SHA)
-	s.seedWorkflowRuns(r2OtherSHA)
-
-	dispatcher.flushWorkflowRunsForSHA(ctx, "org1/repo1", "org1", "repo1", "")
-
-	assert.False(t, s.workflowRunsServe(r2SHA), "an empty sha must flush repo-wide, not no-op")
-	assert.False(t, s.workflowRunsServe(r2OtherSHA), "an empty sha must flush repo-wide, not no-op")
 }

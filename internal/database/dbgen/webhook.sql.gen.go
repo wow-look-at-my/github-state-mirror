@@ -9,6 +9,99 @@ import (
 	"context"
 )
 
+const claimWebhookWatermark = `-- name: ClaimWebhookWatermark :one
+INSERT INTO webhook_watermarks (subject, event_time, delivery_id, event_type, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (subject) DO UPDATE SET
+    event_time = excluded.event_time,
+    delivery_id = excluded.delivery_id,
+    event_type = excluded.event_type,
+    updated_at = excluded.updated_at
+WHERE excluded.event_time > webhook_watermarks.event_time
+RETURNING event_time
+`
+
+type ClaimWebhookWatermarkParams struct {
+	Subject    string
+	EventTime  string
+	DeliveryID string
+	EventType  string
+	UpdatedAt  string
+}
+
+// ClaimWebhookWatermark advances a subject's watermark, and ONLY forward: the
+// WHERE on the upsert is what makes the decision atomic under concurrent
+// deliveries for one subject, so the winner is decided by the payload clock
+// rather than by which request reached the database first. RETURNING yields a
+// row exactly when this view won; no rows means an equal-or-newer view is
+// already recorded.
+func (q *Queries) ClaimWebhookWatermark(ctx context.Context, arg ClaimWebhookWatermarkParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, claimWebhookWatermark,
+		arg.Subject,
+		arg.EventTime,
+		arg.DeliveryID,
+		arg.EventType,
+		arg.UpdatedAt,
+	)
+	var event_time string
+	err := row.Scan(&event_time)
+	return event_time, err
+}
+
+const distinctWebhookEventTypes = `-- name: DistinctWebhookEventTypes :many
+SELECT DISTINCT event_type FROM webhook_deliveries WHERE event_type <> ''
+`
+
+// DistinctWebhookEventTypes lists the event types present in the RETAINED
+// delivery log. The mirror's correctness depends on being subscribed to a
+// specific set of events, and a missing subscription is otherwise invisible:
+// the affected caches just quietly re-fetch forever. This is what turns that
+// silence into something the dashboard can show. Bounded by the log's own
+// prune, so absence means "not in the retained window", not "never sent".
+func (q *Queries) DistinctWebhookEventTypes(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, distinctWebhookEventTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var event_type string
+		if err := rows.Scan(&event_type); err != nil {
+			return nil, err
+		}
+		items = append(items, event_type)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getWebhookWatermark = `-- name: GetWebhookWatermark :one
+
+SELECT subject, event_time, delivery_id, event_type, updated_at FROM webhook_watermarks WHERE subject = ?
+`
+
+// ============================================================================
+// Event-order watermarks (out-of-order delivery handling)
+// ============================================================================
+func (q *Queries) GetWebhookWatermark(ctx context.Context, subject string) (WebhookWatermark, error) {
+	row := q.db.QueryRowContext(ctx, getWebhookWatermark, subject)
+	var i WebhookWatermark
+	err := row.Scan(
+		&i.Subject,
+		&i.EventTime,
+		&i.DeliveryID,
+		&i.EventType,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertWebhookDelivery = `-- name: InsertWebhookDelivery :exec
 
 INSERT INTO webhook_deliveries (delivery_id, event_type, action, repo, received_at, disposition, detail)
@@ -94,4 +187,71 @@ WHERE id <= (
 func (q *Queries) PruneWebhookDeliveries(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneWebhookDeliveries, offset)
 	return err
+}
+
+const pruneWebhookReplays = `-- name: PruneWebhookReplays :exec
+DELETE FROM webhook_replays WHERE requested_at < ?
+`
+
+// PruneWebhookReplays drops rows older than the replayer's lookback window --
+// past it a delivery is never re-requested again, so remembering it costs
+// rows for nothing.
+func (q *Queries) PruneWebhookReplays(ctx context.Context, requestedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneWebhookReplays, requestedAt)
+	return err
+}
+
+const pruneWebhookWatermarks = `-- name: PruneWebhookWatermarks :exec
+DELETE FROM webhook_watermarks WHERE updated_at < ?
+`
+
+// PruneWebhookWatermarks drops subjects nothing has touched in a while. A
+// delivery older than that window is past every TTL it could have moved, and
+// the periodic refresh has been through since.
+func (q *Queries) PruneWebhookWatermarks(ctx context.Context, updatedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneWebhookWatermarks, updatedAt)
+	return err
+}
+
+const recordWebhookReplay = `-- name: RecordWebhookReplay :exec
+INSERT INTO webhook_replays (delivery_id, guid, event_type, delivered_at, requested_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (delivery_id) DO NOTHING
+`
+
+type RecordWebhookReplayParams struct {
+	DeliveryID  int64
+	Guid        string
+	EventType   string
+	DeliveredAt string
+	RequestedAt string
+}
+
+func (q *Queries) RecordWebhookReplay(ctx context.Context, arg RecordWebhookReplayParams) error {
+	_, err := q.db.ExecContext(ctx, recordWebhookReplay,
+		arg.DeliveryID,
+		arg.Guid,
+		arg.EventType,
+		arg.DeliveredAt,
+		arg.RequestedAt,
+	)
+	return err
+}
+
+const webhookReplayRequested = `-- name: WebhookReplayRequested :one
+
+SELECT EXISTS(SELECT 1 FROM webhook_replays WHERE delivery_id = ?)
+`
+
+// ============================================================================
+// Webhook replay requests (delivery-gap recovery)
+// ============================================================================
+// WebhookReplayRequested reports whether this delivery id has already been
+// asked for. GitHub's failure log keeps a failed delivery listed forever, so
+// without this the replayer would re-request the same one every cycle.
+func (q *Queries) WebhookReplayRequested(ctx context.Context, deliveryID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, webhookReplayRequested, deliveryID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }

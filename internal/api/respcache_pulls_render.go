@@ -25,9 +25,11 @@ type restPRJSON struct {
 	MergeCommitSHA *string `json:"merge_commit_sha"`
 	Merged         *bool   `json:"merged"`    // single-PR responses only
 	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
-	Additions      *int64  `json:"additions"` // single-PR responses only
-	Deletions      *int64  `json:"deletions"` // single-PR responses only
-	HTMLURL        string  `json:"html_url"`
+	// MergeableState is single-PR only as well, and it is the field that says
+	MergeableState string `json:"mergeable_state"`
+	Additions      *int64 `json:"additions"` // single-PR responses only
+	Deletions      *int64 `json:"deletions"` // single-PR responses only
+	HTMLURL        string `json:"html_url"`
 	User           *struct {
 		Login     string `json:"login"`
 		Type      string `json:"type"`
@@ -62,7 +64,7 @@ type restPRJSON struct {
 	RequestedTeams     []json.RawMessage `json:"requested_teams"`
 }
 
-// absorbPullsListBody parses a /pulls 200 array into storable rows + labels.
+// absorbPullsListBody parses a /pulls array into storable rows + labels.
 // Reports false -- serve verbatim, store nothing -- for any other status or
 // any item the model cannot hold.
 func absorbPullsListBody(owner, repo string, status int, body []byte) ([]dbgen.PullRequest, map[int64][]dbgen.PrLabel, bool) {
@@ -86,7 +88,7 @@ func absorbPullsListBody(owner, repo string, status int, body []byte) ([]dbgen.P
 	return rows, labelsByPR, true
 }
 
-// absorbRestPR converts one REST PR object into a pull_requests row (+ label
+// absorbRestPR converts REST PR object into a pull_requests row (+ label
 // rows), reporting false when required fields are missing. owner/repo come
 // from the response's own base.repo (canonical casing, so rows collide with
 // webhook/GraphQL-written ones); the URL values are only the fallback.
@@ -151,6 +153,10 @@ func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []
 		}
 		pr.Mergeable = sql.NullString{String: m, Valid: true}
 	}
+	// "unknown" is GitHub's own word for "still computing", not an answer.
+	if p.MergeableState != "" && p.MergeableState != "unknown" {
+		pr.MergeableState = sql.NullString{String: p.MergeableState, Valid: true}
+	}
 	if p.Additions != nil {
 		pr.Additions = sql.NullInt64{Int64: *p.Additions, Valid: true}
 	}
@@ -169,12 +175,6 @@ func absorbRestPR(urlOwner, urlRepo string, p restPRJSON) (dbgen.PullRequest, []
 // ---- rebuilding trimmed PR bodies ----
 
 // The rebuilt shapes: GitHub's list/single PR fields that carry STATE, minus
-// every URL field and the untracked clutter (milestone, assignees, locked,
-// author_association, ...). A superset of every field pr-minder and the
-// pr-minder-reconcile hook read off mirror-served PR objects: number, state,
-// draft, title, body, node_id, user.login/.type, labels[].name/.color,
-// head.ref/.sha/.repo.full_name, base.ref/.sha, auto_merge, merge_commit_sha,
-// created_at/updated_at, and (single) mergeable/merged.
 type pullUserJSON struct {
 	Login string `json:"login"`
 	Type  string `json:"type,omitempty"`
@@ -221,10 +221,40 @@ type pullListItemJSON struct {
 	Base           pullBaseJSON       `json:"base"`
 }
 
+// pullSingleJSON adds the fields only GitHub's SINGLE-PR response carries.
+// The diff stats ride here and NOT on the list item because GitHub's list
 type pullSingleJSON struct {
 	pullListItemJSON
-	Merged    bool  `json:"merged"`
-	Mergeable *bool `json:"mergeable"`
+	Merged         bool   `json:"merged"`
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
+	Additions      *int64 `json:"additions"`
+	Deletions      *int64 `json:"deletions"`
+}
+
+// applySinglePullFields fills the single-PR-only members from the row:
+// mergeable's tri-state mapping and the diff stats (absent stays null).
+func applySinglePullFields(out *pullSingleJSON, pr dbgen.PullRequest) {
+	switch pr.Mergeable.String {
+	case "MERGEABLE":
+		v := true
+		out.Mergeable = &v
+	case "CONFLICTING":
+		v := false
+		out.Mergeable = &v
+	}
+	out.MergeableState = "unknown"
+	if pr.MergeableState.Valid && pr.MergeableState.String != "" {
+		out.MergeableState = pr.MergeableState.String
+	}
+	if pr.Additions.Valid {
+		v := pr.Additions.Int64
+		out.Additions = &v
+	}
+	if pr.Deletions.Valid {
+		v := pr.Deletions.Int64
+		out.Deletions = &v
+	}
 }
 
 func renderPullListItem(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullListItemJSON {
@@ -261,34 +291,15 @@ func renderPullListItem(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullListIt
 
 func renderSinglePull(pr dbgen.PullRequest, labels []dbgen.PrLabel) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels)}
-	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate), so merged is
-	// false by definition.
-	switch pr.Mergeable.String {
-	case "MERGEABLE":
-		v := true
-		out.Mergeable = &v
-	case "CONFLICTING":
-		v := false
-		out.Mergeable = &v
-	}
+	// Only OPEN PRs are ever rebuilt (hit gate + absorb gate).
+	applySinglePullFields(&out, pr)
 	return out
 }
 
 // renderClosedPull renders the trimmed document a CLOSED/merged answer is
-// stored and served as -- rendered once at absorb time, so hit and miss are
-// byte-identical. renderPullListItem lowercases the stored state, so the doc
-// carries "closed" exactly as GitHub does; merged is GitHub's own answer
-// (unlike the open rebuild's by-definition false), and mergeable maps like
-// renderSinglePull's (typically null for a closed PR).
+// stored and served as -- rendered at absorb time.
 func renderClosedPull(pr dbgen.PullRequest, labels []dbgen.PrLabel, merged bool) pullSingleJSON {
 	out := pullSingleJSON{pullListItemJSON: renderPullListItem(pr, labels), Merged: merged}
-	switch pr.Mergeable.String {
-	case "MERGEABLE":
-		v := true
-		out.Mergeable = &v
-	case "CONFLICTING":
-		v := false
-		out.Mergeable = &v
-	}
+	applySinglePullFields(&out, pr)
 	return out
 }

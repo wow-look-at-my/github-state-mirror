@@ -49,12 +49,23 @@ ORDER BY
     CASE WHEN status = 'completed' THEN completed_at ELSE started_at END DESC
 LIMIT ?;
 
--- PruneWorkflowJobs deletes completed jobs whose completed_at is older than
--- the cutoff (RFC3339). Jobs still in progress are never pruned here; they age
--- out once their completed event lands (a stuck row whose completed event was
--- lost is bounded by CI volume and gets overwritten on the job's next attempt).
--- Uses the partial idx_workflow_jobs_completed_at index, so this is one
--- indexed DELETE.
+-- PruneWorkflowJobs deletes completed jobs that are stale on BOTH clocks:
+-- completed_at (the job's own event time) AND updated_at (when the mirror
+-- last applied a webhook for it) are older than the cutoff (RFC3339; both
+-- placeholders receive the same value). Keying on updated_at is load-bearing
+-- for UpsertWorkflowJob's out-of-order guard: the guard's only memory is the
+-- row, and a prune keyed on completed_at alone deleted a just-recorded
+-- completed row whose event time was already past the horizon (a replayed old
+-- delivery; also the 2026-07-17 CI incident, where aged test fixtures crossed
+-- it), letting a late in_progress INSERT a fresh running row -- status
+-- regressed, conclusion blanked, and the phantom row never pruned. With the
+-- updated_at key the row survives a full retention window after the last
+-- webhook touched it, longer than any real redelivery arrives. Jobs still in
+-- progress are never pruned here; they age out once their completed event
+-- lands (a stuck row whose completed event was lost is bounded by CI volume).
+-- The partial idx_workflow_jobs_completed_at index still narrows the scan to
+-- completed rows in the stale completed_at range; updated_at only filters
+-- that already-stale set further.
 -- name: PruneWorkflowJobs :exec
 DELETE FROM workflow_jobs
-WHERE status = 'completed' AND completed_at < ?;
+WHERE status = 'completed' AND completed_at < ? AND updated_at < ?;

@@ -2,24 +2,24 @@ package webhook
 
 import "net/http"
 
-// Disposition values describe what the dispatcher did with a delivery. They are
-// returned to GitHub in the HTTP response and recorded in the webhook delivery
-// log shown on the dashboard.
-//
-// There is deliberately no "skipped" anymore: since the global-cache
-// re-architecture every stateful event applies straight to global truth (there
-// is no per-scope gate to skip on). "ignored" remains only for event types and
-// actions the mirror genuinely does not track.
+// Disposition values describe what the dispatcher did with a delivery. log
+// shown on the dashboard.
 const (
 	DispApplied     = "applied"     // webhook data was written to global truth
 	DispInvalidated = "invalidated" // marked freshness stale (fallback / structural change)
 	DispIgnored     = "ignored"     // an event or action the mirror does not track
 	DispError       = "error"       // an internal (store) failure — GitHub should retry
+	// DispSuperseded means a strictly newer view of the same subject already applied; a success, not a failure.
+	DispSuperseded = "superseded"
+	// DispQueued is the answer to a delivery the journal now holds; the worker applies it.
+	DispQueued = "queued"
+	// DispDuplicate is the answer to a delivery whose id the journal already holds.
+	DispDuplicate = "duplicate"
 )
 
-// DispatchResult summarizes what Dispatch did with one webhook event. The
+// DispatchResult summarizes what Dispatch did with webhook event. The
 // handler serializes it as the HTTP response body so the outcome is visible in
-// GitHub's delivery record instead of being hidden behind a blind 200.
+// GitHub's delivery record instead of being hidden behind a blind.
 type DispatchResult struct {
 	Event       string `json:"event"`
 	Action      string `json:"action,omitempty"`
@@ -28,15 +28,7 @@ type DispatchResult struct {
 	Detail      string `json:"detail,omitempty"`
 }
 
-// StatusCode maps a disposition to the HTTP status returned to GitHub:
-//
-//   - applied                 -> 200 OK   (data written to global truth)
-//   - ignored / invalidated   -> 202      (received, no data applied)
-//   - error                   -> 500      (transient; GitHub retries)
-//
-// Every non-error outcome is 2xx so GitHub never disables a healthy webhook over
-// a legitimate no-op, while the 200-vs-202 split lets an operator tell at a
-// glance — in the deliveries list — whether a delivery actually updated the cache.
+// StatusCode maps a disposition to GitHub's status: only error is non-2xx, applied is, the rest.
 func (r DispatchResult) StatusCode() int {
 	switch r.Disposition {
 	case DispApplied:

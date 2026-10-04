@@ -2,18 +2,24 @@ name: CI
 
 on:
   push:
+    branches: ['**']
 
+concurrency:
+  group: gha_${{ github.repository }}_${{ github.workflow }}_${{ github.ref != 'refs/heads/master' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+# See docs/ci.md for why each grant below is required.
 permissions:
   id-token: write
-  # go-toolchain's dependency-graph submission POSTs a snapshot and fails
-  # without write; its no-all-builds guard scans check runs.
+
   contents: write
   actions: read
   checks: read
+
   artifact-metadata: write
-  # Required by the publish-ghcr reusable workflow to push the image to GHCR.
-  # A reusable workflow cannot exceed the caller's permissions, so it must be
-  # declared here.
+  deployments: write
+  pull-requests: write
+
   packages: write
 
 jobs:
@@ -34,14 +40,7 @@ jobs:
             exit 1
           fi
 
-  # The dashboard front-end has exactly ONE source: TypeScript, in
-  # internal/api/web/src/*.ts. `npm run build` (tsc) emits
-  # internal/api/web/assets/*.js as a BUILD OUTPUT — it is gitignored, never
-  # committed, and every job that needs it compiles it (the build job does so
-  # before the Go build embeds it). This job is the type-check gate (tsc exits
-  # non-zero on any error) and it enforces the no-committed-JS rule, so a
-  # generated file can never creep back into the tree as a second source of
-  # truth that could then go stale.
+  # See docs/ci.md for why this job exists and what it enforces.
   web-check:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
@@ -49,14 +48,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: extractions/setup-just@v2
       - run: npm ci
-      - run: npm run build
+      - run: just build
+
+      - run: just check-harness
       - name: Verify no generated dashboard JS is committed
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            // Ask git what is TRACKED (not what is on disk) — the build step
-            // above just wrote the ignored .js files into the working tree.
+            // Ask git what is TRACKED (not what is on disk) — the build step above just wrote the ignored .js files into the working tree.
             const res = await exec.getExecOutput(
               "git", ["ls-files", "--", "internal/api/web/assets/*.js"], { silent: true });
             const tracked = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -74,34 +75,43 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      # The dashboard JS is not committed, so compile it from the TypeScript
-      # BEFORE the Go build: internal/api/dashboard.go names each assets/*.js
-      # file in its //go:embed line, and a missing embed target is a compile
-      # error, not a runtime 404.
+      # See docs/ci.md: the dashboard JS must compile before the Go build.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: extractions/setup-just@v2
       - run: npm ci
-      - run: npm run build
-      # go-toolchain@v1 itself cache-uploads build/ as the `go-build` hand-off
-      # on every run, and its cache key is once-per-run (NOT job-disambiguated),
-      # so publish-ghcr just cache-downloads it. Do NOT add an explicit
-      # `cache-upload go-build` step here — a second same-run upload of that
-      # name collides on the key and fails.
-      - uses: wow-look-at-my/go-toolchain@v1
+      - run: just build
+      # See docs/ci.md: do not add an explicit cache-upload step here.
+      - uses: wow-look-at-my/go-toolchain@master
+        with:
+          # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
+          cosmo-platforms: linux/amd64,windows/amd64
 
-  # Build the Docker image and push ghcr.io/wow-look-at-my/github-state-mirror:latest
-  # on master. Restores the go-build hand-off (server_linux_amd64) the build job
-  # cache-uploaded and feeds it to the Dockerfile, then prunes old GHCR versions.
-  publish-ghcr:
+  # See docs/ci.md: this job starts the image and requires it to serve.
+  image-smoke:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: extractions/setup-just@v2
+      # See docs/ci.md: path must match what publish-ghcr passes.
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build
+          path: build
+      - run: npm ci
+      - run: just test-image
+
+  # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
+  publish-ghcr:
+    needs: [build, image-smoke]
     uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 
-  # Deploy a standalone, backend-free styling preview of the dashboard to
-  # buildhost as a per-branch static site, served at
-  # https://sites.pazer.build/github-state-mirror/branch/<branch>/. The preview
-  # injects demo-data.js so the page renders canned data (login/user/admin views)
-  # without a real server. OIDC handles auth; no static token is needed.
+  # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
     needs: web-check
     runs-on: ubuntu-latest
@@ -110,8 +120,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: extractions/setup-just@v2
       - run: npm ci
-      - run: npm run build
+      - run: just build
       - name: Assemble the demo bundle
         id: bundle
         uses: wow-look-at-my/actions@typescript#latest
@@ -121,8 +132,7 @@ jobs:
             const dist = "dist";
             fs.mkdirSync(`${dist}/assets`, { recursive: true });
 
-            // Inject the preview-only demo-data.js before app.js so the page
-            // renders canned data instead of calling the (absent) backend.
+            // Inject the preview-only demo-data.js before app.js so the page renders canned data instead of calling the (absent) backend.
             const appTag = '<script type="module" src="assets/app.js"></script>';
             const demoTag = '<script type="module" src="assets/demo-data.js"></script>';
             let html = fs.readFileSync(`${webDir}/index.html`, "utf8");
@@ -133,8 +143,7 @@ jobs:
               fs.copyFileSync(`${webDir}/assets/${f}`, `${dist}/assets/${f}`);
             }
 
-            // buildhost serves sites under a single path segment, so the branch
-            // name must not contain '/'. Flatten anything outside [A-Za-z0-9._-].
+            // buildhost serves sites under a single path segment, so the branch name must not contain '/': flatten anything outside [A-Za-z0-9._-].
             const raw = github.ref_name || "preview";
             const branch = raw.replace(/[^A-Za-z0-9._-]/g, "-");
             core.setOutput("branch", branch);

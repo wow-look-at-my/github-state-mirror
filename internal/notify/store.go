@@ -10,28 +10,11 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 )
 
-// The subscriptions store is a SEPARATE SQLite file from the main cache DB,
-// and lives by different rules — subscriptions are operator/consumer CONFIG,
-// not disposable cached GitHub state:
-//
-//   - It is NEVER nuked. The main DB's SchemaVersion bump-to-nuke doctrine
-//     applies only to the cache; this file survives every deploy.
-//   - Its schema is created with CREATE TABLE IF NOT EXISTS and may only ever
-//     evolve ADDITIVELY (new columns with defaults) so an old file keeps
-//     working under a new binary.
-//   - Queries are hand-rolled SQL in this package — a deliberate exception to
-//     the sqlc doctrine: sqlc.yaml targets the main cache DB's schema, and a
-//     second codegen target for one small config table is not worth the
-//     entanglement.
-//
-// Secrets at rest: subscription secrets are stored plaintext because the
-// notifier must produce an HMAC signature over every delivery body. This is
-// the same trust domain as install_token_cache tokens in the main DB — the
-// file sits on the same host with the same access as the traffic itself.
-// Secret values are never logged and never returned by any API response.
+// A separate, never-nuked SQLite file; schema evolves additively only.
+// see docs/notifications.md
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS subscriptions (
 	id TEXT PRIMARY KEY,
@@ -52,22 +35,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_principal ON subscriptions(principal);
 `
 
-// pragmas mirror the main DB's connection settings (database.Open) where they
-// make sense for a small config DB.
-var pragmas = []string{
-	"PRAGMA journal_mode=WAL",
-	"PRAGMA busy_timeout=5000",
-	"PRAGMA synchronous=NORMAL",
-	"PRAGMA foreign_keys=ON",
-}
-
 // Sentinel errors the API layer maps onto HTTP statuses.
 var (
-	// ErrNotFound: no such subscription for this principal (a foreign
-	// principal's id answers the same, so existence never leaks).
-	ErrNotFound = errors.New("subscription not found")
-	// ErrLimitExceeded: the principal already holds MaxPerPrincipal
-	// subscriptions.
+	ErrNotFound      = errors.New("subscription not found") // a foreign id answers the same; no existence leak
 	ErrLimitExceeded = fmt.Errorf("at most %d subscriptions per principal", MaxPerPrincipal)
 )
 
@@ -80,16 +50,8 @@ type Store struct {
 // there is no version check and no nuke path: the schema is applied
 // idempotently and existing rows are always kept.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open subscriptions db: %w", err)
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("subscriptions db: exec %q: %w", pragma, err)
-		}
-	}
+	// The main DB's connection settings and write gate, applied to every pooled connection.
+	db := database.OpenDSN(database.DurableDSN(path), nil)
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("subscriptions db: apply schema: %w", err)
@@ -105,18 +67,16 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// newID returns "sub_" + 16 random bytes hex.
+// newID returns "sub_" + random bytes hex.
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand never fails on supported platforms; if it somehow does,
-		// an ID collision on insert would surface as a PK error.
-		panic("notify: read random: " + err.Error())
+		panic("notify: read random: " + err.Error()) // never fails on supported platforms
 	}
 	return "sub_" + hex.EncodeToString(b[:])
 }
 
-// NewDeliveryID returns "ntf_" + 16 random bytes hex — unique per
+// NewDeliveryID returns "ntf_" + random bytes hex — unique per
 // subscription x delivery.
 func NewDeliveryID() string {
 	var b [16]byte
@@ -129,7 +89,7 @@ func NewDeliveryID() string {
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 // Create validates and inserts a new subscription for principal, enforcing
-// the per-principal cap inside one transaction. Validation failures return a
+// the per-principal cap inside transaction. Validation failures return a
 // *ValidationError; the cap returns ErrLimitExceeded.
 func (s *Store) Create(ctx context.Context, principal string, in NewSubscription, now time.Time) (Subscription, error) {
 	sub := Subscription{
@@ -187,7 +147,7 @@ func (s *Store) Get(ctx context.Context, principal, id string) (Subscription, er
 		selectCols+` FROM subscriptions WHERE id = ? AND principal = ?`, id, principal))
 }
 
-// List returns all of the principal's subscriptions, oldest first.
+// List returns all of the principal's subscriptions, oldest.
 func (s *Store) List(ctx context.Context, principal string) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx,
 		selectCols+` FROM subscriptions WHERE principal = ? ORDER BY created_at, id`, principal)
@@ -197,7 +157,7 @@ func (s *Store) List(ctx context.Context, principal string) ([]Subscription, err
 	return scanAll(rows)
 }
 
-// ListAll returns every subscription (operator view), oldest first.
+// ListAll returns every subscription (operator view), oldest.
 func (s *Store) ListAll(ctx context.Context) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, selectCols+` FROM subscriptions ORDER BY created_at, id`)
 	if err != nil {
@@ -302,7 +262,7 @@ func (s *Store) RecordSuccess(ctx context.Context, id string, now time.Time) err
 
 // RecordFailure increments the failure counter and stamps last_failure_at and
 // last_error after a terminal delivery failure. When the counter reaches
-// disableAfter the subscription is auto-disabled (active=0, disabled_reason
+// disableAfter the subscription is auto-disabled (active=, disabled_reason
 // set); disabled reports whether THIS call flipped it.
 func (s *Store) RecordFailure(ctx context.Context, id, errMsg string, disableAfter int, now time.Time) (failures int64, disabled bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)

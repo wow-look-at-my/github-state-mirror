@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
-	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -31,12 +30,11 @@ func (failOrgFetcher) Fetch(_ context.Context, _ string, _ string) (freshness.Re
 }
 
 // When the org_repos fetch fails and nothing is cached, the handler must NOT
-// return an empty "200 OK" (which is indistinguishable from "no repos"); it must
-// surface the upstream error with a non-200 status and the reason in the body.
+// return an empty " OK" (which is indistinguishable from "no repos"); it must
+// surface the upstream error with a non- status and the reason in the body.
 func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err)
+	db := openTestDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
@@ -64,13 +62,12 @@ func TestGraphQL_FetchErrorSurfacesAsError(t *testing.T) {
 }
 
 // TestGraphQL_StaleServedOnErrorCarriesHeaders: when the refresh fails but
-// cached data exists, the handler serves the stale cache with 200 — and must
+// cached data exists, the handler serves the stale cache with — and must
 // say so via the X-GSM-Stale / X-GSM-Last-Fetched response HEADERS (never the
 // body, which stays byte-identical to GitHub's shape).
 func TestGraphQL_StaleServedOnErrorCarriesHeaders(t *testing.T) {
 	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err)
+	db := openTestDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { db.Close() })
 
 	store := ghdata.NewStore(db)
@@ -229,7 +226,7 @@ func TestGraphQL_BasicQuery(t *testing.T) {
 
 // TestGraphQL_PRWithoutStatus verifies that a PR with no recorded CI status still
 // returns a well-formed commits object whose statusCheckRollup is null, rather
-// than a null commits. Clients dereference commits.nodes[0].commit unconditionally,
+// than a null commits. Clients dereference commits.nodes[].commit unconditionally,
 // so a null commits would crash them.
 func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	router, store := setupTestRouter(t)
@@ -247,7 +244,6 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 				State:     "OPEN",
 				CreatedAt: "2024-01-01",
 				UpdatedAt: "2024-01-02",
-				// LastCommitStatus intentionally left invalid (no CI status recorded).
 			},
 		},
 	})
@@ -272,8 +268,7 @@ func TestGraphQL_PRWithoutStatus(t *testing.T) {
 	prNodes := nodes[0].(map[string]interface{})["pullRequests"].(map[string]interface{})["nodes"].([]interface{})
 	require.Equal(t, 1, len(prNodes))
 
-	// commits must be a well-formed object (not null) with one node whose
-	// statusCheckRollup is null.
+	// commits must be a well-formed object, not null.
 	commits := prNodes[0].(map[string]interface{})["commits"].(map[string]interface{})
 	commitNodes := commits["nodes"].([]interface{})
 	require.Equal(t, 1, len(commitNodes))
@@ -380,6 +375,38 @@ func TestGraphQL_EmptyRepos(t *testing.T) {
 	repos := org["repositories"].(map[string]interface{})
 	nodes := repos["nodes"].([]interface{})
 	assert.Equal(t, 0, len(nodes))
+}
+
+// The locked query selects repositories(isArchived: false), so GitHub itself
+// never returns an archived repo -- and the node has no isArchived field, so a
+// client cannot filter out either. Truth holds archived repos (the owner
+// query the fleet refresher uses has no such filter), so the assembly must
+// drop them or the mirror answers with rows GitHub would have withheld.
+func TestGraphQL_ArchivedReposExcluded(t *testing.T) {
+	router, store := setupTestRouter(t)
+
+	seedOrgTruth(t, store, testUserActor, "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "active", NameWithOwner: "my-org/active", Url: "u1"},
+		{Owner: "my-org", Name: "retired", NameWithOwner: "my-org/retired", Url: "u2", IsArchived: 1},
+	}, map[string][]dbgen.PullRequest{})
+
+	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
+	req := authedReq(http.MethodPost, "/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	nodes := resp["data"].(map[string]interface{})["organization"].(map[string]interface{})["repositories"].(map[string]interface{})["nodes"].([]interface{})
+
+	names := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		names = append(names, n.(map[string]interface{})["name"].(string))
+	}
+	assert.Equal(t, []string{"active"}, names)
 }
 
 func TestExtractOrgFromQuery(t *testing.T) {

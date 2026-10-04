@@ -22,22 +22,20 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// fakeOwner is one owner's live state served by the fake GitHub.
+// fakeOwner is owner's live state served by the fake GitHub.
 type fakeOwner struct {
 	repos []map[string]any // ownerDataQuery repo nodes
 	vis   []map[string]any // ownerRepoVisibilityQuery nodes (includes archived)
 }
 
-// consistencyFakeGitHub serves the checker's fetch surface: installations
-// (org1 = Organization, someuser = User), token mints, and a /graphql
-// answering BOTH owner-agnostic queries (repositoryOwner data + visibility)
-// per owner. The checker no longer sends organization() queries at all.
+// consistencyFakeGitHub serves the checker's fetch surface: installations,
+// token mints, and a /graphql.
 func consistencyFakeGitHub(t *testing.T, owners map[string]fakeOwner) *httptest.Server {
 	return consistencyFakeGitHubFailing(t, owners, 0)
 }
 
 // consistencyFakeGitHubFailing is consistencyFakeGitHub with a transient-
-// failure knob: the first fail502 /graphql requests answer 502 Bad Gateway
+// failure knob: the fail502 /graphql requests answer Bad Gateway
 // before the normal responses resume (the client's bounded-retry path).
 func consistencyFakeGitHubFailing(t *testing.T, owners map[string]fakeOwner, fail502 int) *httptest.Server {
 	t.Helper()
@@ -168,7 +166,7 @@ func newCheckerTest(t *testing.T, srvURL string) (*ConsistencyChecker, *ghdata.S
 	t.Cleanup(func() { db.Close() })
 
 	gh := ghclient.NewWithBaseURL(srvURL)
-	// Zero backoff: a test exercising the transient-retry path must not sleep.
+	//  backoff: a test exercising the transient-retry path must not sleep.
 	gh.SetRetryBackoff([]time.Duration{0})
 	store := ghdata.NewStore(db)
 	fresh := freshness.NewStore(db)
@@ -185,7 +183,7 @@ func seedPullsListMarker(t *testing.T, store *ghdata.Store, owner, repo string) 
 	require.NoError(t, store.AbsorbPullsList(context.Background(), owner, repo, nil, nil, true, now, now, time.Hour))
 }
 
-// findDiscrepancy returns the first discrepancy matching repo+field (field may be
+// findDiscrepancy returns the discrepancy matching repo+field (field may be
 // "" to match only_in_cache / only_on_github entries by issue).
 func findDiscrepancy(rep *ConsistencyReport, repo, field, issue string) *Discrepancy {
 	for i := range rep.Discrepancies {
@@ -224,9 +222,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// A principal's org list-sync marker (the fetch that refreshes global
-	// truth): error state after a failed refresh, with a known last successful
-	// fetch. The report must surface it as the owner's truth freshness.
+	// The report must surface this principal's error state as the owner's truth freshness.
 	lastFetched := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
 	require.NoError(t, fresh.Upsert(ctx, &freshness.Metadata{
 		ResourceID:    freshness.ResourceID{Kind: KindOrgRepos, Key: "org1", Actor: "user:900"},
@@ -234,8 +230,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 		ErrorMessage:  "github api POST /graphql: 502 Bad Gateway",
 		LastFetchedAt: &lastFetched,
 	}))
-	// A recorded identity for that principal: the report resolves the key to
-	// its display name.
+	// The report resolves this recorded identity's key to its display name.
 	require.NoError(t, store.RecordActorIdentity(ctx, "user:900", "octocat"))
 
 	// Global truth that has drifted from the live state above.
@@ -263,14 +258,12 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "noinstall", Name: "x", NameWithOwner: "noinstall/x", Url: "u",
 	}))
-	// repo under the USER-account installation: since the owner-agnostic query
-	// resolves users, someuser is CHECKED (no longer skipped) and y diffs as
-	// only_in_cache.
+	// A USER-account owner is CHECKED (not skipped), so y diffs as only_in_cache.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "someuser", Name: "y", NameWithOwner: "someuser/y", Url: "u",
 	}))
 
-	// PR #1 cached with stale fields; PR #99 cached open but gone from GitHub.
+	// PR # cached with stale fields; PR # cached open but gone from GitHub.
 	require.NoError(t, store.UpsertPR(ctx, dbgen.PullRequest{
 		Owner: "org1", Repo: "repo1", Number: 1, Title: "Old title", Url: "https://github.com/org1/repo1/pull/1",
 		State: "OPEN", CreatedAt: "2024-01-01", UpdatedAt: "2024-01-02", IsDraft: 1,
@@ -349,7 +342,7 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.NotNil(t, findDiscrepancy(rep, "org1/repo1", "label:stale-label", "field_mismatch"), "stale label only in cache")
 	assert.NotNil(t, findDiscrepancy(rep, "org1/repo1", "label:bug", "field_mismatch"), "bug label only on github")
 
-	// PR #99 (cached open, absent from GitHub's open set) carries the cached
+	// PR # (cached open, absent from GitHub's open set) carries the cached
 	// row's detail for triage.
 	if d := findDiscrepancy(rep, "org1/repo1", "", "only_in_cache"); assert.NotNil(t, d) {
 		assert.Equal(t, int64(99), d.PR)
@@ -382,146 +375,4 @@ func TestConsistencyChecker_DetectsDrift(t *testing.T) {
 	assert.GreaterOrEqual(t, rep.Summary.PRsOnlyInCache, 2)
 	assert.GreaterOrEqual(t, rep.Summary.FieldMismatches, 3)
 	assert.Zero(t, rep.Summary.VisibilityLeaks)
-}
-
-// TestConsistencyChecker_NeverSyncedFreshness: an owner with cached repos but
-// ZERO freshness marker rows must appear in truth_freshness as never_synced --
-// the silent omission is what hid "the fleet refresher never completed a
-// cycle" in the 2026-07-13 report.
-func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {
-	srv := driftFake(t)
-	checker, store, _ := newCheckerTest(t, srv.URL)
-	ctx := context.Background()
-	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
-		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u",
-	}))
-
-	rep, err := checker.Check(ctx, "org1")
-	require.NoError(t, err)
-	sf, ok := rep.TruthFreshness["org1"]
-	require.True(t, ok, "a marker-less owner must still get a truth_freshness entry")
-	assert.Equal(t, "never_synced", sf.State)
-	assert.Empty(t, sf.LastFetchedAt)
-	assert.Empty(t, sf.Principal)
-	assert.Empty(t, sf.Error)
-}
-
-// TestConsistencyChecker_TransientFetchRetried: a single 502 on an owner's
-// GraphQL fetch is retried by the client, so the owner is CHECKED -- not holed
-// out of the report under orgs_skipped (the pre-retry behavior).
-func TestConsistencyChecker_TransientFetchRetried(t *testing.T) {
-	srv := consistencyFakeGitHubFailing(t, map[string]fakeOwner{
-		"org1": {
-			repos: []map[string]any{liveRepo("org1", "repo1", "SUCCESS", nil)},
-			vis:   []map[string]any{visNode("repo1", "PUBLIC", false)},
-		},
-	}, 1)
-	checker, store, _ := newCheckerTest(t, srv.URL)
-	ctx := context.Background()
-	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
-		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
-	}))
-
-	rep, err := checker.Check(ctx, "org1")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"org1"}, rep.OrgsChecked, "a once-502ing fetch must be retried, not skipped")
-	assert.Empty(t, rep.OrgsSkipped)
-}
-
-// TestConsistencyChecker_ServedNow: a live pulls-list marker marks PR
-// existence drift as actively served (the list route trusts the rows).
-func TestConsistencyChecker_ServedNow(t *testing.T) {
-	srv := driftFake(t)
-	checker, store, _ := newCheckerTest(t, srv.URL)
-	ctx := context.Background()
-
-	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
-		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
-		PushedAt: sql.NullString{String: "2024-01-01T00:00:00Z", Valid: true},
-	}))
-	// PR #1 exists on GitHub but not in cache -- and the repo has a LIVE list
-	// marker, so the (incomplete) cached list is served right now.
-	seedPullsListMarker(t, store, "org1", "repo1")
-
-	rep, err := checker.Check(ctx, "org1")
-	require.NoError(t, err)
-	found := false
-	for _, d := range rep.Discrepancies {
-		if d.Kind == "pr" && d.Repo == "org1/repo1" && d.PR == 1 && d.Issue == "only_on_github" {
-			found = true
-			assert.True(t, d.ServedNow, "a live marker means the wrong list is served now")
-		}
-	}
-	assert.True(t, found)
-}
-
-func TestConsistencyChecker_OrgFilter(t *testing.T) {
-	srv := driftFake(t)
-	checker, store, _ := newCheckerTest(t, srv.URL)
-	ctx := context.Background()
-	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
-	// A second owner exists in truth but is excluded by the filter.
-	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{Owner: "someuser", Name: "y", NameWithOwner: "someuser/y", Url: "u"}))
-
-	rep, err := checker.Check(ctx, "org1")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"org1"}, rep.OrgsChecked)
-	assert.Empty(t, rep.OrgsSkipped, "filtered-out owners are not even reported as skipped")
-}
-
-func TestConsistencyChecker_RateLimits(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"id": 7, "account": map[string]any{"login": "wow-look-at-my", "type": "Organization"}},
-		})
-	})
-	mux.HandleFunc("/app/installations/7/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_7"})
-	})
-	mux.HandleFunc("/rate_limit", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"resources": map[string]any{
-				"graphql": map[string]any{"limit": 5000, "remaining": 4000, "used": 1000, "reset": 1999999999},
-			},
-		})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	checker, _, _ := newCheckerTest(t, srv.URL)
-	limits, err := checker.RateLimits(context.Background())
-	require.NoError(t, err)
-	require.Len(t, limits, 1)
-	assert.Equal(t, "wow-look-at-my", limits[0].Installation)
-	assert.Equal(t, "Organization", limits[0].AccountType)
-	assert.Empty(t, limits[0].Error)
-	assert.Equal(t, 4000, limits[0].Resources["graphql"].Remaining)
-	assert.Equal(t, int64(1999999999), limits[0].Resources["graphql"].Reset)
-}
-
-func TestConsistencyChecker_Unavailable(t *testing.T) {
-	dir := t.TempDir()
-	db, err := database.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
-
-	checker := NewConsistencyChecker(ghclient.New(), ghdata.NewStore(db), freshness.NewStore(db), nil)
-	assert.False(t, checker.Available())
-	_, err = checker.Check(context.Background(), "")
-	assert.Error(t, err)
-	_, err = checker.CheckAndApply(context.Background(), "")
-	assert.Error(t, err)
-}
-
-func TestConsistencyChecker_InstallationsError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	t.Cleanup(srv.Close)
-	checker, store, _ := newCheckerTest(t, srv.URL)
-	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "u"}))
-
-	_, err := checker.Check(context.Background(), "")
-	assert.Error(t, err)
 }

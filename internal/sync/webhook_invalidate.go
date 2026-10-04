@@ -4,60 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// invalidateResponseCaches drops trimmed-response-cache rows a webhook makes
-// stale. Round 2 made the grain PER-REF where a payload names the moved refs
-// -- and a per-ref flush covers every SPELLING GitHub accepts for the ref
-// (refSpellings: the bare name plus heads/<name> and refs/heads/<name>, or
-// the tags forms), because the caches key rows by the verbatim requested
-// spelling:
-//
-//   - push: the pushed ref's contents/commits-list/compare/commit-CI rows
-//     flush by ref (see invalidateForPush for the exact grain decisions,
-//     incl. the empty-ref default-branch spelling); PR-files, branches-list,
-//     and pull-diff-406 rows stay repo-wide (no per-ref signal); a payload
-//     without a usable ref keeps the old conservative whole-repo flush.
-//   - status/check_run/check_suite: the payload's head branch(es) + sha name
-//     exactly which verbatim-ref commit-CI snapshots moved, and the sha names
-//     the workflow-runs pages; an unparseable payload falls back repo-wide
-//     for both, as does a (today impossible) parsed payload with no sha for
-//     the workflow-runs pages.
-//   - workflow_job: the job's head_sha flushes that sha's workflow-runs
-//     pages (repo-wide when absent). This runs for EVERY delivery -- before
-//     the disposition logic -- so queued/waiting jobs, which onWorkflowJob
-//     drops as ignored, still flush (a queued job is a run the cached
-//     listing may not have shown yet).
-//   - workflow_run: the run's head_sha flushes that sha's workflow-runs
-//     pages (repo-wide when absent). The ONLY signal for a startup_failure
-//     run, which creates no jobs, check runs, or statuses -- without it a
-//     runs page cached just before the failure serves stale for the full
-//     TTL. The truth side has no workflow_run handler, so the delivery still
-//     records as ignored (invalidation precedes disposition, the queued
-//     workflow_job precedent).
-//   - pull_request/pull_request_review: that one PR's files pages, closed-PR
-//     doc, and pull-diff-406 verdict (head pushed/synchronize -- including
-//     fork heads whose pushes we never see -- base retargets, reopens).
-//     Closed docs are deliberately NOT push-flushed -- a push cannot mutate
-//     a closed PR, so only pull_request (per PR) and repository (whole repo)
-//     events reach them.
-//   - repository (rename/delete/visibility): EVERYTHING repo-wide, incl. the
-//     "open-PR list complete" marker (pull_request events deliberately do
-//     NOT touch it -- they maintain the PR rows, which is what the marker
-//     asserts), the workflow-runs pages, the pull-diff-406 verdicts, and the
-//     git-commit 404 miss markers.
-//   - installation events: the installation's cached token mints AND cached
-//     repo-installation answers (a suspended/deleted/re-scoped installation
-//     must not keep serving either).
-//
-// Git-commit rows are immutable and are deliberately never invalidated; the
-// git-commit 404 MISS markers are instead cleared by the absorb path itself
-// (every real commit upsert un-misses its sha -- ghdata.upsertGitCommit).
-// Everything here is best-effort and disposition-neutral: a failed flush is
-// logged (flush), never fails the dispatch.
+// invalidateResponseCaches drops trimmed-response-cache rows a webhook makes stale, at the finest per-ref/per-kind grain the payload supports. Best-effort and disposition-neutral: a failed flush is logged, never fails the dispatch.
+// see docs/webhooks/response-cache-invalidation.md and docs/webhooks/invalidations.md
 func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event webhook.Event) {
 	switch event.Type {
 	case "push":
@@ -73,6 +30,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		}
 		scope := owner + "/" + repo
 		flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
+		flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
+		flush("owner repos cache", scope, d.store.InvalidateOwnerReposCache(ctx, owner))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
@@ -81,8 +41,24 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pulls list markers", scope, d.store.InvalidatePullsListMarkers(ctx, owner, repo))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullCache(ctx, owner, repo))
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
+		flush("workflow runs truth", scope, d.store.InvalidateWorkflowRunsTruth(ctx, owner, repo))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
+		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
+		flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
+		flush("code quality setup cache", scope, d.store.InvalidateCodeQualitySetup(ctx, owner, repo))
+		flush("label cache", scope, d.store.InvalidateLabelCache(ctx, owner, repo))
+		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
+		flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
+		flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
+	case "label":
+		// Every action, repo-wide (a rename can carry names in delivery); runs before the disposition logic.
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return
+		}
+		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -92,19 +68,16 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull files cache", scope, d.store.InvalidatePullFilesForPR(ctx, owner, repo, event.PRNumber))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
+		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
+		if event.Type == "pull_request" {
+			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
+		}
 	case "status", "check_run", "check_suite":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
 			return
 		}
 		scope := owner + "/" + repo
-		// The payload names the exact refs whose CI answers moved: the head
-		// branch(es) -- expanded to every spelling GitHub accepts for a
-		// branch, since commit_ci_cache keys the verbatim requested ref --
-		// plus the sha itself. The sha flush stays single-spelling: an
-		// abbreviated-sha-keyed row (which this exact-match flush would miss)
-		// is bounded by the 24h TTL, and the surveyed consumers all send
-		// full hex.
 		var refs []string
 		sha := ""
 		if payload, err := webhook.ParseCheckPayload(event.Type, event.Raw); err == nil {
@@ -116,51 +89,50 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			refs = dedupNonEmpty(append(refs, sha))
 		}
 		if len(refs) == 0 {
-			// Unparseable payload (or one naming no refs): no per-ref signal,
-			// so both CI-derived caches keep the conservative repo-wide flush.
+			// Unparseable payload (or naming no refs): no per-ref signal, so every CI-derived cache keeps the repo-wide flush.
 			flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
 			flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
+			flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
 			return
 		}
-		for _, ref := range refs {
-			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
-		}
-		// A new or finished check implies the sha's workflow-runs listing may
-		// have changed too (runs are listed per head_sha) -- only that sha's
-		// pages, never the branch names (workflow_runs_cache keys shas only).
-		// ParseCheckPayload requires a sha today, so this cannot be empty
-		// here; if that ever relaxes, the helper widens repo-wide rather than
-		// exact-matching nothing.
+		d.settleCommitCI(ctx, scope, owner, repo, event, refs)
+		// A new or finished check may also move the sha's workflow-runs listing (runs are listed per head_sha), never by branch name.
 		d.flushWorkflowRunsForSHA(ctx, scope, owner, repo, sha)
+		// A CI result also moves the PR's mergeable_state -- the only merge field a check event touches, since no tip moved.
+		flush("PR mergeable_state", scope, d.store.NullPRMergeableStateByHeadSHA(ctx, owner, repo, sha))
 	case "workflow_job":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
 			return
 		}
-		// Runs for EVERY workflow_job delivery, including the queued/waiting
-		// actions onWorkflowJob drops as ignored: invalidateResponseCaches is
-		// called before the disposition logic, and a queued job is exactly a
-		// run the cached listing may not have shown yet.
-		headSHA := ""
+		headSHA, runID := "", int64(0)
 		if payload, err := webhook.ParseWorkflowJobPayload(event.Raw); err == nil {
-			headSHA = payload.HeadSHA
+			headSHA, runID = payload.HeadSHA, payload.RunID
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
+		// A job's state moved, and the delivery STATES it: the run's cached job answers are rewritten, flushed only where they cannot be.
+		d.settleWorkflowJobs(ctx, owner+"/"+repo, owner, repo, event, runID)
 	case "workflow_run":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" {
 			return
 		}
-		// A workflow_run delivery is the ONLY signal for a run that creates
-		// no jobs, check runs, or statuses -- a startup_failure (broken
-		// workflow YAML) -- so without this flush a runs page cached just
-		// before the failure serves stale for the full TTL. Like the
-		// queued/waiting workflow_job deliveries above, invalidation runs
-		// BEFORE the disposition logic: the truth side has no workflow_run
-		// handler, so the delivery still records as ignored.
-		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo,
-			webhook.ParseWorkflowRunHeadSHA(event.Raw))
+		headSHA, runID := webhook.ParseWorkflowRunIdentity(event.Raw)
+		d.settleWorkflowRuns(ctx, owner+"/"+repo, owner, repo, event, headSHA)
+		d.flushWorkflowJobsForRun(ctx, owner+"/"+repo, owner, repo, runID)
+		d.dropCheckRunPagesBehindCompletedRun(ctx, owner+"/"+repo, owner, repo, event)
 	case "installation", "installation_repositories":
+		// The app-installations LISTING is stored VERBATIM per page, so a changed installation is flushed by its app_id, not spliced in.
+		if appID := webhook.ParseInstallationAppID(event.Raw); appID != "" {
+			appKey := "app:" + appID
+			if err := d.store.InvalidateAppInstallationsForApp(ctx, appKey); err != nil {
+				slog.Warn("webhook: invalidate app installations cache failed", "app", appKey, "error", err)
+			}
+		}
+		// "Not installed here" verdicts carry no installation id, so this delivery -- exactly the news coverage changed -- sweeps them all.
+		flush("absent installation verdicts", "all apps", d.store.InvalidateAbsentRepoInstallations(ctx))
+		// installation-repositories listings key a CREDENTIAL, with no installation id to match on either.
+		flush("installation repos cache", "all credentials", d.store.InvalidateInstallationRepos(ctx))
 		if event.InstallationID == 0 {
 			return
 		}
@@ -175,14 +147,14 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 }
 
 // invalidateForPush flushes the response caches a push makes stale, at the
-// finest grain the payload supports: a push moves exactly ONE ref, so tables
+// finest grain the payload supports: a push moves exactly ref, so tables
 // keyed by a requested ref flush per-ref when the payload names it and
 // repo-wide only when it does not.
 func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook.Event, owner, repo string) {
 	scope := owner + "/" + repo
-	refName, defaultBranch, isTag := "", "", false
+	refName, defaultBranch, after, isTag := "", "", "", false
 	if payload, err := webhook.ParsePushPayload(event.Raw); err == nil {
-		refName, defaultBranch = payload.RefName, payload.DefaultBranch
+		refName, defaultBranch, after = payload.RefName, payload.DefaultBranch, payload.After
 		isTag = strings.HasPrefix(payload.Ref, "refs/tags/")
 	}
 	// (onPush re-parses the payload for the apply side; the parse is a few
@@ -191,29 +163,25 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 
 	switch {
 	case refName == "":
-		// Unparseable payload, or a ref that is neither a branch nor a tag:
-		// no per-ref signal, so keep the pre-round-2 conservative behavior --
-		// every ref-relative cache flushes repo-wide.
+		// Unparseable payload, or a ref that is neither a branch nor a tag: no per-ref signal, so every ref-relative cache flushes repo-wide.
 		flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
+		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 	default:
-		// Every per-ref flush below covers the pushed ref in each spelling
-		// GitHub accepts for it (bare / heads/... / refs/heads/..., or the
-		// tags forms) -- the caches key rows by the verbatim requested
-		// spelling, so a bare-name-only flush would leave the qualified
-		// spellings serving stale.
+		// Every per-ref flush below covers the pushed ref in each spelling GitHub accepts for it, since caches key rows verbatim.
 		spellings := refSpellings(refName, isTag)
-		// contents and commits-list rows key the REQUESTED ref, where the
-		// empty ref means "the default branch" -- so a default-branch push
-		// also moves the empty-ref rows and flushes that spelling too. When
-		// the payload does not say which branch is the default, be
-		// conservative for exactly these two empty-ref-keyed tables
-		// (repo-wide) rather than guess; the tables with no empty-ref key
-		// stay per-ref below.
+		// contents and commits-list rows key the REQUESTED ref, where the empty ref
+		// means "the default branch" -- so a default-branch push also moves the
+		// empty-ref rows and flushes that spelling too. When the payload does not
+		// say which branch is the default, be conservative for exactly these
+		// empty-ref-keyed tables (repo-wide) rather than guess; the tables with no
+		// empty-ref key stay per-ref below.
 		if defaultBranch == "" {
 			flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
+			flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 			flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		} else {
 			refs := spellings
@@ -222,48 +190,47 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			}
 			for _, ref := range refs {
 				flush("contents cache", scope, d.store.InvalidateContentsForRef(ctx, owner, repo, ref))
+				// readme rows key the requested ref as contents rows do, so they share the grain.
+				flush("readme cache", scope, d.store.InvalidateReadmeForRef(ctx, owner, repo, ref))
 				flush("commits list cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, ref))
 			}
 		}
 		for _, ref := range spellings {
-			// compare rows never key an empty side (the route guard requires
-			// both sides non-empty), so the pushed ref's spellings are the
-			// only ones to flush -- one call per spelling matches it on
-			// either side.
+			// compare rows never key an empty side, so the pushed ref's spellings are the only ones to flush, call per spelling.
 			flush("compare cache", scope, d.store.InvalidateCompareForRef(ctx, owner, repo, ref))
-			// commit-CI rows key the VERBATIM requested ref and have no
-			// empty-ref spelling either; the pushed ref's spellings are the
-			// only row families the push moves (a sha-form row describes an
-			// immutable commit, and the push's brand-new shas have no rows
-			// yet).
+			// commit-CI rows key the VERBATIM requested ref with no empty-ref spelling either; the pushed ref's spellings are the only ones moved.
 			flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, ref))
+			applied, err := d.store.ApplyPushedRefTip(ctx, owner, repo, ref, after, time.Now(), ghdata.GitRefCacheTTL)
+			if err != nil {
+				flush("git ref tip apply", scope, err)
+			}
+			if !applied {
+				flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, ref))
+			}
 		}
 	}
 
-	// No per-ref grain for the rest, parseable or not: PR-files pages (a
-	// base push moves merge-base-relative file lists with no per-PR signal
-	// -- the belt for missed pull_request deliveries), branches listings
-	// (any push edits the listing: create, delete, tip-move), and
-	// pull-diff-406 verdicts (a base push can move a PR's three-dot diff
-	// across the 406 size boundary in either direction).
+	// A push names changed FILES, and a file maps to a workflow id only through the answer this caches, so repo-wide is the finest grain there is.
+	flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
+
+	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
+	// matching_refs_cache has no narrower per-ref target than the branches listing does, so it rides the same repo-wide flush.
+	flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
+
+	// No per-ref grain for the rest, parseable or not: PR-files pages and pull-diff- verdicts both stay repo-wide.
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
-	flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
+	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
-// flush logs one best-effort cache invalidation's failure; it never fails
-// the dispatch (the invalidation pass is disposition-neutral bookkeeping).
 func flush(what, scope string, err error) {
 	if err != nil {
 		slog.Warn("webhook: invalidate "+what+" failed", "scope", scope, "error", err)
 	}
 }
 
-// flushWorkflowRunsForSHA drops one sha's cached workflow-runs pages,
-// widening to the repo-wide flush when the sha is empty: workflow_runs_cache
-// keys full-hex shas, so an empty sha would exact-match nothing (a silent
-// no-op) while the triggering payload still said SOME run in the repo
-// changed.
+// flushWorkflowRunsForSHA drops sha's cached workflow-runs pages, widening to the repo-wide flush when the sha is empty.
+// see docs/webhooks/response-cache-invalidation.md
 func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, owner, repo, sha string) {
 	if sha == "" {
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
@@ -272,13 +239,40 @@ func (d *WebhookDispatcher) flushWorkflowRunsForSHA(ctx context.Context, scope, 
 	flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsForHeadSHA(ctx, owner, repo, sha))
 }
 
-// refSpellings returns every ref spelling GitHub accepts for a short branch
-// or tag name on the ref-parameterized cached routes -- the CI routes' {ref}
-// segment, contents ?ref=, commits ?sha=, and compare basehead sides all
-// take the bare name, the heads/<name> (tags/<name>) form, and the fully
-// qualified refs/heads/<name> (refs/tags/<name>) form. The response caches
-// key rows by the VERBATIM requested spelling, so a per-ref flush must cover
-// all three or the alternate spellings serve stale for the full TTL.
+func pullCommitsRefKey(number int64) string {
+	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
+}
+
+// flushWorkflowJobsForRun drops run's cached job answers -- its jobs
+// pages AND the single-job rows under it -- widening to the repo-wide flush
+// when the payload named no run: an id of would exact-match nothing (a
+// silent no-op) while the delivery still said SOME run's jobs moved.
+func (d *WebhookDispatcher) flushWorkflowJobsForRun(ctx context.Context, scope, owner, repo string, runID int64) {
+	if runID <= 0 {
+		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
+		return
+	}
+	flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsForRun(ctx, owner, repo, runID))
+}
+
+// dropCheckRunPagesBehindCompletedRun drops the check-runs pages a completed
+// run proves stale. A page that lost a job's check_run delivery otherwise
+// serves that job as unfinished for the whole TTL.
+// see docs/webhooks/invalidations.md ("The check-run rewrite")
+func (d *WebhookDispatcher) dropCheckRunPagesBehindCompletedRun(ctx context.Context, scope, owner, repo string, event webhook.Event) {
+	run, err := webhook.ParseWorkflowRunPayload(event.Raw)
+	if err != nil || run.Status != "completed" {
+		return
+	}
+	dropped, err := d.store.DropCheckRunPagesContradictedByRun(ctx, owner, repo, run.HeadSHA, run.RunID)
+	flush("check-runs pages behind a completed run", scope, err)
+	if dropped > 0 {
+		slog.Warn("webhook: completed run contradicted cached check-runs pages; a check_run delivery was lost",
+			"scope", scope, "sha", run.HeadSHA, "run", run.RunID, "pages", dropped)
+	}
+}
+
+// refSpellings returns every ref spelling GitHub accepts for a short branch or tag name; a per-ref flush must cover all.
 func refSpellings(shortName string, isTag bool) []string {
 	if shortName == "" {
 		return nil
@@ -290,18 +284,14 @@ func refSpellings(shortName string, isTag bool) []string {
 }
 
 // dedupNonEmpty returns vals with empty strings dropped and duplicates
-// removed, first occurrence order preserved.
+// removed, occurrence order preserved.
 func dedupNonEmpty(vals []string) []string {
-	seen := make(map[string]struct{}, len(vals))
+	seen := set.New[string](len(vals))
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if v == "" {
+		if v == "" || !seen.Add(v) {
 			continue
 		}
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
 		out = append(out, v)
 	}
 	return out

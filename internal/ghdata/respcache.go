@@ -1,46 +1,41 @@
 package ghdata
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// This file is the storage layer for the cached REST routes (repo contents,
-// git commits, installation-token mints, repo installations). It stores the
-// STATE a GitHub response contained -- never the raw response bytes -- and the
-// API layer rebuilds a trimmed response from it (internal/api/respcache.go).
-// contents/git-commits rows are GLOBAL truth (who may read one is the reveal
-// layer's job); the installation-token and repo-installation caches stay keyed
-// by the verified app identity because their answers are app-specific.
+// Storage layer for the cached REST routes. Stores the STATE a GitHub
 
-// CacheMaxRows bounds each cached-route table: after every write the least
-// recently used rows beyond this cap are pruned (along with expired rows).
-// cmd/server sets it from the CACHE_MAX_ROWS env var at startup (default
-// 1,000,000); tests lower it directly. It is deliberately ONE knob for every
-// table: all but git_commits_cache are TTL-bounded (~24h backstop or token
-// expiry), so for them the cap is only a runaway safety net -- while
-// git_commits_cache (immutable rows, no TTL) is the one table that actually
-// grows to the ceiling, evicting its oldest-accessed row on every absorb once
-// pinned there (and degrading any commits-list snapshot naming the evicted
-// sha into a miss).
+// CacheMaxRows is the per-table row ceiling (see CACHE_MAX_ROWS in CLAUDE.md); only git_commits_cache grows to it.
 var CacheMaxRows int64 = 1_000_000
 
-// rfc3339 formats a time in the fixed-width UTC RFC3339 form used across the
-// schema. Fixed width means lexicographic comparison in SQL (the expired-row
-// prunes) matches chronological order.
+// rfc3339 is fixed-width so lexicographic SQL comparison matches chronological order.
 func rfc3339(t time.Time) string {
 	return t.UTC().Truncate(time.Second).Format(time.RFC3339)
 }
 
-// NormalizeRepoKey lowercases an owner or repo name for cache keying. GitHub
-// treats owners/repos case-insensitively in URLs, and webhook payloads carry
-// the canonical casing, so both sides must fold to one key or invalidation
-// could miss rows written under a differently-cased request URL.
+// MarshalCacheDoc renders a stored document; a hit and a miss must produce identical bytes for the same value.
+func MarshalCacheDoc(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// Off because GitHub does not escape; a branch named "a&b" must round-trip.
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// NormalizeRepoKey folds owner/repo casing so a webhook's canonical casing and a request URL's casing key the same row.
 func NormalizeRepoKey(s string) string { return strings.ToLower(s) }
 
 // ---- Contents (GET /repos/{owner}/{repo}/contents/{path}) ----
@@ -49,10 +44,10 @@ func NormalizeRepoKey(s string) string { return strings.ToLower(s) }
 const (
 	ContentsKindFile    = "file"
 	ContentsKindDir     = "dir"
-	ContentsKindMissing = "missing" // a cached 404
+	ContentsKindMissing = "missing" // a cached
 )
 
-// CachedContents is the absorbed state of one contents response.
+// CachedContents is the absorbed state of contents response.
 type CachedContents struct {
 	Owner    string // lowercased
 	Repo     string // lowercased
@@ -65,15 +60,15 @@ type CachedContents struct {
 	Encoding string
 	Content  string // base64 exactly as GitHub sent it (incl. line breaks)
 	Entries  string // dir listings: JSON array of trimmed entries
-	Message  string // missing: GitHub's 404 message
+	Message  string // missing: GitHub's message
 }
 
-// GetCachedContents returns the cached contents state, or (zero, false) on a
+// GetCachedContents returns the cached contents state, or (, false) on a
 // miss. An expired row is a miss (deleted lazily by the next write's prune). A
 // hit refreshes the row's LRU timestamp. Callers must have passed the reveal
 // check before serving this.
 func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref string, now time.Time) (CachedContents, bool, error) {
-	row, err := s.q.GetContentsCache(ctx, dbgen.GetContentsCacheParams{
+	row, err := s.qx(ctx).GetContentsCache(ctx, dbgen.GetContentsCacheParams{
 		Owner: owner, Repo: repo, Path: path, Ref: ref,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -86,7 +81,7 @@ func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref st
 		return CachedContents{}, false, nil
 	}
 	// Best-effort LRU touch; a failure must not fail the read.
-	_ = s.q.TouchContentsCache(ctx, dbgen.TouchContentsCacheParams{
+	_ = s.qx(ctx).TouchContentsCache(ctx, dbgen.TouchContentsCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, Path: path, Ref: ref,
 	})
 	return CachedContents{
@@ -99,7 +94,7 @@ func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref st
 // PutCachedContents stores absorbed contents state with the given TTL, then
 // prunes expired + over-cap rows.
 func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertContentsCache(ctx, dbgen.UpsertContentsCacheParams{
+	if err := s.qx(ctx).UpsertContentsCache(ctx, dbgen.UpsertContentsCacheParams{
 		Owner: c.Owner, Repo: c.Repo, Path: c.Path, Ref: c.Ref,
 		Kind: c.Kind, Name: c.Name, Sha: c.SHA, Size: c.Size,
 		Encoding: c.Encoding, Content: c.Content, Entries: c.Entries, Message: c.Message,
@@ -107,38 +102,31 @@ func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now tim
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredContentsCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredContentsCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneContentsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneContentsCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateContentsCache drops every cached contents row for a repo -- the
-// conservative whole-repo flush a repository webhook (or a push whose ref /
-// default branch is unknown) triggers. owner/repo are normalized here so
-// callers can pass payload casing.
+// InvalidateContentsCache is the conservative whole-repo flush a repository event (or an unknown-ref push) triggers.
 func (s *Store) InvalidateContentsCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
+	return s.qx(ctx).DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
-// InvalidateContentsForRef drops one requested ref spelling's contents rows
-// (ref "" = the default-branch rows) -- the per-ref push flush. A push only
-// moves the pushed ref's answers, so other refs' rows survive. owner/repo
-// are normalized here so callers can pass payload casing; ref is matched
-// verbatim, exactly as rows are keyed.
+// InvalidateContentsForRef is the per-ref push flush (ref "" = default branch); other refs' rows survive.
 func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref string) error {
-	return s.q.DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
+	return s.qx(ctx).DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }
 
 // ---- Git commits (GET /repos/{owner}/{repo}/git/commits/{sha}) ----
 
-// CachedGitCommit is the absorbed state of one git commit. Rows come from two
-// sources -- an upstream fetch, or a push webhook payload -- and both rebuild to
-// the same trimmed shape, so the struct is the single source of truth.
+// CachedGitCommit is the absorbed state of git commit. Rows come from sources
+// -- an upstream fetch, or a push webhook payload -- and both rebuild to the
+// same trimmed shape, so the struct is the source of truth.
 type CachedGitCommit struct {
 	Owner          string // lowercased
 	Repo           string // lowercased
@@ -154,10 +142,10 @@ type CachedGitCommit struct {
 	Parents        []string
 }
 
-// GetCachedGitCommit returns the cached commit, or (zero, false) on a miss.
+// GetCachedGitCommit returns the cached commit, or (, false) on a miss.
 // Commits are immutable: no TTL check. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string, now time.Time) (CachedGitCommit, bool, error) {
-	row, err := s.q.GetGitCommitCache(ctx, dbgen.GetGitCommitCacheParams{
+	row, err := s.qx(ctx).GetGitCommitCache(ctx, dbgen.GetGitCommitCacheParams{
 		Owner: owner, Repo: repo, Sha: sha,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -166,7 +154,7 @@ func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string,
 	if err != nil {
 		return CachedGitCommit{}, false, err
 	}
-	_ = s.q.TouchGitCommitCache(ctx, dbgen.TouchGitCommitCacheParams{
+	_ = s.qx(ctx).TouchGitCommitCache(ctx, dbgen.TouchGitCommitCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, Sha: sha,
 	})
 	return CachedGitCommit{
@@ -177,26 +165,26 @@ func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string,
 	}, true, nil
 }
 
-// PutCachedGitCommit stores one commit, then prunes.
+// PutCachedGitCommit stores commit, then prunes.
 func (s *Store) PutCachedGitCommit(ctx context.Context, c CachedGitCommit, now time.Time) error {
-	if err := s.upsertGitCommit(ctx, s.q, c, now); err != nil {
+	if err := s.upsertGitCommit(ctx, s.qx(ctx), c, now); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
-// UpsertGitCommits absorbs push-payload commits into global truth in one
-// transaction -- the webhook dispatcher's write path. Prunes once afterwards.
+// UpsertGitCommits absorbs push-payload commits into global truth in
+// transaction -- the webhook dispatcher's write path. Prunes afterwards.
 func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit, now time.Time) error {
 	if len(commits) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	for _, c := range commits {
 		if err := s.upsertGitCommit(ctx, q, c, now); err != nil {
 			return err
@@ -205,7 +193,7 @@ func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit,
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
 func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedGitCommit, now time.Time) error {
@@ -218,23 +206,13 @@ func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedG
 	}); err != nil {
 		return err
 	}
-	// INVARIANT: upserting a REAL commit must clear any git_commit_miss_cache
-	// marker for its sha, so a sha that was probed before it existed stops
-	// answering 404 the moment the commit materializes. EVERY absorb path --
-	// the single-commit fetch (PutCachedGitCommit), the push-payload absorb
-	// (UpsertGitCommits), and the commits-list/compare absorbs -- funnels
-	// through THIS function, so a new absorber can never skip the un-miss.
-	// The clear runs on q (the caller's transaction when there is one) so a
-	// rolled-back absorb never half-applies. Keys are re-normalized
-	// defensively; callers already pass lowercased owner/repo/sha.
+	// Every absorb path funnels through here so a real commit always clears its miss marker -- see docs/cache/rest-routes.md.
 	return q.DeleteGitCommitMiss(ctx, dbgen.DeleteGitCommitMissParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Sha: strings.ToLower(c.SHA),
 	})
 }
 
-// joinParents/splitParents encode a parent-sha list as the compact form stored
-// in the parents column. Shas are hex, so a comma join is unambiguous; stored
-// as "sha1,sha2" ('' = no parents).
+// joinParents encodes a parent-sha list as "sha1,sha2" ('' = no parents); hex shas make the comma join unambiguous.
 func joinParents(parents []string) string { return strings.Join(parents, ",") }
 
 func splitParents(s string) []string {
@@ -246,7 +224,7 @@ func splitParents(s string) []string {
 
 // ---- Installation tokens (POST /app/installations/{id}/access_tokens) ----
 
-// CachedInstallToken is the absorbed state of one token-mint 201 response.
+// CachedInstallToken is the absorbed state of token-mint response.
 type CachedInstallToken struct {
 	InstallationID      string
 	BodyHash            string
@@ -257,9 +235,9 @@ type CachedInstallToken struct {
 }
 
 // GetCachedInstallToken returns the cached mint for the given app actor, or
-// (zero, false) on a miss. A row past its serve-until expiry is a miss.
+// (, false) on a miss. A row past its serve-until expiry is a miss.
 func (s *Store) GetCachedInstallToken(ctx context.Context, appActor, installationID, bodyHash string, now time.Time) (CachedInstallToken, bool, error) {
-	row, err := s.q.GetInstallTokenCache(ctx, dbgen.GetInstallTokenCacheParams{
+	row, err := s.qx(ctx).GetInstallTokenCache(ctx, dbgen.GetInstallTokenCacheParams{
 		Actor: appActor, InstallationID: installationID, BodyHash: bodyHash,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -281,7 +259,7 @@ func (s *Store) GetCachedInstallToken(ctx context.Context, appActor, installatio
 // PutCachedInstallToken stores a mint for the given app actor with the given
 // serve-until time, then prunes expired + over-cap rows.
 func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t CachedInstallToken, now, serveUntil time.Time) error {
-	if err := s.q.UpsertInstallTokenCache(ctx, dbgen.UpsertInstallTokenCacheParams{
+	if err := s.qx(ctx).UpsertInstallTokenCache(ctx, dbgen.UpsertInstallTokenCacheParams{
 		Actor: appActor, InstallationID: t.InstallationID, BodyHash: t.BodyHash,
 		Token: t.Token, TokenExpiresAt: t.TokenExpiresAt,
 		Permissions: t.Permissions, RepositorySelection: t.RepositorySelection,
@@ -289,30 +267,21 @@ func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t Ca
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredInstallTokenCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredInstallTokenCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneInstallTokenCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneInstallTokenCacheLRU(ctx, CacheMaxRows)
 }
 
-// InvalidateInstallTokenCache drops every cached mint for an installation --
-// an installation/installation_repositories webhook means the installation's
-// grants changed (or it was suspended/deleted), so cached tokens must not keep
-// serving. (The dispatcher also flushes the repo-installation answers via
-// InvalidateRepoInstallationCache.)
+// InvalidateInstallTokenCache drops every mint for an installation whose grants changed, per an installation event.
 func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID string) error {
-	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
+	return s.qx(ctx).DeleteInstallTokenCacheByInstallation(ctx, installationID)
 }
 
-// InvalidateInstallTokenByToken drops the cached mint that issued this exact
-// token -- the upstream-auth-failure invalidation. gsm only receives ITS OWN
-// App's installation webhooks, so a CONSUMER App's permission change never
-// reaches InvalidateInstallTokenCache; a 401/403 from GitHub on a call
-// carrying the minted token is the signal that mint's cached grants no
-// longer match, and dropping it makes the caller's next mint refetch.
+// InvalidateInstallTokenByToken reacts to a / on the minted token itself, since a consumer App's own permission change reaches no webhook here.
 func (s *Store) InvalidateInstallTokenByToken(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
-	return s.q.DeleteInstallTokenCacheByToken(ctx, token)
+	return s.qx(ctx).DeleteInstallTokenCacheByToken(ctx, token)
 }

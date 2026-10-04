@@ -12,9 +12,13 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// repoInstallationCacheTTL is the TTL backstop on cached
-// GET /repos/{o}/{r}/installation answers; installation events flush sooner.
-const repoInstallationCacheTTL = 24 * time.Hour
+const (
+	// repoInstallationCacheTTL backstops a cached installation ANSWER; events flush it sooner.
+	repoInstallationCacheTTL = 24 * time.Hour
+
+	// installationAbsentTTL is the PRIMARY bound for a "not installed" verdict:
+	installationAbsentTTL = 5 * time.Minute
+)
 
 // ---- GET /repos/{owner}/{repo}/installation ----
 
@@ -26,16 +30,16 @@ const repoInstallationCacheTTL = 24 * time.Hour
 func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request) {
 	jwt := bearerToken(r)
 	if jwt == "" {
-		h.ghProxy.ServeHTTP(w, r) // the proxy 401s tokenless requests
+		h.passthrough(w, r, PassIdentity) // the proxy 401s tokenless requests
 		return
 	}
 	ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
 	if err != nil {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassIdentity)
 		return
 	}
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, true))
 		return
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
@@ -43,9 +47,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}
-	// This route sits outside requireAuth, so its verified app identity would
-	// otherwise never reach actor_identities; record it here so the dashboard
-	// resolves app:<id> to the slug.
+	// Outside requireAuth, so record identity here for the dashboard's app:<id> -> slug lookup.
 	if h.recordIdentity != nil {
 		h.recordIdentity(ctx, actorKey, ident.Slug)
 	}
@@ -74,16 +76,24 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, repoInstallationCacheTTL); err != nil {
+	if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, installationTTL(c)); err != nil {
 		slog.Warn("repo installation cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
 	h.serveRepoInstallation(w, c, false)
 }
 
+// installationTTL: a real installation gets the long backstop; a verdict gets the short primary bound.
+func installationTTL(c ghdata.CachedRepoInstallation) time.Duration {
+	if c.Status == http.StatusNotFound {
+		return installationAbsentTTL
+	}
+	return repoInstallationCacheTTL
+}
+
 // repoInstallationJSON is the trimmed rebuild: GitHub's installation object
 // minus every *_url field and the untracked clutter (permissions, events,
-// timestamps). pr-minder reads only .id.
+// timestamps). pr-minder reads only.id.
 type repoInstallationJSON struct {
 	ID                  int64                  `json:"id"`
 	Account             repoInstallAccountJSON `json:"account"`
@@ -99,6 +109,15 @@ type repoInstallAccountJSON struct {
 }
 
 func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedRepoInstallation, hit bool) {
+	if c.Status == http.StatusNotFound {
+		body, err := marshalTrimmed(notFoundJSON{Message: c.Message, Status: "404"})
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeRebuilt(w, http.StatusNotFound, body, hit)
+		return
+	}
 	body, err := marshalTrimmed(repoInstallationJSON{
 		ID:                  c.InstallationID,
 		Account:             repoInstallAccountJSON{Login: c.AccountLogin, Type: c.AccountType},
@@ -114,10 +133,21 @@ func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedR
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// absorbRepoInstallation parses an upstream repo-installation response. Only
-// a well-formed 200 is absorbed; 404 ("app not installed on this repo") is
-// replayed unstored -- the app can be installed a moment later.
+// absorbRepoInstallation parses an upstream installation response into either
+// a well-formed or the authoritative VERDICT ("not installed here"). Anything
+// else -- a the JWT earned, a 5xx -- reports false and is replayed unstored.
+//
+// The verdict is cacheable on the contents/compare/git-ref precedent: it is
+// GitHub's own authoritative answer, and a fleet sweep re-asks it per account
+// forever (forwards in process, every a). What keeps it honest is its short
+// TTL, NOT a webhook -- see installationAbsentTTL.
 func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata.CachedRepoInstallation, bool) {
+	if status == http.StatusNotFound {
+		return ghdata.CachedRepoInstallation{
+			Owner: owner, Repo: repo,
+			Status: http.StatusNotFound, Message: upstreamErrorMessage(body),
+		}, true
+	}
 	if status != http.StatusOK {
 		return ghdata.CachedRepoInstallation{}, false
 	}
@@ -136,7 +166,7 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 		return ghdata.CachedRepoInstallation{}, false
 	}
 	c := ghdata.CachedRepoInstallation{
-		Owner: owner, Repo: repo, InstallationID: g.ID,
+		Owner: owner, Repo: repo, Status: http.StatusOK, InstallationID: g.ID,
 		RepositorySelection: g.RepositorySelection,
 		AppID:               g.AppID, AppSlug: g.AppSlug, TargetType: g.TargetType,
 	}
@@ -144,4 +174,71 @@ func absorbRepoInstallation(owner, repo string, status int, body []byte) (ghdata
 		c.AccountLogin, c.AccountType = g.Account.Login, g.Account.Type
 	}
 	return c, true
+}
+
+// ---- GET /orgs/{org}/installation and GET /users/{username}/installation ----
+
+// Owner-level installation lookups reuse the repo route's absorb/rebuild/row
+const (
+	ownerInstallScopeOrg  = "*org"
+	ownerInstallScopeUser = "*user"
+)
+
+// cachedOwnerInstallation serves an owner-level installation lookup. scope
+// picks which sentinel (and therefore which question) the row answers;
+// ownerParam names the chi URL parameter carrying the login.
+func (h *handlers) cachedOwnerInstallation(scope, ownerParam string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		jwt := bearerToken(r)
+		if jwt == "" {
+			h.passthrough(w, r, PassIdentity) // the proxy 401s tokenless requests
+			return
+		}
+		ident, err := h.gh.VerifyAppIdentity(r.Context(), jwt)
+		if err != nil {
+			h.passthrough(w, r, PassIdentity)
+			return
+		}
+		if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" {
+			h.passthrough(w, r, shapeReason(r, true))
+			return
+		}
+		actorKey := fmt.Sprintf("app:%d", ident.ID)
+		ctx := actor.WithActor(r.Context(), actorKey)
+		if ident.Slug != "" {
+			ctx = actor.WithName(ctx, ident.Slug)
+		}
+		if h.recordIdentity != nil {
+			h.recordIdentity(ctx, actorKey, ident.Slug)
+		}
+		who := callerIdent{Key: actorKey, Name: ident.Slug}
+		owner := ghdata.NormalizeRepoKey(chi.URLParam(r, ownerParam))
+
+		now := time.Now()
+		if c, ok, err := h.store.GetCachedRepoInstallation(ctx, actorKey, owner, scope, now); err == nil && ok {
+			h.reqlog.observeAs(r, who, DispHit, 0)
+			h.serveRepoInstallation(w, c, true)
+			return
+		} else if err != nil {
+			slog.Warn("owner installation cache read failed", "owner", owner, "scope", scope, "error", err)
+		}
+
+		resp, body, overflow, err := h.fetchUpstream(r, nil)
+		if err != nil {
+			h.upstreamError(w, r, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		c, absorbed := absorbRepoInstallation(owner, scope, resp.StatusCode, body)
+		if overflow || !absorbed {
+			h.replayUnstored(w, r, resp, body)
+			return
+		}
+		if err := h.store.PutCachedRepoInstallation(ctx, actorKey, c, now, installationTTL(c)); err != nil {
+			slog.Warn("owner installation cache write failed", "owner", owner, "scope", scope, "error", err)
+		}
+		h.reqlog.observeAs(r, who, DispMiss, resp.StatusCode)
+		h.serveRepoInstallation(w, c, false)
+	}
 }

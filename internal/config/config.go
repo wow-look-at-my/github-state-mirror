@@ -8,41 +8,42 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// defaultCacheMaxRows is the default per-table row ceiling for the response
-// caches (applied to ghdata.CacheMaxRows at startup). Pinned equal to that
-// var's own initializer by TestCacheMaxRowsDefaultMatchesGhdata.
+// defaultCacheMaxRows matches ghdata.CacheMaxRows' own initializer, pinned by TestCacheMaxRowsDefaultMatchesGhdata.
 const defaultCacheMaxRows int64 = 1_000_000
 
-// defaultRefreshInterval is the default periodic fleet-refresh cadence (see
-// REFRESH_INTERVAL).
+// defaultRefreshInterval is the default REFRESH_INTERVAL.
 const defaultRefreshInterval = 6 * time.Hour
+
+// defaultReplayInterval is minutes, not hours: the gap before a lost delivery is replayed can stall a PR forever.
+const defaultReplayInterval = 5 * time.Minute
+
+// maxPassthroughDebounce must stay in step with internal/api's DebounceMaxWindow (TestDebounceWindowBoundMatchesAPI).
+const (
+	defaultPassthroughDebounce = 5 * time.Second
+	maxPassthroughDebounce     = 30 * time.Second
+)
 
 type Config struct {
 	ListenAddr    string
 	DBPath        string
 	WebhookSecret string
-	// SubscriptionsDBPath is the subscriber-notification config DB — a
-	// SEPARATE SQLite file that survives the cache DB's SchemaVersion nukes.
-	// Empty = derive from DBPath (github-mirror.db ->
-	// github-mirror-subscriptions.db; notify.DeriveDBPath, applied in
-	// cmd/server).
+	// SubscriptionsDBPath is a SEPARATE SQLite file; empty derives from DBPath (notify.DeriveDBPath).
 	SubscriptionsDBPath string
 	AllowedOrigins      []string
 	RefreshInterval     time.Duration
+	ReplayInterval      time.Duration
 
-	// CacheMaxRows is the per-table row ceiling for the response caches
-	// (cmd/server applies it to ghdata.CacheMaxRows at startup). One knob for
-	// every cache table: all but git_commits_cache are TTL-bounded, so for
-	// them the cap is only a runaway safety net; git_commits_cache (immutable
-	// rows, no TTL) is the one table that actually grows to the ceiling.
+	// PassthroughDebounce holds an eligible uncacheable read so concurrent
+	PassthroughDebounce time.Duration
+
+	// CacheMaxRows is the per-table row ceiling; only git_commits_cache (no TTL) grows to it.
 	CacheMaxRows int64
 
-	// GitHub App credentials for background (periodic) refreshes. The service
-	// holds no static user token: API requests are authenticated by the
-	// caller's own Authorization header, and the only credential the service
-	// itself uses is this GitHub App (signed in per-installation).
+	// GitHub App credentials for background refreshes; the service holds no static user token otherwise.
 	GitHubAppID             string
 	GitHubAppPrivateKey     string // inline PEM (literal or \n-escaped)
 	GitHubAppPrivateKeyPath string // path to a PEM file (takes precedence)
@@ -51,7 +52,7 @@ type Config struct {
 	OAuthClientID     string
 	OAuthClientSecret string
 	SessionSecret     []byte          // HMAC key for session cookies
-	AdminLogins       map[string]bool // lowercased logins granted the all-scopes view
+	AdminLogins       set.Set[string] // lowercased logins granted the all-scopes view
 	BaseURL           string          // public base URL (for OAuth redirect_uri); derived from request if empty
 }
 
@@ -64,7 +65,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	replayInterval, err := parseReplayInterval(os.Getenv("WEBHOOK_REPLAY_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
 	refreshInterval, err := parseRefreshInterval(os.Getenv("REFRESH_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
+	debounce, err := parsePassthroughDebounce(os.Getenv("PASSTHROUGH_DEBOUNCE"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -75,6 +84,8 @@ func Load() (Config, error) {
 		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
 		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
 		RefreshInterval:     refreshInterval,
+		ReplayInterval:      replayInterval,
+		PassthroughDebounce: debounce,
 		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
@@ -90,10 +101,7 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// parseCacheMaxRows parses the CACHE_MAX_ROWS override for the response-cache
-// row ceiling. Absent/empty keeps the default; a value that is unparseable or
-// < 1 is an error (the server refuses to start) rather than a silent fallback
-// that would leave the operator running with a cap they didn't set.
+// parseCacheMaxRows parses CACHE_MAX_ROWS; unparseable or < fails startup rather than silently falling back.
 func parseCacheMaxRows(s string) (int64, error) {
 	if s == "" {
 		return defaultCacheMaxRows, nil
@@ -108,11 +116,7 @@ func parseCacheMaxRows(s string) (int64, error) {
 	return n, nil
 }
 
-// parseRefreshInterval parses the REFRESH_INTERVAL override for the periodic
-// fleet-refresh cadence (a Go duration string, e.g. "6h" or "30m").
-// Absent/empty keeps the default; a value that is unparseable or not positive
-// is an error (the server refuses to start) rather than a silent fallback
-// that would leave the operator running with a cadence they didn't set.
+// parseRefreshInterval parses REFRESH_INTERVAL; unparseable or non-positive fails startup rather than silently falling back.
 func parseRefreshInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return defaultRefreshInterval, nil
@@ -127,19 +131,45 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// GitHubAppConfigured reports whether a GitHub App ID was provided. The private
-// key is validated separately (see AppPrivateKeyPEM) so a half-configured app is
-// surfaced as an error rather than silently ignored.
+// parseReplayInterval parses WEBHOOK_REPLAY_INTERVAL; an explicit disables the replayer, accepting missed deliveries stay missed.
+func parseReplayInterval(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultReplayInterval, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid WEBHOOK_REPLAY_INTERVAL %q: must not be negative", s)
+	}
+	return d, nil
+}
+
+// parsePassthroughDebounce parses PASSTHROUGH_DEBOUNCE; a fat-fingered value must fail loudly at boot, not wedge the API.
+func parsePassthroughDebounce(s string) (time.Duration, error) {
+	if s == "" {
+		return defaultPassthroughDebounce, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: must not be negative (0 disables)", s)
+	}
+	if d > maxPassthroughDebounce {
+		return 0, fmt.Errorf("invalid PASSTHROUGH_DEBOUNCE %q: must be <= %s", s, maxPassthroughDebounce)
+	}
+	return d, nil
+}
+
+// GitHubAppConfigured checks only the ID; AppPrivateKeyPEM validates the key separately.
 func (c Config) GitHubAppConfigured() bool {
 	return c.GitHubAppID != ""
 }
 
-// AppPrivateKeyPEM returns the GitHub App private key as PEM bytes, read from
-// GITHUB_APP_PRIVATE_KEY_PATH if set, otherwise from the inline
-// GITHUB_APP_PRIVATE_KEY value. Inline values may use \n-escaped newlines
-// (common when a PEM is stored in a single-line env var). It returns an error
-// only when a configured path cannot be read; a wholly unset key returns
-// (nil, nil) so the caller can treat the app as not configured.
+// AppPrivateKeyPEM prefers the path over the inline value; a wholly unset key returns (nil, nil), never an error.
 func (c Config) AppPrivateKeyPEM() ([]byte, error) {
 	if c.GitHubAppPrivateKeyPath != "" {
 		b, err := os.ReadFile(c.GitHubAppPrivateKeyPath)
@@ -161,9 +191,7 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// unescapeNewlines turns a single-line PEM that uses literal "\n" sequences into
-// a real multi-line PEM. If the value already contains real newlines it is
-// returned unchanged.
+// unescapeNewlines turns a literal "\n"-escaped single-line PEM into a real multi-line; real newlines pass through.
 func unescapeNewlines(s string) string {
 	if strings.Contains(s, "\n") {
 		return s
@@ -171,9 +199,7 @@ func unescapeNewlines(s string) string {
 	return strings.ReplaceAll(s, `\n`, "\n")
 }
 
-// parseOrigins splits a comma-separated ALLOWED_ORIGINS value into a list of
-// allowed CORS origins. An empty value defaults to ["*"] (allow any origin),
-// which is safe because the mirror isolates data by token fingerprint.
+// parseOrigins defaults an empty ALLOWED_ORIGINS to ["*"], safe because the mirror isolates data by token fingerprint.
 func parseOrigins(s string) []string {
 	out := make([]string, 0)
 	for _, p := range strings.Split(s, ",") {
@@ -189,11 +215,11 @@ func parseOrigins(s string) []string {
 
 // parseAdmins builds the set of admin logins (lowercased for case-insensitive
 // matching) from a comma-separated list.
-func parseAdmins(s string) map[string]bool {
-	out := make(map[string]bool)
+func parseAdmins(s string) set.Set[string] {
+	out := set.New[string]()
 	for _, p := range strings.Split(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			out[strings.ToLower(p)] = true
+			out.Add(strings.ToLower(p))
 		}
 	}
 	return out
@@ -208,8 +234,7 @@ func sessionSecret(env string) []byte {
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand failure is fatal-ish; fall back to a fixed (insecure) key
-		// rather than crash. Operators should set SESSION_SECRET in production.
+		// Falls back to a fixed, insecure key rather than crash; set SESSION_SECRET in production.
 		slog.Error("could not generate session secret; set SESSION_SECRET", "error", err)
 		return []byte("insecure-fallback-session-key")
 	}

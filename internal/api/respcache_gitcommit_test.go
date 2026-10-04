@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -26,14 +25,14 @@ func TestCachedGitCommit_HitImmuneToPush(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"sha": %q,
-		"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-		"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-		"message": "fix: a thing <with> & symbols",
-		"tree": {"sha": %q},
-		"parents": [{"sha": %q}]
-	}`, shaCommit, shaTree1, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"sha":       shaCommit,
+		"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+		"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+		"message":   "fix: a thing <with> & symbols",
+		"tree":      map[string]any{"sha": shaTree1},
+		"parents":   []any{map[string]any{"sha": shaBase}},
+	}), w1.Body.String())
 
 	// Push events do NOT invalidate immutable commit state.
 	postWebhook(t, router, "push", `{"repository":{"name":"repo1","owner":{"login":"org1"}}}`)
@@ -55,36 +54,39 @@ func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
 
 	// No seeding: the dispatcher applies to GLOBAL truth unconditionally —
 	// this repo has never been fetched by anyone.
-	push := fmt.Sprintf(`{
-		"repository": {"name":"repo1","owner":{"login":"org1"}},
-		"before": %q, "after": %q, "forced": false,
-		"head_commit": {"timestamp": "2026-07-03T10:00:00Z"},
-		"commits": [
-			{"id": %q, "tree_id": %q, "message": "first", "timestamp": "2026-07-03T09:59:00Z",
-			 "author": {"name":"Alice","email":"alice@example.com"},
-			 "committer": {"name":"Bob","email":"bob@example.com"}},
-			{"id": %q, "tree_id": %q, "message": "second", "timestamp": "2026-07-03T10:00:00Z",
-			 "author": {"name":"Alice","email":"alice@example.com"},
-			 "committer": {"name":"Bob","email":"bob@example.com"}}
-		]
-	}`, shaBase, shaTip, shaMid, shaTree1, shaTip, shaTree2)
-	postWebhook(t, router, "push", push)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"repository": fixtureRepo(),
+		"before":     shaBase, "after": shaTip, "forced": false,
+		"head_commit": map[string]any{"timestamp": "2026-07-03T10:00:00Z"},
+		"commits": []any{
+			map[string]any{
+				"id": shaMid, "tree_id": shaTree1, "message": "first", "timestamp": "2026-07-03T09:59:00Z",
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com"},
+			},
+			map[string]any{
+				"id": shaTip, "tree_id": shaTree2, "message": "second", "timestamp": "2026-07-03T10:00:00Z",
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com"},
+			},
+		},
+	})
 
-	// First commit: parent is the payload's `before`.
+	//  commit: parent is the payload's `before`.
 	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaMid, nil))
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "hit", w1.Header().Get(cacheHeader), "webhook-absorbed commit must be a hit")
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"sha": %q,
-		"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-03T09:59:00Z"},
-		"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-03T09:59:00Z"},
-		"message": "first",
-		"tree": {"sha": %q},
-		"parents": [{"sha": %q}]
-	}`, shaMid, shaTree1, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"sha":       shaMid,
+		"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-03T09:59:00Z"},
+		"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-03T09:59:00Z"},
+		"message":   "first",
+		"tree":      map[string]any{"sha": shaTree1},
+		"parents":   []any{map[string]any{"sha": shaBase}},
+	}), w1.Body.String())
 
-	// Second commit: parent is its predecessor in the chain.
+	//  commit: parent is its predecessor in the chain.
 	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -111,15 +113,17 @@ func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
 func TestCachedGitCommit_ForcedPushNotAbsorbed(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
-	push := fmt.Sprintf(`{
-		"repository": {"name":"repo1","owner":{"login":"org1"}},
-		"before": %q, "after": %q, "forced": true,
-		"commits": [
-			{"id": %q, "tree_id": %q, "message": "rewritten", "timestamp": "2026-07-03T10:00:00Z",
-			 "author": {"name":"A","email":"a@x"}, "committer": {"name":"B","email":"b@x"}}
-		]
-	}`, shaBase, shaTip, shaTip, shaTree1)
-	postWebhook(t, router, "push", push)
+	postWebhookJSON(t, router, "push", map[string]any{
+		"repository": fixtureRepo(),
+		"before":     shaBase, "after": shaTip, "forced": true,
+		"commits": []any{
+			map[string]any{
+				"id": shaTip, "tree_id": shaTree1, "message": "rewritten", "timestamp": "2026-07-03T10:00:00Z",
+				"author":    map[string]any{"name": "A", "email": "a@x"},
+				"committer": map[string]any{"name": "B", "email": "b@x"},
+			},
+		},
+	})
 
 	w := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
 	require.Equal(t, http.StatusOK, w.Code)
@@ -128,7 +132,8 @@ func TestCachedGitCommit_ForcedPushNotAbsorbed(t *testing.T) {
 }
 
 // gitCommit404Upstream makes the fake's git-commit endpoint answer GitHub's
-// 404 (a GC'd or never-pushed sha).
+//
+//	(a GC'd or never-pushed sha).
 func gitCommit404Upstream(u *respCacheUpstream) {
 	u.gitCommit = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -137,19 +142,20 @@ func gitCommit404Upstream(u *respCacheUpstream) {
 	}
 }
 
-// TestCachedGitCommit_404MissMarker: round 2's stance change -- round 1 never
-// cached a git-commit 404 ("a missing sha can be pushed later"), but the
+// TestCachedGitCommit_404MissMarker: round 's stance change -- round never
+// cached a git-commit ("a missing sha can be pushed later"), but the
 // dominant traffic is pr-minder's mergeWouldBeEmpty re-reading GC'd
-// test-merge shas on every fleet sweep, each read a fresh upstream 404
-// forever. The 404 is now absorbed as an EXPIRING miss marker (rebuilt in
-// the contents route's notFoundJSON shape, relayed as a miss), and the
-// second read is a cached 404 hit with zero upstream calls.
+// test-merge shas on every fleet sweep, each read a fresh upstream
+// forever. The is now absorbed as an EXPIRING miss marker (rebuilt in the
+// contents route's notFoundJSON shape, relayed as a miss).
+//
+//	read is a cached hit with upstream calls.
 func TestCachedGitCommit_404MissMarker(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	gitCommit404Upstream(u)
 	target := "/repos/org1/repo1/git/commits/" + shaCommit
 
-	// Miss: the 404 is absorbed as a marker and relayed REBUILT.
+	// Miss: the is absorbed as a marker and relayed REBUILT.
 	w1 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusNotFound, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
@@ -158,7 +164,7 @@ func TestCachedGitCommit_404MissMarker(t *testing.T) {
 	assert.JSONEq(t, `{"message":"Not Found","status":"404"}`, w1.Body.String(),
 		"the 404 rebuilds in the contents route's shape, documentation_url dropped")
 
-	// Hit: the marker answers, zero upstream calls.
+	// Hit: the marker answers, upstream calls.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusNotFound, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -167,11 +173,11 @@ func TestCachedGitCommit_404MissMarker(t *testing.T) {
 }
 
 // TestCachedGitCommit_404MarkerClearedByAbsorb: the un-miss invariant. A sha
-// carrying a 404 marker later materializes -- here via a push webhook whose
+// carrying a marker later materializes -- here via a push webhook whose
 // payload absorbs the commit (every absorb path funnels through
 // ghdata.upsertGitCommit, which clears the marker) -- and the next read
-// serves the 200 rebuild immediately, from the absorbed row, rather than the
-// stale 404 or a refetch.
+// serves the rebuild immediately, from the absorbed row, rather than the
+// stale or a refetch.
 func TestCachedGitCommit_404MarkerClearedByAbsorb(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
 	gitCommit404Upstream(u)
@@ -186,15 +192,15 @@ func TestCachedGitCommit_404MarkerClearedByAbsorb(t *testing.T) {
 
 	// The sha is pushed: the payload absorb upserts the commit, and the
 	// upsert clears the marker.
-	postWebhook(t, router, "push", fmt.Sprintf(`{
-		"repository": {"name":"repo1","owner":{"login":"org1"}},
-		"before": %q, "after": %q, "forced": false,
-		"commits": [
-			{"id": %q, "tree_id": %q, "message": "now it exists", "timestamp": "2026-07-03T10:00:00Z",
-			 "author": {"name":"Alice","email":"alice@example.com"},
-			 "committer": {"name":"Bob","email":"bob@example.com"}}
-		]
-	}`, shaBase, shaMid, shaMid, shaTree1))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"repository": fixtureRepo(),
+		"before":     shaBase, "after": shaMid, "forced": false,
+		"commits": []any{map[string]any{
+			"id": shaMid, "tree_id": shaTree1, "message": "now it exists", "timestamp": "2026-07-03T10:00:00Z",
+			"author":    map[string]any{"name": "Alice", "email": "alice@example.com"},
+			"committer": map[string]any{"name": "Bob", "email": "bob@example.com"},
+		}},
+	})
 
 	var markers int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM git_commit_miss_cache`).Scan(&markers))

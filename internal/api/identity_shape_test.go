@@ -70,8 +70,8 @@ func assertSameShape(t *testing.T, path string, want, got interface{}) {
 		if !assert.Truef(t, ok, "%s: want array, got %s", path, jsonType(got)) {
 			return
 		}
-		// Compare element [0] shape when both have one (GraphQL arrays are
-		// homogeneous, so one element pins the shape).
+		// Compare element [] shape when both have (GraphQL arrays are
+		// homogeneous, so element pins the shape).
 		if len(w) > 0 && len(g) > 0 {
 			assertSameShape(t, path+"[0]", w[0], g[0])
 		}
@@ -147,8 +147,7 @@ func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 
 	assertSameShape(t, "$", want, got)
 
-	// Enum vocabulary is structural in GraphQL: assert the cache emits values from
-	// GitHub's enums, not e.g. a lowercased REST value.
+	// Enum vocabulary is structural in GraphQL: assert real enum values, not a lowercased REST value.
 	pr := firstPR(t, got)
 	assert.Contains(t, []string{"MERGEABLE", "CONFLICTING", "UNKNOWN"}, pr["mergeable"], "mergeable must be a GraphQL enum value")
 	rollup := pr["commits"].(map[string]interface{})["nodes"].([]interface{})[0].(map[string]interface{})["commit"].(map[string]interface{})["statusCheckRollup"].(map[string]interface{})

@@ -7,16 +7,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Workflow jobs.
-//
-// GitHub Actions job state fed by workflow_job webhooks. Like the webhook
-// delivery log, this data is GLOBAL (not actor-scoped): it is webhook-fed
-// operational telemetry with no per-credential fetch path — a job's state only
-// ever arrives via the HMAC-verified delivery, never through a caller's token,
-// so there is no credential to partition by. The read path (GET /api/jobs) is
-// admin-only, consistent with the other global logs.
+// Workflow jobs: GLOBAL, webhook-fed state; see docs/dashboard/dashboard.md.
 
-// WorkflowJob is one GitHub Actions job's recorded state. Empty string means
+// WorkflowJob is GitHub Actions job's recorded state. Empty string means
 // the webhook didn't report the field.
 type WorkflowJob struct {
 	Owner        string `json:"owner"`
@@ -37,16 +30,13 @@ type WorkflowJob struct {
 	UpdatedAt    string `json:"updated_at"` // RFC3339: when the last webhook was applied
 }
 
-// workflowJobRetention bounds the table's growth: completed jobs older than
-// this are pruned after each upsert (one cheap indexed DELETE — see
-// PruneWorkflowJobs). Jobs still in progress are never pruned. Two weeks keeps
-// enough history to be useful while a CI-heavy org's job volume stays bounded;
-// no config knob on purpose (this is observability, not source-of-truth).
+// workflowJobRetention bounds the table's growth; see docs/dashboard/dashboard.md.
 const workflowJobRetention = 14 * 24 * time.Hour
 
 // RecordWorkflowJob upserts a job's state (out-of-order tolerant: a completed
 // event never regresses to in_progress — see the UpsertWorkflowJob query) and
-// prunes completed jobs older than workflowJobRetention.
+// prunes completed jobs whose completed_at and updated_at are both older than
+// workflowJobRetention.
 func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 	now := time.Now().UTC()
 	updatedAt := j.UpdatedAt
@@ -55,12 +45,10 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 	}
 	completedAt := j.CompletedAt
 	if j.Status == "completed" && completedAt == "" {
-		// Defensive: a completed event always carries completed_at, but the prune
-		// compares completed_at lexicographically, and '' would read as infinitely
-		// old and be swept immediately.
+		// Defensive: an empty completed_at would sort as infinitely old and be swept immediately.
 		completedAt = updatedAt
 	}
-	if err := s.q.UpsertWorkflowJob(ctx, dbgen.UpsertWorkflowJobParams{
+	if err := s.qx(ctx).UpsertWorkflowJob(ctx, dbgen.UpsertWorkflowJobParams{
 		Owner:        j.Owner,
 		Repo:         j.Repo,
 		JobID:        j.JobID,
@@ -81,13 +69,16 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 		return err
 	}
 	cutoff := now.Add(-workflowJobRetention).Format(time.RFC3339)
-	return s.q.PruneWorkflowJobs(ctx, cutoff)
+	return s.qx(ctx).PruneWorkflowJobs(ctx, dbgen.PruneWorkflowJobsParams{
+		CompletedAt: cutoff,
+		UpdatedAt:   cutoff,
+	})
 }
 
-// RecentWorkflowJobs returns recent jobs: running first (newest started first),
-// then completed (newest completed first).
+// RecentWorkflowJobs returns recent jobs: running (newest started),
+// then completed (newest completed).
 func (s *Store) RecentWorkflowJobs(ctx context.Context, limit int64) ([]WorkflowJob, error) {
-	rows, err := s.q.ListRecentWorkflowJobs(ctx, limit)
+	rows, err := s.qx(ctx).ListRecentWorkflowJobs(ctx, limit)
 	if err != nil {
 		return nil, err
 	}

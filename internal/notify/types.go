@@ -6,7 +6,7 @@
 // racing their own GitHub webhooks against the mirror's ingestion.
 //
 // Subscriptions are service CONFIG, not cache: they live in their own SQLite
-// file (see store.go) that the main DB's SchemaVersion nuke never touches.
+// file (see store.go) that the main DB's schema nuke never touches.
 package notify
 
 import (
@@ -19,7 +19,7 @@ import (
 
 // Limits enforced by validation.
 const (
-	// MaxPerPrincipal caps how many subscriptions one principal may hold.
+	// MaxPerPrincipal caps how many subscriptions principal may hold.
 	MaxPerPrincipal = 20
 	// maxFilters caps the repo and event filter lists.
 	maxFilters = 50
@@ -28,7 +28,7 @@ const (
 	maxSecretLen = 256
 )
 
-// Subscription is one registered notification endpoint. Secret is the HMAC
+// Subscription is registered notification endpoint. Secret is the HMAC
 // key used to sign every delivery — it is stored to sign with, never returned
 // by any API response and never logged.
 type Subscription struct {
@@ -37,15 +37,11 @@ type Subscription struct {
 	URL       string
 	Secret    string
 	// RepoFilters restricts which repos notify this subscription: each entry
-	// is "owner" (every repo of that owner) or "owner/repo", lowercased.
-	// Empty = all repos the principal may see.
 	RepoFilters []string
 	// EventFilters restricts which GitHub event types notify this
-	// subscription ("push", "pull_request", ...). Empty = all events.
 	EventFilters []string
 	Active       bool
 	// ConsecutiveFailures counts terminal delivery failures since the last
-	// success; reaching the auto-disable threshold flips Active off.
 	ConsecutiveFailures int64
 	DisabledReason      string
 	CreatedAt           string // RFC3339Nano UTC
@@ -95,8 +91,6 @@ type NewSubscription struct {
 }
 
 // Patch carries a partial update. Nil fields are left unchanged. Setting
-// Active=true resets ConsecutiveFailures and clears DisabledReason — the
-// re-enable path after an auto-disable.
 type Patch struct {
 	URL    *string   `json:"url"`
 	Secret *string   `json:"secret"`
@@ -105,8 +99,7 @@ type Patch struct {
 	Active *bool     `json:"active"`
 }
 
-// ValidationError describes a rejected subscription field; the API maps it to
-// a 400 response with the message.
+// ValidationError describes a rejected subscription field.
 type ValidationError struct{ msg string }
 
 func (e *ValidationError) Error() string { return e.msg }
@@ -116,10 +109,9 @@ func invalidf(format string, args ...any) error {
 }
 
 // repoFilterRe admits "owner" or "owner/repo" entries (already lowercased):
-// GitHub logins/repo names are alphanumerics plus ., _, -.
 var repoFilterRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,99}(/[a-z0-9._-]{1,100})?$`)
 
-// eventFilterRe admits GitHub event names ("push", "pull_request", ...).
+// eventFilterRe admits GitHub event names ("push", "pull_request",...).
 var eventFilterRe = regexp.MustCompile(`^[a-z_]{1,64}$`)
 
 // NormalizeAndValidate checks every caller-controlled field, lowercasing the
@@ -187,10 +179,7 @@ func validateEndpointURL(raw string) error {
 		return invalidf("url scheme must be https (got %q)", u.Scheme)
 	}
 	if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
-		// 10/8, 172.16/12, 192.168/16, fc00::/7 (IsPrivate) and 169.254/16,
-		// fe80::/10 (IsLinkLocalUnicast): the mirror must not be pointed at
-		// internal infrastructure via an IP literal. 0.0.0.0/:: are not
-		// dialable targets either.
+		// /,./,./, fc00::/ (IsPrivate) and./,
 		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
 			return invalidf("url host must not be a private, link-local, or unspecified IP literal")
 		}
@@ -199,7 +188,7 @@ func validateEndpointURL(raw string) error {
 }
 
 // isLoopbackHost reports whether host names the local machine: "localhost" or
-// a loopback IP literal (127.0.0.0/8, ::1).
+// a loopback IP literal (.../,::).
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
@@ -209,8 +198,6 @@ func isLoopbackHost(host string) bool {
 }
 
 // DeriveDBPath derives the default subscriptions DB path from the main cache
-// DB path: strip a trailing ".db" and append "-subscriptions.db"
-// (github-mirror.db -> github-mirror-subscriptions.db).
 func DeriveDBPath(dbPath string) string {
 	return strings.TrimSuffix(dbPath, ".db") + "-subscriptions.db"
 }

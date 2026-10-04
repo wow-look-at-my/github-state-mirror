@@ -1,11 +1,13 @@
 package api
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,80 +17,44 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached PR REST routes (tier 2 of the cache
-// contract, like respcache.go):
-//
-//   - GET /repos/{owner}/{repo}/pulls          (open-PR list)
-//   - GET /repos/{owner}/{repo}/pulls/{number} (single PR)
-//   - GET /repos/{owner}/{repo}/installation   (App-JWT authed, like the mint)
-//
-// The PR routes absorb into the SAME pull_requests/pr_labels tables the
-// webhook dispatcher maintains, so pull_request webhooks keep served state
-// current without invalidating anything. What gates serving:
-//
-//   REVEAL (both PR routes): the caller must pass the reveal layer first --
-//   public repo, a fresh grant, or a probe against GitHub (reveal.go). A
-//   cached deny verdict answers repeat probes without touching GitHub.
-//
-//   LIST: a per-repo GLOBAL "open-PR list complete" marker (pulls_list_cache)
-//   proves the rows are the WHOLE open set. Absorbing a complete unfiltered
-//   page sets it (24h TTL backstop); webhooks never touch it (they ARE the
-//   maintenance). A rebuilt list as long as the request's per_page may be
-//   truncated upstream -- served as a miss, never from state.
-//
-//   SINGLE (open): the row must be rest-complete, RECENTLY TOUCHED
-//   (PRRowFresh -- the staleness backstop for a missed `closed` delivery),
-//   AND its mergeable KNOWN. GitHub computes `mergeable` lazily and pr-minder
-//   polls this endpoint waiting for it to resolve, so an unknown/null
-//   mergeable always misses (fetch + absorb the computed answer) -- the cache
-//   must never wedge that poll. Branch pushes un-resolve the stored value
-//   (see NullPRMergeableByBranch) so a known answer can't go silently stale
-//   after either side moves.
-//
-//   SINGLE (closed): a fetched CLOSED/merged PR is absorbed as a rendered
-//   whole-doc snapshot (closed_pull_cache) -- the open-only pull_requests
-//   invariant is untouched (the stale open row is still deleted; closed PRs
-//   live only in the doc side table). pull_request events flush the PR's doc
-//   (reopen/edit/relabel); a push never does (it cannot mutate a closed PR);
-//   the 24h TTL backstop bounds missed deliveries, like PRRowFresh.
-//
-//   DIFF READS (the single-PR route with the diff media type) get the
-//   406-verdict flow in respcache_pulldiff.go; any OTHER non-default Accept
-//   (raw/html/full, a multi-range Accept) passes through exactly as before.
+// Cached PR REST routes (tier of the cache contract, like respcache.go): the
+// open-PR list, the PR.
 
 const (
-	// pullsListCacheTTL bounds how long a MISSED pull_request delivery could
-	// leave a stale absorbed list being served. Webhooks are the maintenance;
-	// this is only the backstop.
+	// pullsListCacheTTL is only the backstop for a missed pull_request delivery; webhooks are the maintenance.
 	pullsListCacheTTL = 24 * time.Hour
 
-	// closedPullCacheTTL bounds how long a MISSED pull_request delivery
-	// (reopen/edit/relabel) could leave a stale closed-PR doc being served --
-	// the same accepted staleness class as PRRowFresh.
+	// closedPullCacheTTL is the same accepted staleness class as PRRowFresh, for a missed reopen/edit/relabel.
 	closedPullCacheTTL = 24 * time.Hour
 
-	// pullsDefaultPerPage is GitHub's default page size for the list route
-	// when the request does not send per_page.
+	// pullsDefaultPerPage is GitHub's default page size when per_page is absent.
 	pullsDefaultPerPage = 30
 )
 
 // ---- GET /repos/{owner}/{repo}/pulls ----
 
 // pullsListShape is a parsed, cacheable /pulls query: the shapes pr-minder
-// sends (state=open + per_page/page, optionally head=owner:branch) plus the
-// bare default. Anything else passes through.
 type pullsListShape struct {
-	perPage int
-	head    string // "" = unfiltered; else "owner:branch"
+	perPage   int
+	head      string // "" = unfiltered; else "owner:branch"
+	base      string // "" = unfiltered; else a base branch name
+	sortBy    string // "created" or "updated"; both are columns on the row
+	ascending bool
 }
 
 // parsePullsListShape reports the shape of a /pulls query and whether the
 // cache models it. Unknown params, repeated params, state != open, a
-// malformed head, an out-of-range per_page, or any page other than the first
-// make it non-cacheable (page > 1 only ever follows a full page 1, which is
+// malformed head, an out-of-range per_page, or any page other than the
+// make it non-cacheable (page > only ever follows a full page, which is
 // itself never served from state).
+//
+// head and base are both pure FILTERS over the open set the completeness
+// marker already vouches for -- given the whole open set, selecting the PRs
+// with a given head or base is exactly what GitHub does -- so they are
+// answered from state and, like any filtered response, never used to SET the
+// marker.
 func parsePullsListShape(q url.Values) (pullsListShape, bool) {
-	shape := pullsListShape{perPage: pullsDefaultPerPage}
+	shape := pullsListShape{perPage: pullsDefaultPerPage, sortBy: "created"}
 	for key, vals := range q {
 		if len(vals) != 1 {
 			return shape, false
@@ -115,6 +81,23 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 				return shape, false
 			}
 			shape.head = v
+		case "base":
+			if v == "" {
+				return shape, false
+			}
+			shape.base = v
+		case "sort":
+			// popularity and long-running rank by a value the row does not
+			// carry, so each keeps forwarding.
+			if v != "created" && v != "updated" {
+				return shape, false
+			}
+			shape.sortBy = v
+		case "direction":
+			if v != "asc" && v != "desc" {
+				return shape, false
+			}
+			shape.ascending = v == "asc"
 		default:
 			return shape, false
 		}
@@ -122,25 +105,64 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 	return shape, true
 }
 
+// sortPullRows orders a COMPLETE open set the way GitHub's sort and direction
+// ask for. It is safe only there: the caller serves from state only when the
+// whole set fits in a single page, so ordering never decides which rows the caller
+// sees, and a full page continues upstream. The read already emits
+// created-descending, which is GitHub's own default, so an unstated sort and
+// direction reorder nothing. Number descending breaks a tie, matching that
+// read.
+func sortPullRows(rows []dbgen.PullRequest, shape pullsListShape) []dbgen.PullRequest {
+	key := func(pr dbgen.PullRequest) string {
+		if shape.sortBy == "updated" {
+			return pr.UpdatedAt
+		}
+		return pr.CreatedAt
+	}
+	out := slices.Clone(rows)
+	slices.SortStableFunc(out, func(a, b dbgen.PullRequest) int {
+		if c := cmp.Compare(key(a), key(b)); c != 0 {
+			if shape.ascending {
+				return c
+			}
+			return -c
+		}
+		if shape.ascending {
+			return cmp.Compare(a.Number, b.Number)
+		}
+		return cmp.Compare(b.Number, a.Number)
+	})
+	return out
+}
+
 // filterPullRows applies the head=owner:branch filter the way GitHub does:
 // branch name exact, head-repo owner case-insensitive. A row with no head
 // repo (deleted fork) can never match an owner-qualified filter.
-func filterPullRows(rows []dbgen.PullRequest, head string) []dbgen.PullRequest {
-	if head == "" {
+func filterPullRows(rows []dbgen.PullRequest, head, base string) []dbgen.PullRequest {
+	if head == "" && base == "" {
 		return rows
 	}
 	hOwner, hBranch, _ := strings.Cut(head, ":")
 	var out []dbgen.PullRequest
 	for _, pr := range rows {
-		if !pr.HeadRefName.Valid || pr.HeadRefName.String != hBranch {
-			continue
+		if head != "" {
+			if !pr.HeadRefName.Valid || pr.HeadRefName.String != hBranch {
+				continue
+			}
+			if !pr.HeadRepoFullName.Valid {
+				continue
+			}
+			repoOwner, _, ok := strings.Cut(pr.HeadRepoFullName.String, "/")
+			if !ok || !strings.EqualFold(repoOwner, hOwner) {
+				continue
+			}
 		}
-		if !pr.HeadRepoFullName.Valid {
-			continue
-		}
-		repoOwner, _, ok := strings.Cut(pr.HeadRepoFullName.String, "/")
-		if !ok || !strings.EqualFold(repoOwner, hOwner) {
-			continue
+		if base != "" {
+			// The base branch always lives in THIS repo, so the bare name is
+			// the whole filter (unlike head, which can name a fork).
+			if !pr.BaseRefName.Valid || pr.BaseRefName.String != base {
+				continue
+			}
 		}
 		out = append(out, pr)
 	}
@@ -148,18 +170,19 @@ func filterPullRows(rows []dbgen.PullRequest, head string) []dbgen.PullRequest {
 }
 
 // cachedPullsList serves a repo's open-PR list from webhook-maintained state
-// once a complete list has been absorbed, fetching and absorbing on a miss.
+//
+//	a complete list has been absorbed, fetching and absorbing on a miss.
 func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	shape, ok := parsePullsListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
@@ -180,10 +203,8 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("pulls list cache read failed", "owner", owner, "repo", repo, "error", err)
 		} else if allRestComplete(rows) {
-			filtered := filterPullRows(rows, shape.head)
-			// Pagination guard: a rebuilt list as long as the requested page
-			// could be truncated upstream -- only a provably-single-page
-			// answer is served from state.
+			filtered := sortPullRows(filterPullRows(rows, shape.head, shape.base), shape)
+			// Only a provably-single-page answer is served from state; a full page may continue upstream.
 			if len(filtered) < shape.perPage {
 				h.servePullsList(w, r, filtered, labelsByPR, true)
 				return
@@ -205,11 +226,8 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	// The response proves the COMPLETE open set only when it is unfiltered
-	// and not a full page (a full page may continue upstream). A filtered or
-	// full-page response still absorbs rows -- useful state -- but sets no
-	// completeness marker.
-	complete := shape.head == "" && len(rows) < shape.perPage
+	// Only an unfiltered, not-full page proves the complete open set; a filtered or full page still absorbs rows.
+	complete := shape.head == "" && shape.base == "" && len(rows) < shape.perPage
 	absorbOwner, absorbRepo := owner, repo
 	if len(rows) > 0 {
 		absorbOwner, absorbRepo = rows[0].Owner, rows[0].Repo
@@ -224,17 +242,12 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 
 // servePullsList rebuilds and writes the trimmed list. Hit and miss serve the
 // same shape; a miss keeps GitHub's own response order, a hit serves
-// newest-created first (GitHub's default sort).
+// newest-created (GitHub's default sort).
 func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, hit bool) {
 	items := make([]pullListItemJSON, 0, len(rows))
 	now := time.Now()
 	for _, pr := range rows {
-		// The single-PR route's stale-sha belt, applied to the list tier: a
-		// row somehow holding the push-invalidated test-merge sha must not
-		// serve it from ANY rebuild (the guarded writes null it instead, so
-		// this is belt and braces exactly like the single-PR hit gate).
-		// Gate rather than omit: the REST list shape genuinely carries
-		// merge_commit_sha, so the field stays for valid rows.
+		// Belt and braces, like the single-PR hit gate: a row must never serve a push-invalidated test-merge sha.
 		if ghdata.PRMergeShaStale(pr, now) {
 			pr.MergeCommitSha = sql.NullString{}
 		}
@@ -252,9 +265,7 @@ func (h *handlers) servePullsList(w http.ResponseWriter, r *http.Request, rows [
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// allRestComplete reports whether every row can be rebuilt as a REST response
-// (GraphQL-sourced rows cannot; SetRepoPRs also clears the list marker, so
-// this is belt and braces).
+// allRestComplete reports whether every row can be rebuilt as a REST response (GraphQL-sourced rows cannot).
 func allRestComplete(rows []dbgen.PullRequest) bool {
 	for _, pr := range rows {
 		if !ghdata.PRRestComplete(pr) {
@@ -283,17 +294,17 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numStr, 10, 64)
 	if err != nil || number <= 0 || r.URL.RawQuery != "" {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, err == nil && number > 0))
 		return
 	}
 	if !acceptsDefaultJSON(r) {
-		// The DIFF representation gets the 406-verdict flow (see the file
+		// The DIFF representation gets the -verdict flow (see the file
 		// comment); every other non-default Accept keeps today's passthrough.
 		if acceptsPullDiff(r) {
 			h.cachedPullDiff(w, r, owner, repo, number, numStr)
 			return
 		}
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 
@@ -307,11 +318,11 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The hit gate: rest-complete, mergeable KNOWN, the stored test-merge sha
-	// not the push-invalidated one (belt and braces -- the guarded writes null
+	// not the push-invalidated (belt and braces -- the guarded writes null
 	// that sha instead of storing it), and recently touched.
 	if pr, labels, ok, err := h.store.RestSinglePull(r.Context(), owner, repo, number); err != nil {
 		slog.Warn("single PR cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
-	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) &&
+	} else if ok && ghdata.PRRestComplete(pr) && mergeableKnown(pr) && diffStatsKnown(pr) &&
 		!ghdata.PRMergeShaStale(pr, time.Now()) && ghdata.PRRowFresh(pr, time.Now()) {
 		h.serveSinglePull(w, r, pr, labels, true)
 		return
@@ -351,7 +362,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		// Closed/merged: the truth table retains open PRs only, so drop any
 		// stale row -- and absorb GitHub's answer as a rendered whole-doc
 		// snapshot, served rebuilt (hit and miss byte-identical).
-		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number); err != nil {
+		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number, pr.UpdatedAt, time.Now()); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
 		doc, mErr := marshalTrimmed(renderClosedPull(pr, labels, raw.Merged != nil && *raw.Merged))
@@ -379,13 +390,8 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	if staleRejected {
-		// The fetch re-offered the test-merge sha a push just invalidated: a
-		// pre-push answer (GitHub's recompute lag), stored unresolved above.
-		// Serve it unresolved too -- exactly what GitHub answers once its
-		// recompute actually starts -- never the value the mirror just proved
-		// stale; the consumer's resolve-poll carries on and every poll misses
-		// (re-triggering the recompute) until GitHub serves a fresh sha.
 		pr.Mergeable = sql.NullString{}
+		pr.MergeableState = sql.NullString{}
 		pr.MergeCommitSha = sql.NullString{}
 	}
 	h.serveSinglePull(w, r, pr, labels, false)
@@ -404,13 +410,18 @@ func (h *handlers) serveSinglePull(w http.ResponseWriter, r *http.Request, pr db
 	writeRebuilt(w, http.StatusOK, body, hit)
 }
 
-// mergeableKnown reports whether the row's mergeable is a resolved answer.
-// NULL (unresolved / un-resolved by a branch push) and the GraphQL "UNKNOWN"
-// both gate the single-PR route to a miss so pr-minder's resolve-poll always
-// reaches GitHub.
+// mergeableKnown gates both mergeable and mergeable_state, so a hit never serves a state GitHub has since left.
+// see docs/cache/rest-routes.md
 func mergeableKnown(pr dbgen.PullRequest) bool {
 	return pr.Mergeable.Valid &&
-		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING")
+		(pr.Mergeable.String == "MERGEABLE" || pr.Mergeable.String == "CONFLICTING") &&
+		pr.MergeableState.Valid && pr.MergeableState.String != "" && pr.MergeableState.String != "unknown"
+}
+
+// diffStatsKnown gates on additions/deletions, which only a single-PR answer supplies.
+// see docs/cache/rest-routes.md
+func diffStatsKnown(pr dbgen.PullRequest) bool {
+	return pr.Additions.Valid && pr.Deletions.Valid
 }
 
 // ---- small helpers ----
@@ -426,8 +437,7 @@ func nullableStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
-// normalizeRESTTime folds a REST timestamp to the fixed-width UTC RFC3339
-// form the schema stores (mirrors the webhook package's normaliseTime).
+// normalizeRESTTime folds a REST timestamp to the fixed-width UTC RFC3339 form the schema stores.
 func normalizeRESTTime(s string) string {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {

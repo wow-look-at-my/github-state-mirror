@@ -5,20 +5,30 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
 // Store persists cache metadata to SQLite, wrapping the sqlc-generated queries.
 type Store struct {
-	q *dbgen.Queries
+	db *sql.DB
+	q  *dbgen.Queries
 }
 
 func NewStore(db *sql.DB) *Store {
-	return &Store{q: dbgen.New(db)}
+	return &Store{db: db, q: dbgen.New(db)}
+}
+
+// qx returns the queries bound to the transaction ctx carries (database.InTx), or to the pool.
+func (s *Store) qx(ctx context.Context) *dbgen.Queries {
+	if tx := database.TxFrom(ctx, s.db); tx != nil {
+		return s.q.WithTx(tx)
+	}
+	return s.q
 }
 
 func (s *Store) Get(ctx context.Context, id ResourceID) (*Metadata, error) {
-	row, err := s.q.GetCacheMetadata(ctx, dbgen.GetCacheMetadataParams{
+	row, err := s.qx(ctx).GetCacheMetadata(ctx, dbgen.GetCacheMetadataParams{
 		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
@@ -33,7 +43,7 @@ func (s *Store) Get(ctx context.Context, id ResourceID) (*Metadata, error) {
 }
 
 func (s *Store) Upsert(ctx context.Context, m *Metadata) error {
-	return s.q.UpsertCacheMetadata(ctx, dbgen.UpsertCacheMetadataParams{
+	return s.qx(ctx).UpsertCacheMetadata(ctx, dbgen.UpsertCacheMetadataParams{
 		Actor:         m.Actor,
 		ResourceKind:  m.Kind,
 		ResourceKey:   m.Key,
@@ -48,7 +58,7 @@ func (s *Store) Upsert(ctx context.Context, m *Metadata) error {
 }
 
 func (s *Store) MarkFetching(ctx context.Context, id ResourceID) error {
-	return s.q.MarkFetching(ctx, dbgen.MarkFetchingParams{
+	return s.qx(ctx).MarkFetching(ctx, dbgen.MarkFetchingParams{
 		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
@@ -57,7 +67,7 @@ func (s *Store) MarkFetching(ctx context.Context, id ResourceID) error {
 
 func (s *Store) MarkFresh(ctx context.Context, id ResourceID, etag string, expiresAt time.Time) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	return s.q.MarkFresh(ctx, dbgen.MarkFreshParams{
+	return s.qx(ctx).MarkFresh(ctx, dbgen.MarkFreshParams{
 		LastFetchedAt: sql.NullString{String: now, Valid: true},
 		Etag:          nullString(etag),
 		ExpiresAt:     sql.NullString{String: expiresAt.UTC().Format(time.RFC3339), Valid: true},
@@ -68,7 +78,7 @@ func (s *Store) MarkFresh(ctx context.Context, id ResourceID, etag string, expir
 }
 
 func (s *Store) MarkStale(ctx context.Context, id ResourceID) error {
-	return s.q.MarkStale(ctx, dbgen.MarkStaleParams{
+	return s.qx(ctx).MarkStale(ctx, dbgen.MarkStaleParams{
 		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
@@ -76,14 +86,14 @@ func (s *Store) MarkStale(ctx context.Context, id ResourceID) error {
 }
 
 func (s *Store) MarkStaleAllActors(ctx context.Context, kind, key string) error {
-	return s.q.MarkStaleByKindKey(ctx, dbgen.MarkStaleByKindKeyParams{
+	return s.qx(ctx).MarkStaleByKindKey(ctx, dbgen.MarkStaleByKindKeyParams{
 		ResourceKind: kind,
 		ResourceKey:  key,
 	})
 }
 
 func (s *Store) MarkError(ctx context.Context, id ResourceID, errMsg string, retryAfter time.Time) error {
-	return s.q.MarkError(ctx, dbgen.MarkErrorParams{
+	return s.qx(ctx).MarkError(ctx, dbgen.MarkErrorParams{
 		ErrorMessage: nullString(errMsg),
 		RetryAfter:   sql.NullString{String: retryAfter.UTC().Format(time.RFC3339), Valid: true},
 		Actor:        id.Actor,
@@ -93,7 +103,7 @@ func (s *Store) MarkError(ctx context.Context, id ResourceID, errMsg string, ret
 }
 
 func (s *Store) ListByKind(ctx context.Context, actor, kind string) ([]Metadata, error) {
-	rows, err := s.q.ListByKind(ctx, dbgen.ListByKindParams{
+	rows, err := s.qx(ctx).ListByKind(ctx, dbgen.ListByKindParams{
 		Actor:        actor,
 		ResourceKind: kind,
 	})
@@ -107,10 +117,10 @@ func (s *Store) ListByKind(ctx context.Context, actor, kind string) ([]Metadata,
 	return out, nil
 }
 
-// ListByKindKeyAllActors returns every actor's metadata row for one
+// ListByKindKeyAllActors returns every actor's metadata row for
 // (kind, key) resource -- e.g. all principals' org-sync markers for an owner.
 func (s *Store) ListByKindKeyAllActors(ctx context.Context, kind, key string) ([]Metadata, error) {
-	rows, err := s.q.ListByKindKey(ctx, dbgen.ListByKindKeyParams{
+	rows, err := s.qx(ctx).ListByKindKey(ctx, dbgen.ListByKindKeyParams{
 		ResourceKind: kind,
 		ResourceKey:  key,
 	})
@@ -125,7 +135,7 @@ func (s *Store) ListByKindKeyAllActors(ctx context.Context, kind, key string) ([
 }
 
 func (s *Store) ListStale(ctx context.Context, actor string, before time.Time) ([]Metadata, error) {
-	rows, err := s.q.ListStale(ctx, dbgen.ListStaleParams{
+	rows, err := s.qx(ctx).ListStale(ctx, dbgen.ListStaleParams{
 		Actor: actor,
 		ExpiresAt: sql.NullString{
 			String: before.UTC().Format(time.RFC3339),
@@ -143,7 +153,7 @@ func (s *Store) ListStale(ctx context.Context, actor string, before time.Time) (
 }
 
 func (s *Store) Delete(ctx context.Context, id ResourceID) error {
-	return s.q.DeleteCacheMetadata(ctx, dbgen.DeleteCacheMetadataParams{
+	return s.qx(ctx).DeleteCacheMetadata(ctx, dbgen.DeleteCacheMetadataParams{
 		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
@@ -151,7 +161,7 @@ func (s *Store) Delete(ctx context.Context, id ResourceID) error {
 }
 
 func (s *Store) InsertRefreshLog(ctx context.Context, id ResourceID, trigger TriggerSource) (int64, error) {
-	return s.q.InsertRefreshLog(ctx, dbgen.InsertRefreshLogParams{
+	return s.qx(ctx).InsertRefreshLog(ctx, dbgen.InsertRefreshLogParams{
 		Actor:        id.Actor,
 		ResourceKind: id.Kind,
 		ResourceKey:  id.Key,
@@ -167,7 +177,7 @@ func (s *Store) CompleteRefreshLog(ctx context.Context, logID int64, success boo
 	} else {
 		successVal = sql.NullInt64{Int64: 0, Valid: true}
 	}
-	return s.q.CompleteRefreshLog(ctx, dbgen.CompleteRefreshLogParams{
+	return s.qx(ctx).CompleteRefreshLog(ctx, dbgen.CompleteRefreshLogParams{
 		CompletedAt:    sql.NullString{String: time.Now().UTC().Format(time.RFC3339), Valid: true},
 		Success:        successVal,
 		RecordsChanged: sql.NullInt64{Int64: int64(recordsChanged), Valid: true},

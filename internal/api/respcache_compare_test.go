@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -19,7 +18,7 @@ import (
 // rebuild drops entirely) around the fields the model absorbs. files == nil
 // OMITS the array (GitHub's oversized-response form -- pr-minder reads
 // absence as "unknown, fail open"), while an empty non-nil slice yields
-// "files": [] (a genuinely 0-diff comparison -- the close-empty gate).
+// "files": [] (a genuinely -diff comparison -- the close-empty gate).
 func upstreamCompare(status string, aheadBy, behindBy int, commits []any, files []any) map[string]any {
 	web := "https://github.com/org1/repo1/compare/main...dev"
 	doc := map[string]any{
@@ -42,7 +41,7 @@ func upstreamCompare(status string, aheadBy, behindBy int, commits []any, files 
 	return doc
 }
 
-// upstreamCompareFile builds one GitHub-shaped files entry, including the
+// upstreamCompareFile builds GitHub-shaped files entry, including the
 // blob/raw/contents URLs and the per-file `patch` the rebuild must drop.
 func upstreamCompareFile(filename, status string, additions, deletions int, prev string) map[string]any {
 	f := map[string]any{
@@ -74,8 +73,7 @@ type compareCacheUpstream struct {
 func newCompareCacheUpstream() *compareCacheUpstream {
 	u := &compareCacheUpstream{}
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
-		// The commit message carries the requested basehead, so distinct
-		// baseheads produce distinguishable trimmed docs.
+		// The commit message carries the requested basehead, so distinct baseheads produce distinguishable trimmed docs.
 		basehead := strings.SplitN(r.URL.Path, "/compare/", 2)[1]
 		servePRJSON(w, upstreamCompare("ahead", 1, 0,
 			[]any{upstreamCommit(shaCommit, "tip of "+basehead, shaTree2, shaBase)},
@@ -121,12 +119,12 @@ func compareCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 	return router, store, db, u
 }
 
-// TestCachedCompare_MissAbsorbHit covers the core flow: the first read fetches
-// + absorbs (miss), the second serves the identical trimmed body from state
-// (hit, zero upstream calls), the rebuild drops every URL field, the full
-// base_commit object, the user-object clutter, and the per-file patch -- and
-// the compare's commits land in the SAME global git_commits_cache rows the
-// single git-commit route serves.
+// TestCachedCompare_MissAbsorbHit covers the core flow: the read fetches +
+// absorbs (miss), the serves the identical trimmed body from state (hit,
+// upstream calls), the rebuild drops every URL field, the full base_commit
+// object, the user-object clutter, and the per-file patch -- and the
+// compare's commits land in the SAME global git_commits_cache rows the
+// git-commit route serves.
 func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 	target := "/repos/org1/repo1/compare/main...dev"
@@ -136,27 +134,30 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`{
-		"status": "ahead",
-		"ahead_by": 1,
-		"behind_by": 0,
-		"total_commits": 1,
-		"merge_base_commit": {"sha": %q},
-		"commits": [
-			{"sha": %q,
-			 "commit": {
-				"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-				"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-				"message": "tip of main...dev",
-				"tree": {"sha": %q}},
-			 "parents": [{"sha": %q}]}
-		],
-		"files": [
-			{"filename": "main.go", "status": "modified", "additions": 10, "deletions": 2, "changes": 12},
-			{"filename": "renamed.go", "status": "renamed", "additions": 0, "deletions": 0, "changes": 0,
-			 "previous_filename": "old.go"}
-		]
-	}`, shaBase, shaCommit, shaTree2, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString(map[string]any{
+		"status":            "ahead",
+		"ahead_by":          1,
+		"behind_by":         0,
+		"total_commits":     1,
+		"merge_base_commit": map[string]any{"sha": shaBase},
+		"commits": []any{map[string]any{
+			"sha": shaCommit,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "tip of main...dev",
+				"tree":      map[string]any{"sha": shaTree2},
+			},
+			"parents": []any{map[string]any{"sha": shaBase}},
+		}},
+		"files": []any{
+			map[string]any{"filename": "main.go", "status": "modified", "additions": 10, "deletions": 2, "changes": 12},
+			map[string]any{
+				"filename": "renamed.go", "status": "renamed", "additions": 0, "deletions": 0, "changes": 0,
+				"previous_filename": "old.go",
+			},
+		},
+	}), w1.Body.String())
 	assert.NotContains(t, w1.Body.String(), "never stored", "the per-file patch must be dropped")
 	assert.NotContains(t, w1.Body.String(), "base commit", "the base_commit object must be dropped")
 
@@ -166,19 +167,17 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.compareHits), "hit must not call upstream")
 
-	// Absorb synergy: the compare's commits are global git_commits_cache rows,
-	// so the single git-commit route hits without its own fetch ever having
-	// happened (this fake 404s that endpoint -- a miss could not serve).
+	// Absorb synergy: the compare's commits are global git_commits_cache rows.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaCommit, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "compare-absorbed commits must serve the single git-commit route")
 }
 
 // TestCachedCompare_ChangedFilesPreserved pins the field whose loss got the
-// old /compare cache REMOVED: pr-minder reads changed_files = files.length,
-// where an EMPTY array means a 0-diff branch (close/skip -- the empty-PR
-// gate) and an ABSENT array means unknown (fail open, never close). Both
-// forms must survive the rebuild exactly, on the miss and on the hit.
+// /compare cache REMOVED: pr-minder reads changed_files = files.length, where
+// an EMPTY array means a -diff branch (close/skip -- the empty-PR gate) and
+// an ABSENT array means unknown (fail open, never close). Both forms must
+// survive the rebuild exactly, on the miss and on the hit.
 func TestCachedCompare_ChangedFilesPreserved(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 
@@ -195,7 +194,7 @@ func TestCachedCompare_ChangedFilesPreserved(t *testing.T) {
 		return arr, true
 	}
 
-	// A squash-merge orphan: ahead by commit count, ZERO net diff. files must
+	// A squash-merge orphan: ahead by commit count, net diff. files must
 	// rebuild as a present-and-empty array so the close-empty gate fires.
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
 		servePRJSON(w, upstreamCompare("ahead", 2, 0,
@@ -211,7 +210,7 @@ func TestCachedCompare_ChangedFilesPreserved(t *testing.T) {
 	}
 
 	// An oversized comparison: GitHub OMITS the files array. The rebuild must
-	// omit it too -- inventing an empty one would flip "unknown" into "0-diff"
+	// omit it too -- inventing an empty would flip "unknown" into "-diff"
 	// and close a real PR.
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
 		servePRJSON(w, upstreamCompare("ahead", 3, 0,
@@ -285,8 +284,7 @@ func TestCachedCompare_BaseheadKeying(t *testing.T) {
 // TestCachedCompare_PassthroughShapes: shapes the cache does not model pass
 // through verbatim, uncached, every time -- query params, the diff/patch
 // media types, the cross-fork owner:branch form (whose fork side this repo's
-// webhooks can never invalidate), and a basehead without the three-dot
-// separator.
+// webhooks can never invalidate), and a basehead without the -dot separator.
 func TestCachedCompare_PassthroughShapes(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 
@@ -295,7 +293,7 @@ func TestCachedCompare_PassthroughShapes(t *testing.T) {
 		"/repos/org1/repo1/compare/main...dev?page=2",      // ...none of them
 		"/repos/org1/repo1/compare/main...other:branch",    // cross-fork head
 		"/repos/org1/repo1/compare/other:main...dev",       // cross-fork base
-		"/repos/org1/repo1/compare/main..dev",              // two-dot form (no ...)
+		"/repos/org1/repo1/compare/main..dev",              // -dot form (no...)
 		"/repos/org1/repo1/compare/just-one-ref",           // no separator at all
 		"/repos/org1/repo1/compare/...dev",                 // empty base
 		"/repos/org1/repo1/compare/main...",                // empty head
@@ -370,7 +368,7 @@ func TestCachedCompare_TTLBackstopExpiry(t *testing.T) {
 }
 
 // TestCachedCompare_ErrorStatusNotStored: 5xx (and any status that is neither
-// a 200 comparison nor a 404 verdict) is relayed verbatim and stores nothing.
+// a comparison nor a verdict) is relayed verbatim and stores nothing.
 func TestCachedCompare_ErrorStatusNotStored(t *testing.T) {
 	router, _, db, u := compareCacheStack(t)
 	u.compare = func(w http.ResponseWriter, r *http.Request) {
@@ -391,11 +389,11 @@ func TestCachedCompare_ErrorStatusNotStored(t *testing.T) {
 	assert.Zero(t, count, "an error answer must store no compare doc")
 }
 
-// TestCachedCompare_404VerdictCached: round 2 absorbs the 404 unknown-ref
+// TestCachedCompare_404VerdictCached: round absorbs the unknown-ref
 // VERDICT -- the fleet's close-empty pass compares base...head for fork PRs
-// whose head ref does not exist in the base repo, re-earning the same 404
-// every sweep. Absorbed as a status-404 row ({"message": ..., "status":
-// "404"}, documentation_url dropped), served from state on the next read, and
+// whose head ref does not exist in the base repo, re-earning the same
+// every sweep. Absorbed as a status- row ({"message":..., "status":
+// ""}, documentation_url dropped), served from state on the next read, and
 // FLUSHED when a push names the missing ref (its creation is exactly what
 // changes the answer): the per-ref compare flush matches base_ref/head_ref.
 func TestCachedCompare_404VerdictCached(t *testing.T) {
@@ -408,7 +406,7 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 	u.compare = real404
 	target := "/repos/org1/repo1/compare/main...ghostbranch"
 
-	// Miss: the 404 verdict is absorbed and relayed REBUILT.
+	// Miss: the verdict is absorbed and relayed REBUILT.
 	w1 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusNotFound, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
@@ -416,7 +414,7 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 	assertNoURLKeys(t, w1.Body.Bytes())
 	assert.JSONEq(t, `{"message":"Not Found","status":"404"}`, w1.Body.String())
 
-	// Hit: the verdict answers, zero upstream calls.
+	// Hit: the verdict answers, upstream calls.
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusNotFound, w2.Code)
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -425,20 +423,19 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 
 	// A push naming an UNRELATED ref leaves the verdict alone (the per-ref
 	// grain)...
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/unrelated","before":%q,"after":%q,`+
-			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/unrelated", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 	w3 := do(t, router, authedReq("GET", target, nil))
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "a push to an unrelated ref must not flush the verdict")
 
-	// ...while a push CREATING the missing head ref flushes it, and the next
-	// read fetches the now-real comparison.
+	// ...while a push CREATING the missing head ref flushes it and refetches.
 	u.compare = newCompareCacheUpstream().compare
-	postWebhook(t, router, "push", fmt.Sprintf(
-		`{"ref":"refs/heads/ghostbranch","before":%q,"after":%q,`+
-			`"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`,
-		shaBase, shaTip))
+	postWebhookJSON(t, router, "push", map[string]any{
+		"ref": "refs/heads/ghostbranch", "before": shaBase, "after": shaTip,
+		"repository": fixtureRepo(),
+	})
 	w4 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w4.Code, "the created ref's comparison must be refetched")
 	assert.Equal(t, "miss", w4.Header().Get(cacheHeader), "a push naming the missing ref must flush the 404 verdict")
@@ -470,7 +467,7 @@ func TestCachedCompare_RevealDenied(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.compareHits))
 }
 
-// TestCompareBaseheadCacheable pins the shape gate: the consumers' three-dot
+// TestCompareBaseheadCacheable pins the shape gate: the consumers' -dot
 // form (slashes and all) is cacheable; anything else is not.
 func TestCompareBaseheadCacheable(t *testing.T) {
 	for _, good := range []string{

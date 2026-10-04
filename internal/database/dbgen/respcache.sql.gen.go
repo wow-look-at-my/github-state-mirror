@@ -7,7 +7,109 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 )
+
+const contradictingPRBaseTip = `-- name: ContradictingPRBaseTip :one
+SELECT base_ref_oid FROM pull_requests
+WHERE owner = ? AND repo = ? AND base_ref_name = ?
+  AND base_ref_oid IS NOT NULL AND base_ref_oid != '' AND base_ref_oid != ?
+  AND touched_at > ?
+ORDER BY touched_at DESC
+LIMIT 1
+`
+
+type ContradictingPRBaseTipParams struct {
+	Owner       string
+	Repo        string
+	BaseRefName sql.NullString
+	BaseRefOid  sql.NullString
+	TouchedAt   string
+}
+
+// ContradictingPRBaseTip finds an absorbed OPEN PR whose base branch is this
+// ref and whose base.sha is NOT the sha this row serves -- evidence, from a
+// view absorbed AFTER the row was fetched, that the row has moved on.
+// Newest-absorbed first, so several PRs on one branch settle deterministically
+// on one refetch rather than taking turns re-triggering it.
+func (q *Queries) ContradictingPRBaseTip(ctx context.Context, arg ContradictingPRBaseTipParams) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, contradictingPRBaseTip,
+		arg.Owner,
+		arg.Repo,
+		arg.BaseRefName,
+		arg.BaseRefOid,
+		arg.TouchedAt,
+	)
+	var base_ref_oid sql.NullString
+	err := row.Scan(&base_ref_oid)
+	return base_ref_oid, err
+}
+
+const countWorkflowRuns = `-- name: CountWorkflowRuns :one
+SELECT COUNT(*) FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+`
+
+type CountWorkflowRunsParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+}
+
+// CountWorkflowRuns is the same filter without pagination -- the listing's
+// total_count, exact because the completeness marker vouches for the set.
+func (q *Queries) CountWorkflowRuns(ctx context.Context, arg CountWorkflowRunsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countWorkflowRuns,
+		arg.Owner,
+		arg.Repo,
+		arg.Status,
+		arg.HeadBranch,
+		arg.HeadSha,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteAbsentRepoInstallationCache = `-- name: DeleteAbsentRepoInstallationCache :exec
+DELETE FROM repo_installation_cache WHERE status <> 200
+`
+
+// DeleteAbsentRepoInstallationCache drops every "not installed" VERDICT row.
+// Those carry installation_id 0, so the by-id flush above cannot reach them,
+// and an installation event means some account gained (or lost) an install --
+// exactly what a verdict claims is absent.
+func (q *Queries) DeleteAbsentRepoInstallationCache(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAbsentRepoInstallationCache)
+	return err
+}
+
+const deleteAllInstallationReposCache = `-- name: DeleteAllInstallationReposCache :exec
+DELETE FROM installation_repos_cache
+`
+
+// DeleteAllInstallationReposCache is the installation-event flush. Rows key a
+// credential, not an installation id, so there is nothing finer to match on --
+// and these deliveries are rare while the table holds one row per live token.
+func (q *Queries) DeleteAllInstallationReposCache(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllInstallationReposCache)
+	return err
+}
+
+const deleteAppInstallationsCacheForApp = `-- name: DeleteAppInstallationsCacheForApp :exec
+DELETE FROM app_installations_cache WHERE app_key = ?
+`
+
+func (q *Queries) DeleteAppInstallationsCacheForApp(ctx context.Context, appKey string) error {
+	_, err := q.db.ExecContext(ctx, deleteAppInstallationsCacheForApp, appKey)
+	return err
+}
 
 const deleteBranchesListCacheByRepo = `-- name: DeleteBranchesListCacheByRepo :exec
 DELETE FROM branches_list_cache WHERE owner = ? AND repo = ?
@@ -23,6 +125,20 @@ type DeleteBranchesListCacheByRepoParams struct {
 // arrive as pushes).
 func (q *Queries) DeleteBranchesListCacheByRepo(ctx context.Context, arg DeleteBranchesListCacheByRepoParams) error {
 	_, err := q.db.ExecContext(ctx, deleteBranchesListCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteCheckRunCacheByRepo = `-- name: DeleteCheckRunCacheByRepo :exec
+DELETE FROM check_run_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCheckRunCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteCheckRunCacheByRepo(ctx context.Context, arg DeleteCheckRunCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCheckRunCacheByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -58,6 +174,20 @@ type DeleteClosedPullCacheByRepoParams struct {
 // closed PR.
 func (q *Queries) DeleteClosedPullCacheByRepo(ctx context.Context, arg DeleteClosedPullCacheByRepoParams) error {
 	_, err := q.db.ExecContext(ctx, deleteClosedPullCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteCodeQualitySetupCacheByRepo = `-- name: DeleteCodeQualitySetupCacheByRepo :exec
+DELETE FROM code_quality_setup_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteCodeQualitySetupCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteCodeQualitySetupCacheByRepo(ctx context.Context, arg DeleteCodeQualitySetupCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCodeQualitySetupCacheByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -97,6 +227,31 @@ func (q *Queries) DeleteCommitCICacheForRef(ctx context.Context, arg DeleteCommi
 	return err
 }
 
+const deleteCommitCICacheForRefKind = `-- name: DeleteCommitCICacheForRefKind :exec
+DELETE FROM commit_ci_cache WHERE owner = ? AND repo = ? AND ref = ? AND kind = ?
+`
+
+type DeleteCommitCICacheForRefKindParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Kind  string
+}
+
+// DeleteCommitCICacheForRefKind drops one ref spelling's snapshots of ONE
+// kind. A status delivery and a check delivery move disjoint documents --
+// statuses never appear in a check-runs listing and check runs never appear
+// in a combined status -- so each flushes only the kinds it can have moved.
+func (q *Queries) DeleteCommitCICacheForRefKind(ctx context.Context, arg DeleteCommitCICacheForRefKindParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitCICacheForRefKind,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Kind,
+	)
+	return err
+}
+
 const deleteCommitsListCacheByRepo = `-- name: DeleteCommitsListCacheByRepo :exec
 DELETE FROM commits_list_cache WHERE owner = ? AND repo = ?
 `
@@ -130,6 +285,26 @@ type DeleteCommitsListCacheForRefParams struct {
 // absorbed git_commits_cache rows are immutable and stay.
 func (q *Queries) DeleteCommitsListCacheForRef(ctx context.Context, arg DeleteCommitsListCacheForRefParams) error {
 	_, err := q.db.ExecContext(ctx, deleteCommitsListCacheForRef, arg.Owner, arg.Repo, arg.RefParam)
+	return err
+}
+
+const deleteCommitsListCachePullSnapshots = `-- name: DeleteCommitsListCachePullSnapshots :exec
+DELETE FROM commits_list_cache
+WHERE owner = ? AND repo = ? AND ref_param LIKE 'pull/%'
+`
+
+type DeleteCommitsListCachePullSnapshotsParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteCommitsListCachePullSnapshots drops a repo's PR-commit snapshots --
+// the rows whose ref key is the synthetic "pull/<number>/commits" (see
+// internal/api/respcache_pullcommits.go). A push moves a PR's commit list
+// with no per-PR signal, exactly as it does the PR-files pages, so it flushes
+// these repo-wide as the belt behind the per-PR pull_request flush.
+func (q *Queries) DeleteCommitsListCachePullSnapshots(ctx context.Context, arg DeleteCommitsListCachePullSnapshotsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCommitsListCachePullSnapshots, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -206,6 +381,15 @@ func (q *Queries) DeleteContentsCacheForRef(ctx context.Context, arg DeleteConte
 	return err
 }
 
+const deleteExpiredAppInstallationsCache = `-- name: DeleteExpiredAppInstallationsCache :exec
+DELETE FROM app_installations_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredAppInstallationsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredAppInstallationsCache, expiresAt)
+	return err
+}
+
 const deleteExpiredBranchesListCache = `-- name: DeleteExpiredBranchesListCache :exec
 DELETE FROM branches_list_cache WHERE expires_at <= ?
 `
@@ -215,12 +399,30 @@ func (q *Queries) DeleteExpiredBranchesListCache(ctx context.Context, expiresAt 
 	return err
 }
 
+const deleteExpiredCheckRunCache = `-- name: DeleteExpiredCheckRunCache :exec
+DELETE FROM check_run_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCheckRunCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCheckRunCache, expiresAt)
+	return err
+}
+
 const deleteExpiredClosedPullCache = `-- name: DeleteExpiredClosedPullCache :exec
 DELETE FROM closed_pull_cache WHERE expires_at <= ?
 `
 
 func (q *Queries) DeleteExpiredClosedPullCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredClosedPullCache, expiresAt)
+	return err
+}
+
+const deleteExpiredCodeQualitySetupCache = `-- name: DeleteExpiredCodeQualitySetupCache :exec
+DELETE FROM code_quality_setup_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredCodeQualitySetupCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredCodeQualitySetupCache, expiresAt)
 	return err
 }
 
@@ -269,12 +471,84 @@ func (q *Queries) DeleteExpiredGitCommitMissCache(ctx context.Context, expiresAt
 	return err
 }
 
+const deleteExpiredGitRefCache = `-- name: DeleteExpiredGitRefCache :exec
+DELETE FROM git_ref_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredGitRefCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredGitRefCache, expiresAt)
+	return err
+}
+
+const deleteExpiredHooksCache = `-- name: DeleteExpiredHooksCache :exec
+DELETE FROM hooks_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredHooksCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredHooksCache, expiresAt)
+	return err
+}
+
+const deleteExpiredIdentityCache = `-- name: DeleteExpiredIdentityCache :exec
+DELETE FROM identity_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredIdentityCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredIdentityCache, expiresAt)
+	return err
+}
+
 const deleteExpiredInstallTokenCache = `-- name: DeleteExpiredInstallTokenCache :exec
 DELETE FROM install_token_cache WHERE expires_at <= ?
 `
 
 func (q *Queries) DeleteExpiredInstallTokenCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredInstallTokenCache, expiresAt)
+	return err
+}
+
+const deleteExpiredInstallationReposCache = `-- name: DeleteExpiredInstallationReposCache :exec
+DELETE FROM installation_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredInstallationReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredInstallationReposCache, expiresAt)
+	return err
+}
+
+const deleteExpiredLabelCache = `-- name: DeleteExpiredLabelCache :exec
+DELETE FROM label_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredLabelCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredLabelCache, expiresAt)
+	return err
+}
+
+const deleteExpiredMatchingRefsCache = `-- name: DeleteExpiredMatchingRefsCache :exec
+DELETE FROM matching_refs_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredMatchingRefsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredMatchingRefsCache, expiresAt)
+	return err
+}
+
+const deleteExpiredOrgRunnersCache = `-- name: DeleteExpiredOrgRunnersCache :exec
+DELETE FROM org_runners_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredOrgRunnersCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredOrgRunnersCache, expiresAt)
+	return err
+}
+
+const deleteExpiredOwnerReposCache = `-- name: DeleteExpiredOwnerReposCache :exec
+DELETE FROM owner_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredOwnerReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredOwnerReposCache, expiresAt)
 	return err
 }
 
@@ -305,6 +579,15 @@ func (q *Queries) DeleteExpiredPullsListMarkers(ctx context.Context, expiresAt s
 	return err
 }
 
+const deleteExpiredReadmeCache = `-- name: DeleteExpiredReadmeCache :exec
+DELETE FROM readme_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredReadmeCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredReadmeCache, expiresAt)
+	return err
+}
+
 const deleteExpiredRepoInstallationCache = `-- name: DeleteExpiredRepoInstallationCache :exec
 DELETE FROM repo_installation_cache WHERE expires_at <= ?
 `
@@ -314,12 +597,57 @@ func (q *Queries) DeleteExpiredRepoInstallationCache(ctx context.Context, expire
 	return err
 }
 
+const deleteExpiredSearchIssuesCache = `-- name: DeleteExpiredSearchIssuesCache :exec
+DELETE FROM search_issues_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredSearchIssuesCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredSearchIssuesCache, expiresAt)
+	return err
+}
+
+const deleteExpiredUserReposCache = `-- name: DeleteExpiredUserReposCache :exec
+DELETE FROM user_repos_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredUserReposCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredUserReposCache, expiresAt)
+	return err
+}
+
+const deleteExpiredWorkflowJobsCache = `-- name: DeleteExpiredWorkflowJobsCache :exec
+DELETE FROM workflow_jobs_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowJobsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowJobsCache, expiresAt)
+	return err
+}
+
 const deleteExpiredWorkflowRunsCache = `-- name: DeleteExpiredWorkflowRunsCache :exec
 DELETE FROM workflow_runs_cache WHERE expires_at <= ?
 `
 
 func (q *Queries) DeleteExpiredWorkflowRunsCache(ctx context.Context, expiresAt string) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowRunsCache, expiresAt)
+	return err
+}
+
+const deleteExpiredWorkflowRunsListMarkers = `-- name: DeleteExpiredWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowRunsListMarkers(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowRunsListMarkers, expiresAt)
+	return err
+}
+
+const deleteExpiredWorkflowsCache = `-- name: DeleteExpiredWorkflowsCache :exec
+DELETE FROM workflows_cache WHERE expires_at <= ?
+`
+
+func (q *Queries) DeleteExpiredWorkflowsCache(ctx context.Context, expiresAt string) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredWorkflowsCache, expiresAt)
 	return err
 }
 
@@ -355,6 +683,56 @@ func (q *Queries) DeleteGitCommitMissCacheByRepo(ctx context.Context, arg Delete
 	return err
 }
 
+const deleteGitRefCacheByRepo = `-- name: DeleteGitRefCacheByRepo :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteGitRefCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteGitRefCacheByRepo(ctx context.Context, arg DeleteGitRefCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteGitRefCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteGitRefCacheForRef = `-- name: DeleteGitRefCacheForRef :exec
+DELETE FROM git_ref_cache WHERE owner = ? AND repo = ? AND ref = ?
+`
+
+type DeleteGitRefCacheForRefParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+}
+
+// DeleteGitRefCacheForRef drops ONE requested spelling of a ref -- the
+// per-ref push flush (a push moves, creates, or deletes exactly one ref).
+func (q *Queries) DeleteGitRefCacheForRef(ctx context.Context, arg DeleteGitRefCacheForRefParams) error {
+	_, err := q.db.ExecContext(ctx, deleteGitRefCacheForRef, arg.Owner, arg.Repo, arg.Ref)
+	return err
+}
+
+const deleteHooksCacheForTarget = `-- name: DeleteHooksCacheForTarget :exec
+DELETE FROM hooks_cache WHERE scope = ? AND owner = ? AND repo = ?
+`
+
+type DeleteHooksCacheForTargetParams struct {
+	Scope string
+	Owner string
+	Repo  string
+}
+
+// DeleteHooksCacheForTarget drops one target's listings across EVERY
+// credential. A hook created, edited or deleted through the mirror changes
+// what every caller sees, not just the one that wrote it -- so the write flush
+// cannot be per-credential even though the rows are.
+func (q *Queries) DeleteHooksCacheForTarget(ctx context.Context, arg DeleteHooksCacheForTargetParams) error {
+	_, err := q.db.ExecContext(ctx, deleteHooksCacheForTarget, arg.Scope, arg.Owner, arg.Repo)
+	return err
+}
+
 const deleteInstallTokenCacheByInstallation = `-- name: DeleteInstallTokenCacheByInstallation :exec
 DELETE FROM install_token_cache WHERE installation_id = ?
 `
@@ -374,6 +752,48 @@ DELETE FROM install_token_cache WHERE token = ?
 // keep serving (its grants no longer match GitHub's).
 func (q *Queries) DeleteInstallTokenCacheByToken(ctx context.Context, token string) error {
 	_, err := q.db.ExecContext(ctx, deleteInstallTokenCacheByToken, token)
+	return err
+}
+
+const deleteLabelCacheByRepo = `-- name: DeleteLabelCacheByRepo :exec
+DELETE FROM label_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteLabelCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteLabelCacheByRepo is the ONLY flush grain: a label event names one
+// label, but a rename names two, and every requested spelling of a name is
+// its own row. Label events are rare and a repo holds few labels.
+func (q *Queries) DeleteLabelCacheByRepo(ctx context.Context, arg DeleteLabelCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteLabelCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteMatchingRefsCacheByRepo = `-- name: DeleteMatchingRefsCacheByRepo :exec
+DELETE FROM matching_refs_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteMatchingRefsCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteMatchingRefsCacheByRepo(ctx context.Context, arg DeleteMatchingRefsCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteMatchingRefsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteOwnerReposCacheByOwner = `-- name: DeleteOwnerReposCacheByOwner :exec
+DELETE FROM owner_repos_cache WHERE owner = ?
+`
+
+// DeleteOwnerReposCacheByOwner spans every credential, because a created,
+// deleted or renamed repo moves the owner's listing for all of them.
+func (q *Queries) DeleteOwnerReposCacheByOwner(ctx context.Context, owner string) error {
+	_, err := q.db.ExecContext(ctx, deleteOwnerReposCacheByOwner, owner)
 	return err
 }
 
@@ -464,12 +884,90 @@ func (q *Queries) DeletePullsListMarkersByRepo(ctx context.Context, arg DeletePu
 	return err
 }
 
+const deleteReadmeCacheByRepo = `-- name: DeleteReadmeCacheByRepo :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteReadmeCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteReadmeCacheByRepo(ctx context.Context, arg DeleteReadmeCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteReadmeCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteReadmeCacheForRef = `-- name: DeleteReadmeCacheForRef :exec
+DELETE FROM readme_cache WHERE owner = ? AND repo = ? AND ref = ?
+`
+
+type DeleteReadmeCacheForRefParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+}
+
+// DeleteReadmeCacheForRef is the per-ref grain a push names, matching the
+// contents_cache flush: rows key the ref the CALLER asked for, so a
+// default-branch push flushes the ” spelling too.
+func (q *Queries) DeleteReadmeCacheForRef(ctx context.Context, arg DeleteReadmeCacheForRefParams) error {
+	_, err := q.db.ExecContext(ctx, deleteReadmeCacheForRef, arg.Owner, arg.Repo, arg.Ref)
+	return err
+}
+
 const deleteRepoInstallationCacheByInstallation = `-- name: DeleteRepoInstallationCacheByInstallation :exec
 DELETE FROM repo_installation_cache WHERE installation_id = ?
 `
 
 func (q *Queries) DeleteRepoInstallationCacheByInstallation(ctx context.Context, installationID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteRepoInstallationCacheByInstallation, installationID)
+	return err
+}
+
+const deleteWorkflowJobsCacheByRepo = `-- name: DeleteWorkflowJobsCacheByRepo :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowJobsCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteWorkflowJobsCacheByRepo(ctx context.Context, arg DeleteWorkflowJobsCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowJobsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteWorkflowJobsCacheForRun = `-- name: DeleteWorkflowJobsCacheForRun :exec
+DELETE FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?
+`
+
+type DeleteWorkflowJobsCacheForRunParams struct {
+	Owner string
+	Repo  string
+	RunID int64
+}
+
+// DeleteWorkflowJobsCacheForRun drops every row a run's jobs back -- both the
+// run's own jobs pages and the single-job rows under it. A re-run replaces a
+// run's jobs under the SAME run id, so this is the flush that matters.
+func (q *Queries) DeleteWorkflowJobsCacheForRun(ctx context.Context, arg DeleteWorkflowJobsCacheForRunParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowJobsCacheForRun, arg.Owner, arg.Repo, arg.RunID)
+	return err
+}
+
+const deleteWorkflowRunsByRepo = `-- name: DeleteWorkflowRunsByRepo :exec
+DELETE FROM workflow_runs WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowRunsByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+func (q *Queries) DeleteWorkflowRunsByRepo(ctx context.Context, arg DeleteWorkflowRunsByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsByRepo, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -499,12 +997,115 @@ type DeleteWorkflowRunsCacheForHeadSHAParams struct {
 	HeadSha string
 }
 
-// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
-// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
-// snapshots survive.
 func (q *Queries) DeleteWorkflowRunsCacheForHeadSHA(ctx context.Context, arg DeleteWorkflowRunsCacheForHeadSHAParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
 	return err
+}
+
+const deleteWorkflowRunsListMarkers = `-- name: DeleteWorkflowRunsListMarkers :exec
+DELETE FROM workflow_runs_list_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowRunsListMarkersParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteWorkflowRunsListMarkers clears a repo's completeness proofs. Only
+// repository events (and the expiry) do this -- a run delivery MAINTAINS the
+// rows the marker vouches for, so it must never clear the marker.
+func (q *Queries) DeleteWorkflowRunsListMarkers(ctx context.Context, arg DeleteWorkflowRunsListMarkersParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowRunsListMarkers, arg.Owner, arg.Repo)
+	return err
+}
+
+const deleteWorkflowRunsNotIn = `-- name: DeleteWorkflowRunsNotIn :exec
+DELETE FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+  AND run_id NOT IN (/*SLICE:kept*/?)
+`
+
+type DeleteWorkflowRunsNotInParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+	Kept       []int64
+}
+
+// DeleteWorkflowRunsNotIn drops the rows a reconciling absorb proved stale:
+// runs that still MATCH the filter in truth but were absent from a short
+// page-1 response for that same filter. Their state provably moved and the
+// response did not say where to, so the row goes and the next read re-absorbs
+// it. sqlc.slice expands to the run ids the response did contain.
+func (q *Queries) DeleteWorkflowRunsNotIn(ctx context.Context, arg DeleteWorkflowRunsNotInParams) error {
+	query := deleteWorkflowRunsNotIn
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Owner)
+	queryParams = append(queryParams, arg.Repo)
+	queryParams = append(queryParams, arg.Status)
+	queryParams = append(queryParams, arg.HeadBranch)
+	queryParams = append(queryParams, arg.HeadSha)
+	if len(arg.Kept) > 0 {
+		for _, v := range arg.Kept {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:kept*/?", strings.Repeat(",?", len(arg.Kept))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:kept*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
+
+const deleteWorkflowsCacheByRepo = `-- name: DeleteWorkflowsCacheByRepo :exec
+DELETE FROM workflows_cache WHERE owner = ? AND repo = ?
+`
+
+type DeleteWorkflowsCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// DeleteWorkflowsCacheByRepo is the only flush grain a push supports: the
+// delivery names changed FILES, and a file maps to a workflow id only through
+// an answer this table is the cache of. A repo holds few workflows.
+func (q *Queries) DeleteWorkflowsCacheByRepo(ctx context.Context, arg DeleteWorkflowsCacheByRepoParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWorkflowsCacheByRepo, arg.Owner, arg.Repo)
+	return err
+}
+
+const getAppInstallationsCache = `-- name: GetAppInstallationsCache :one
+
+SELECT id, app_key, per_page, page, doc, fetched_at, expires_at, last_used_at FROM app_installations_cache
+WHERE app_key = ? AND per_page = ? AND page = ?
+`
+
+type GetAppInstallationsCacheParams struct {
+	AppKey  string
+	PerPage int64
+	Page    int64
+}
+
+// ---- app_installations_cache (GET /app/installations) ----
+func (q *Queries) GetAppInstallationsCache(ctx context.Context, arg GetAppInstallationsCacheParams) (AppInstallationsCache, error) {
+	row := q.db.QueryRowContext(ctx, getAppInstallationsCache, arg.AppKey, arg.PerPage, arg.Page)
+	var i AppInstallationsCache
+	err := row.Scan(
+		&i.ID,
+		&i.AppKey,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
 }
 
 const getBranchesListCache = `-- name: GetBranchesListCache :one
@@ -543,6 +1144,35 @@ func (q *Queries) GetBranchesListCache(ctx context.Context, arg GetBranchesListC
 	return i, err
 }
 
+const getCheckRunCache = `-- name: GetCheckRunCache :one
+
+SELECT id, owner, repo, check_run_id, doc, fetched_at, expires_at, last_used_at FROM check_run_cache
+WHERE owner = ? AND repo = ? AND check_run_id = ?
+`
+
+type GetCheckRunCacheParams struct {
+	Owner      string
+	Repo       string
+	CheckRunID int64
+}
+
+// ---- check_run_cache (GET /repos/{owner}/{repo}/check-runs/{check_run_id}) ----
+func (q *Queries) GetCheckRunCache(ctx context.Context, arg GetCheckRunCacheParams) (CheckRunCache, error) {
+	row := q.db.QueryRowContext(ctx, getCheckRunCache, arg.Owner, arg.Repo, arg.CheckRunID)
+	var i CheckRunCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.CheckRunID,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getClosedPullCache = `-- name: GetClosedPullCache :one
 
 SELECT id, owner, repo, number, doc, fetched_at, expires_at, last_used_at FROM closed_pull_cache
@@ -572,9 +1202,35 @@ func (q *Queries) GetClosedPullCache(ctx context.Context, arg GetClosedPullCache
 	return i, err
 }
 
+const getCodeQualitySetupCache = `-- name: GetCodeQualitySetupCache :one
+
+SELECT id, owner, repo, doc, fetched_at, expires_at, last_used_at FROM code_quality_setup_cache WHERE owner = ? AND repo = ?
+`
+
+type GetCodeQualitySetupCacheParams struct {
+	Owner string
+	Repo  string
+}
+
+// ---- code_quality_setup_cache (GET /repos/{owner}/{repo}/code-quality/setup) ----
+func (q *Queries) GetCodeQualitySetupCache(ctx context.Context, arg GetCodeQualitySetupCacheParams) (CodeQualitySetupCache, error) {
+	row := q.db.QueryRowContext(ctx, getCodeQualitySetupCache, arg.Owner, arg.Repo)
+	var i CodeQualitySetupCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getCommitCICache = `-- name: GetCommitCICache :one
 
-SELECT id, owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache
+SELECT id, owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache
 WHERE owner = ? AND repo = ? AND ref = ? AND kind = ? AND per_page = ? AND page = ?
 `
 
@@ -607,6 +1263,7 @@ func (q *Queries) GetCommitCICache(ctx context.Context, arg GetCommitCICachePara
 		&i.Kind,
 		&i.PerPage,
 		&i.Page,
+		&i.Status,
 		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
@@ -656,7 +1313,7 @@ func (q *Queries) GetCommitsListCache(ctx context.Context, arg GetCommitsListCac
 
 const getCompareCache = `-- name: GetCompareCache :one
 
-SELECT id, owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at FROM compare_cache
+SELECT id, owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at FROM compare_cache
 WHERE owner = ? AND repo = ? AND basehead = ?
 `
 
@@ -677,6 +1334,7 @@ func (q *Queries) GetCompareCache(ctx context.Context, arg GetCompareCacheParams
 		&i.Basehead,
 		&i.BaseRef,
 		&i.HeadRef,
+		&i.BaseTipSha,
 		&i.Status,
 		&i.Doc,
 		&i.FetchedAt,
@@ -805,6 +1463,147 @@ func (q *Queries) GetGitCommitMissCache(ctx context.Context, arg GetGitCommitMis
 	return i, err
 }
 
+const getGitRefCache = `-- name: GetGitRefCache :one
+
+SELECT id, owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against FROM git_ref_cache
+WHERE owner = ? AND repo = ? AND ref = ?
+`
+
+type GetGitRefCacheParams struct {
+	Owner string
+	Repo  string
+	Ref   string
+}
+
+// ---- git_ref_cache (GET /repos/{owner}/{repo}/git/ref/{ref}) ----
+func (q *Queries) GetGitRefCache(ctx context.Context, arg GetGitRefCacheParams) (GitRefCache, error) {
+	row := q.db.QueryRowContext(ctx, getGitRefCache, arg.Owner, arg.Repo, arg.Ref)
+	var i GitRefCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Ref,
+		&i.Status,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.ReconciledAgainst,
+	)
+	return i, err
+}
+
+const getGitTreeCache = `-- name: GetGitTreeCache :one
+
+SELECT id, owner, repo, sha, "recursive", doc, fetched_at, last_used_at FROM git_trees_cache
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?
+`
+
+type GetGitTreeCacheParams struct {
+	Owner     string
+	Repo      string
+	Sha       string
+	Recursive string
+}
+
+// ---- git_trees_cache (GET /repos/{owner}/{repo}/git/trees/{sha}) ----
+func (q *Queries) GetGitTreeCache(ctx context.Context, arg GetGitTreeCacheParams) (GitTreesCache, error) {
+	row := q.db.QueryRowContext(ctx, getGitTreeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+		arg.Recursive,
+	)
+	var i GitTreesCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Sha,
+		&i.Recursive,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getHooksCache = `-- name: GetHooksCache :one
+
+SELECT id, token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM hooks_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?
+`
+
+type GetHooksCacheParams struct {
+	TokenFp string
+	Scope   string
+	Owner   string
+	Repo    string
+	HookID  int64
+	PerPage int64
+	Page    int64
+}
+
+// ---- hooks_cache (GET /repos/{owner}/{repo}/hooks, GET /orgs/{org}/hooks) ----
+// A listing row carries hook_id 0; a single-hook row carries its id and pages
+// at 0. The key covers both, so neither can answer the other's question.
+func (q *Queries) GetHooksCache(ctx context.Context, arg GetHooksCacheParams) (HooksCache, error) {
+	row := q.db.QueryRowContext(ctx, getHooksCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.HookID,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i HooksCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Scope,
+		&i.Owner,
+		&i.Repo,
+		&i.HookID,
+		&i.PerPage,
+		&i.Page,
+		&i.Status,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getIdentityCache = `-- name: GetIdentityCache :one
+
+SELECT id, subject_key, kind, doc, fetched_at, expires_at, last_used_at FROM identity_cache
+WHERE subject_key = ? AND kind = ?
+`
+
+type GetIdentityCacheParams struct {
+	SubjectKey string
+	Kind       string
+}
+
+// ---- identity_cache (GET /app, GET /user, GET /user/orgs) ----
+func (q *Queries) GetIdentityCache(ctx context.Context, arg GetIdentityCacheParams) (IdentityCache, error) {
+	row := q.db.QueryRowContext(ctx, getIdentityCache, arg.SubjectKey, arg.Kind)
+	var i IdentityCache
+	err := row.Scan(
+		&i.ID,
+		&i.SubjectKey,
+		&i.Kind,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getInstallTokenCache = `-- name: GetInstallTokenCache :one
 
 SELECT id, actor, installation_id, body_hash, token, token_expires_at, permissions, repository_selection, fetched_at, expires_at, last_used_at FROM install_token_cache
@@ -830,6 +1629,184 @@ func (q *Queries) GetInstallTokenCache(ctx context.Context, arg GetInstallTokenC
 		&i.TokenExpiresAt,
 		&i.Permissions,
 		&i.RepositorySelection,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getInstallationReposCache = `-- name: GetInstallationReposCache :one
+
+SELECT id, token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at FROM installation_repos_cache
+WHERE token_fp = ? AND per_page = ? AND page = ?
+`
+
+type GetInstallationReposCacheParams struct {
+	TokenFp string
+	PerPage int64
+	Page    int64
+}
+
+// ---- installation_repos_cache (GET /installation/repositories) ----
+func (q *Queries) GetInstallationReposCache(ctx context.Context, arg GetInstallationReposCacheParams) (InstallationReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getInstallationReposCache, arg.TokenFp, arg.PerPage, arg.Page)
+	var i InstallationReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getLabelCache = `-- name: GetLabelCache :one
+
+SELECT id, owner, repo, name, doc, fetched_at, expires_at, last_used_at FROM label_cache WHERE owner = ? AND repo = ? AND name = ?
+`
+
+type GetLabelCacheParams struct {
+	Owner string
+	Repo  string
+	Name  string
+}
+
+// ---- label_cache (GET /repos/{owner}/{repo}/labels/{name}) ----
+func (q *Queries) GetLabelCache(ctx context.Context, arg GetLabelCacheParams) (LabelCache, error) {
+	row := q.db.QueryRowContext(ctx, getLabelCache, arg.Owner, arg.Repo, arg.Name)
+	var i LabelCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Name,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getMatchingRefsCache = `-- name: GetMatchingRefsCache :one
+
+SELECT id, owner, repo, prefix, per_page, page, doc, fetched_at, expires_at, last_used_at FROM matching_refs_cache
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?
+`
+
+type GetMatchingRefsCacheParams struct {
+	Owner   string
+	Repo    string
+	Prefix  string
+	PerPage int64
+	Page    int64
+}
+
+// ---- matching_refs_cache (GET /repos/{owner}/{repo}/git/matching-refs/heads/*) ----
+func (q *Queries) GetMatchingRefsCache(ctx context.Context, arg GetMatchingRefsCacheParams) (MatchingRefsCache, error) {
+	row := q.db.QueryRowContext(ctx, getMatchingRefsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Prefix,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i MatchingRefsCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Prefix,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getOrgRunnersCache = `-- name: GetOrgRunnersCache :one
+
+SELECT id, token_fp, org, per_page, page, doc, fetched_at, expires_at, last_used_at FROM org_runners_cache
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?
+`
+
+type GetOrgRunnersCacheParams struct {
+	TokenFp string
+	Org     string
+	PerPage int64
+	Page    int64
+}
+
+// ---- org_runners_cache (GET /orgs/{org}/actions/runners) ----
+func (q *Queries) GetOrgRunnersCache(ctx context.Context, arg GetOrgRunnersCacheParams) (OrgRunnersCache, error) {
+	row := q.db.QueryRowContext(ctx, getOrgRunnersCache,
+		arg.TokenFp,
+		arg.Org,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i OrgRunnersCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Org,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getOwnerReposCache = `-- name: GetOwnerReposCache :one
+
+SELECT id, token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM owner_repos_cache
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?
+`
+
+type GetOwnerReposCacheParams struct {
+	TokenFp   string
+	Scope     string
+	Owner     string
+	Sort      string
+	Direction string
+	PerPage   int64
+	Page      int64
+}
+
+// ---- owner_repos_cache (GET /orgs/{org}/repos, GET /users/{username}/repos) ----
+func (q *Queries) GetOwnerReposCache(ctx context.Context, arg GetOwnerReposCacheParams) (OwnerReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getOwnerReposCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i OwnerReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Scope,
+		&i.Owner,
+		&i.Sort,
+		&i.Direction,
+		&i.PerPage,
+		&i.Page,
+		&i.Status,
+		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
@@ -931,9 +1908,45 @@ func (q *Queries) GetPullsListMarker(ctx context.Context, arg GetPullsListMarker
 	return i, err
 }
 
+const getReadmeCache = `-- name: GetReadmeCache :one
+
+SELECT id, owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at FROM readme_cache WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?
+`
+
+type GetReadmeCacheParams struct {
+	Owner string
+	Repo  string
+	Dir   string
+	Ref   string
+}
+
+// ---- readme_cache (GET /repos/{owner}/{repo}/readme[/{dir}]) ----
+func (q *Queries) GetReadmeCache(ctx context.Context, arg GetReadmeCacheParams) (ReadmeCache, error) {
+	row := q.db.QueryRowContext(ctx, getReadmeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+	)
+	var i ReadmeCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Dir,
+		&i.Ref,
+		&i.Status,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getRepoInstallationCache = `-- name: GetRepoInstallationCache :one
 
-SELECT id, actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at FROM repo_installation_cache
+SELECT id, actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at FROM repo_installation_cache
 WHERE actor = ? AND owner = ? AND repo = ?
 `
 
@@ -952,6 +1965,8 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 		&i.Actor,
 		&i.Owner,
 		&i.Repo,
+		&i.Status,
+		&i.Message,
 		&i.InstallationID,
 		&i.AccountLogin,
 		&i.AccountType,
@@ -959,6 +1974,111 @@ func (q *Queries) GetRepoInstallationCache(ctx context.Context, arg GetRepoInsta
 		&i.AppID,
 		&i.AppSlug,
 		&i.TargetType,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getSearchIssuesCache = `-- name: GetSearchIssuesCache :one
+
+SELECT id, token_fp, query_key, doc, fetched_at, expires_at, last_used_at FROM search_issues_cache WHERE token_fp = ? AND query_key = ?
+`
+
+type GetSearchIssuesCacheParams struct {
+	TokenFp  string
+	QueryKey string
+}
+
+// ---- search_issues_cache (GET /search/issues) ----
+func (q *Queries) GetSearchIssuesCache(ctx context.Context, arg GetSearchIssuesCacheParams) (SearchIssuesCache, error) {
+	row := q.db.QueryRowContext(ctx, getSearchIssuesCache, arg.TokenFp, arg.QueryKey)
+	var i SearchIssuesCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.QueryKey,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getUserReposCache = `-- name: GetUserReposCache :one
+
+SELECT id, token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at FROM user_repos_cache
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?
+`
+
+type GetUserReposCacheParams struct {
+	TokenFp string
+	Sort    string
+	PerPage int64
+	Page    int64
+}
+
+// ---- user_repos_cache (GET /user/repos) ----
+func (q *Queries) GetUserReposCache(ctx context.Context, arg GetUserReposCacheParams) (UserReposCache, error) {
+	row := q.db.QueryRowContext(ctx, getUserReposCache,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i UserReposCache
+	err := row.Scan(
+		&i.ID,
+		&i.TokenFp,
+		&i.Sort,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getWorkflowJobsCache = `-- name: GetWorkflowJobsCache :one
+
+SELECT id, owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_jobs_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type GetWorkflowJobsCacheParams struct {
+	Owner   string
+	Repo    string
+	Kind    string
+	RefID   int64
+	PerPage int64
+	Page    int64
+}
+
+// ---- workflow_jobs_cache (Actions job reads) ----
+func (q *Queries) GetWorkflowJobsCache(ctx context.Context, arg GetWorkflowJobsCacheParams) (WorkflowJobsCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowJobsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i WorkflowJobsCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Kind,
+		&i.RefID,
+		&i.RunID,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
 		&i.FetchedAt,
 		&i.ExpiresAt,
 		&i.LastUsedAt,
@@ -980,7 +2100,7 @@ type GetWorkflowRunsCacheParams struct {
 	Page    int64
 }
 
-// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=...) ----
+// ---- workflow_runs_cache (GET /repos/{owner}/{repo}/actions/runs?head_sha=) ----
 func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsCacheParams) (WorkflowRunsCache, error) {
 	row := q.db.QueryRowContext(ctx, getWorkflowRunsCache,
 		arg.Owner,
@@ -1005,6 +2125,355 @@ func (q *Queries) GetWorkflowRunsCache(ctx context.Context, arg GetWorkflowRunsC
 	return i, err
 }
 
+const getWorkflowRunsListMarker = `-- name: GetWorkflowRunsListMarker :one
+SELECT owner, repo, filters, fetched_at, expires_at FROM workflow_runs_list_cache WHERE owner = ? AND repo = ? AND filters = ?
+`
+
+type GetWorkflowRunsListMarkerParams struct {
+	Owner   string
+	Repo    string
+	Filters string
+}
+
+func (q *Queries) GetWorkflowRunsListMarker(ctx context.Context, arg GetWorkflowRunsListMarkerParams) (WorkflowRunsListCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowRunsListMarker, arg.Owner, arg.Repo, arg.Filters)
+	var i WorkflowRunsListCache
+	err := row.Scan(
+		&i.Owner,
+		&i.Repo,
+		&i.Filters,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getWorkflowsCache = `-- name: GetWorkflowsCache :one
+
+SELECT id, owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflows_cache
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type GetWorkflowsCacheParams struct {
+	Owner   string
+	Repo    string
+	Kind    string
+	RefID   string
+	PerPage int64
+	Page    int64
+}
+
+// ---- workflows_cache (GET /repos/{owner}/{repo}/actions/workflows[/{id}]) ----
+func (q *Queries) GetWorkflowsCache(ctx context.Context, arg GetWorkflowsCacheParams) (WorkflowsCache, error) {
+	row := q.db.QueryRowContext(ctx, getWorkflowsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+	)
+	var i WorkflowsCache
+	err := row.Scan(
+		&i.ID,
+		&i.Owner,
+		&i.Repo,
+		&i.Kind,
+		&i.RefID,
+		&i.PerPage,
+		&i.Page,
+		&i.Doc,
+		&i.FetchedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const listBranchesListCacheByRepo = `-- name: ListBranchesListCacheByRepo :many
+SELECT id, owner, repo, per_page, page, doc, fetched_at, expires_at, last_used_at FROM branches_list_cache WHERE owner = ? AND repo = ?
+`
+
+type ListBranchesListCacheByRepoParams struct {
+	Owner string
+	Repo  string
+}
+
+// ListBranchesListCacheByRepo returns a repo's cached pages so a push can
+// rewrite the tip it states inside each one (ApplyPushedBranchTip) instead of
+// dropping the listing.
+func (q *Queries) ListBranchesListCacheByRepo(ctx context.Context, arg ListBranchesListCacheByRepoParams) ([]BranchesListCache, error) {
+	rows, err := q.db.QueryContext(ctx, listBranchesListCacheByRepo, arg.Owner, arg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BranchesListCache
+	for rows.Next() {
+		var i BranchesListCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommitCICacheByRepoKind = `-- name: ListCommitCICacheByRepoKind :many
+SELECT id, owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at FROM commit_ci_cache WHERE owner = ? AND repo = ? AND kind = ?
+`
+
+type ListCommitCICacheByRepoKindParams struct {
+	Owner string
+	Repo  string
+	Kind  string
+}
+
+// ListCommitCICacheByRepoKind returns a repo's snapshots of one kind so a
+// status delivery can rewrite the documents it states (ApplyStatusToCommitCI)
+// instead of dropping them. Every spelling is listed, not just the sha:
+// a branch-form combined status names the sha it resolved to, so the ones
+// describing this commit are recognizable from their own contents.
+func (q *Queries) ListCommitCICacheByRepoKind(ctx context.Context, arg ListCommitCICacheByRepoKindParams) ([]CommitCiCache, error) {
+	rows, err := q.db.QueryContext(ctx, listCommitCICacheByRepoKind, arg.Owner, arg.Repo, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CommitCiCache
+	for rows.Next() {
+		var i CommitCiCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Ref,
+			&i.Kind,
+			&i.PerPage,
+			&i.Page,
+			&i.Status,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowJobsCacheForRun = `-- name: ListWorkflowJobsCacheForRun :many
+SELECT id, owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_jobs_cache WHERE owner = ? AND repo = ? AND run_id = ?
+`
+
+type ListWorkflowJobsCacheForRunParams struct {
+	Owner string
+	Repo  string
+	RunID int64
+}
+
+// ListWorkflowJobsCacheForRun returns every row a run's jobs back -- its jobs
+// pages and the single-job rows under it -- so a workflow_job delivery can
+// rewrite the job's entry inside each one (ApplyWorkflowJob) instead of
+// dropping answers the delivery just told us the new value of.
+func (q *Queries) ListWorkflowJobsCacheForRun(ctx context.Context, arg ListWorkflowJobsCacheForRunParams) ([]WorkflowJobsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowJobsCacheForRun, arg.Owner, arg.Repo, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowJobsCache
+	for rows.Next() {
+		var i WorkflowJobsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.Kind,
+			&i.RefID,
+			&i.RunID,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowRuns = `-- name: ListWorkflowRuns :many
+SELECT owner, repo, run_id, run_attempt, name, head_sha, head_branch, status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at FROM workflow_runs
+WHERE owner = ?1 AND repo = ?2
+  AND (?3 = '' OR status = ?3 OR conclusion = ?3)
+  AND (?4 = '' OR head_branch = ?4)
+  AND (?5 = '' OR head_sha = ?5)
+ORDER BY created_at DESC, run_id DESC
+LIMIT ?7 OFFSET ?6
+`
+
+type ListWorkflowRunsParams struct {
+	Owner      string
+	Repo       string
+	Status     interface{}
+	HeadBranch interface{}
+	HeadSha    interface{}
+	PageOffset int64
+	PageSize   int64
+}
+
+// ListWorkflowRuns returns one page of a repo's runs, newest first (GitHub's
+// own ordering), optionally filtered by status and/or head branch and/or head
+// sha. An empty filter argument means "no filter on this field".
+// The `status` filter matches a run's status OR its CONCLUSION, because
+// GitHub's own filter does: ?status=success selects completed runs that
+// succeeded, while ?status=queued selects by status. Matching only the status
+// column would answer ?status=success with nothing.
+//
+// Every parameter here is NAMED on purpose: sqlc numbers `?` placeholders and
+// sqlc.arg() references in one shared sequence, so mixing the two silently
+// misaligns the bindings ("missing argument with index N" at run time).
+func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsParams) ([]WorkflowRun, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowRuns,
+		arg.Owner,
+		arg.Repo,
+		arg.Status,
+		arg.HeadBranch,
+		arg.HeadSha,
+		arg.PageOffset,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRun
+	for rows.Next() {
+		var i WorkflowRun
+		if err := rows.Scan(
+			&i.Owner,
+			&i.Repo,
+			&i.RunID,
+			&i.RunAttempt,
+			&i.Name,
+			&i.HeadSha,
+			&i.HeadBranch,
+			&i.Status,
+			&i.Conclusion,
+			&i.HtmlUrl,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RunStartedAt,
+			&i.TouchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowRunsCacheForHeadSHA = `-- name: ListWorkflowRunsCacheForHeadSHA :many
+SELECT id, owner, repo, head_sha, per_page, page, doc, fetched_at, expires_at, last_used_at FROM workflow_runs_cache WHERE owner = ? AND repo = ? AND head_sha = ?
+`
+
+type ListWorkflowRunsCacheForHeadSHAParams struct {
+	Owner   string
+	Repo    string
+	HeadSha string
+}
+
+// DeleteWorkflowRunsCacheForHeadSHA drops one sha's snapshots (all pages) --
+// the per-sha status/check_run/check_suite/workflow_job flush. Other shas'
+// snapshots survive.
+// ListWorkflowRunsCacheForHeadSHA returns one sha's snapshots so a
+// workflow_run delivery can rewrite the run's entry inside each page
+// (ApplyWorkflowRunToPages) instead of dropping answers it just stated.
+func (q *Queries) ListWorkflowRunsCacheForHeadSHA(ctx context.Context, arg ListWorkflowRunsCacheForHeadSHAParams) ([]WorkflowRunsCache, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkflowRunsCacheForHeadSHA, arg.Owner, arg.Repo, arg.HeadSha)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRunsCache
+	for rows.Next() {
+		var i WorkflowRunsCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Repo,
+			&i.HeadSha,
+			&i.PerPage,
+			&i.Page,
+			&i.Doc,
+			&i.FetchedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pruneAppInstallationsCacheLRU = `-- name: PruneAppInstallationsCacheLRU :exec
+DELETE FROM app_installations_cache WHERE id IN (
+    SELECT id FROM app_installations_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneAppInstallationsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneAppInstallationsCacheLRU, offset)
+	return err
+}
+
 const pruneBranchesListCacheLRU = `-- name: PruneBranchesListCacheLRU :exec
 DELETE FROM branches_list_cache WHERE id IN (
     SELECT id FROM branches_list_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1016,6 +2485,17 @@ func (q *Queries) PruneBranchesListCacheLRU(ctx context.Context, offset int64) e
 	return err
 }
 
+const pruneCheckRunCacheLRU = `-- name: PruneCheckRunCacheLRU :exec
+DELETE FROM check_run_cache WHERE id IN (
+    SELECT id FROM check_run_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCheckRunCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCheckRunCacheLRU, offset)
+	return err
+}
+
 const pruneClosedPullCacheLRU = `-- name: PruneClosedPullCacheLRU :exec
 DELETE FROM closed_pull_cache WHERE id IN (
     SELECT id FROM closed_pull_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1024,6 +2504,17 @@ DELETE FROM closed_pull_cache WHERE id IN (
 
 func (q *Queries) PruneClosedPullCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneClosedPullCacheLRU, offset)
+	return err
+}
+
+const pruneCodeQualitySetupCacheLRU = `-- name: PruneCodeQualitySetupCacheLRU :exec
+DELETE FROM code_quality_setup_cache WHERE id IN (
+    SELECT id FROM code_quality_setup_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneCodeQualitySetupCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneCodeQualitySetupCacheLRU, offset)
 	return err
 }
 
@@ -1096,6 +2587,50 @@ func (q *Queries) PruneGitCommitsCacheLRU(ctx context.Context, offset int64) err
 	return err
 }
 
+const pruneGitRefCacheLRU = `-- name: PruneGitRefCacheLRU :exec
+DELETE FROM git_ref_cache WHERE id IN (
+    SELECT id FROM git_ref_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneGitRefCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneGitRefCacheLRU, offset)
+	return err
+}
+
+const pruneGitTreesCacheLRU = `-- name: PruneGitTreesCacheLRU :exec
+DELETE FROM git_trees_cache WHERE id IN (
+    SELECT id FROM git_trees_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneGitTreesCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneGitTreesCacheLRU, offset)
+	return err
+}
+
+const pruneHooksCacheLRU = `-- name: PruneHooksCacheLRU :exec
+DELETE FROM hooks_cache WHERE id IN (
+    SELECT id FROM hooks_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneHooksCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneHooksCacheLRU, offset)
+	return err
+}
+
+const pruneIdentityCacheLRU = `-- name: PruneIdentityCacheLRU :exec
+DELETE FROM identity_cache WHERE id IN (
+    SELECT id FROM identity_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneIdentityCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneIdentityCacheLRU, offset)
+	return err
+}
+
 const pruneInstallTokenCacheLRU = `-- name: PruneInstallTokenCacheLRU :exec
 DELETE FROM install_token_cache WHERE id IN (
     SELECT id FROM install_token_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1104,6 +2639,61 @@ DELETE FROM install_token_cache WHERE id IN (
 
 func (q *Queries) PruneInstallTokenCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneInstallTokenCacheLRU, offset)
+	return err
+}
+
+const pruneInstallationReposCacheLRU = `-- name: PruneInstallationReposCacheLRU :exec
+DELETE FROM installation_repos_cache WHERE id IN (
+    SELECT id FROM installation_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneInstallationReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneInstallationReposCacheLRU, offset)
+	return err
+}
+
+const pruneLabelCacheLRU = `-- name: PruneLabelCacheLRU :exec
+DELETE FROM label_cache WHERE id IN (
+    SELECT id FROM label_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneLabelCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneLabelCacheLRU, offset)
+	return err
+}
+
+const pruneMatchingRefsCacheLRU = `-- name: PruneMatchingRefsCacheLRU :exec
+DELETE FROM matching_refs_cache WHERE id IN (
+    SELECT id FROM matching_refs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneMatchingRefsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneMatchingRefsCacheLRU, offset)
+	return err
+}
+
+const pruneOrgRunnersCacheLRU = `-- name: PruneOrgRunnersCacheLRU :exec
+DELETE FROM org_runners_cache WHERE id IN (
+    SELECT id FROM org_runners_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneOrgRunnersCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneOrgRunnersCacheLRU, offset)
+	return err
+}
+
+const pruneOwnerReposCacheLRU = `-- name: PruneOwnerReposCacheLRU :exec
+DELETE FROM owner_repos_cache WHERE id IN (
+    SELECT id FROM owner_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneOwnerReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneOwnerReposCacheLRU, offset)
 	return err
 }
 
@@ -1140,6 +2730,17 @@ func (q *Queries) PrunePullsListMarkersLRU(ctx context.Context, offset int64) er
 	return err
 }
 
+const pruneReadmeCacheLRU = `-- name: PruneReadmeCacheLRU :exec
+DELETE FROM readme_cache WHERE id IN (
+    SELECT id FROM readme_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneReadmeCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneReadmeCacheLRU, offset)
+	return err
+}
+
 const pruneRepoInstallationCacheLRU = `-- name: PruneRepoInstallationCacheLRU :exec
 DELETE FROM repo_installation_cache WHERE id IN (
     SELECT id FROM repo_installation_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1151,6 +2752,51 @@ func (q *Queries) PruneRepoInstallationCacheLRU(ctx context.Context, offset int6
 	return err
 }
 
+const pruneSearchIssuesCacheLRU = `-- name: PruneSearchIssuesCacheLRU :exec
+DELETE FROM search_issues_cache WHERE id IN (
+    SELECT id FROM search_issues_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneSearchIssuesCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneSearchIssuesCacheLRU, offset)
+	return err
+}
+
+const pruneSettledWorkflowRuns = `-- name: PruneSettledWorkflowRuns :exec
+DELETE FROM workflow_runs WHERE status = 'completed' AND touched_at < ?
+`
+
+// PruneSettledWorkflowRuns bounds the table: completed runs the mirror has
+// not touched within the retention window are dropped. Runs still queued or
+// in progress are never pruned.
+func (q *Queries) PruneSettledWorkflowRuns(ctx context.Context, touchedAt string) error {
+	_, err := q.db.ExecContext(ctx, pruneSettledWorkflowRuns, touchedAt)
+	return err
+}
+
+const pruneUserReposCacheLRU = `-- name: PruneUserReposCacheLRU :exec
+DELETE FROM user_repos_cache WHERE id IN (
+    SELECT id FROM user_repos_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneUserReposCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneUserReposCacheLRU, offset)
+	return err
+}
+
+const pruneWorkflowJobsCacheLRU = `-- name: PruneWorkflowJobsCacheLRU :exec
+DELETE FROM workflow_jobs_cache WHERE id IN (
+    SELECT id FROM workflow_jobs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneWorkflowJobsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneWorkflowJobsCacheLRU, offset)
+	return err
+}
+
 const pruneWorkflowRunsCacheLRU = `-- name: PruneWorkflowRunsCacheLRU :exec
 DELETE FROM workflow_runs_cache WHERE id IN (
     SELECT id FROM workflow_runs_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
@@ -1159,6 +2805,39 @@ DELETE FROM workflow_runs_cache WHERE id IN (
 
 func (q *Queries) PruneWorkflowRunsCacheLRU(ctx context.Context, offset int64) error {
 	_, err := q.db.ExecContext(ctx, pruneWorkflowRunsCacheLRU, offset)
+	return err
+}
+
+const pruneWorkflowsCacheLRU = `-- name: PruneWorkflowsCacheLRU :exec
+DELETE FROM workflows_cache WHERE id IN (
+    SELECT id FROM workflows_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneWorkflowsCacheLRU(ctx context.Context, offset int64) error {
+	_, err := q.db.ExecContext(ctx, pruneWorkflowsCacheLRU, offset)
+	return err
+}
+
+const touchAppInstallationsCache = `-- name: TouchAppInstallationsCache :exec
+UPDATE app_installations_cache SET last_used_at = ?
+WHERE app_key = ? AND per_page = ? AND page = ?
+`
+
+type TouchAppInstallationsCacheParams struct {
+	LastUsedAt string
+	AppKey     string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchAppInstallationsCache(ctx context.Context, arg TouchAppInstallationsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchAppInstallationsCache,
+		arg.LastUsedAt,
+		arg.AppKey,
+		arg.PerPage,
+		arg.Page,
+	)
 	return err
 }
 
@@ -1186,6 +2865,28 @@ func (q *Queries) TouchBranchesListCache(ctx context.Context, arg TouchBranchesL
 	return err
 }
 
+const touchCheckRunCache = `-- name: TouchCheckRunCache :exec
+UPDATE check_run_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND check_run_id = ?
+`
+
+type TouchCheckRunCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	CheckRunID int64
+}
+
+func (q *Queries) TouchCheckRunCache(ctx context.Context, arg TouchCheckRunCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCheckRunCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.CheckRunID,
+	)
+	return err
+}
+
 const touchClosedPullCache = `-- name: TouchClosedPullCache :exec
 UPDATE closed_pull_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND number = ?
@@ -1205,6 +2906,21 @@ func (q *Queries) TouchClosedPullCache(ctx context.Context, arg TouchClosedPullC
 		arg.Repo,
 		arg.Number,
 	)
+	return err
+}
+
+const touchCodeQualitySetupCache = `-- name: TouchCodeQualitySetupCache :exec
+UPDATE code_quality_setup_cache SET last_used_at = ? WHERE owner = ? AND repo = ?
+`
+
+type TouchCodeQualitySetupCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+}
+
+func (q *Queries) TouchCodeQualitySetupCache(ctx context.Context, arg TouchCodeQualitySetupCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCodeQualitySetupCache, arg.LastUsedAt, arg.Owner, arg.Repo)
 	return err
 }
 
@@ -1352,6 +3068,221 @@ func (q *Queries) TouchGitCommitMissCache(ctx context.Context, arg TouchGitCommi
 	return err
 }
 
+const touchGitRefCache = `-- name: TouchGitRefCache :exec
+UPDATE git_ref_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND ref = ?
+`
+
+type TouchGitRefCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Ref        string
+}
+
+func (q *Queries) TouchGitRefCache(ctx context.Context, arg TouchGitRefCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchGitRefCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+	)
+	return err
+}
+
+const touchGitTreeCache = `-- name: TouchGitTreeCache :exec
+UPDATE git_trees_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND sha = ? AND recursive = ?
+`
+
+type TouchGitTreeCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Sha        string
+	Recursive  string
+}
+
+func (q *Queries) TouchGitTreeCache(ctx context.Context, arg TouchGitTreeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchGitTreeCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+		arg.Recursive,
+	)
+	return err
+}
+
+const touchHooksCache = `-- name: TouchHooksCache :exec
+UPDATE hooks_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND repo = ? AND hook_id = ? AND per_page = ? AND page = ?
+`
+
+type TouchHooksCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	HookID     int64
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchHooksCache(ctx context.Context, arg TouchHooksCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchHooksCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.HookID,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchIdentityCache = `-- name: TouchIdentityCache :exec
+UPDATE identity_cache SET last_used_at = ?
+WHERE subject_key = ? AND kind = ?
+`
+
+type TouchIdentityCacheParams struct {
+	LastUsedAt string
+	SubjectKey string
+	Kind       string
+}
+
+func (q *Queries) TouchIdentityCache(ctx context.Context, arg TouchIdentityCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchIdentityCache, arg.LastUsedAt, arg.SubjectKey, arg.Kind)
+	return err
+}
+
+const touchInstallationReposCache = `-- name: TouchInstallationReposCache :exec
+UPDATE installation_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND per_page = ? AND page = ?
+`
+
+type TouchInstallationReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchInstallationReposCache(ctx context.Context, arg TouchInstallationReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchInstallationReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchLabelCache = `-- name: TouchLabelCache :exec
+UPDATE label_cache SET last_used_at = ? WHERE owner = ? AND repo = ? AND name = ?
+`
+
+type TouchLabelCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Name       string
+}
+
+func (q *Queries) TouchLabelCache(ctx context.Context, arg TouchLabelCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchLabelCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
+	)
+	return err
+}
+
+const touchMatchingRefsCache = `-- name: TouchMatchingRefsCache :exec
+UPDATE matching_refs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND prefix = ? AND per_page = ? AND page = ?
+`
+
+type TouchMatchingRefsCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Prefix     string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchMatchingRefsCache(ctx context.Context, arg TouchMatchingRefsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchMatchingRefsCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Prefix,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchOrgRunnersCache = `-- name: TouchOrgRunnersCache :exec
+UPDATE org_runners_cache SET last_used_at = ?
+WHERE token_fp = ? AND org = ? AND per_page = ? AND page = ?
+`
+
+type TouchOrgRunnersCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Org        string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchOrgRunnersCache(ctx context.Context, arg TouchOrgRunnersCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchOrgRunnersCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Org,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchOwnerReposCache = `-- name: TouchOwnerReposCache :exec
+UPDATE owner_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND scope = ? AND owner = ? AND sort = ? AND direction = ? AND per_page = ? AND page = ?
+`
+
+type TouchOwnerReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchOwnerReposCache(ctx context.Context, arg TouchOwnerReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchOwnerReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
 const touchPullDiff406Cache = `-- name: TouchPullDiff406Cache :exec
 UPDATE pull_diff406_cache SET last_used_at = ?
 WHERE owner = ? AND repo = ? AND number = ?
@@ -1416,6 +3347,30 @@ func (q *Queries) TouchPullsListMarker(ctx context.Context, arg TouchPullsListMa
 	return err
 }
 
+const touchReadmeCache = `-- name: TouchReadmeCache :exec
+UPDATE readme_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND dir = ? AND ref = ?
+`
+
+type TouchReadmeCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+}
+
+func (q *Queries) TouchReadmeCache(ctx context.Context, arg TouchReadmeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchReadmeCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+	)
+	return err
+}
+
 const touchRepoInstallationCache = `-- name: TouchRepoInstallationCache :exec
 UPDATE repo_installation_cache SET last_used_at = ?
 WHERE actor = ? AND owner = ? AND repo = ?
@@ -1434,6 +3389,73 @@ func (q *Queries) TouchRepoInstallationCache(ctx context.Context, arg TouchRepoI
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+	)
+	return err
+}
+
+const touchSearchIssuesCache = `-- name: TouchSearchIssuesCache :exec
+UPDATE search_issues_cache SET last_used_at = ? WHERE token_fp = ? AND query_key = ?
+`
+
+type TouchSearchIssuesCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	QueryKey   string
+}
+
+func (q *Queries) TouchSearchIssuesCache(ctx context.Context, arg TouchSearchIssuesCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchSearchIssuesCache, arg.LastUsedAt, arg.TokenFp, arg.QueryKey)
+	return err
+}
+
+const touchUserReposCache = `-- name: TouchUserReposCache :exec
+UPDATE user_repos_cache SET last_used_at = ?
+WHERE token_fp = ? AND sort = ? AND per_page = ? AND page = ?
+`
+
+type TouchUserReposCacheParams struct {
+	LastUsedAt string
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchUserReposCache(ctx context.Context, arg TouchUserReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchUserReposCache,
+		arg.LastUsedAt,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const touchWorkflowJobsCache = `-- name: TouchWorkflowJobsCache :exec
+UPDATE workflow_jobs_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type TouchWorkflowJobsCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchWorkflowJobsCache(ctx context.Context, arg TouchWorkflowJobsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchWorkflowJobsCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
 	)
 	return err
 }
@@ -1460,6 +3482,67 @@ func (q *Queries) TouchWorkflowRunsCache(ctx context.Context, arg TouchWorkflowR
 		arg.HeadSha,
 		arg.PerPage,
 		arg.Page,
+	)
+	return err
+}
+
+const touchWorkflowsCache = `-- name: TouchWorkflowsCache :exec
+UPDATE workflows_cache SET last_used_at = ?
+WHERE owner = ? AND repo = ? AND kind = ? AND ref_id = ? AND per_page = ? AND page = ?
+`
+
+type TouchWorkflowsCacheParams struct {
+	LastUsedAt string
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+}
+
+func (q *Queries) TouchWorkflowsCache(ctx context.Context, arg TouchWorkflowsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchWorkflowsCache,
+		arg.LastUsedAt,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.PerPage,
+		arg.Page,
+	)
+	return err
+}
+
+const upsertAppInstallationsCache = `-- name: UpsertAppInstallationsCache :exec
+INSERT INTO app_installations_cache (app_key, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (app_key, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertAppInstallationsCacheParams struct {
+	AppKey     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertAppInstallationsCache(ctx context.Context, arg UpsertAppInstallationsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAppInstallationsCache,
+		arg.AppKey,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
 	)
 	return err
 }
@@ -1491,6 +3574,39 @@ func (q *Queries) UpsertBranchesListCache(ctx context.Context, arg UpsertBranche
 		arg.Repo,
 		arg.PerPage,
 		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertCheckRunCache = `-- name: UpsertCheckRunCache :exec
+INSERT INTO check_run_cache (owner, repo, check_run_id, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, check_run_id) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCheckRunCacheParams struct {
+	Owner      string
+	Repo       string
+	CheckRunID int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCheckRunCache(ctx context.Context, arg UpsertCheckRunCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCheckRunCache,
+		arg.Owner,
+		arg.Repo,
+		arg.CheckRunID,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
@@ -1532,10 +3648,42 @@ func (q *Queries) UpsertClosedPullCache(ctx context.Context, arg UpsertClosedPul
 	return err
 }
 
+const upsertCodeQualitySetupCache = `-- name: UpsertCodeQualitySetupCache :exec
+INSERT INTO code_quality_setup_cache (owner, repo, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertCodeQualitySetupCacheParams struct {
+	Owner      string
+	Repo       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertCodeQualitySetupCache(ctx context.Context, arg UpsertCodeQualitySetupCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCodeQualitySetupCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
 const upsertCommitCICache = `-- name: UpsertCommitCICache :exec
-INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO commit_ci_cache (owner, repo, ref, kind, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, ref, kind, per_page, page) DO UPDATE SET
+    status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at,
@@ -1549,6 +3697,7 @@ type UpsertCommitCICacheParams struct {
 	Kind       string
 	PerPage    int64
 	Page       int64
+	Status     int64
 	Doc        string
 	FetchedAt  string
 	ExpiresAt  string
@@ -1563,6 +3712,7 @@ func (q *Queries) UpsertCommitCICache(ctx context.Context, arg UpsertCommitCICac
 		arg.Kind,
 		arg.PerPage,
 		arg.Page,
+		arg.Status,
 		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
@@ -1609,11 +3759,12 @@ func (q *Queries) UpsertCommitsListCache(ctx context.Context, arg UpsertCommitsL
 }
 
 const upsertCompareCache = `-- name: UpsertCompareCache :exec
-INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO compare_cache (owner, repo, basehead, base_ref, head_ref, base_tip_sha, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, repo, basehead) DO UPDATE SET
     base_ref = excluded.base_ref,
     head_ref = excluded.head_ref,
+    base_tip_sha = excluded.base_tip_sha,
     status = excluded.status,
     doc = excluded.doc,
     fetched_at = excluded.fetched_at,
@@ -1627,6 +3778,7 @@ type UpsertCompareCacheParams struct {
 	Basehead   string
 	BaseRef    string
 	HeadRef    string
+	BaseTipSha string
 	Status     int64
 	Doc        string
 	FetchedAt  string
@@ -1641,6 +3793,7 @@ func (q *Queries) UpsertCompareCache(ctx context.Context, arg UpsertCompareCache
 		arg.Basehead,
 		arg.BaseRef,
 		arg.HeadRef,
+		arg.BaseTipSha,
 		arg.Status,
 		arg.Doc,
 		arg.FetchedAt,
@@ -1793,6 +3946,155 @@ func (q *Queries) UpsertGitCommitMissCache(ctx context.Context, arg UpsertGitCom
 	return err
 }
 
+const upsertGitRefCache = `-- name: UpsertGitRefCache :exec
+INSERT INTO git_ref_cache (owner, repo, ref, status, doc, fetched_at, expires_at, last_used_at, reconciled_against)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at,
+    -- An empty value LEAVES the recorded contradiction alone: a push applying
+    -- its own tip settles nothing about a lagging PR base.sha, and clearing
+    -- the memory there would re-arm a refetch the row already paid for.
+    reconciled_against = CASE WHEN excluded.reconciled_against = '' THEN git_ref_cache.reconciled_against ELSE excluded.reconciled_against END
+`
+
+type UpsertGitRefCacheParams struct {
+	Owner             string
+	Repo              string
+	Ref               string
+	Status            int64
+	Doc               string
+	FetchedAt         string
+	ExpiresAt         string
+	LastUsedAt        string
+	ReconciledAgainst string
+}
+
+func (q *Queries) UpsertGitRefCache(ctx context.Context, arg UpsertGitRefCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertGitRefCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Ref,
+		arg.Status,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+		arg.ReconciledAgainst,
+	)
+	return err
+}
+
+const upsertGitTreeCache = `-- name: UpsertGitTreeCache :exec
+INSERT INTO git_trees_cache (owner, repo, sha, recursive, doc, fetched_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, sha, recursive) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertGitTreeCacheParams struct {
+	Owner      string
+	Repo       string
+	Sha        string
+	Recursive  string
+	Doc        string
+	FetchedAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertGitTreeCache(ctx context.Context, arg UpsertGitTreeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertGitTreeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Sha,
+		arg.Recursive,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertHooksCache = `-- name: UpsertHooksCache :exec
+INSERT INTO hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, repo, hook_id, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertHooksCacheParams struct {
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Repo       string
+	HookID     int64
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertHooksCache(ctx context.Context, arg UpsertHooksCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHooksCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Repo,
+		arg.HookID,
+		arg.PerPage,
+		arg.Page,
+		arg.Status,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertIdentityCache = `-- name: UpsertIdentityCache :exec
+INSERT INTO identity_cache (subject_key, kind, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (subject_key, kind) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertIdentityCacheParams struct {
+	SubjectKey string
+	Kind       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertIdentityCache(ctx context.Context, arg UpsertIdentityCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertIdentityCache,
+		arg.SubjectKey,
+		arg.Kind,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
 const upsertInstallTokenCache = `-- name: UpsertInstallTokenCache :exec
 INSERT INTO install_token_cache (actor, installation_id, body_hash, token, token_expires_at, permissions, repository_selection, fetched_at, expires_at, last_used_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1828,6 +4130,188 @@ func (q *Queries) UpsertInstallTokenCache(ctx context.Context, arg UpsertInstall
 		arg.TokenExpiresAt,
 		arg.Permissions,
 		arg.RepositorySelection,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertInstallationReposCache = `-- name: UpsertInstallationReposCache :exec
+INSERT INTO installation_repos_cache (token_fp, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertInstallationReposCacheParams struct {
+	TokenFp    string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertInstallationReposCache(ctx context.Context, arg UpsertInstallationReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertInstallationReposCache,
+		arg.TokenFp,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertLabelCache = `-- name: UpsertLabelCache :exec
+INSERT INTO label_cache (owner, repo, name, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, name) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertLabelCacheParams struct {
+	Owner      string
+	Repo       string
+	Name       string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertLabelCache(ctx context.Context, arg UpsertLabelCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertLabelCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Name,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertMatchingRefsCache = `-- name: UpsertMatchingRefsCache :exec
+INSERT INTO matching_refs_cache (owner, repo, prefix, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, prefix, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertMatchingRefsCacheParams struct {
+	Owner      string
+	Repo       string
+	Prefix     string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertMatchingRefsCache(ctx context.Context, arg UpsertMatchingRefsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertMatchingRefsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Prefix,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertOrgRunnersCache = `-- name: UpsertOrgRunnersCache :exec
+INSERT INTO org_runners_cache (token_fp, org, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, org, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertOrgRunnersCacheParams struct {
+	TokenFp    string
+	Org        string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertOrgRunnersCache(ctx context.Context, arg UpsertOrgRunnersCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertOrgRunnersCache,
+		arg.TokenFp,
+		arg.Org,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertOwnerReposCache = `-- name: UpsertOwnerReposCache :exec
+INSERT INTO owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, scope, owner, sort, direction, per_page, page) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertOwnerReposCacheParams struct {
+	TokenFp    string
+	Scope      string
+	Owner      string
+	Sort       string
+	Direction  string
+	PerPage    int64
+	Page       int64
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertOwnerReposCache(ctx context.Context, arg UpsertOwnerReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertOwnerReposCache,
+		arg.TokenFp,
+		arg.Scope,
+		arg.Owner,
+		arg.Sort,
+		arg.Direction,
+		arg.PerPage,
+		arg.Page,
+		arg.Status,
+		arg.Doc,
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
@@ -1933,10 +4417,50 @@ func (q *Queries) UpsertPullsListMarker(ctx context.Context, arg UpsertPullsList
 	return err
 }
 
+const upsertReadmeCache = `-- name: UpsertReadmeCache :exec
+INSERT INTO readme_cache (owner, repo, dir, ref, status, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, dir, ref) DO UPDATE SET
+    status = excluded.status,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertReadmeCacheParams struct {
+	Owner      string
+	Repo       string
+	Dir        string
+	Ref        string
+	Status     int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertReadmeCache(ctx context.Context, arg UpsertReadmeCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertReadmeCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Dir,
+		arg.Ref,
+		arg.Status,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
 const upsertRepoInstallationCache = `-- name: UpsertRepoInstallationCache :exec
-INSERT INTO repo_installation_cache (actor, owner, repo, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO repo_installation_cache (actor, owner, repo, status, message, installation_id, account_login, account_type, repository_selection, app_id, app_slug, target_type, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (actor, owner, repo) DO UPDATE SET
+    status = excluded.status,
+    message = excluded.message,
     installation_id = excluded.installation_id,
     account_login = excluded.account_login,
     account_type = excluded.account_type,
@@ -1953,6 +4477,8 @@ type UpsertRepoInstallationCacheParams struct {
 	Actor               string
 	Owner               string
 	Repo                string
+	Status              int64
+	Message             string
 	InstallationID      int64
 	AccountLogin        string
 	AccountType         string
@@ -1970,6 +4496,8 @@ func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRep
 		arg.Actor,
 		arg.Owner,
 		arg.Repo,
+		arg.Status,
+		arg.Message,
 		arg.InstallationID,
 		arg.AccountLogin,
 		arg.AccountType,
@@ -1980,6 +4508,227 @@ func (q *Queries) UpsertRepoInstallationCache(ctx context.Context, arg UpsertRep
 		arg.FetchedAt,
 		arg.ExpiresAt,
 		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertSearchIssuesCache = `-- name: UpsertSearchIssuesCache :exec
+INSERT INTO search_issues_cache (token_fp, query_key, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, query_key) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertSearchIssuesCacheParams struct {
+	TokenFp    string
+	QueryKey   string
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertSearchIssuesCache(ctx context.Context, arg UpsertSearchIssuesCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertSearchIssuesCache,
+		arg.TokenFp,
+		arg.QueryKey,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertUserReposCache = `-- name: UpsertUserReposCache :exec
+INSERT INTO user_repos_cache (token_fp, sort, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (token_fp, sort, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertUserReposCacheParams struct {
+	TokenFp    string
+	Sort       string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertUserReposCache(ctx context.Context, arg UpsertUserReposCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertUserReposCache,
+		arg.TokenFp,
+		arg.Sort,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertWorkflowJobsCache = `-- name: UpsertWorkflowJobsCache :exec
+INSERT INTO workflow_jobs_cache (owner, repo, kind, ref_id, run_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    run_id = excluded.run_id,
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertWorkflowJobsCacheParams struct {
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      int64
+	RunID      int64
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertWorkflowJobsCache(ctx context.Context, arg UpsertWorkflowJobsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowJobsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
+		arg.RunID,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertWorkflowRunFromJob = `-- name: UpsertWorkflowRunFromJob :exec
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name        = CASE WHEN workflow_runs.name = '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha    = CASE WHEN workflow_runs.head_sha = '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch = CASE WHEN workflow_runs.head_branch = '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status      = CASE WHEN workflow_runs.status = 'queued' AND workflow_runs.conclusion = '' AND excluded.status = 'in_progress'
+                       THEN 'in_progress' ELSE workflow_runs.status END,
+    touched_at  = excluded.touched_at
+`
+
+type UpsertWorkflowRunFromJobParams struct {
+	Owner      string
+	Repo       string
+	RunID      int64
+	RunAttempt int64
+	Name       string
+	HeadSha    string
+	HeadBranch string
+	Status     string
+	TouchedAt  string
+}
+
+// UpsertWorkflowRunFromJob records what a workflow_job delivery can prove
+// about its RUN. A job payload names the run's identity but carries no
+// run-level status, so this may only ever CREATE the row or RAISE its status
+// floor: a job that is in_progress proves the run is in_progress. It must
+// never conclude a run (the job set may be incomplete) and never regress one
+// that a workflow_run delivery or a REST absorb already settled -- hence the
+// status clause fires only when the stored status is 'queued' and the row was
+// never given a conclusion.
+func (q *Queries) UpsertWorkflowRunFromJob(ctx context.Context, arg UpsertWorkflowRunFromJobParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunFromJob,
+		arg.Owner,
+		arg.Repo,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.Name,
+		arg.HeadSha,
+		arg.HeadBranch,
+		arg.Status,
+		arg.TouchedAt,
+	)
+	return err
+}
+
+const upsertWorkflowRunFull = `-- name: UpsertWorkflowRunFull :exec
+
+INSERT INTO workflow_runs (
+    owner, repo, run_id, run_attempt, name, head_sha, head_branch,
+    status, conclusion, html_url, created_at, updated_at, run_started_at, touched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, run_id) DO UPDATE SET
+    run_attempt    = MAX(excluded.run_attempt, workflow_runs.run_attempt),
+    name           = CASE WHEN excluded.name <> '' THEN excluded.name ELSE workflow_runs.name END,
+    head_sha       = CASE WHEN excluded.head_sha <> '' THEN excluded.head_sha ELSE workflow_runs.head_sha END,
+    head_branch    = CASE WHEN excluded.head_branch <> '' THEN excluded.head_branch ELSE workflow_runs.head_branch END,
+    status         = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.status ELSE workflow_runs.status END,
+    conclusion     = CASE WHEN excluded.updated_at >= workflow_runs.updated_at THEN excluded.conclusion ELSE workflow_runs.conclusion END,
+    html_url       = CASE WHEN excluded.html_url <> '' THEN excluded.html_url ELSE workflow_runs.html_url END,
+    created_at     = CASE WHEN excluded.created_at <> '' THEN excluded.created_at ELSE workflow_runs.created_at END,
+    updated_at     = MAX(excluded.updated_at, workflow_runs.updated_at),
+    run_started_at = CASE WHEN excluded.run_started_at <> '' THEN excluded.run_started_at ELSE workflow_runs.run_started_at END,
+    touched_at     = excluded.touched_at
+`
+
+type UpsertWorkflowRunFullParams struct {
+	Owner        string
+	Repo         string
+	RunID        int64
+	RunAttempt   int64
+	Name         string
+	HeadSha      string
+	HeadBranch   string
+	Status       string
+	Conclusion   string
+	HtmlUrl      string
+	CreatedAt    string
+	UpdatedAt    string
+	RunStartedAt string
+	TouchedAt    string
+}
+
+// ---- workflow_runs (truth) + workflow_runs_list_cache (completeness) ----
+// UpsertWorkflowRunFull records a run from an AUTHORITATIVE source -- a
+// workflow_run delivery or a REST absorb -- both of which carry the run's own
+// status and conclusion. Out-of-order tolerant on the run's own updated_at:
+// an older event never overwrites a newer one (a delivery replay, or a
+// listing absorbed while a fresher delivery was in flight).
+func (q *Queries) UpsertWorkflowRunFull(ctx context.Context, arg UpsertWorkflowRunFullParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunFull,
+		arg.Owner,
+		arg.Repo,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.Name,
+		arg.HeadSha,
+		arg.HeadBranch,
+		arg.Status,
+		arg.Conclusion,
+		arg.HtmlUrl,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.RunStartedAt,
+		arg.TouchedAt,
 	)
 	return err
 }
@@ -2011,6 +4760,72 @@ func (q *Queries) UpsertWorkflowRunsCache(ctx context.Context, arg UpsertWorkflo
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.PerPage,
+		arg.Page,
+		arg.Doc,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+	)
+	return err
+}
+
+const upsertWorkflowRunsListMarker = `-- name: UpsertWorkflowRunsListMarker :exec
+INSERT INTO workflow_runs_list_cache (owner, repo, filters, fetched_at, expires_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, filters) DO UPDATE SET
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at
+`
+
+type UpsertWorkflowRunsListMarkerParams struct {
+	Owner     string
+	Repo      string
+	Filters   string
+	FetchedAt string
+	ExpiresAt string
+}
+
+func (q *Queries) UpsertWorkflowRunsListMarker(ctx context.Context, arg UpsertWorkflowRunsListMarkerParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowRunsListMarker,
+		arg.Owner,
+		arg.Repo,
+		arg.Filters,
+		arg.FetchedAt,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
+const upsertWorkflowsCache = `-- name: UpsertWorkflowsCache :exec
+INSERT INTO workflows_cache (owner, repo, kind, ref_id, per_page, page, doc, fetched_at, expires_at, last_used_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (owner, repo, kind, ref_id, per_page, page) DO UPDATE SET
+    doc = excluded.doc,
+    fetched_at = excluded.fetched_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at
+`
+
+type UpsertWorkflowsCacheParams struct {
+	Owner      string
+	Repo       string
+	Kind       string
+	RefID      string
+	PerPage    int64
+	Page       int64
+	Doc        string
+	FetchedAt  string
+	ExpiresAt  string
+	LastUsedAt string
+}
+
+func (q *Queries) UpsertWorkflowsCache(ctx context.Context, arg UpsertWorkflowsCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertWorkflowsCache,
+		arg.Owner,
+		arg.Repo,
+		arg.Kind,
+		arg.RefID,
 		arg.PerPage,
 		arg.Page,
 		arg.Doc,

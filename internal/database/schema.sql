@@ -1,5 +1,8 @@
--- Schema version: bump this constant in db.go when changing this file.
--- The DB is a cache -- on version mismatch, the file gets deleted and recreated.
+-- The DB is a cache with no migrations. Changing this file rebuilds it: db.go
+-- hashes it with comments scrubbed and compares that against the hash recorded
+-- in the file, so editing a table nukes and editing this comment does not.
+-- Nothing here needs declaring, and nothing else nukes -- history and the
+-- post-deploy reconcile step are in docs/schema-history.md.
 --
 -- DATA MODEL (since v9): ONE GLOBAL TRUTH STORE. GitHub state tables (repos,
 -- pull_requests, pr_labels, commit_checks, and the per-route response-cache
@@ -18,7 +21,10 @@
 -- ============================================================================
 
 CREATE TABLE schema_version (
-    version INTEGER NOT NULL
+    fingerprint TEXT NOT NULL   -- sha256 of this file, comments scrubbed and
+                                -- whitespace collapsed. A file whose value
+                                -- differs from the running binary's is a file
+                                -- describing other tables, and is replaced.
 );
 
 -- Freshness markers. Two kinds of rows share this table:
@@ -112,6 +118,14 @@ CREATE TABLE pull_requests (
     additions            INTEGER,
     deletions            INTEGER,
     mergeable            TEXT,
+    mergeable_state      TEXT,   -- GitHub's mergeable_state (clean|behind|blocked|unstable|dirty|draft|
+                                 -- has_hooks|unknown). SINGLE-PR responses only, like the diff stats.
+                                 -- It answers what `mergeable` cannot -- WHY a mergeable PR still will not
+                                 -- merge -- and `behind` is the only statement anywhere that a strict
+                                 -- up-to-date rule is the thing blocking it. Un-resolved with `mergeable`
+                                 -- by every branch/tip move AND, unlike it, by CI events: unstable/blocked
+                                 -- <-> clean turn on check results, which move no tip and so would leave
+                                 -- this field the one cached answer nothing invalidates.
     author_login         TEXT,
     author_avatar        TEXT,
     author_url           TEXT,
@@ -164,6 +178,27 @@ CREATE TABLE pr_labels (
     color       TEXT NOT NULL,
     PRIMARY KEY (owner, repo, pr_number, name)
 );
+
+-- The record that a PR left the cache because it closed. Only OPEN PRs are
+-- retained, so closing DELETES the row -- and once the row is gone there is
+-- nothing for a later write carrying OLDER state to lose against: it simply
+-- re-inserts the PR as open, and nothing afterwards restates the close.
+-- A delivery's payload is the state at the moment the event happened, so any
+-- delivery that arrives late (redelivered, or merely out of order -- GitHub
+-- delivers concurrently) can be that write. This table is what lets the open
+-- write paths refuse one. Keyed lowercase (NormalizeRepoKey), pruned at
+-- ghdata.PRClosureRetention, and dropped the moment a write proves it
+-- postdates the close (a genuine reopen).
+CREATE TABLE pr_closures (
+    owner       TEXT NOT NULL,     -- lowercased
+    repo        TEXT NOT NULL,     -- lowercased
+    number      INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL,     -- the closing view's pull_request.updated_at
+    recorded_at TEXT NOT NULL,     -- RFC3339, for retention pruning
+    PRIMARY KEY (owner, repo, number)
+);
+
+CREATE INDEX idx_pr_closures_recorded ON pr_closures (recorded_at);
 
 -- Per-check state for a commit, fed by status/check_run/check_suite webhooks.
 -- We aggregate these into the PR's last_commit_status rollup without re-fetching
@@ -345,7 +380,11 @@ CREATE INDEX idx_commits_list_cache_lru ON commits_list_cache (last_used_at);
 -- never invent or drop it. A comparison depends on both refs' tips, so a
 -- push flushes the pushed ref's rows (base_ref or head_ref match; repo-wide
 -- when the ref is unknown) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries. The compare's
+-- expires_at is the 24h TTL backstop for missed deliveries. base_tip_sha is
+-- what makes a MISSED flush survivable on the side that matters: GitHub
+-- states the base tip it computed against, so a row whose base branch has
+-- since moved can be recognized as stale on read instead of being served.
+-- The compare's
 -- commits are also upserted into git_commits_cache on absorb (synergy with
 -- the single-commit and commits-list routes); the doc is self-contained, so
 -- a hit never depends on those rows. owner/repo lowercased like the other
@@ -357,6 +396,7 @@ CREATE TABLE compare_cache (
     basehead     TEXT NOT NULL,              -- raw base...head path tail, exact
     base_ref     TEXT NOT NULL,              -- basehead's base side (before the '...')
     head_ref     TEXT NOT NULL,              -- basehead's head side (after the '...')
+    base_tip_sha TEXT NOT NULL DEFAULT '',   -- base_commit.sha: the base tip this answer was computed against ('' = not stated)
     status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
     doc          TEXT NOT NULL,              -- rendered document as JSON (trimmed compare, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339
@@ -403,6 +443,17 @@ CREATE INDEX idx_compare_cache_lru ON compare_cache (last_used_at);
 -- unknown), repository flushes the whole repo like everywhere else;
 -- expires_at is the 24h TTL backstop for missed deliveries. owner/repo
 -- lowercased like the other cached-route tables.
+--
+-- status is the upstream answer the row absorbed (the compare_cache
+-- precedent): 200, a real snapshot in one of the three per-kind shapes above,
+-- or 404, an expiring unknown-ref miss marker -- CI status watchers re-poll a
+-- ref until it settles, and a ref that never resolves re-earns the same 404
+-- on every sweep, exactly like compare's fork-PR case. A 403 is NEVER
+-- absorbed here: unlike a 404, it is a fact about the CALLER's credential
+-- (fine-grained PATs cannot use the Checks API at all), not about the repo or
+-- ref, and this table carries no actor column -- caching it would serve a
+-- stale denial to a differently-scoped caller (an App installation token,
+-- say) who could get a real answer from the same request.
 CREATE TABLE commit_ci_cache (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner        TEXT NOT NULL,              -- lowercased
@@ -411,7 +462,8 @@ CREATE TABLE commit_ci_cache (
     kind         TEXT NOT NULL,              -- 'status' | 'check_runs' | 'statuses_list'
     per_page     INTEGER NOT NULL,           -- default 30 for param-less requests
     page         INTEGER NOT NULL,           -- default 1 for param-less requests
-    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    status       INTEGER NOT NULL DEFAULT 200, -- 200, or 404 (expiring unknown-ref miss marker)
+    doc          TEXT NOT NULL,              -- trimmed document as JSON (per-kind snapshot, or the 404 body)
     fetched_at   TEXT NOT NULL,              -- RFC3339
     expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
     last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
@@ -498,17 +550,25 @@ CREATE UNIQUE INDEX idx_branches_list_cache_key ON branches_list_cache (owner, r
 CREATE INDEX idx_branches_list_cache_lru ON branches_list_cache (last_used_at);
 
 -- Per-page snapshots for GET /repos/{owner}/{repo}/actions/runs?head_sha=...
--- (the workflow-runs listing filtered to one commit -- pr-minder's
+-- (the workflow-runs listing filtered to ONE COMMIT -- pr-minder's
 -- hasWorkflowRuns zombie probe, repeated per bot PR by the reconcile hook's
 -- fleet sweeps). Whole-doc snapshots per exact pagination shape, keyed by
 -- (owner, repo, head_sha, per_page, page); doc holds the ALREADY-TRIMMED
--- document as JSON. A sha's runs change when its CI moves, so
--- status/check_run/check_suite/workflow_job/workflow_run webhooks flush that
--- sha's rows (workflow_job is the precise signal -- its head_sha names the
--- row directly; workflow_run is the ONLY signal for a startup_failure run,
--- which creates no jobs, check runs, or statuses; repo-wide only when a
--- payload carries no sha) and repository events flush the whole repo;
--- expires_at is the 24h TTL backstop for missed deliveries.
+-- document as JSON.
+--
+-- Only the per-commit shape lives here. The repo-wide listing
+-- (?status=&branch=) is NOT a snapshot at all -- it is rebuilt from the
+-- workflow_runs truth table above, because no per-sha signal can name a
+-- run entering or leaving `queued` and clearing a snapshot on every job
+-- delivery is invalidate-and-refetch, which the cache doctrine forbids.
+--
+-- A sha's runs change when its CI moves, so status/check_run/check_suite/
+-- workflow_job/workflow_run webhooks flush that sha's rows (workflow_job is
+-- the precise signal -- its head_sha names the row directly; workflow_run is
+-- the ONLY signal for a startup_failure run, which creates no jobs, check
+-- runs, or statuses; repo-wide only when a payload carries no sha) and
+-- repository events flush the whole repo; expires_at is the 24h TTL backstop
+-- for missed deliveries and for run DELETION, which GitHub never delivers.
 -- owner/repo lowercased like the other cached-route tables; head_sha
 -- lowercased full hex.
 CREATE TABLE workflow_runs_cache (
@@ -630,11 +690,21 @@ CREATE INDEX idx_pulls_list_cache_lru ON pulls_list_cache (last_used_at);
 -- by app identity, deliberately outside the global-truth model. Invalidated by
 -- installation/installation_repositories events for the stored installation
 -- id, plus the TTL backstop. owner/repo lowercased.
+--
+-- status distinguishes the two absorbed answers: 200 rows carry a real
+-- installation, 404 rows are the "not installed here" VERDICT and carry
+-- installation_id 0, so the by-installation-id flush cannot reach them --
+-- DeleteAbsentRepoInstallationCache is what clears those. A verdict's TTL is
+-- deliberately much shorter than a 200's (installationAbsentTTL): the mirror
+-- only receives ITS OWN App's installation webhooks, so a consumer App being
+-- installed somewhere emits no signal the mirror can see.
 CREATE TABLE repo_installation_cache (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     actor                TEXT NOT NULL,             -- "app:<verified app id>"
     owner                TEXT NOT NULL,             -- lowercased
     repo                 TEXT NOT NULL,             -- lowercased
+    status               INTEGER NOT NULL DEFAULT 200, -- 200 installed | 404 absent verdict
+    message              TEXT NOT NULL DEFAULT '',  -- GitHub's message, 404 rows only
     installation_id      INTEGER NOT NULL,
     account_login        TEXT NOT NULL DEFAULT '',
     account_type         TEXT NOT NULL DEFAULT '',  -- Organization | User
@@ -650,6 +720,7 @@ CREATE TABLE repo_installation_cache (
 CREATE UNIQUE INDEX idx_repo_installation_cache_key ON repo_installation_cache (actor, owner, repo);
 CREATE INDEX idx_repo_installation_cache_install ON repo_installation_cache (installation_id);
 CREATE INDEX idx_repo_installation_cache_lru ON repo_installation_cache (last_used_at);
+CREATE INDEX idx_repo_installation_cache_status ON repo_installation_cache (status);
 
 -- ============================================================================
 -- Principal Identities (dashboard only)
@@ -693,6 +764,53 @@ CREATE TABLE webhook_deliveries (
     detail       TEXT NOT NULL DEFAULT ''    -- human summary, e.g. "upserted PR #42"
 );
 
+-- The newest view of each SUBJECT this mirror has applied, so an older one
+-- arriving later can be recognized as superseded rather than written over it.
+-- GitHub does not order deliveries and never claims to; two views of one
+-- resource can arrive in either order, and applying the older one second is a
+-- correct, repeatable write of stale state (a merged PR came back OPEN 82
+-- seconds after its merge exactly that way).
+--
+-- subject is the RESOURCE the view is of, at the grain that actually
+-- supersedes -- "pr:owner/repo#12", "status:owner/repo:<sha>:<context>",
+-- "check_run:owner/repo:<id>" (webhook.OrderOf). Coarser keys would let one
+-- resource's event discard another's. event_time is the payload's own clock
+-- for that subject, always a GitHub-set field, never a user-set one (a push
+-- uses repository.pushed_at, never head_commit.timestamp).
+--
+-- Observability, not truth: the rows only gate writes, and losing them (a
+-- nuke, a prune) costs at most a window in which an out-of-order delivery is
+-- applied as it always was. Pruned by age on write.
+CREATE TABLE webhook_watermarks (
+    subject     TEXT PRIMARY KEY,           -- the resource, at superseding grain
+    event_time  TEXT NOT NULL,              -- RFC3339, from the payload's own clock
+    delivery_id TEXT NOT NULL DEFAULT '',   -- X-GitHub-Delivery of the view that set it
+    event_type  TEXT NOT NULL DEFAULT '',   -- X-GitHub-Event of that view
+    updated_at  TEXT NOT NULL               -- RFC3339 receipt time, for pruning
+);
+
+CREATE INDEX idx_webhook_watermarks_pruning ON webhook_watermarks (updated_at);
+
+-- Deliveries this mirror has already asked GitHub to send again. GitHub keeps
+-- its own log of deliveries it could not hand over and will re-send one on
+-- request, but it never retries by itself -- so a delivery lost to a restart
+-- or a blip is simply gone, and every cache that delivery would have moved
+-- serves its last absorbed answer for the full TTL with nothing reporting a
+-- gap. The replayer (internal/sync) reads that log and requests the missing
+-- ones; this table is how it asks exactly once per delivery, across restarts.
+-- One row per GitHub delivery id (a redelivery gets its own id, so a replay
+-- that also fails is a new, separately-requestable delivery). Bounded by
+-- pruning rows past the replayer's own lookback window.
+CREATE TABLE webhook_replays (
+    delivery_id  INTEGER PRIMARY KEY,        -- GitHub's numeric delivery id
+    guid         TEXT NOT NULL DEFAULT '',   -- the X-GitHub-Delivery UUID it will arrive under
+    event_type   TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's original attempt
+    requested_at TEXT NOT NULL               -- RFC3339, when this mirror asked
+);
+
+CREATE INDEX idx_webhook_replays_requested ON webhook_replays (requested_at);
+
 -- ============================================================================
 -- Workflow jobs (webhook-fed Actions job state)
 -- ============================================================================
@@ -728,3 +846,526 @@ CREATE TABLE workflow_jobs (
 -- completed_at < cutoff) a single indexed scan of only the completed rows.
 CREATE INDEX idx_workflow_jobs_completed_at
     ON workflow_jobs (completed_at) WHERE status = 'completed';
+
+-- GitHub Actions RUN state -- global truth, maintained by webhooks the same
+-- way pull_requests is, and the state the repo-wide runs LISTING
+-- (GET /repos/{owner}/{repo}/actions/runs?status=&branch=) is rebuilt from.
+--
+-- This is a truth table, NOT a response snapshot: a delivery that moves one
+-- run UPDATES THAT RUN'S ROW and leaves every other run served. The listing
+-- is a filtered view over these rows, so a run entering or leaving `queued`
+-- changes the answer without anything being cleared and re-fetched.
+--
+-- Who writes it:
+--   * workflow_run deliveries -- the authoritative whole object (id, name,
+--     status, conclusion, timestamps). The only signal for a run that creates
+--     no jobs at all (a startup_failure, or one gated by a concurrency group).
+--   * workflow_job deliveries -- these name the RUN (run_id, head_sha,
+--     head_branch, workflow_name, run_attempt) but carry no run-level status,
+--     so they may only ever establish a run's identity and RAISE its status
+--     floor (a job in_progress proves its run is in_progress). They must
+--     never conclude a run: the job set may be incomplete.
+--   * REST absorbs -- every /actions/runs response upserts every run it
+--     listed.
+-- check_suite/check_run deliveries carry no run identity at all and
+-- deliberately do not touch this table.
+--
+-- Empty string means "not reported" (the workflow_jobs convention) and is
+-- rendered as JSON null: name, conclusion (until completed), and
+-- run_started_at (until it starts) are exactly that case.
+CREATE TABLE workflow_runs (
+    owner          TEXT NOT NULL,              -- lowercased
+    repo           TEXT NOT NULL,              -- lowercased
+    run_id         INTEGER NOT NULL,
+    run_attempt    INTEGER NOT NULL DEFAULT 0,
+    name           TEXT NOT NULL DEFAULT '',
+    head_sha       TEXT NOT NULL DEFAULT '',   -- lowercased full hex
+    head_branch    TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL,              -- queued | in_progress | completed | waiting | ...
+    conclusion     TEXT NOT NULL DEFAULT '',   -- success | failure | ... (completed only)
+    html_url       TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
+    updated_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
+    run_started_at TEXT NOT NULL DEFAULT '',   -- RFC3339, null while queued
+    touched_at     TEXT NOT NULL,              -- RFC3339: when the mirror last applied anything
+    PRIMARY KEY (owner, repo, run_id)
+);
+
+-- The listing's ordering (newest first, GitHub's own) and the status/branch
+-- filters it selects on.
+CREATE INDEX idx_workflow_runs_listing ON workflow_runs (owner, repo, created_at DESC, run_id DESC);
+CREATE INDEX idx_workflow_runs_head_sha ON workflow_runs (owner, repo, head_sha);
+-- Bounds the table: settled runs are pruned on write once they are older than
+-- the retention window (ghdata.workflowRunRetention).
+CREATE INDEX idx_workflow_runs_settled ON workflow_runs (touched_at) WHERE status = 'completed';
+
+-- The COMPLETENESS PROOF for serving the runs listing out of workflow_runs.
+--
+-- Rows alone cannot answer a list: truth holds the runs the mirror has seen,
+-- which is not the same as every run GitHub would return. One row per
+-- (owner, repo, canonical filter set) records that a page-1 response for
+-- EXACTLY that filter came back SHORT -- fewer items than per_page -- which
+-- proves truth then held every run matching it. Webhooks maintain the rows
+-- from that point on, so the marker is never touched by a run delivery; that
+-- is the whole point (the pulls_list_cache stance).
+--
+-- expires_at is deliberately SHORT. It bounds exactly one hole: a run that
+-- enters the filter's set without any delivery naming it -- which needs the
+-- App subscribed to workflow_run (see docs/webhooks/*), since a run with no
+-- jobs yet emits no workflow_job. A queued-backlog answer is what a runner
+-- coordinator provisions against, so that window is held to minutes.
+-- repository events clear it outright.
+CREATE TABLE workflow_runs_list_cache (
+    owner      TEXT NOT NULL,                  -- lowercased
+    repo       TEXT NOT NULL,                  -- lowercased
+    filters    TEXT NOT NULL,                  -- canonical "k=v&k=v" of the modeled filters, '' = unfiltered
+    fetched_at TEXT NOT NULL,                  -- RFC3339
+    expires_at TEXT NOT NULL,                  -- RFC3339
+    PRIMARY KEY (owner, repo, filters)
+);
+
+-- Snapshots for GET /repos/{owner}/{repo}/git/ref/{ref} -- the ref-to-tip
+-- lookup (heads/<branch>, tags/<tag>). One row per (owner, repo, verbatim
+-- requested ref): callers may spell the same branch three ways and each
+-- spelling is its own row, so the per-ref push flush covers every spelling
+-- (refSpellings in internal/sync/webhook_invalidate.go). status is 200 (a
+-- real ref) or 404 (the "no such ref" VERDICT -- deleted branches are polled
+-- forever by fleet sweeps, and ref creation arrives as a push, which clears
+-- the verdict). doc holds the rendered trimmed body. owner/repo lowercased.
+-- reconciled_against records the contradicting PR base.sha a refetch already
+-- settled (see Store.GetCachedGitRefChecked): a PR's base.sha legitimately
+-- LAGS its branch, so the same lagging value must not buy a refetch on every
+-- read. Empty means no contradiction has been answered for this row.
+CREATE TABLE git_ref_cache (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner              TEXT NOT NULL,              -- lowercased
+    repo               TEXT NOT NULL,              -- lowercased
+    ref                TEXT NOT NULL,              -- VERBATIM requested ref path, e.g. "heads/main"
+    status             INTEGER NOT NULL,           -- 200 (a ref) or 404 (absent verdict)
+    doc                TEXT NOT NULL,              -- trimmed ref document as JSON
+    fetched_at         TEXT NOT NULL,              -- RFC3339
+    expires_at         TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes flush sooner)
+    last_used_at       TEXT NOT NULL,              -- RFC3339, for LRU pruning
+    reconciled_against TEXT NOT NULL DEFAULT ''    -- a contradicting PR base.sha this row's fetch already settled
+);
+
+CREATE UNIQUE INDEX idx_git_ref_cache_key ON git_ref_cache (owner, repo, ref);
+CREATE INDEX idx_git_ref_cache_lru ON git_ref_cache (last_used_at);
+
+-- Snapshots for the Actions JOB reads:
+--   GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs  (kind 'run_jobs')
+--   GET /repos/{owner}/{repo}/actions/jobs/{job_id}       (kind 'job')
+--
+-- A job still moving is stored too, on a short TTL, and REWRITTEN by its own
+-- workflow_job deliveries rather than left to age (ghdata.ApplyWorkflowJob).
+-- The fetch proves a page's membership; the deliveries keep its contents
+-- current; the short TTL bounds a lost delivery and nothing else. Storing only
+-- terminal answers left the GHA coordinator re-asking GitHub for state it had
+-- already been told, which was most of the mirror's passthrough volume.
+--
+-- ref_id is the run id (kind 'run_jobs') or the job id (kind 'job'); run_id is
+-- carried on BOTH kinds so a re-run -- a different set of jobs under the same
+-- run id -- flushes every row it invalidates from one signal.
+CREATE TABLE workflow_jobs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- 'run_jobs' | 'job'
+    ref_id       INTEGER NOT NULL,           -- run id ('run_jobs') or job id ('job')
+    run_id       INTEGER NOT NULL,           -- the owning run, on both kinds
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflow_jobs_cache_key ON workflow_jobs_cache (owner, repo, kind, ref_id, per_page, page);
+CREATE INDEX idx_workflow_jobs_cache_run ON workflow_jobs_cache (owner, repo, run_id);
+CREATE INDEX idx_workflow_jobs_cache_lru ON workflow_jobs_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/code-quality/setup -- GitHub Code
+-- Quality's per-repo enablement configuration (public preview; schema
+-- `code-quality-setup` in GitHub's OpenAPI description). One row per repo:
+-- the endpoint takes no query parameters, so the repo IS the key.
+--
+-- This is CONFIG, changed only by an explicit PATCH to the same path or by a
+-- human in the UI -- and GitHub emits no webhook for either. The mirror
+-- flushes the row when it PROXIES such a PATCH, and `repository` events flush
+-- repo-wide, but a change made outside the mirror is invisible until
+-- expires_at. The TTL is short for that reason (codeQualitySetupTTL); see
+-- docs/cache/rest-routes.md.
+CREATE TABLE code_quality_setup_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    doc          TEXT NOT NULL,              -- trimmed setup document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_code_quality_setup_cache_key ON code_quality_setup_cache (owner, repo);
+CREATE INDEX idx_code_quality_setup_cache_lru ON code_quality_setup_cache (last_used_at);
+
+-- Snapshot for GET /repos/{owner}/{repo}/labels/{name} -- one label
+-- definition. The name is the VERBATIM requested path segment (GitHub label
+-- names carry spaces and punctuation), so a differently-cased spelling of the
+-- same label is its own row; every flush here is repo-wide, which is what
+-- makes that safe.
+--
+-- Only the 200 is stored. The absent answer deliberately is not: a caller's
+-- ensure-then-create pass would read its own stale 404 in the seconds before
+-- the `label` delivery lands, and in this fleet's traffic essentially every
+-- answer is a 200 anyway, so the verdict would buy nothing for that risk.
+--
+-- Invalidation: EVERY `label` delivery (created/edited/deleted -- a rename
+-- moves two names at once, so the grain is the repo, and these events are
+-- rare), the write verbs the mirror proxies on the same path, `repository`
+-- events, + a 24h TTL backstop.
+CREATE TABLE label_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    name         TEXT NOT NULL,              -- VERBATIM requested label name
+    doc          TEXT NOT NULL,              -- trimmed label document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_label_cache_key ON label_cache (owner, repo, name);
+CREATE INDEX idx_label_cache_lru ON label_cache (last_used_at);
+
+-- Snapshot for GET /installation/repositories -- "which repos does the token
+-- I am holding cover".
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), not by the reveal-layer principal. The answer belongs to one
+-- installation token, and the app:<id> principal deliberately shares one
+-- bucket across every token of an app -- including tokens of DIFFERENT
+-- installations, which see different repos. Per-credential keying is also
+-- what gates the row: it can only ever be replayed to the exact credential
+-- GitHub already answered.
+--
+-- Bounded primarily by its TTL (installationReposTTL): installation /
+-- installation_repositories deliveries flush the whole table, but the mirror
+-- only receives ITS OWN App's, and these callers are other apps.
+CREATE TABLE installation_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed listing document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_installation_repos_cache_key ON installation_repos_cache (token_fp, per_page, page);
+CREATE INDEX idx_installation_repos_cache_lru ON installation_repos_cache (last_used_at);
+
+-- Snapshots for the webhook CONFIGURATION listings:
+--   GET /repos/{owner}/{repo}/hooks  (scope 'repo')
+--   GET /orgs/{org}/hooks            (scope 'org', repo '')
+--
+-- Keyed by the CREDENTIAL (a SHA-256 fingerprint of the bearer, never the
+-- bearer), like installation_repos_cache and for a stronger reason: these are
+-- ADMIN-only reads. The reveal layer proves READ access and its public fast
+-- path admits any authenticated principal, so a global row behind the ordinary
+-- gate would hand a read-only caller the repo's webhook URLs. Per-credential
+-- keying is self-gating -- a row is only ever replayed to the exact credential
+-- GitHub already answered it for -- and needs no new authorization machinery.
+-- What a GLOBAL row would need instead, and the arithmetic that decides
+-- whether it would pay, is in docs/cache/rest-routes.md.
+--
+-- Invalidation: the write verbs the mirror proxies on these paths flush the
+-- listing ACROSS ALL CREDENTIALS (a hook one caller creates changes what every
+-- caller sees), `repository` events flush a repo's rows, and the TTL is the
+-- primary bound -- GitHub's `meta` event is NOT a usable signal here: it is
+-- delivered only to the hook being deleted, so another hook's deletion is
+-- something the mirror never hears about.
+CREATE TABLE hooks_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- 'repo' | 'org'
+    owner        TEXT NOT NULL,              -- lowercased owner, or the org login
+    repo         TEXT NOT NULL,              -- lowercased repo; '' for scope 'org'
+    -- A SINGLE hook read (GET .../hooks/{hook_id}) stores its id here and the
+    -- listing stores 0. Both answers describe the same subject, so they share
+    -- a table and one flush drops the listing and the single reads together.
+    hook_id      INTEGER NOT NULL DEFAULT 0,
+    per_page     INTEGER NOT NULL,           -- 0 on a single-hook row: it does not page
+    page         INTEGER NOT NULL,           -- 0 on a single-hook row
+    -- 200, or 404 for a single hook GitHub says is not there. That verdict is
+    -- authoritative and worth storing: a deleted hook is asked for repeatedly.
+    status       INTEGER NOT NULL DEFAULT 200,
+    doc          TEXT NOT NULL,              -- trimmed hooks document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_hooks_cache_key ON hooks_cache (token_fp, scope, owner, repo, hook_id, per_page, page);
+CREATE INDEX idx_hooks_cache_target ON hooks_cache (scope, owner, repo);
+CREATE INDEX idx_hooks_cache_lru ON hooks_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/git/trees/{tree_sha}[?recursive=1].
+-- Trees are content-addressed and immutable like git commits: no TTL, no
+-- webhook invalidation (no delivery names a tree object), LRU pruning only.
+-- recursive is the verbatim query value ('' or '1') because GitHub answers a
+-- DIFFERENT entry set for the same sha depending on it, so it is part of the
+-- key rather than a rendering option. doc is the whole trimmed document
+-- (sha, truncated, tree[] with url dropped from every entry) rendered once at
+-- absorb time, the hooks_cache/branches_list_cache snapshot convention.
+CREATE TABLE git_trees_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    sha          TEXT NOT NULL,              -- lowercased full hex tree sha
+    recursive    TEXT NOT NULL DEFAULT '',   -- '' or '1', verbatim
+    doc          TEXT NOT NULL,              -- trimmed tree document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_git_trees_cache_key ON git_trees_cache (owner, repo, sha, recursive);
+CREATE INDEX idx_git_trees_cache_lru ON git_trees_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/check-runs/{check_run_id} (the SINGLE
+-- check-run read, distinct from commit_ci_cache's LIST route). Keyed by the
+-- check run's own id, which never changes owner/repo/sha once created.
+-- Absorbed from an upstream fetch AND rewritten in place by `check_run`
+-- webhook deliveries (ghdata.StoredCheckRun/TrimCheckRunJSON, the same trim
+-- the LIST route uses -- one answer for what a check run becomes regardless
+-- of source). doc is the trimmed single-check-run document. expires_at is a
+-- backstop for a check run whose terminal state a delivery never reaches
+-- (deleted app, GitHub-side ordering loss); webhooks are the primary path.
+CREATE TABLE check_run_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    check_run_id INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed check-run document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks rewrite sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_check_run_cache_key ON check_run_cache (owner, repo, check_run_id);
+CREATE INDEX idx_check_run_cache_lru ON check_run_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix} (the
+-- ref-prefix search pr-minder's queue-branch scan uses). doc is the trimmed
+-- JSON array of matching {ref, object:{sha}} entries for one exact prefix.
+-- A branch create/delete/tip-move all arrive as a push naming a ref under
+-- refs/heads/ -- push/repository webhooks flush the whole repo's rows (the
+-- branches_list_cache precedent: a prefix search has no narrower per-ref
+-- target than the listing does). expires_at is the 24h TTL backstop.
+CREATE TABLE matching_refs_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    prefix       TEXT NOT NULL,              -- verbatim path after heads/
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed matching-refs array as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (webhooks flush sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_matching_refs_cache_key ON matching_refs_cache (owner, repo, prefix, per_page, page);
+CREATE INDEX idx_matching_refs_cache_lru ON matching_refs_cache (last_used_at);
+
+-- State for the identity/self routes with no per-repo scope and no webhook
+-- signal: GET /app (App metadata, keyed by verified app id), GET /user and
+-- GET /user/orgs (keyed by the bearer's fingerprint, the hooks_cache
+-- convention -- a token uniquely names one user). `kind` picks which
+-- question a row answers; doc is the trimmed document. TTL is the PRIMARY
+-- bound for all three (hooks_cache's staleness stance): App metadata rarely
+-- changes and carries no webhook at all, and GitHub sends no event for a
+-- user's own profile edits or org membership changes (the CLAUDE.md
+-- `organization`/`membership` payload-unused exception covers the same gap).
+CREATE TABLE identity_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_key  TEXT NOT NULL,              -- app:<id> or the bearer's token fingerprint
+    kind         TEXT NOT NULL,              -- 'app' | 'user' | 'user_orgs'
+    doc          TEXT NOT NULL,              -- trimmed document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_identity_cache_key ON identity_cache (subject_key, kind);
+CREATE INDEX idx_identity_cache_lru ON identity_cache (last_used_at);
+
+-- State for GET /orgs/{org}/actions/runners. Keyed by the bearer's
+-- fingerprint like hooks_cache -- this is an admin-scoped read (needs
+-- `manage_runners:organization` or equivalent) and GitHub sends no webhook
+-- for a runner's online/offline/busy transitions, so a global row would both
+-- leak admin-only data through the ordinary reveal gate and go stale with no
+-- way to notice. TTL is short and primary: a runner's status is a live value
+-- a scheduler provisions against.
+CREATE TABLE org_runners_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    org          TEXT NOT NULL,              -- lowercased
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- trimmed runners document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_org_runners_cache_key ON org_runners_cache (token_fp, org, per_page, page);
+CREATE INDEX idx_org_runners_cache_lru ON org_runners_cache (last_used_at);
+
+-- State for GET /app/installations (every installation of the calling App --
+-- distinct from repo_installation_cache, which answers "does the app cover
+-- THIS repo/owner"). Keyed by the verified app id, per-page, cached VERBATIM
+-- like identity_cache/org_runners_cache (identical-or-passthrough: this is a
+-- listing of full installation objects with no consumer survey to trim
+-- against). `installation`/`installation_repositories` deliveries flush the
+-- owning app's pages when the payload's own installation object names its
+-- app_id (installation_apply.go); expires_at is the TTL backstop otherwise.
+CREATE TABLE app_installations_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_key      TEXT NOT NULL,              -- app:<id>
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- verbatim installations-page JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_app_installations_cache_key ON app_installations_cache (app_key, per_page, page);
+CREATE INDEX idx_app_installations_cache_lru ON app_installations_cache (last_used_at);
+
+-- State for GET /search/issues?q=...&per_page=...: an exact-query-string
+-- cache, the documented exception to webhook-driven invalidation (see
+-- docs/cache/uncacheable-routes.md) -- an arbitrary search query has no
+-- single resource a webhook could name, so this is TTL-only and
+-- deliberately short: long enough to collapse a tight poll loop asking the
+-- identical query, short enough that a real answer change (an issue closed,
+-- a label added) is visible within one poll cycle either way.
+--
+-- token_fp is part of the key, NOT an optimization -- search results are
+-- PERMISSION-SCOPED (GitHub filters hits to what the caller's token can see),
+-- so a row keyed on the query text alone would replay one credential's
+-- results to a different credential asking the identical query. Same
+-- per-credential stance as hooks_cache/org_runners_cache, for the same
+-- reason: correctness, not just cache-sharing convenience.
+CREATE TABLE search_issues_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    query_key    TEXT NOT NULL,              -- sha256(q + '\n' + per_page + '\n' + page), verbatim query is unbounded
+    doc          TEXT NOT NULL,              -- verbatim search-results document as JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary and only bound)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_search_issues_cache_key ON search_issues_cache (token_fp, query_key);
+CREATE INDEX idx_search_issues_cache_lru ON search_issues_cache (last_used_at);
+
+-- State for GET /user/repos: the requesting token's own personalized repo
+-- listing (distinct from the org-repos GraphQL tier-1 query -- this is a
+-- REST listing spanning every repo the token can see, across every owner).
+-- Keyed by the bearer's fingerprint + the modeled query shape, cached
+-- VERBATIM (identical-or-passthrough). No webhook interaction: a repository
+-- event is repo-wide and this is a personalized, potentially cross-owner
+-- listing with no clean per-repo patch target, so TTL alone bounds it, the
+-- hooks_cache/org_runners_cache precedent.
+CREATE TABLE user_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    sort         TEXT NOT NULL DEFAULT '',   -- verbatim ?sort= value ('' = default)
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- verbatim repos-page JSON
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_user_repos_cache_key ON user_repos_cache (token_fp, sort, per_page, page);
+CREATE INDEX idx_user_repos_cache_lru ON user_repos_cache (last_used_at);
+
+-- State for GET /repos/{owner}/{repo}/readme[/{dir}]. The answer is one
+-- content object, the same shape contents_cache holds, so the row stores the
+-- RENDERED trimmed document and the status it belongs to. A repo with no
+-- README answers 404, and that verdict is an answer this route holds: a fleet
+-- polling every repo's readme spends one seventh of its calls on repos that
+-- have none. Rows key the requested subtree and ref, and a push flushes them
+-- exactly where it flushes contents_cache.
+CREATE TABLE readme_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    dir          TEXT NOT NULL DEFAULT '',   -- the /readme/{dir} subtree ('' = repo root)
+    ref          TEXT NOT NULL DEFAULT '',   -- ?ref= query value ('' = default branch)
+    status       INTEGER NOT NULL,           -- 200 or 404
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop (pushes invalidate sooner)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_readme_cache_key ON readme_cache (owner, repo, dir, ref);
+CREATE INDEX idx_readme_cache_lru ON readme_cache (last_used_at);
+
+-- State for the Actions WORKFLOW definitions: the repo's workflow listing
+-- (GET /repos/{owner}/{repo}/actions/workflows) and one workflow
+-- (.../workflows/{id}, by numeric id or by file name). Both are the same
+-- resource seen at two grains, so one table holds both under kind, the
+-- workflow_jobs_cache precedent. A workflow definition changes only when a
+-- push edits .github/workflows, so a push flushes the repo's rows and the TTL
+-- backstops a lost delivery.
+CREATE TABLE workflows_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- list | single
+    ref_id       TEXT NOT NULL DEFAULT '',   -- single: the requested id or file name; list: ''
+    per_page     INTEGER NOT NULL DEFAULT 0, -- list paging; single: 0
+    page         INTEGER NOT NULL DEFAULT 0,
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL backstop
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_workflows_cache_key ON workflows_cache (owner, repo, kind, ref_id, per_page, page);
+CREATE INDEX idx_workflows_cache_lru ON workflows_cache (last_used_at);
+
+-- State for the owner repo listings: GET /orgs/{org}/repos and
+-- GET /users/{username}/repos. Both answer "the repos of this owner that THIS
+-- token can see", so rows key the bearer's fingerprint alongside the owner,
+-- the user_repos_cache precedent -- a shared row would reveal one token's
+-- private repos to another. scope separates the two spellings, which answer
+-- differently for the same name (an org's user listing omits its repos). A
+-- 404 verdict is stored too: a listing asked for a name that is not an org is
+-- a stable answer, and this fleet spends a quarter of these calls on it.
+CREATE TABLE owner_repos_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- org | user
+    owner        TEXT NOT NULL,              -- lowercased
+    sort         TEXT NOT NULL DEFAULT '',   -- verbatim ?sort= value ('' = default)
+    direction    TEXT NOT NULL DEFAULT '',   -- verbatim ?direction= value ('' = default)
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    status       INTEGER NOT NULL,           -- 200 or 404
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339 TTL (the primary bound here)
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_owner_repos_cache_key ON owner_repos_cache (token_fp, scope, owner, sort, direction, per_page, page);
+CREATE INDEX idx_owner_repos_cache_owner ON owner_repos_cache (owner);
+CREATE INDEX idx_owner_repos_cache_lru ON owner_repos_cache (last_used_at);

@@ -23,13 +23,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// AccessChecker is the sliver of the ghdata store the reveal gate needs
-// (ghdata.Store satisfies it as-is); an interface so tests can fake it. The
-// gate reuses the reveal layer's NON-PROBING fast paths only: public
-// visibility in global truth, or a live grant. There is deliberately no
-// per-notification probe — no caller token exists at delivery time — and no
-// deny-cache involvement; absence of public+grant simply gates the
-// notification (fail closed).
+// AccessChecker is the sliver of the ghdata store the reveal gate needs; an interface so tests can fake it.
+// see docs/notifications.md
 type AccessChecker interface {
 	GetRepoInsensitive(ctx context.Context, owner, name string) (dbgen.Repo, error)
 	HasGrant(ctx context.Context, principal, owner, repo string, now time.Time) (bool, error)
@@ -43,8 +38,7 @@ const (
 	defaultDisableAfter   = 10
 	defaultUserAgent      = "github-state-mirror-notifier"
 
-	// fanOutTimeout bounds one delivery's subscription listing + reveal
-	// gating (local SQLite reads).
+	// fanOutTimeout bounds delivery's subscription listing + reveal gating.
 	fanOutTimeout = 30 * time.Second
 	// storeOpTimeout bounds the per-delivery outcome writes.
 	storeOpTimeout = 5 * time.Second
@@ -54,38 +48,30 @@ const (
 
 func defaultBackoff() []time.Duration { return []time.Duration{1 * time.Second, 4 * time.Second} }
 
-// Config configures a Notifier. Zero fields take the documented defaults.
+// Config configures a Notifier. fields take the documented defaults.
 type Config struct {
 	Store  *Store
 	Access AccessChecker
-	// HTTPClient posts the notifications (per-attempt timeouts are applied via
-	// request contexts). Default: a plain &http.Client{}.
+	// HTTPClient posts notifications; default a plain &http.Client{}.
 	HTTPClient *http.Client
-	// MaxConcurrent bounds concurrent subscriber POSTs (default 8).
+	// MaxConcurrent bounds concurrent subscriber POSTs (default).
 	MaxConcurrent int
-	// Attempts per delivery (default 3).
+	// Attempts per delivery (default).
 	Attempts int
 	// AttemptTimeout bounds each POST (default 8s).
 	AttemptTimeout time.Duration
 	// Backoff between attempts (default 1s then 4s; the last entry repeats).
 	Backoff []time.Duration
-	// DisableAfter is the consecutive-terminal-failure count that
-	// auto-disables a subscription (default 10).
+	// DisableAfter is the consecutive-terminal-failure count that auto-disables a subscription (default).
 	DisableAfter int
 	// UserAgent identifies the mirror to subscribers.
 	UserAgent string
-	// Timeline records every outbound delivery attempt (real per-attempt
-	// duration, status, terminal flag) onto the dashboard's Timeline chart.
-	// Nil-safe: nil records nothing.
+	// Timeline records every outbound delivery attempt onto the dashboard chart; nil records nothing.
 	Timeline *reqtimeline.Recorder
 }
 
-// Notifier fans a post-ingest event out to matching, authorized
-// subscriptions. Delivery work is DETACHED like the freshness fetches: it
-// runs on context.Background-derived contexts with bounded timeouts, tracked
-// in a WaitGroup, and Drain waits it out at shutdown BEFORE the DBs close.
-// All methods are nil-receiver-safe, so wiring may pass a nil notifier to
-// keep the feature inert.
+// Notifier fans a post-ingest event out to matching, authorized subscriptions; nil-receiver-safe.
+// see docs/notifications.md
 type Notifier struct {
 	store          *Store
 	access         AccessChecker
@@ -105,7 +91,7 @@ type Notifier struct {
 	wg       sync.WaitGroup
 }
 
-// New builds a Notifier from cfg, applying defaults to zero fields.
+// New builds a Notifier from cfg, applying defaults to fields.
 func New(cfg Config) *Notifier {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{}
@@ -154,7 +140,7 @@ func (n *Notifier) Store() *Store {
 }
 
 // Activity returns the cumulative counters and up to limit recent delivery
-// attempts, newest first. Nil-safe.
+// attempts, newest. Nil-safe.
 func (n *Notifier) Activity(limit int) (Counters, []Attempt) {
 	if n == nil {
 		return Counters{}, nil
@@ -191,10 +177,7 @@ func (n *Notifier) NotifyIngest(event webhook.Event, result webhook.DispatchResu
 	go n.fanOut(event, result.Disposition, ingestedAt)
 }
 
-// Drain stops new deliveries and retries promptly (pending backoff sleeps are
-// cut) and waits for in-flight work to finish, or the timeout to elapse. Call
-// it during shutdown BEFORE closing the databases. Returns true when fully
-// drained. Nil-safe.
+// Drain stops new deliveries, cuts pending backoff, and waits for in-flight work; nil-safe.
 func (n *Notifier) Drain(timeout time.Duration) bool {
 	if n == nil {
 		return true
@@ -231,10 +214,7 @@ func (n *Notifier) awaitQuiescence(timeout time.Duration) bool {
 	}
 }
 
-// track registers one unit of in-flight work, refusing (false) once the
-// notifier is stopping. The mutex closes the WaitGroup Add-after-Wait race:
-// stopping is flipped under the same lock, so no Add can slip in after Drain
-// began waiting on a drained group.
+// track adds unit of in-flight work, refusing stopping (the mutex avoids the Add-after-Wait race).
 func (n *Notifier) track() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -245,7 +225,7 @@ func (n *Notifier) track() bool {
 	return true
 }
 
-// fanOut matches one ingested delivery against every active subscription and
+// fanOut matches ingested delivery against every active subscription and
 // spawns a delivery per authorized match. Matching (active + event filter +
 // repo filter) and the reveal gate run per delivery, against live state.
 func (n *Notifier) fanOut(event webhook.Event, disposition string, ingestedAt time.Time) {
@@ -320,7 +300,7 @@ func (n *Notifier) revealAllowed(ctx context.Context, principal, owner, repo str
 	return ok
 }
 
-// deliver POSTs one notification with bounded retries, recording the outcome.
+// deliver POSTs notification with bounded retries, recording the outcome.
 // A stop/drain signal cuts pending backoff sleeps; a delivery abandoned by
 // shutdown records nothing (it neither succeeded nor terminally failed, and
 // counting it toward auto-disable would be unfair to the subscriber).
@@ -345,8 +325,7 @@ func (n *Notifier) deliver(sub Subscription, note Notification) {
 		attemptStart := time.Now()
 		status, err := n.post(sub, note)
 		ok := err == nil && status >= 200 && status < 300
-		// Every attempt is a real outbound request: chart it, with its real
-		// duration, whether it succeeded, failed, or will be retried.
+		// Every attempt is a real outbound request: chart it regardless of outcome.
 		disp := "failed"
 		if ok {
 			disp = "delivered"
@@ -367,9 +346,7 @@ func (n *Notifier) deliver(sub Subscription, note Notification) {
 	n.recordTerminalFailure(sub, note, lastStatus, lastErr, time.Since(start))
 }
 
-// subscriptionHost is the display target for a delivery attempt: the URL's
-// host only — never the full URL, whose path/query is subscriber
-// configuration that could embed credentials.
+// subscriptionHost is the display target: the host only, never the full URL (could embed credentials).
 func subscriptionHost(rawURL string) string {
 	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
 		return u.Host
@@ -377,7 +354,7 @@ func subscriptionHost(rawURL string) string {
 	return "(invalid url)"
 }
 
-// backoffFor returns the sleep before the given attempt (attempt >= 2); the
+// backoffFor returns the sleep before the given attempt (attempt >=); the
 // last configured backoff repeats.
 func (n *Notifier) backoffFor(attempt int) time.Duration {
 	i := attempt - 2
@@ -399,7 +376,7 @@ func (n *Notifier) sleep(d time.Duration) bool {
 	}
 }
 
-// post sends one signed attempt. SentAt is stamped per attempt so the
+// post sends signed attempt. SentAt is stamped per attempt so the
 // signature always covers the exact bytes sent.
 func (n *Notifier) post(sub Subscription, note Notification) (int, error) {
 	note.SentAt = rfc3339(time.Now())
@@ -464,9 +441,7 @@ func (n *Notifier) recordTerminalFailure(sub Subscription, note Notification, st
 	})
 }
 
-// SignBody computes the X-Hub-Signature-256 header value for a delivery body:
-// "sha256=" + hex(HMAC-SHA256(secret, body)) — GitHub's exact scheme, so
-// subscribers reuse their existing webhook verification code.
+// SignBody computes X-Hub-Signature-: GitHub's exact scheme, so subscribers reuse their verification code.
 func SignBody(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)

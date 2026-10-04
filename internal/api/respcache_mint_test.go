@@ -15,11 +15,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// These tests lock the upstream-auth-failure mint invalidation: gsm never
-// receives a CONSUMER App's installation webhooks, so a 401/403 from GitHub
-// on a proxied call carrying the minted token is the only signal the cached
-// mint's grants went stale -- it must drop the mint so the next mint
-// refetches, while rate-limit refusals and foreign bearers leave it alone.
+// These tests lock the upstream-auth-failure mint invalidation.
+// see docs/cache/rest-routes.md
 
 // authFailResp builds a minimal upstream response shape for the helper.
 func authFailResp(status int, hdr map[string]string) *http.Response {
@@ -49,12 +46,12 @@ func mintCached(t *testing.T, store *ghdata.Store) bool {
 func TestInvalidateMintOnAuthFailure(t *testing.T) {
 	_, store, _, _ := respCacheStack(t)
 
-	// 403 permission verdict: the mint drops.
+	//  permission verdict: the mint drops.
 	seedMint(t, store, "ghs_tok1")
 	invalidateMintOnAuthFailure(context.Background(), store, "ghs_tok1", authFailResp(403, nil))
 	assert.False(t, mintCached(t, store), "a 403 on the minted token must drop the cached mint")
 
-	// 401 drops too (revoked/expired-out-of-band token).
+	//  drops too (revoked/expired-out-of-band token).
 	seedMint(t, store, "ghs_tok1")
 	invalidateMintOnAuthFailure(context.Background(), store, "ghs_tok1", authFailResp(401, nil))
 	assert.False(t, mintCached(t, store))
@@ -86,10 +83,11 @@ func TestMintInvalidatedByProxiedAuthFailure(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id": 777, "slug": "testapp"}`))
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
 			n := mintCount.Add(1)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"token": "ghs_minted%d", "expires_at": %q}`,
-				n, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			writeGitHubJSON(w, map[string]any{
+				"token":      fmt.Sprintf("ghs_minted%d", n),
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
 		case r.URL.Path == "/repos/org1/repo1/collaborators":
 			forbidCount.Add(1)
 			w.WriteHeader(http.StatusForbidden)
@@ -113,15 +111,13 @@ func TestMintInvalidatedByProxiedAuthFailure(t *testing.T) {
 	require.Equal(t, "hit", mint().Header().Get(cacheHeader), "the mint must cache before the failure")
 	require.Equal(t, int32(1), mintCount.Load())
 
-	// An unmodeled path (the router's NotFound passthrough proxy) that the
-	// upstream 404s -- NOT an auth failure -- leaves the mint cached.
+	// An unmodeled path that 404s (not an auth failure) leaves the mint cached.
 	call := httptest.NewRequest("GET", "/repos/org1/repo1/topics", nil)
 	call.Header.Set("Authorization", "Bearer ghs_minted1")
 	require.Equal(t, http.StatusNotFound, do(t, router, call).Code)
 	assert.Equal(t, "hit", mint().Header().Get(cacheHeader), "a 404 must not drop the mint")
 
-	// The upstream 403s a proxied call carrying the minted token: the mint
-	// drops and the next mint refetches.
+	// The upstream 403s a proxied call carrying the minted token: the mint drops and the next mint refetches.
 	forbidden := httptest.NewRequest("GET", "/repos/org1/repo1/collaborators", nil)
 	forbidden.Header.Set("Authorization", "Bearer ghs_minted1")
 	require.Equal(t, http.StatusForbidden, do(t, router, forbidden).Code)

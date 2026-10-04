@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +23,7 @@ import (
 )
 
 // twoUserGH is a fake GitHub that resolves the standard test token and
-// "other-user-token" to two distinct users.
+// "other-user-token" to distinct users.
 func twoUserGH() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Header.Get("Authorization") {
@@ -68,7 +67,10 @@ func TestSubscriptionsCRUD(t *testing.T) {
 
 	// Create.
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q,"repos":["My-Org"],"events":["push","pull_request"]}`, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": "https://example.com/hook", "secret": testSubSecret,
+			"repos": []any{"My-Org"}, "events": []any{"push", "pull_request"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, "create: %s", w.Body.String())
 	assert.NotContains(t, w.Body.String(), testSubSecret, "the secret must never appear in a response")
 	var created subscriptionJSON
@@ -100,7 +102,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.NotContains(t, w.Body.String(), testSubSecret)
 
-	// A second principal gets 404 for the first's id — and an empty list.
+	// A principal gets for the 's id — and an empty list.
 	w = subReq(stack.router, "other-user-token", http.MethodGet, "/_mirror/subscriptions/"+created.ID, "")
 	assert.Equal(t, http.StatusNotFound, w.Code, "a foreign principal's id answers 404")
 	w = subReq(stack.router, "other-user-token", http.MethodDelete, "/_mirror/subscriptions/"+created.ID, "")
@@ -126,7 +128,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	assert.False(t, patched.Active)
 	assert.Equal(t, created.Repos, patched.Repos, "unpatched fields survive")
 
-	// Validation failures answer 400 with the reason.
+	// Validation failures answer with the reason.
 	w = subReq(stack.router, testToken, http.MethodPatch, "/_mirror/subscriptions/"+created.ID,
 		`{"url":"http://not-loopback.example.com/x"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -149,7 +151,6 @@ func TestSubscriptionsPerPrincipalCap(t *testing.T) {
 	stack := newFullTestStack(t, auth.New(auth.Config{SessionKey: []byte("test-session-key")}), twoUserGH())
 
 	// Fill the cap directly through the store (same principal requireAuth
-	// resolves the test token to).
 	st := stack.notifier.Store()
 	for i := 0; i < notify.MaxPerPrincipal; i++ {
 		_, err := st.Create(context.Background(), testUserActor, notify.NewSubscription{
@@ -159,7 +160,7 @@ func TestSubscriptionsPerPrincipalCap(t *testing.T) {
 	}
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":"https://example.com/hook","secret":%q}`, testSubSecret))
+		mustJSONString(map[string]any{"url": "https://example.com/hook", "secret": testSubSecret}))
 	assert.Equal(t, http.StatusConflict, w.Code, "the per-principal cap answers 409")
 }
 
@@ -189,18 +190,21 @@ func TestWebhookDeliveryNotifiesSubscriber(t *testing.T) {
 	defer receiver.Close()
 
 	w := subReq(stack.router, testToken, http.MethodPost, "/_mirror/subscriptions",
-		fmt.Sprintf(`{"url":%q,"secret":%q,"events":["push"]}`, receiver.URL, testSubSecret))
+		mustJSONString(map[string]any{
+			"url": receiver.URL, "secret": testSubSecret, "events": []any{"push"},
+		}))
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
 
 	// A signed push delivery through the real /webhook route.
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-GitHub-Delivery", "gh-guid-e2e")
 	req.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(payload)))
 	rw := httptest.NewRecorder()
 	stack.router.ServeHTTP(rw, req)
-	require.Equal(t, http.StatusOK, rw.Code, "the push applies to global truth")
+	require.Equal(t, http.StatusAccepted, rw.Code, "the push is recorded")
+	awaitWebhooks(t, stack.router)
 
 	require.True(t, stack.notifier.Flush(5*time.Second), "notification must complete")
 
@@ -237,25 +241,25 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	// A recorded identity for the subscription's principal: the operator view
-	// resolves it to the login.
 	require.NoError(t, stack.store.RecordActorIdentity(context.Background(), "user:42", "octocat"))
 
-	// Drive one delivery so the recent-attempts ring has an entry to decorate.
+	// Drive delivery so the recent-attempts ring has an entry to decorate.
 	require.NoError(t, stack.store.UpsertRepo(context.Background(), dbgen.Repo{
 		Owner: "my-org", Name: "open", NameWithOwner: "my-org/open", Url: "u",
 		Visibility: ghdata.VisibilityPublic,
 	}))
-	payload := `{"ref":"refs/heads/master","before":"` + strings.Repeat("1", 40) + `","after":"` + strings.Repeat("2", 40) + `","repository":{"name":"open","owner":{"login":"my-org"}}}`
+	payload := pushPayloadJSON(t, strings.Repeat("1", 40), strings.Repeat("2", 40))
 	wh := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
 	wh.Header.Set("X-GitHub-Event", "push")
 	wh.Header.Set("X-GitHub-Delivery", "gh-guid-admin")
 	wh.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(payload)))
 	whw := httptest.NewRecorder()
 	stack.router.ServeHTTP(whw, wh)
-	require.Equal(t, http.StatusOK, whw.Code)
+	require.Equal(t, http.StatusAccepted, whw.Code)
+	awaitWebhooks(t, stack.router)
 	require.True(t, stack.notifier.Flush(5*time.Second), "delivery must complete")
 
-	// Anonymous: 401. Signed-in non-admin: 403.
+	// Anonymous:. Signed-in non-admin:.
 	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	w := httptest.NewRecorder()
 	stack.router.ServeHTTP(w, req)
@@ -267,8 +271,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	stack.router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 
-	// Admin: the operator view — counters, recent, ALL subscriptions with
-	// principals, secrets structurally absent.
+	// Admin: the operator view — counters, recent.
 	req = httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
 	w = httptest.NewRecorder()
@@ -288,4 +291,17 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	require.NotEmpty(t, resp.Recent, "the driven delivery must appear in the activity ring")
 	assert.Equal(t, "user:42", resp.Recent[0].Principal)
 	assert.Equal(t, "octocat", resp.Recent[0].PrincipalName, "attempts are decorated with the recorded login")
+}
+
+// pushPayloadJSON marshals a push delivery for my-org/open. Marshalling rather
+// than splicing the shas into a literal is what internal/guards' json-splice
+// check requires -- and what makes the body correct for any value.
+func pushPayloadJSON(t *testing.T, before, after string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"ref": "refs/heads/master", "before": before, "after": after,
+		"repository": map[string]any{"name": "open", "owner": map[string]any{"login": "my-org"}},
+	})
+	require.NoError(t, err)
+	return string(body)
 }

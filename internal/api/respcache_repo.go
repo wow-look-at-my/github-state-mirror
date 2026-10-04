@@ -12,30 +12,20 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// This file implements the cached bare-repository read (tier 2 of the cache
+// This file implements the cached bare-repository read (tier of the cache
 // contract, like respcache.go):
 //
 //	GET /repos/{owner}/{repo}
 //
 // Unlike every other cached route there is NO snapshot table: the rebuild
 // comes straight from the `repos` TRUTH row -- the same webhook-maintained
-// (repository events), fleet-synced, consistency-checked state tier 1
+// (repository events), fleet-synced, consistency-checked state tier
 // already serves -- so there is deliberately no per-row TTL either. Truth
 // freshness IS the service's core model; a reveal probe additionally
 // re-absorbs the row per principal within the <=24h grant TTL. The pinned
 // consumers read only fields the row carries: the pr-minder-reconcile hook's
 // getDefaultBranch (default_branch) and status-only access checks
-// (buildhost's canAccessRepo pattern -- the 200 is the answer).
-//
-// The row serves only when it can answer COMPLETELY: known visibility
-// (unknown '' fails closed, e.g. a row seeded solely by the identity-locked
-// GraphQL fetch), a known default branch, and a canonical full name --
-// anything else falls to the fetch path, whose 200 is absorbed back into the
-// row (healing it) via the same repositoryObject mapping webhooks and the
-// reveal probe use. pushed_at is deliberately NOT emitted (truth '' cannot
-// distinguish never-pushed from not-yet-synced, and no consumer reads it);
-// fork/id are not stored, so not emitted. Query params, non-default Accepts,
-// and HEAD requests (MethodNotAllowed -> the proxy) pass through.
+// (buildhost's canAccessRepo pattern -- the is the answer).
 
 // cachedRepo serves the bare repository read from the repos truth row,
 // fetching and absorbing on an incomplete or missing row.
@@ -44,7 +34,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if r.URL.RawQuery != "" || !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, true))
 		return
 	}
 
@@ -57,10 +47,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serve straight from the truth row when it can answer completely. For a
-	// private repo the reveal probe often absorbed this very row a moment
-	// ago -- that is by design: the probe belongs to the reveal layer, and
-	// the serve is still a hit (no additional upstream call).
+	// A private repo's row may already be absorbed by the reveal probe; this still counts as a hit.
 	row, err := h.store.GetRepoInsensitive(r.Context(), owner, repo)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("repo truth read failed", "owner", owner, "repo", repo, "error", err)
@@ -79,8 +66,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if overflow || resp.StatusCode != http.StatusOK {
-		// Includes 404 (their truth about a gone/hidden repo): relayed
-		// verbatim, never stored.
+		// Includes an authoritative, relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -94,8 +80,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.UpsertRepo(r.Context(), repoRow); err != nil {
 		slog.Warn("repo truth absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
-	// ...but only a response carrying every rebuild field is served rebuilt;
-	// a partial answer passes through verbatim rather than rendering a hole.
+	// A partial answer passes through verbatim rather than rendering a hole.
 	if !repoRowComplete(repoRow) {
 		h.replayUnstored(w, r, resp, body)
 		return
@@ -105,9 +90,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	h.serveRepoMeta(w, r, repoRow, false)
 }
 
-// repoRowComplete reports whether a truth row carries everything the trimmed
-// rebuild emits: known visibility (fail closed on unknown ''), a default
-// branch, and the canonical full name.
+// repoRowComplete reports whether the row has every field the trimmed rebuild emits.
 func repoRowComplete(row dbgen.Repo) bool {
 	return row.Visibility != "" &&
 		row.DefaultBranch.Valid && row.DefaultBranch.String != "" &&

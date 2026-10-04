@@ -141,12 +141,12 @@ func TestManager_EnsureFresh_LazyFetch(t *testing.T) {
 	ctx := context.Background()
 	id := ResourceID{Kind: "test", Key: "key1"}
 
-	// First call should trigger a fetch.
+	//  call should trigger a fetch.
 	require.NoError(t, mgr.EnsureFresh(ctx, id))
 
 	assert.Equal(t, 1, fetchCount)
 
-	// Second call — data is fresh, no fetch.
+	//  call — data is fresh, no fetch.
 	require.NoError(t, mgr.EnsureFresh(ctx, id))
 
 	assert.Equal(t, 1, fetchCount)
@@ -169,7 +169,7 @@ func TestManager_Invalidate_ThenEnsureFresh(t *testing.T) {
 	ctx := context.Background()
 	id := ResourceID{Kind: "test", Key: "key1"}
 
-	// Fetch once.
+	// Fetch.
 	mgr.EnsureFresh(ctx, id)
 
 	// Invalidate.
@@ -319,8 +319,8 @@ func TestStore_Delete(t *testing.T) {
 // TestManager_FetchSurvivesCallerCancel locks the detached-fetch behavior: an
 // in-flight fetch is shared work whose result is cached for every future
 // caller, so a client aborting its request mid-fetch must neither cancel the
-// fetch nor prevent the result from being stored. (Previously an impatient
-// browser abort could cancel the multi-page org-repos fetch on every attempt,
+// fetch nor prevent the result from being stored. ( an impatient browser
+// abort could cancel the multi-page org-repos fetch on every attempt,
 // preventing a scope from ever refreshing.)
 func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
 	s := testStore(t)
@@ -357,9 +357,10 @@ func TestManager_FetchSurvivesCallerCancel(t *testing.T) {
 	assert.Equal(t, StateFresh, meta.State, "the result must be stored even though the requester is gone")
 }
 
-// TestManager_FetchIgnoresCallerDeadline: a caller's own (possibly very short)
-// deadline must NOT bound the detached fetch -- shared work is not killed by
-// one impatient caller (a short caller deadline once starved every fetch a
+// TestManager_FetchIgnoresCallerDeadline.
+//
+//	impatient caller (a short caller deadline starved every fetch a
+//
 // webhook path triggered). The fetch context instead carries only the
 // manager's own generous safety timeout.
 func TestManager_FetchIgnoresCallerDeadline(t *testing.T) {
@@ -415,7 +416,7 @@ func TestManager_DrainWaitsForInflightFetches(t *testing.T) {
 // TestManager_ErrorBackoffSkipsRefetch: an error-state row still inside its
 // retry-after window must not re-attempt the fetch on every request (retry
 // storm against a failing upstream); the stored error is reported so callers
-// can deliberately serve stale data. Once the window passes, fetching resumes.
+// can deliberately serve stale data. the window passes, fetching resumes.
 func TestManager_ErrorBackoffSkipsRefetch(t *testing.T) {
 	s := testStore(t)
 	mgr := NewManager(s)
@@ -433,7 +434,7 @@ func TestManager_ErrorBackoffSkipsRefetch(t *testing.T) {
 	ctx := context.Background()
 	id := ResourceID{Kind: "test", Key: "key1"}
 
-	// Real attempt: fails and opens a 5-minute retry window.
+	// Real attempt: fails and opens a -minute retry window.
 	err := mgr.EnsureFresh(ctx, id)
 	assert.Error(t, err)
 	assert.Equal(t, 1, fetchCount)

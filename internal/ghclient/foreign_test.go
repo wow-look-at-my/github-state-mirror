@@ -13,19 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The collaborator-repo bleed guard: GitHub's repositoryOwner
-// repositories(...) connection defaults ownerAffiliations to
-// [OWNER, COLLABORATOR], so a User's listing can include repos the login
-// merely collaborates on -- under their real owners -- which convertRepo/
-// convertPR then keyed by the QUERY login, poisoning truth with junk
-// "<queried>/<name>" rows. The owner-agnostic queries pin
-// ownerAffiliations: OWNER, and every conversion loop drops (never re-keys)
-// any node whose real owner differs from the queried login.
+// The collaborator-repo bleed guard: see docs/ghclient.md ("ownerAffiliations: OWNER, and the foreign-node drop").
 
 // captureSlog routes the default slog output into a buffer for the duration
 // of the test, so drop logging is assertable.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
+	t.Serial()
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -58,8 +52,7 @@ func TestGetOwnerData_DropsForeignOwnerNode(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &req))
 		assert.Contains(t, req.Query, "repositoryOwner")
 
-		// The foreign node advertises MORE PR pages: were it not dropped
-		// before pagination, the per-repo follow-up query above would fire.
+		// More PR pages advertised: dropping before pagination must prevent the per-repo follow-up query.
 		foreign := ownerRepoNode("wow-look-at-my", "tool", nil)
 		foreign["pullRequests"] = map[string]any{
 			"pageInfo": map[string]any{"hasNextPage": true, "endCursor": "PC"},
@@ -142,9 +135,7 @@ func TestOwnerRepoVisibilities_DropsForeignOwnerNode(t *testing.T) {
 						"nodes": []map[string]any{
 							{"name": "dots", "nameWithOwner": "someuser/dots", "visibility": "PRIVATE", "isArchived": false},
 							{"name": "tool", "nameWithOwner": "wow-look-at-my/tool", "visibility": "PUBLIC", "isArchived": false},
-							// Foreign node with the SAME bare name as the owned
-							// one, listed after it: without the guard, last write
-							// wins and PUBLIC clobbers the owned PRIVATE entry.
+							// Same bare name as the owned entry: without the guard, PUBLIC clobbers the owned PRIVATE.
 							{"name": "dots", "nameWithOwner": "otherorg/dots", "visibility": "PUBLIC", "isArchived": false},
 						},
 					},

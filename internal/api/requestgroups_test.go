@@ -11,7 +11,7 @@ import (
 )
 
 func TestNormalizeRoute(t *testing.T) {
-	sha := strings.Repeat("9f3c1a2b", 5) // 40 hex chars
+	sha := strings.Repeat("9f3c1a2b", 5) //  hex chars
 	cases := []struct {
 		path, want string
 	}{
@@ -85,8 +85,8 @@ func TestNormalizeRoute(t *testing.T) {
 }
 
 // TestRequestLog_Groups verifies group accumulation: per-disposition splits,
-// totals, the raw-path sample, and that different concrete paths of one shape
-// land in one group.
+// totals, the raw-path sample, and that different concrete paths of shape
+// land in group.
 func TestRequestLog_Groups(t *testing.T) {
 	l := newRequestLog()
 	l.record(callerIdent{Key: "a"}, "GET", "/repos/o/r/compare/a...b", DispHit)
@@ -122,16 +122,16 @@ func TestRequestLog_Groups(t *testing.T) {
 	assert.Equal(t, int64(1), byKey["GET /repos/{owner}/{repo}/pulls/{number}"].Error)
 	assert.Equal(t, int64(1), byKey["POST /graphql"].Hit)
 
-	// Groups are sorted by total desc; the compare group (3) leads.
+	// Groups are sorted by total desc; the compare group () leads.
 	assert.Equal(t, "GET /repos/{owner}/{repo}/compare/{basehead}", snap.Groups[0].Key)
 }
 
-// TestRequestLog_GroupsBound verifies the group map is bounded: once full, new
+// TestRequestLog_GroupsBound verifies the group map is bounded: full, new
 // shapes are dropped while existing groups keep counting.
 func TestRequestLog_GroupsBound(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestGroupsCap+50; i++ {
-		// Two-segment literal paths each normalize to a distinct shape.
+		// -segment literal paths each normalize to a distinct shape.
 		l.record(callerIdent{Key: "a"}, "GET", fmt.Sprintf("/bucket%d/leaf", i), DispPassthrough)
 	}
 	l.mu.Lock()
@@ -156,9 +156,9 @@ func TestRequestLog_GroupSnapshotSortedAndCapped(t *testing.T) {
 	l := newRequestLog()
 	for i := 0; i < requestGroupsSnapshotCap+20; i++ {
 		path := fmt.Sprintf("/tie%03d/leaf", i)
-		l.record(callerIdent{Key: "a"}, "GET", path, DispHit) // 120 groups with total 1 each
+		l.record(callerIdent{Key: "a"}, "GET", path, DispHit) //  groups with total each
 	}
-	// One hot group that must sort first.
+	//  hot group that must sort.
 	for i := 0; i < 5; i++ {
 		l.record(callerIdent{Key: "a"}, "POST", "/graphql", DispMiss)
 	}

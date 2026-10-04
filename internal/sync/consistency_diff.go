@@ -18,7 +18,7 @@ import (
 // pulls-list marker probe is a pure read); the corrections live in
 // consistency_apply.go.
 
-// diffOwner compares the cached repos/PRs/labels for one owner against the data
+// diffOwner compares the cached repos/PRs/labels for owner against the data
 // freshly fetched from GitHub, appending discrepancies to the report.
 // visibility (repo name -> live visibility + archive state, as the App sees it,
 // INCLUDING archived repos) classifies missing repos and feeds the visibility/
@@ -39,8 +39,6 @@ func (c *ConsistencyChecker) diffOwner(
 ) {
 	now := time.Now()
 	// servedNow memoizes the repo's live pulls-list marker: a PR-existence
-	// discrepancy under a live marker is being SERVED wrong right now (the
-	// list route trusts the rows); without one it self-heals on the next read.
 	markerByRepo := map[string]bool{}
 	servedNow := func(name string) bool {
 		if v, ok := markerByRepo[name]; ok {
@@ -167,9 +165,6 @@ func (c *ConsistencyChecker) diffOwner(
 }
 
 // pushedAtTolerance absorbs the race between the check's fetch and live
-// pushes: only a cached pushed_at lagging GitHub's by MORE than this is
-// reported. The signal being hunted is missed push webhooks (which also mean
-// un-flushed contents_cache rows), not seconds of skew.
 const pushedAtTolerance = 5 * time.Minute
 
 // pushedAtDrift reports whether the cached pushed_at lags GitHub's by more
@@ -195,12 +190,7 @@ func pushedAtDrift(cached, github sql.NullString) (time.Duration, bool) {
 }
 
 // racedDuringCheck reports whether a GitHub-side RFC3339 timestamp is at or
-// after the check's start: the resource provably moved WHILE the check ran, so
-// the cached value never had a chance to catch up and the difference is race,
-// not drift. The boundary is >= (a value exactly at check start already
-// postdates the cached rows the diff read). A zero checkStart or an
-// unparseable/absent timestamp never claims a race -- fail toward reporting
-// drift.
+// after the check's start: the resource provably moved WHILE the check ran.
 func racedDuringCheck(github string, checkStart time.Time) bool {
 	if checkStart.IsZero() || github == "" {
 		return false
@@ -213,12 +203,6 @@ func racedDuringCheck(github string, checkStart time.Time) bool {
 }
 
 // noneMarker renders an absent value explicitly. The Discrepancy JSON fields
-// are omitempty (so only_* entries stay clean), which silently DROPPED the
-// github side of a default_branch mismatch whenever GraphQL reported no
-// defaultBranchRef (an empty repo has no ref even though REST reports a
-// configured default_branch name) -- the 2026-07-20 report's value-less
-// entries. An explicit marker keeps both sides always present for fields
-// where emptiness is a real answer.
 const noneMarker = "(none)"
 
 func orNone(v sql.NullString) string {
@@ -246,8 +230,7 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	// explicit github value: GraphQL's defaultBranchRef is null for a repo with
 	// no commits (REST still reports the CONFIGURED default_branch name, which
 	// is what the webhook/REST absorb paths cache), and the bare add() rendered
-	// that as "" -- dropped from the JSON by omitempty, leaving a one-sided
-	// entry.
+	// that as "" -- dropped from the JSON by omitempty, leaving a -sided entry.
 	if ns(c.DefaultBranch) != ns(g.DefaultBranch) {
 		d := Discrepancy{
 			Kind: "repo", Repo: repoKey, Issue: "field_mismatch", Field: "default_branch",
@@ -265,7 +248,6 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	vis, visKnown := visibility[name]
 
 	// is_archived: a repo in the org data fetch is non-archived by the query's
-	// own filter; prefer the visibility map's authoritative answer when known.
 	ghArchived := g.IsArchived != 0
 	if visKnown {
 		ghArchived = vis.Archived
@@ -327,12 +309,12 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 }
 
 // prFieldDiffs compares the webhook-fed / refreshed PR fields. created_at and
-// updated_at are intentionally not compared (updated_at churns constantly and is
-// not a correctness signal); mergeable is skipped (see the report notes).
+// updated_at are intentionally not compared (updated_at churns constantly and
+// is not a correctness signal); mergeable is skipped (see the report notes).
 // checkStart gates head_ref_oid's raced_during_check classification: the
-// in-flight-movement proof is the PR's own GitHub-side updated_at (a head push
-// bumps it, and it is the timestamp the owner-query snapshot actually carries
-// -- the repo's pushed_at is not threaded down here).
+// in-flight-movement proof is the PR's own GitHub-side updated_at (a head
+// push bumps it, and it is the timestamp the owner-query snapshot carries --
+// the repo's pushed_at is not threaded down here).
 func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest, checkStart time.Time) []Discrepancy {
 	var out []Discrepancy
 	add := func(field, cv, gv string) {
@@ -345,8 +327,8 @@ func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest, checkStart 
 	add("last_commit_status", ns(c.LastCommitStatus), ns(g.LastCommitStatus))
 
 	// head_ref_oid: a differing head sha whose PR was updated at/after the
-	// check's start moved WHILE the check ran (the push's webhook simply had no
-	// time to land) -- raced_during_check, not drift.
+	// check's start moved WHILE the check ran (the push's webhook had no time to
+	// land) -- raced_during_check, not drift.
 	if ns(c.HeadRefOid) != ns(g.HeadRefOid) {
 		if racedDuringCheck(g.UpdatedAt, checkStart) {
 			out = append(out, Discrepancy{

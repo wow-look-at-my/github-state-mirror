@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/wow-look-at-my/go-containers/set"
 	"net/http"
 )
 
@@ -15,19 +16,11 @@ import (
 // any origin is allowed (Access-Control-Allow-Origin: *). Otherwise only an
 // exact-match Origin is echoed back; a non-matching Origin gets no ACAO header
 // and the browser blocks the response.
-//
-// Preflight OPTIONS requests are answered here with 204 and never reach
-// requireAuth, because browsers do not send the Authorization header on
-// preflight. chi runs r.Use middleware before route matching, so this also
-// intercepts preflight for method-specific routes like POST /graphql.
 func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 	wildcard := len(allowed) == 0
-	allowSet := make(map[string]struct{}, len(allowed))
-	for _, o := range allowed {
-		if o == "*" {
-			wildcard = true
-		}
-		allowSet[o] = struct{}{}
+	allowSet := set.Of(allowed...)
+	if allowSet.Contains("*") {
+		wildcard = true
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -36,14 +29,20 @@ func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 			if wildcard {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			} else if origin != "" {
-				if _, ok := allowSet[origin]; ok {
+				if allowSet.Contains(origin) {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Add("Vary", "Origin")
 				}
 			}
 
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			// Every method the router serves: a preflight refuses what is missing here.
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			// Widens only what a browser may read -- a rebuilt cache hit has none of these otherwise.
+			// Link carries pagination: without it a browser client cannot page a list at all.
+			w.Header().Add("Access-Control-Expose-Headers",
+				"X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Reset, "+
+					"Link, X-GSM-Cache, X-GSM-Stale, X-GSM-Last-Fetched")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

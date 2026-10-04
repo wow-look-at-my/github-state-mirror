@@ -16,17 +16,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 )
 
-// Per-user principal resolution (1 GitHub user == 1 reveal-layer principal).
-//
-// These tests cover requireAuth's principal selection end to end against a
-// fake GitHub upstream:
-//   - two different tokens of the same user share one "user:<id>" principal
-//     (grants earned by either token reveal truth to both)
-//   - a machine token (403 on /user) falls back to a per-token fingerprint
-//     principal, with the verdict cached
-//   - a transient /user failure fails the request (503) and never picks a
-//     principal; recovery needs no restart
-//   - identity rows are recorded under the "user:<id>" principal
+// Covers requireAuth's principal selection end to end. See docs/reveal-layer.md.
 
 func partitionAuthSvc() *auth.Service {
 	return auth.New(auth.Config{SessionKey: []byte("test-session-key")})
@@ -50,10 +40,10 @@ func postOrgRepos(router http.Handler, token string) *httptest.ResponseRecorder 
 }
 
 // TestUserPartition_SameUserTokensShareScope verifies the operator-decided
-// keying: two DIFFERENT tokens resolving to the SAME GitHub user id share one
+// keying: DIFFERENT tokens resolving to the SAME GitHub user id share
 // "user:<id>" principal — grants earned under it reveal truth through either
-// token — while a third user's token has no grant and sees nothing. It also
-// verifies /user is asked once per unique token (the identity is cached).
+// token — while a user's token has no grant and sees nothing. It also
+// verifies /user is asked per unique token (the identity is cached).
 func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 	var userCalls atomic.Int64
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +52,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 		userCalls.Add(1)
 		switch r.Header.Get("Authorization") {
 		case "Bearer pat-laptop", "Bearer pat-ci":
-			// Two distinct credentials, one human.
+			//  distinct credentials, human.
 			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "id": 42})
 		case "Bearer someone-elses-token":
 			_ = json.NewEncoder(w).Encode(map[string]any{"login": "stranger", "id": 43})
@@ -74,12 +64,12 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
 	// Absorb a repo into global truth via octocat's sync (as a request through
-	// any of octocat's tokens would), granting the "user:42" principal.
+	// any of octocat's tokens would), granting the "user:" principal.
 	seedOrgTruth(t, store, "user:42", "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "shared-repo", NameWithOwner: "my-org/shared-repo", Url: "u"},
 	}, nil)
 
-	// Granted via one token's principal, revealed via the other token.
+	// Granted via token's principal, revealed via the other token.
 	for _, token := range []string{"pat-laptop", "pat-ci"} {
 		w := postOrgRepos(router, token)
 		require.Equal(t, http.StatusOK, w.Code, "token %s", token)
@@ -102,7 +92,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 }
 
 // TestMachineToken_FingerprintIsolation verifies that a token GitHub
-// definitively says is not a user (403 on /user without rate-limit headers —
+// definitively says is not a user (on /user without rate-limit headers —
 // e.g. an installation token) keeps a per-token fingerprint principal, that
 // the verdict is cached, and that no identity row is written (there is no
 // login to attribute).
@@ -138,8 +128,8 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 
 // TestTransientUserFailure_503AndNoPartition verifies the fail-closed rule:
 // when GET /user fails transiently (5xx here) and no verdict is cached, the
-// request fails with 503 — it is never silently served from a guessed
-// (fingerprint) partition — and nothing is recorded. Once GitHub recovers, the
+// request fails with — it is never silently served from a guessed
+// (fingerprint) partition — and nothing is recorded. GitHub recovers, the
 // same token works without a restart (no negative verdict was cached).
 func TestTransientUserFailure_503AndNoPartition(t *testing.T) {
 	var failing atomic.Bool
@@ -170,8 +160,8 @@ func TestTransientUserFailure_503AndNoPartition(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "recovery must not require a restart")
 }
 
-// TestRateLimited403_IsTransientNotMachineVerdict verifies a rate-limited 403
-// on /user (X-RateLimit-Remaining: 0) is treated as transient (503), NOT as a
+// TestRateLimited403_IsTransientNotMachineVerdict verifies a rate-limited
+// on /user (X-RateLimit-Remaining:) is treated as transient (), NOT as a
 // definitive "not a user" verdict — otherwise a rate-limited USER token would
 // be permanently mis-partitioned onto its fingerprint.
 func TestRateLimited403_IsTransientNotMachineVerdict(t *testing.T) {

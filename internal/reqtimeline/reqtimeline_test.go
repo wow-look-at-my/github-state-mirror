@@ -1,6 +1,7 @@
 package reqtimeline
 
 import (
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
@@ -48,8 +49,7 @@ func TestSinceCursor(t *testing.T) {
 
 	require.False(t, snap.Events[0].ID != 4 || snap.Events[1].ID != 5)
 
-	// A cursor at (or past) the newest ID yields an empty page but MaxID
-	// still reports the frontier.
+	// A cursor at (or past) the newest ID yields an empty page but MaxID still reports the frontier.
 	snap = r.Snapshot(5)
 	require.False(t, len(snap.Events) != 0 || snap.MaxID != 5)
 
@@ -69,8 +69,7 @@ func TestRetentionEviction(t *testing.T) {
 	snap := r.Snapshot(0)
 	require.False(t, len(snap.Events) != 1 || snap.Events[0].ID != 2)
 
-	// Advance the clock past the survivor's window: read-side eviction drops
-	// it too, with no write in between (lazy on read, not only on write).
+	// Advance past the survivor's window: read-side eviction drops it too, with no write in between.
 	now = now.Add(25 * time.Hour)
 	snap = r.Snapshot(0)
 	require.Equal(t, 0, len(snap.Events))
@@ -108,13 +107,12 @@ func TestCountCap(t *testing.T) {
 func TestCompactionKeepsLiveEvents(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	r := newTestRecorder(24*time.Hour, 2000, &now)
-	// Fill beyond the compaction threshold (head > 1024) with events already
-	// outside retention, so every write advances head and compaction fires.
+	// Fill beyond the compaction threshold with events already outside retention, so compaction fires.
 	for i := 0; i < 3000; i++ {
 		r.RecordWebhook(now.Add(-25*time.Hour), time.Millisecond, "old", "", "", "o/r", "applied")
 	}
 	// Everything so far is instantly outside retention; head grows and
-	// compaction has triggered at least once. Now record live events.
+	// compaction has triggered at least. Now record live events.
 	for i := 0; i < 5; i++ {
 		r.RecordWebhook(now, time.Millisecond, "push", "", "", "o/r", "applied")
 	}
@@ -166,4 +164,34 @@ func TestConcurrentAccess(t *testing.T) {
 		require.Greater(t, snap.Events[i].ID, snap.Events[i-1].ID)
 
 	}
+}
+
+// TestSnapshotRange: the async-history read returns exactly the events
+// overlapping the window — the client's whole defence against decoding 100k
+// events to paint hour.
+func TestSnapshotRange(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	r := &Recorder{retention: DefaultRetention, maxEvents: DefaultMaxEvents, now: func() time.Time { return base }}
+	//  event per hour for the last hours, each minute long.
+	for i := 6; i >= 1; i-- {
+		r.RecordWebhook(base.Add(-time.Duration(i)*time.Hour), time.Minute, "push", "", "d", "o/r", "applied")
+	}
+
+	got := r.SnapshotRange(base.Add(-3*time.Hour), base.Add(-1*time.Hour))
+	require.Equal(t, 2, len(got.Events))
+
+	assert.True(t, got.Events[0].Start.Equal(base.Add(-3*time.Hour)))
+
+	// The live cursor is independent of the range read.
+	assert.Equal(t, uint64(6), got.MaxID)
+
+	// An event straddling the window boundary is included, even though it began before it.
+	r.RecordWebhook(base.Add(-90*time.Minute), 60*time.Minute, "push", "", "d", "o/r", "applied")
+	straddle := r.SnapshotRange(base.Add(-45*time.Minute), base)
+	require.Equal(t, 1, len(straddle.Events))
+
+	//  bounds mean the whole retained window.
+	all := r.SnapshotRange(time.Time{}, time.Time{})
+	assert.Equal(t, 7, len(all.Events))
+
 }

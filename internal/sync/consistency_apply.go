@@ -11,13 +11,14 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The consistency check's APPLY half (POST /api/cache/check?apply=true): the
 // corrections written from the already-fetched snapshot, plus the per-class
 // remediation hints the report attaches.
 
-// applyOwner corrects the drift for one owner from the already-fetched
+// applyOwner corrects the drift for owner from the already-fetched
 // snapshot, under the installation's stable principal. The diff has already
 // run against the pre-apply cache, so the report reads as before/after.
 func (c *ConsistencyChecker) applyOwner(
@@ -34,36 +35,33 @@ func (c *ConsistencyChecker) applyOwner(
 	now := time.Now()
 	principal := AppInstallationActor(inst.ID)
 
-	// 1. Absorb the snapshot: repos + open PRs + labels upserted, stale
-	// cached-open PRs deleted (grace-guarded reconcile), the principal's
-	// grants replace-synced. Tally intent against the pre-apply cache -- the
-	// same view the diff used.
+	// . Absorb the snapshot; tally intent against the pre-apply cache the diff used.
 	sync := ghdata.OrgSyncData{Repos: data.Repos, PRsByRepo: data.PRsByRepo, LabelsByPR: data.LabelsByPR}
 	if err := c.store.SyncOrgTruth(ctx, owner, sync, principal, fetchStart, now); err != nil {
 		return fmt.Errorf("sync truth: %w", err)
 	}
-	fetchedNames := make(map[string]bool, len(data.Repos))
+	fetchedNames := set.New[string](len(data.Repos))
 	for _, r := range data.Repos {
-		fetchedNames[r.Name] = true
+		fetchedNames.Add(r.Name)
 		repoKey := owner + "/" + r.Name
 		if _, ok := cachedRepos[r.Name]; !ok {
 			ap.ReposAbsorbed++
 		}
-		fetched := make(map[int64]bool, len(data.PRsByRepo[r.NameWithOwner]))
+		fetched := set.New[int64](len(data.PRsByRepo[r.NameWithOwner]))
 		for _, pr := range data.PRsByRepo[r.NameWithOwner] {
-			fetched[pr.Number] = true
+			fetched.Add(pr.Number)
 			if _, ok := cachedPRs[repoKey][pr.Number]; !ok {
 				ap.PRsAbsorbed++
 			}
 		}
 		for num := range cachedPRs[repoKey] {
-			if !fetched[num] {
+			if !fetched.Contains(num) {
 				ap.PRsDeleted++
 			}
 		}
 	}
 
-	// 2. Visibility, from the checker-private map: fixes fail-closed '' rows
+	// . Visibility, from the checker-private map: fixes fail-closed '' rows
 	// AND drift in both directions (a leak -- cached public, GitHub private --
 	// and the reverse). Only rows that exist are written (a repo neither
 	// cached nor fetched, e.g. archived and never absorbed, has no row).
@@ -72,7 +70,7 @@ func (c *ConsistencyChecker) applyOwner(
 			continue
 		}
 		cr, wasCached := cachedRepos[name]
-		if !wasCached && !fetchedNames[name] {
+		if !wasCached && !fetchedNames.Contains(name) {
 			continue
 		}
 		if wasCached && cr.Visibility == vis.Visibility {
@@ -85,10 +83,10 @@ func (c *ConsistencyChecker) applyOwner(
 	}
 
 	for _, r := range data.Repos {
-		// 3. default_branch_status: explicit set INCLUDING NULL where
-		// mismatched -- the COALESCE upsert can never null a stale rollup
-		// (the gcc/.github drift class: the tip advanced to a commit with no
-		// CI and the old rollup stuck forever).
+		// . default_branch_status: explicit set INCLUDING NULL where mismatched --
+		// the COALESCE upsert can never null a stale rollup (the gcc/.github drift
+		// class: the tip advanced to a commit with no CI and the rollup stuck
+		// forever).
 		if cr, ok := cachedRepos[r.Name]; ok && ns(cr.DefaultBranchStatus) != ns(r.DefaultBranchStatus) {
 			if err := c.store.SetRepoDefaultBranchStatus(ctx, owner, r.Name, r.DefaultBranchStatus); err != nil {
 				return fmt.Errorf("set default branch status %s/%s: %w", owner, r.Name, err)
@@ -98,10 +96,6 @@ func (c *ConsistencyChecker) applyOwner(
 
 		repoKey := owner + "/" + r.Name
 		for _, fpr := range data.PRsByRepo[r.NameWithOwner] {
-			// 4. The commit_checks stick rule. GitHub's rollup for the PR's
-			// FRESH head sha is the verdict; the webhook-aggregated rows are
-			// corrected by deletion, never by synthesizing per-check rows (a
-			// fabricated completed row would be tomorrow's ghost).
 			sha := ns(fpr.HeadRefOid)
 			ghRollup := ns(fpr.LastCommitStatus)
 			if sha != "" {
@@ -111,12 +105,11 @@ func (c *ConsistencyChecker) applyOwner(
 					if err != nil {
 						return err
 					}
-					// Only ROWS that contradict the terminal verdict need the
-					// correction: with zero rows there is nothing to poison the
-					// next recompute, and the sync's COALESCE upsert already
-					// stamped the non-null verdict on the column -- correcting
-					// anyway would tally every checks-less PR as "corrected" on
-					// every apply, forever.
+					// Only ROWS that contradict the terminal verdict need the correction:
+					// with rows there is nothing to poison the next recompute, and the
+					// sync's COALESCE upsert already stamped the non-null verdict on the
+					// column -- correcting anyway would tally every checks-less PR as
+					// "corrected" on every apply, forever.
 					if len(states) > 0 && ghdata.RollupState(states) != ghRollup {
 						if err := c.store.ForceCheckRollup(ctx, owner, r.Name, sha, sql.NullString{String: ghRollup, Valid: true}); err != nil {
 							return fmt.Errorf("force rollup %s#%d: %w", repoKey, fpr.Number, err)
@@ -125,9 +118,7 @@ func (c *ConsistencyChecker) applyOwner(
 						ap.CheckRowsDeleted += len(states)
 					}
 				case "":
-					// GitHub reports NO rollup (e.g. the head advanced to a
-					// commit with no checks). Leftover rows or a non-NULL
-					// cached column are stale state from a previous sha.
+					// GitHub reports NO rollup; leftover rows or a non-NULL cached column are stale state from a previous sha.
 					states, err := c.store.CommitCheckStates(ctx, owner, r.Name, sha)
 					if err != nil {
 						return err
@@ -144,15 +135,9 @@ func (c *ConsistencyChecker) applyOwner(
 						ap.CheckRowsDeleted += len(states)
 					}
 				default:
-					// PENDING/EXPECTED: not a terminal verdict -- completions
-					// will recompute; touching rows here only loses real state.
 				}
 			}
 
-			// 5. auto_merge_method: the upsert never applies it from
-			// GraphQL-shaped rows, so a mismatch needs the explicit set
-			// (including NULL -- a stale armed flag silently disables
-			// pr-minder's merge backstop).
 			cachedArm := ""
 			if cpr, ok := cachedPRs[repoKey][fpr.Number]; ok {
 				cachedArm = ns(cpr.AutoMergeMethod)
@@ -166,9 +151,9 @@ func (c *ConsistencyChecker) applyOwner(
 		}
 	}
 
-	// 6. Stamp the app-installation freshness marker so truth_freshness (and
-	// the dashboard) reflect that this owner's truth was just refreshed.
-	// Best-effort: the corrections above already landed.
+	// . Stamp the app-installation freshness marker so truth_freshness (and the
+	// dashboard) reflect that this owner's truth was refreshed. Best-effort: the
+	// corrections above already landed.
 	if c.fresh != nil {
 		exp := now.Add(6 * time.Hour) // the org_repos policy TTL
 		lastFetched := now

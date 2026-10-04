@@ -14,10 +14,8 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-// maxGraphQLBodyBytes caps how much of a GraphQL request body we buffer. Real
-// GraphQL payloads are tiny; this only guards memory when forwarding arbitrary
-// queries to GitHub.
-const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
+// Caps buffered GraphQL body size.
+const maxGraphQLBodyBytes = 10 << 20 //  MiB
 
 // graphql handles the POST /graphql endpoint.
 //
@@ -29,8 +27,7 @@ const maxGraphQLBodyBytes = 10 << 20 // 10 MiB
 func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Buffer the body so we can both inspect the query and, if we cannot serve
-	// it from cache, replay it to GitHub.
+	// Buffer body to inspect and possibly replay to GitHub.
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -68,13 +65,13 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(withDispositionHint(r.Context(), DispWrite))
 		} else {
 			r = r.WithContext(withDispositionHint(r.Context(), DispPassthrough))
+			r = r.WithContext(withPassthroughReason(r.Context(), PassGraphQL))
 		}
 		h.ghProxy.ServeHTTP(w, r)
 		return
 	}
 
-	// Ensure org repos data is fresh, recording whether this was a cache hit
-	// (served fresh) or a miss (triggered a fetch) for the dashboard.
+	// Ensure org repos are fresh; record hit vs miss for the dashboard.
 	outcome, ensureErr := h.mgr.EnsureFreshOutcome(ctx, freshness.ResourceID{Kind: syncpkg.KindOrgRepos, Key: orgLogin})
 	if ensureErr != nil {
 		slog.Warn("ensure fresh org repos failed; serving stale cache if available",
@@ -89,11 +86,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	h.reqlog.observe(r, disp)
 
-	// Read repos from GLOBAL truth, filtered to what the reveal layer permits
-	// this caller: public repos plus the caller's granted repos. The grant set
-	// was replace-synced by the caller's own fetch (this request's, or an
-	// earlier one within the marker TTL), so the filtered view tracks what
-	// GitHub itself answers this principal -- never the whole truth store.
+	// Repos visible to this caller: public plus granted repos.
 	repos, err := h.store.ListVisibleReposByOwner(ctx, orgLogin, actor.FromContext(ctx), time.Now())
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -101,7 +94,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If the refresh failed and there is no cached data to fall back on, surface
-	// the upstream error instead of returning an empty-but-"200 OK" success — a
+	// the upstream error instead of returning an empty-but-" OK" success — a
 	// silent empty result is indistinguishable from "this org has no repos" and
 	// hides real failures (bad token, GitHub 5xx, rate limit, ...). When cached
 	// repos DO exist we serve them (stale is better than an error). The body is a
@@ -132,6 +125,11 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	// Build response matching GraphQL shape.
 	repoNodes := make([]map[string]interface{}, 0, len(repos))
 	for _, repo := range repos {
+		// The locked query selects repositories(isArchived: false), so GitHub
+		if repo.IsArchived != 0 {
+			continue
+		}
+
 		// Get open PRs for this repo.
 		prs, err := h.store.ListOpenPRsByRepo(ctx, repo.Owner, repo.Name)
 		if err != nil {
@@ -141,7 +139,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 
 		prNodes := make([]map[string]interface{}, 0, len(prs))
 		for _, pr := range prs {
-			// Get labels for this PR.
+			// Get labels for.
 			labels, _ := h.store.ListPRLabels(ctx, pr.Owner, pr.Repo, pr.Number)
 			labelNodes := make([]map[string]interface{}, 0, len(labels))
 			for _, l := range labels {
@@ -152,8 +150,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// statusCheckRollup is null when no CI status is recorded, mirroring
-			// real GitHub. The commits object itself is always a well-formed node
-			// list so clients can safely read commits.nodes[0].commit.statusCheckRollup.
 			var rollup interface{}
 			if pr.LastCommitStatus.Valid {
 				rollup = map[string]interface{}{
@@ -228,8 +224,6 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 			"defaultBranchRef": defaultBranchRef,
 			"pullRequests": map[string]interface{}{
 				// The canonical query selects pullRequests.pageInfo (queries.go),
-				// so GitHub returns it; include it to stay shape-identical. The
-				// mirror returns every open PR in one page, so it never advances.
 				"pageInfo": map[string]interface{}{
 					"hasNextPage": false,
 					"endCursor":   nil,
@@ -244,9 +238,7 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]interface{}{
 			"organization": map[string]interface{}{
 				"repositories": map[string]interface{}{
-					// The mirror returns every repo in one response, so paging
-					// always terminates after the first page. pageInfo must be
-					// present: clients read pageInfo.hasNextPage unconditionally.
+					// The mirror returns every repo in response, so paging
 					"pageInfo": map[string]interface{}{
 						"hasNextPage": false,
 						"endCursor":   nil,

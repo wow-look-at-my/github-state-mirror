@@ -14,9 +14,7 @@ import (
 
 // TestRepoFieldDiffs_Table covers the new repo field comparisons.
 func TestRepoFieldDiffs_Table(t *testing.T) {
-	// checkStart is well after every base timestamp, so the pre-existing cases
-	// all read as strictly-before-the-check drift; the raced_* cases place
-	// GitHub's value at/after it.
+	// checkStart is well after every base timestamp; the raced_* cases place GitHub's value at/after it.
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	base := func() dbgen.Repo {
 		return dbgen.Repo{
@@ -141,9 +139,9 @@ func TestRepoFieldDiffs_Table(t *testing.T) {
 // TestDefaultBranchDiff_CarriesGitHubValue: a default_branch mismatch entry
 // must ALWAYS name both sides. GraphQL's defaultBranchRef is null for a repo
 // with no commits (REST still reports the CONFIGURED default_branch name,
-// which is what the cache holds), and the old shared add() rendered that as ""
-// -- silently dropped from the report JSON by omitempty, so the 2026-07-20
-// entries carried no github value at all.
+// which is what the cache holds), and the shared add() rendered that as "" --
+// silently dropped from the report JSON by omitempty, so the -- entries
+// carried no github value at all.
 func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	base := dbgen.Repo{
@@ -162,8 +160,7 @@ func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 	assert.Equal(t, "master", diffs[0].GitHub)
 	assert.Empty(t, diffs[0].Note)
 
-	// GitHub reported NO default branch ref: the github side is an explicit
-	// marker (surviving the JSON omitempty), plus a note explaining why.
+	// GitHub reported NO default branch ref: an explicit marker, plus a note explaining why.
 	c, g = base, base
 	g.DefaultBranch = sql.NullString{}
 	diffs = repoFieldDiffs("o", "r", c, g, nil, checkStart)
@@ -240,7 +237,7 @@ func TestConsistencyChecker_RacedDuringCheck(t *testing.T) {
 	ctx := context.Background()
 
 	// Cached truth matches the live state everywhere EXCEPT the raced fields,
-	// so the report isolates the two classifications under test.
+	// so the report isolates the classifications under test.
 	require.NoError(t, store.UpsertRepo(ctx, dbgen.Repo{
 		Owner: "org1", Name: "repo1", NameWithOwner: "org1/repo1", Url: "https://github.com/org1/repo1",
 		Visibility:    "public",

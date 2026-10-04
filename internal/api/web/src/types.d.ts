@@ -1,9 +1,4 @@
-// Shared DTO types for the dashboard front-end: the shapes returned by the
-// /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
-// endpoints, plus the demo-preview config. Single source of truth — both app.ts
-// (the renderer) and demo-data.ts (the preview fixtures) import these, so the
-// two can never drift. Imported with `import type`, so nothing here emits into
-// the runtime bundles (this is a declaration file: tsc produces no .js for it).
+// Shared DTO types for the dashboard front-end.
 
 export interface Me {
     authenticated: boolean;
@@ -72,20 +67,63 @@ export interface WebhookDelivery {
     detail: string;
 }
 
+export interface MissingSubscription {
+    event: string;
+    effect: string;
+}
+
+// One delivery the ordering gate refused: it carried a view of a subject that
+// a newer delivery had already applied.
+export interface OutOfOrderSample {
+    at: string;
+    event_type: string;
+    action?: string;
+    repo?: string;
+    subject: string;
+    delivery_id?: string;
+    superseded_by?: string;
+    lateness_seconds: number;
+    // True when the refused delivery still contributed facts that cannot be stale.
+    still_absorbed: boolean;
+    clock_field?: string;
+    event_time: string;
+    watermark_time: string;
+}
+
+// What the out-of-order gate has seen since this process started. GitHub
+// orders nothing, so a non-zero superseded count is normal; the bands are what
+// distinguish ordinary delivery jitter from something holding deliveries back.
+export interface OrderingSnapshot {
+    ordered: number;
+    superseded: number;
+    unorderable: number;
+    failed: number;
+    superseded_within_grace: number;
+    superseded_beyond_grace: number;
+    grace_seconds: number;
+    worst_lateness_seconds: number;
+    mean_lateness_seconds: number;
+    by_event?: Record<string, number> | null;
+    recent?: OutOfOrderSample[] | null;
+}
+
 export interface WebhooksResponse {
     deliveries: WebhookDelivery[] | null;
+    missing_subscriptions?: MissingSubscription[] | null;
+    ordering?: OrderingSnapshot | null;
 }
 
 // ---- request activity (cache hit/miss/passthrough/write) ----
 export interface RequestEvent {
     actor: string;
-    // Verified display name for the actor (user login / app slug); absent when
-    // none was proven (e.g. token fingerprints, unverified identity headers).
+    // Verified display name for the actor (user login / app slug).
     actor_name?: string;
     method: string;
     path: string;
     disposition: string;
-    status?: number; // upstream HTTP status for a passthrough/write (0/absent otherwise)
+    status?: number;
+    // Why this read was forwarded uncached; passthroughs only, absent otherwise.
+    reason?: string;
     at: string;
 }
 
@@ -102,6 +140,13 @@ export interface RequestGroup {
     passthrough: number;
     write: number;
     error: number;
+    // by_reason splits `passthrough` by WHY the read was forwarded uncached.
+    by_reason?: Record<string, number> | null;
+    // pass_query: one recent passthrough's query-parameter NAMES, comma- separated (values are never recorded).
+    pass_query?: string;
+    // debounced: uncacheable reads the passthrough debouncer HELD for its window. upstream_saved.
+    debounced?: number;
+    upstream_saved?: number;
     sample: string; // one recent raw path, for identifying the shape
     last_seen: string; // RFC3339
 }
@@ -151,9 +196,7 @@ export interface TimelineResponse {
     now: string; // RFC3339
 }
 
-// The <gsm-timeline> custom element (src/timeline.ts). app.ts creates it on
-// the Timeline tab and, in demo mode, overrides its fetcher so the standalone
-// preview renders canned data.
+// The <gsm-timeline> custom element (src/timeline.ts).
 export interface GsmTimelineElement extends HTMLElement {
     fetcher: ((path: string) => Promise<TimelineResponse>) | null;
 }
@@ -173,13 +216,11 @@ export interface InstallationRateLimit {
     error?: string;
 }
 
-// One passively observed X-RateLimit-* reading: the latest headers seen on an
-// upstream response for one (identity, resource) pair. In-memory server-side;
-// resets on restart.
+// One passively observed X-RateLimit-* reading: the latest headers seen on an upstream response for one (identity, resource) pair. In-memory
+// server-side; resets on restart.
 export interface ObservedRateLimit {
     identity: string;
-    // Verified display name for the identity (user login / app slug /
-    // installation account login); absent when none was observed.
+    // Verified display name for the identity (user login / app slug / installation account login); absent.
     name?: string;
     resource: string;
     limit: number;
@@ -190,14 +231,33 @@ export interface ObservedRateLimit {
 }
 
 export interface RateLimitResponse {
-    // live: the GitHub App's per-installation GET /rate_limit poll. Empty when
-    // no App is configured or the poll failed (see note).
+    // live: the GitHub App's per-installation GET /rate_limit poll.
     live: InstallationRateLimit[] | null;
-    // observed: passively recorded X-RateLimit-* readings, sorted by identity
-    // then resource.
+    // observed: passively recorded X-RateLimit-* readings, sorted by identity then resource.
     observed: ObservedRateLimit[] | null;
     // note explains an empty/failed live poll.
     note?: string;
+}
+
+// One operation kind's latency distribution. buckets[i] counts observations
+// <= bounds_ms[i]; the extra last bucket counts the rest.
+export interface LatencyKind {
+    kind: string;
+    count: number;
+    mean_ms: number;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+    max_ms: number;
+    buckets: number[];
+}
+
+// /api/latency: in-memory histograms since `since`; resets on restart.
+export interface LatencyResponse {
+    since: string; // RFC3339
+    bounds_ms: number[];
+    kinds: LatencyKind[];
+    webhook_timeout_ms: number;
 }
 
 // ---- admin cache browse (global truth rows) ----
@@ -334,13 +394,9 @@ export interface ConsistencyReport {
     notes?: string[];
 }
 
-// One NDJSON line from the streaming consistency check / reconcile
-// (GET/POST /api/cache/check?stream=1): checker progress events while the run
-// works, then exactly one terminal line — phase "report" carrying the full
-// ConsistencyReport, or phase "error" when the run failed mid-stream.
+// One NDJSON line from the streaming consistency check / reconcile (GET/POST /api/cache/check?stream=1): checker progress events while the run works, then exactly one terminal line — phase "report" carrying the full ConsistencyReport, or phase
+// "error" when the run failed mid-stream.
 export interface CheckProgressEvent {
-    // start | owner | fetch | visibility | diffed | applied | skip | done
-    // | report | error (the last two only as the terminal line)
     phase: string;
     owner?: string;
     index?: number; // this owner's 1-based position (phase=owner)
@@ -363,12 +419,12 @@ export interface DemoStateData {
     requests?: RequestsResponse;
     timeline?: TimelineResponse;
     ratelimit?: RateLimitResponse;
+    latency?: LatencyResponse;
     browse?: BrowseResponse; // global truth rows (one cache)
     grants?: Record<string, GrantsResponse>; // keyed by principal_id
     check?: ConsistencyReport; // global check (read-only)
     checkApplied?: ConsistencyReport; // the Reconcile (apply=true) answer
-    // Canned progress events replayed before check/checkApplied resolves (the
-    // demo mock can't stream, so the preview plays these on a timer).
+    // Canned progress events replayed before check/checkApplied resolves.
     checkProgress?: CheckProgressEvent[];
 }
 
@@ -382,4 +438,29 @@ declare global {
     interface Window {
         __GSM_DEMO__?: DemoConfig;
     }
+}
+
+// The admin-only implementation brief (GET /api/brief): every uncached route
+// joined to the captured shape of its requests and GitHub's answers.
+export interface BriefResponse {
+    generated_at: string;
+    total: number;
+    totals: Record<string, number>;
+    candidates: BriefCandidate[];
+    // markdown is the deliverable: what the "Copy implementation brief" button puts on the clipboard.
+    markdown: string;
+}
+
+export interface BriefCandidate extends RequestGroup {
+    shape?: {
+        seen: number;
+        query_names?: Array<{ name: string; count: number }>;
+        accepts?: Array<{ name: string; count: number }>;
+        callers?: Array<{ name: string; count: number }>;
+        statuses?: Array<{ value: number; count: number }>;
+        sample_paths?: string[];
+        bodies?: Array<{ status: number; content_type?: string; bytes: number; skeleton: string; at: string }>;
+        // Statuses that WERE sampled and confirmed not JSON (a diff/patch body, a plain-text denial) — permanently no skeleton to show, and distinct.
+        non_json?: Array<{ status: number; content_type?: string; bytes: number; at: string }>;
+    };
 }

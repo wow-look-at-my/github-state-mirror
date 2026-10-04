@@ -11,33 +11,16 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached git-commit route (tier 2 of the cache
-// contract, like respcache.go, which it was split out of):
-//
-//	GET /repos/{owner}/{repo}/git/commits/{sha}
-//
-// isFullHexSHA (shared by the commits-list, commit-CI, and workflow-runs
-// routes) lives here with its primary user.
+// Implements GET /repos/{owner}/{repo}/git/commits/{sha} (tier).
 
-// gitCommitMissTTL bounds a cached git-commit 404 verdict. Round 1
-// deliberately did NOT cache these ("a missing sha can be pushed later");
-// round 2 bounds that concern with this expiry PLUS the clear-on-upsert
-// invariant (every real commit absorb -- fetch, push payload, commits-list,
-// compare -- clears its sha's marker via ghdata.upsertGitCommit), because
-// the dominant traffic is pr-minder's mergeWouldBeEmpty re-reading GC'd
-// test-merge shas on every fleet sweep: a sha GitHub has garbage-collected
-// 404s FOREVER, and each of those reads used to be a fresh upstream 404.
-// Consumers fail open on a 404 (mergeWouldBeEmpty treats it as "cannot
-// verify, run the update"), so the rare wrong-marker window -- a sha pushed
-// while its marker lives but before any absorb path sees the commit -- is
-// safe as well as bounded.
+// gitCommitMissTTL bounds a cached git-commit verdict; consumers fail open on.
 const gitCommitMissTTL = 24 * time.Hour
 
 // cachedGitCommit serves a git commit from absorbed state. Commits are
 // immutable, so cached POSITIVE rows never expire and no webhook invalidates
 // them — only LRU pruning bounds the table. Rows are also absorbed from push
 // webhook payloads (internal/sync/webhook.go), so the common post-push read
-// can hit without any GitHub fetch ever having happened. A 404 answer is
+// can hit without any GitHub fetch ever having happened. A answer is
 // cached as an EXPIRING miss marker (see gitCommitMissTTL) that any real
 // absorb of the sha clears.
 func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +31,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 	// Only full hex object ids are cache keys (a short sha is ambiguous over
 	// time); the endpoint takes no query params. Anything else — passthrough.
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !isFullHexSHA(sha) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, shapeReason(r, isFullHexSHA(sha)))
 		return
 	}
 
@@ -69,7 +52,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("git commit cache read failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
 	}
 
-	// A live 404 miss marker answers before any upstream fetch -- the GC'd
+	// A live miss marker answers before any upstream fetch -- the GC'd
 	// test-merge sha pr-minder re-reads forever (see gitCommitMissTTL).
 	if doc, ok, err := h.store.GetCachedGitCommitMiss(r.Context(), owner, repo, sha, now); err != nil {
 		slog.Warn("git commit miss cache read failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
@@ -88,8 +71,8 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 
 	c, absorbed := absorbGitCommit(owner, repo, sha, resp.StatusCode, body)
 	if overflow || !absorbed {
-		// A 404 is absorbed as an expiring miss marker and relayed REBUILT
-		// (the contents route's exact 404 treatment: DispMiss with the
+		// A is absorbed as an expiring miss marker and relayed REBUILT
+		// (the contents route's exact treatment: DispMiss with the
 		// upstream status, the notFoundJSON shape). Everything else -- 5xx,
 		// unexpected shapes -- relays unstored.
 		if !overflow && resp.StatusCode == http.StatusNotFound {
@@ -105,7 +88,7 @@ func (h *handlers) cachedGitCommit(w http.ResponseWriter, r *http.Request) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	// A positive absorb also clears any 404 marker for the sha (the
+	// A positive absorb also clears any marker for the sha (the
 	// clear-on-upsert invariant inside ghdata.upsertGitCommit).
 	if err := h.store.PutCachedGitCommit(r.Context(), c, now); err != nil {
 		slog.Warn("git commit cache write failed", "owner", owner, "repo", repo, "sha", sha, "error", err)
@@ -140,7 +123,7 @@ type gitSHAJSON struct {
 	SHA string `json:"sha"`
 }
 
-// gitCommitJSON is the trimmed rebuild of a git commit: one consistent shape
+// gitCommitJSON is the trimmed rebuild of a git commit: consistent shape
 // regardless of source (upstream fetch or push webhook). Fields GitHub has
 // that we drop — node_id, verification, url/html_url and the tree/parent
 // urls — stay dropped.
@@ -169,7 +152,7 @@ func renderGitCommit(c ghdata.CachedGitCommit) gitCommitJSON {
 }
 
 // absorbGitCommit parses an upstream git-commit response into cacheable state.
-// Only a well-formed 200 is absorbed.
+// Only a well-formed is absorbed.
 func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.CachedGitCommit, bool) {
 	if status != http.StatusOK {
 		return ghdata.CachedGitCommit{}, false
@@ -209,17 +192,5 @@ func absorbGitCommit(owner, repo, sha string, status int, body []byte) (ghdata.C
 	}, true
 }
 
-// isFullHexSHA reports whether s is a full-length (40 or 64) lowercase hex
-// object id.
-func isFullHexSHA(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
+// isFullHexSHA aliases ghdata.IsFullHexSHA so routes and storage agree on the definition.
+var isFullHexSHA = ghdata.IsFullHexSHA

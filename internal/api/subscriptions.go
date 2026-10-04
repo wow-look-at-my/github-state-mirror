@@ -12,20 +12,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 )
 
-// Subscriber-notification CRUD: /_mirror/subscriptions.
-//
-// The top-level /_mirror/* prefix is the RESERVED mirror-native namespace.
-// GitHub's API has no underscore-prefixed top-level paths, and chi-registered
-// routes always win over the NotFound passthrough proxy, so nothing under
-// /_mirror/* can ever collide with (or leak to) proxied GitHub traffic. New
-// mirror-native endpoints belong under this prefix.
-//
-// The routes are registered INSIDE requireAuth, so callers resolve to a
-// principal exactly like data routes (user:<id>, app:<id> via
-// X-Mirror-Identity, or a token fingerprint) and every subscription is owned
-// by the principal that created it. They deliberately do NOT go through the
-// reveal layer (they are not repo reads) and are not recorded in the GitHub
-// request log (only cached-route handlers and the passthrough record there).
+// Subscriber-notification CRUD, under the reserved /_mirror/* namespace.
+// see docs/notifications.md
 type subscriptionsAPI struct {
 	notifier *notify.Notifier
 }
@@ -44,8 +32,7 @@ func (s *subscriptionsAPI) routes(r chi.Router) {
 type subscriptionJSON struct {
 	ID        string `json:"id"`
 	Principal string `json:"principal,omitempty"`
-	// PrincipalName is Principal's recorded display name (from
-	// actor_identities); admin view only, like Principal.
+	// Principal's display name; admin view only, like Principal.
 	PrincipalName       string   `json:"principal_name,omitempty"`
 	URL                 string   `json:"url"`
 	Repos               []string `json:"repos"`
@@ -107,7 +94,7 @@ func (s *subscriptionsAPI) begin(w http.ResponseWriter, r *http.Request) (*notif
 // maxSubscriptionBody bounds a create/patch request body.
 const maxSubscriptionBody = 64 << 10
 
-// decodeBody decodes a bounded JSON request body into v, answering 400 itself
+// decodeBody decodes a bounded JSON request body into v, answering itself
 // on failure.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	body := http.MaxBytesReader(w, r.Body, maxSubscriptionBody)
@@ -118,9 +105,9 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// writeSubscriptionError maps a store error onto the HTTP response: 400 for a
-// validation failure (with the message), 409 for the per-principal cap, 404
-// for a missing/foreign id, 500 otherwise.
+// writeSubscriptionError maps a store error onto the HTTP response: for a
+// validation failure (with the message), for the per-principal cap,
+// for a missing/foreign id, otherwise.
 func writeSubscriptionError(w http.ResponseWriter, err error) {
 	var ve *notify.ValidationError
 	switch {
@@ -145,7 +132,7 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 }
 
 // create registers a new subscription for the caller's principal.
-// POST /_mirror/subscriptions {url, secret, repos?, events?} -> 201.
+// POST /_mirror/subscriptions {url, secret, repos?, events?} ->.
 func (s *subscriptionsAPI) create(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {
@@ -182,8 +169,8 @@ func (s *subscriptionsAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"subscriptions": views})
 }
 
-// get returns one of the caller's subscriptions; a foreign principal's id
-// answers 404 (no existence leak).
+// get returns of the caller's subscriptions; a foreign principal's id
+// answers (no existence leak).
 func (s *subscriptionsAPI) get(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {
@@ -197,7 +184,7 @@ func (s *subscriptionsAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, subscriptionView(sub, false))
 }
 
-// patch partially updates one of the caller's subscriptions. Setting
+// patch partially updates of the caller's subscriptions. Setting
 // active=true resets consecutive_failures and clears disabled_reason (the
 // re-enable path after an auto-disable).
 func (s *subscriptionsAPI) patch(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +204,7 @@ func (s *subscriptionsAPI) patch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, subscriptionView(sub, false))
 }
 
-// remove deletes one of the caller's subscriptions -> 204; missing/foreign -> 404.
+// remove deletes of the caller's subscriptions ->; missing/foreign ->.
 func (s *subscriptionsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	st, principal, ok := s.begin(w, r)
 	if !ok {
@@ -242,7 +229,7 @@ type notificationsResponse struct {
 // (counters + recent attempts; resets on restart, the request-log stance) and
 // EVERY subscription with its principal — the operator view. Principals are
 // decorated with their recorded display names (actor_identities, best-effort:
-// a failed lookup just leaves names absent). Secrets are structurally absent
+// a failed lookup leaves names absent). Secrets are structurally absent
 // (subscriptionJSON has no secret field). Admin-only, like the other global
 // operator views.
 func (d *dashboard) handleNotifications(w http.ResponseWriter, r *http.Request) {

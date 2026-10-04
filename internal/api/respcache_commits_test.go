@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -71,7 +70,7 @@ func newCommitsCacheUpstream() *commitsCacheUpstream {
 			servePRJSON(w, []any{upstreamCommit(shaBase, "initial", shaTree1)})
 		case q.Get("sha") == "dev":
 			servePRJSON(w, []any{upstreamCommit(shaCommit, "dev tip", shaTree2, shaBase)})
-		default: // newest first, like GitHub
+		default: // newest, like GitHub
 			servePRJSON(w, []any{
 				upstreamCommit(shaTip, "fix: a thing <with> & symbols", shaTree2, shaMid),
 				upstreamCommit(shaMid, "feat: mid", shaTree1, shaBase),
@@ -114,11 +113,11 @@ func commitsCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 	return router, store, db, u
 }
 
-// TestCachedCommitsList_MissAbsorbHit covers the core flow: the first read
-// fetches + absorbs (miss), the second serves the identical trimmed body from
-// state (hit, zero upstream calls), the rebuild drops every URL field and the
-// user-object clutter -- and the absorbed commits land in the SAME global
-// git_commits_cache rows the single git-commit route serves.
+// TestCachedCommitsList_MissAbsorbHit covers the core flow: the read fetches
+// + absorbs (miss), the serves the identical trimmed body from state (hit,
+// upstream calls), the rebuild drops every URL field and the user-object
+// clutter -- and the absorbed commits land in the SAME global
+// git_commits_cache rows the git-commit route serves.
 func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 	target := "/repos/org1/repo1/commits?sha=main&per_page=100&page=1"
@@ -128,22 +127,28 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, fmt.Sprintf(`[
-		{"sha": %q,
-		 "commit": {
-			"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-			"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-			"message": "fix: a thing <with> & symbols",
-			"tree": {"sha": %q}},
-		 "parents": [{"sha": %q}]},
-		{"sha": %q,
-		 "commit": {
-			"author": {"name":"Alice","email":"alice@example.com","date":"2026-07-01T10:00:00Z"},
-			"committer": {"name":"Bob","email":"bob@example.com","date":"2026-07-01T10:05:00Z"},
-			"message": "feat: mid",
-			"tree": {"sha": %q}},
-		 "parents": [{"sha": %q}]}
-	]`, shaTip, shaTree2, shaMid, shaMid, shaTree1, shaBase), w1.Body.String())
+	assert.JSONEq(t, mustJSONString([]any{
+		map[string]any{
+			"sha": shaTip,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "fix: a thing <with> & symbols",
+				"tree":      map[string]any{"sha": shaTree2},
+			},
+			"parents": []any{map[string]any{"sha": shaMid}},
+		},
+		map[string]any{
+			"sha": shaMid,
+			"commit": map[string]any{
+				"author":    map[string]any{"name": "Alice", "email": "alice@example.com", "date": "2026-07-01T10:00:00Z"},
+				"committer": map[string]any{"name": "Bob", "email": "bob@example.com", "date": "2026-07-01T10:05:00Z"},
+				"message":   "feat: mid",
+				"tree":      map[string]any{"sha": shaTree1},
+			},
+			"parents": []any{map[string]any{"sha": shaBase}},
+		},
+	}), w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", target, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
@@ -151,16 +156,14 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String(), "hit must serve the same trimmed body as the miss")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits), "hit must not call upstream")
 
-	// Absorb-don't-byte-cache: the listed commits are global git_commits_cache
-	// rows, so the single git-commit route hits without its own fetch ever
-	// having happened (this fake 404s that endpoint -- a miss could not serve).
+	// Listed commits also become global git_commits_cache rows.
 	w3 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/commits/"+shaTip, nil))
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Equal(t, "hit", w3.Header().Get(cacheHeader), "list-absorbed commits must serve the single git-commit route")
 }
 
 // TestCachedCommitsList_PageAndRefKeying: every modeled query dimension is its
-// own snapshot -- page=1 vs page=2, one ref vs another vs the bare default --
+// own snapshot -- page= vs page=, ref vs another vs the bare default --
 // and, unlike the pulls list, a page as long as per_page is still served from
 // state (the snapshot IS that exact page's answer; the next page has its own
 // key, so there is nothing to truncate).
@@ -226,8 +229,7 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader), "non-default Accept must pass through")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits))
 
-	// The single-commit endpoint is a DIFFERENT path and stays passthrough
-	// (this fake does not serve it, so the proxied answer is its 404).
+	// /commits/{sha} is a different path and passes through; this fake 404s it.
 	wc := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/"+shaCommit, nil))
 	assert.Equal(t, http.StatusNotFound, wc.Code)
 	assert.Empty(t, wc.Header().Get(cacheHeader), "/commits/{sha} must not hit the cached list route")
@@ -315,8 +317,8 @@ func TestCachedCommitsList_MissingCommitRowMisses(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
-// TestCachedCommitsList_Non200NotStored: 404 (unknown ref), 409 (empty repo),
-// 5xx -- anything but a 200 -- is relayed verbatim and stores no snapshot.
+// TestCachedCommitsList_Non200NotStored: (unknown ref), (empty repo),
+// 5xx -- anything but a -- is relayed verbatim and stores no snapshot.
 func TestCachedCommitsList_Non200NotStored(t *testing.T) {
 	router, _, db, u := commitsCacheStack(t)
 	u.list = func(w http.ResponseWriter, r *http.Request) {

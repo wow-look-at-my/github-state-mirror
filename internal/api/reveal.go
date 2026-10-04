@@ -13,54 +13,39 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The reveal layer: WHO may read a piece of global truth.
-//
-// The truth store is global (one row per resource; webhooks and any caller's
-// fetches all feed it), so serving cached state must be gated per caller.
-// GitHub itself is the permission oracle -- the mirror never invents an
-// authorization model, it only caches GitHub's own answers:
-//
-//   1. PUBLIC fast path: the repo's webhook/REST-learned visibility is
-//      'public' -> any authenticated principal may read its cached state. A
-//      repo whose visibility is unknown ('', e.g. seeded only by the
-//      identity-locked GraphQL fetch, which cannot carry visibility) is
-//      treated as PRIVATE -- fail closed.
-//   2. GRANT: the principal holds an unexpired access_grants row for the
-//      repo, earned from GitHub's own answers to that principal's requests
-//      (an org list-sync with their token, or an earlier probe).
-//   3. DENY VERDICT: GitHub authoritatively told this principal "no" (404 /
-//      non-rate-limit 403) for this exact resource within the deny TTL ->
-//      serve that answer again without asking GitHub.
-//   4. PROBE: otherwise ask GitHub: GET /repos/{owner}/{repo} with the
-//      caller's own token (buildhost's canAccessRepo pattern). 200 proves
-//      access -> absorb the (canonical, visibility-carrying) repository
-//      object into truth, record a grant, proceed. 404/authoritative-403 ->
-//      record a deny verdict, relay the answer. Transient failures (5xx,
-//      429, rate-limited 403, network) are relayed but NEVER cached -- a
-//      hiccup must not pin a caller out (or in).
-//
-// The probe costs one upstream call on a principal's FIRST touch of a
-// non-public repo (per grant TTL); it also heals unknown-visibility rows,
-// since the probe response carries visibility for everyone's benefit.
+// The reveal layer: WHO may read a piece of global truth. GitHub is the
+// permission oracle -- public repo, a live grant, a cached deny verdict, or a
+// live probe with the caller's own token decide it, in that order.
+// see docs/reveal-layer.md
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
-	denyKindContents     = "contents"
-	denyKindGitCommit    = "git_commit"
-	denyKindRepoPulls    = "repo_pulls"
-	denyKindPull         = "pull"
-	denyKindRepoCommits  = "repo_commits"
-	denyKindCompare      = "compare"
-	denyKindCommitStatus = "commit_status"
-	denyKindCheckRuns    = "check_runs"
-	denyKindPullFiles    = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
-	denyKindBranches     = "branches"      // GET /repos/{owner}/{repo}/branches
-	denyKindRepo         = "repo"          // GET /repos/{owner}/{repo}
-	denyKindStatusesList = "statuses_list" // the raw statuses LIST (both path spellings)
-	denyKindWorkflowRuns = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
+	denyKindContents       = "contents"
+	denyKindGitCommit      = "git_commit"
+	denyKindRepoPulls      = "repo_pulls"
+	denyKindPull           = "pull"
+	denyKindRepoCommits    = "repo_commits"
+	denyKindCompare        = "compare"
+	denyKindCommitStatus   = "commit_status"
+	denyKindCheckRuns      = "check_runs"
+	denyKindPullFiles      = "pull_files"    // GET /repos/{owner}/{repo}/pulls/{number}/files
+	denyKindBranches       = "branches"      // GET /repos/{owner}/{repo}/branches
+	denyKindRepo           = "repo"          // GET /repos/{owner}/{repo}
+	denyKindStatusesList   = "statuses_list" // the raw statuses LIST (both path spellings)
+	denyKindWorkflowRuns   = "workflow_runs" // GET /repos/{owner}/{repo}/actions/runs?head_sha=
+	denyKindGitRef         = "git_ref"       // GET /repos/{owner}/{repo}/git/ref/{ref}
+	denyKindRunJobs        = "run_jobs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+	denyKindWorkflowJob    = "workflow_job"  // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
+	denyKindCodeQuality    = "code_quality"  // GET /repos/{owner}/{repo}/code-quality/setup
+	denyKindLabel          = "label"         // GET /repos/{owner}/{repo}/labels/{name}
+	denyKindGitTree        = "git_tree"      // GET /repos/{owner}/{repo}/git/trees/{sha}
+	denyKindSingleCheckRun = "check_run"     // GET /repos/{owner}/{repo}/check-runs/{check_run_id}
+	denyKindMatchingRefs   = "matching_refs" // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
+	denyKindReadme         = "readme"        // GET /repos/{owner}/{repo}/readme[/{dir}]
+	denyKindWorkflows      = "workflows"     // GET /repos/{owner}/{repo}/actions/workflows[/{id}]
 )
 
-// revealOutcome is the reveal decision for one request.
+// revealOutcome is the reveal decision for request.
 type revealOutcome int
 
 const (
@@ -68,8 +53,7 @@ const (
 	revealAllowed revealOutcome = iota
 	// revealDenied: GitHub said no (now or recently); serve the verdict.
 	revealDenied
-	// revealError: could not decide (transient probe/store failure); the
-	// request fails 502 without caching anything.
+	// revealError: could not decide (transient failure); the request fails without caching anything.
 	revealError
 )
 
@@ -82,7 +66,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 	principal := actor.FromContext(ctx)
 	now := time.Now()
 
-	// 1. Public fast path (case-insensitive: truth rows carry canonical
+	// . Public fast path (case-insensitive: truth rows carry canonical
 	// casing, the URL may not). Unknown visibility falls through -- private
 	// until proven otherwise.
 	if repoRow, err := h.store.GetRepoInsensitive(ctx, owner, repo); err == nil {
@@ -91,7 +75,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		}
 	}
 
-	// 2. Grant.
+	// . Grant.
 	if principal != "" {
 		ok, err := h.store.HasGrant(ctx, principal, owner, repo, now)
 		if err != nil {
@@ -102,7 +86,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 			return revealAllowed, ghdata.DenyVerdict{}, false
 		}
 
-		// 3. Cached deny verdict for this exact resource.
+		// . Cached deny verdict for this exact resource.
 		v, ok, err := h.store.GetDenyVerdict(ctx, principal, kind, resourceKey, now)
 		if err != nil {
 			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
@@ -113,7 +97,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		}
 	}
 
-	// 4. Probe GitHub with the caller's own token.
+	// . Probe GitHub with the caller's own token.
 	return h.probeRepoAccess(r, principal, owner, repo, kind, resourceKey)
 }
 
@@ -121,7 +105,9 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 // (GET /repos/{owner}/{repo} with their token) and records the answer.
 func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind, resourceKey string) (revealOutcome, ghdata.DenyVerdict, bool) {
 	ctx := r.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.gh.BaseURL()+"/repos/"+owner+"/"+repo, nil)
+	// The transport charts this as a real mirror->GitHub exchange under dispProbe, failures included.
+	req, err := http.NewRequestWithContext(withUpstreamDisposition(ctx, dispProbe),
+		http.MethodGet, h.gh.BaseURL()+"/repos/"+owner+"/"+repo, nil)
 	if err != nil {
 		return revealError, ghdata.DenyVerdict{}, false
 	}
@@ -130,17 +116,12 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		req.Header.Set("Authorization", auth)
 	}
 
-	// The probe is a real mirror→GitHub exchange: time it onto the chart
-	// (disposition "probe"; a transport failure records as an error).
 	who := callerLabel(r)
-	start := time.Now()
 	resp, err := h.upstream.Do(req)
 	if err != nil {
-		h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), 0, DispError, who.Key, who.Name)
 		slog.Warn("reveal probe failed", "repo", owner+"/"+repo, "error", err)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
-	h.timeline.RecordRequest(start, time.Since(start), http.MethodGet, normalizeRoute(req.URL.Path), resp.StatusCode, dispProbe, who.Key, who.Name)
 	defer resp.Body.Close()
 	// Passively record the X-RateLimit-* headers the probe response carries.
 	h.meter.Observe(who.Key, who.Name, resp)
@@ -170,17 +151,14 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 
 	case resp.StatusCode == http.StatusNotFound,
 		resp.StatusCode == http.StatusForbidden && !upstreamRateLimited(resp):
-		// Authoritative "no". Their truth: relay it, and remember it briefly
-		// so a poll doesn't hammer GitHub. (404 is deliberately keyed to the
-		// exact resource, not the repo: GitHub's 404 cannot be told apart
-		// from "resource missing inside a repo you CAN see".)
+		//  is keyed to the exact resource, not the repo: GitHub's can't be told apart from a readable repo's missing resource.
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
 			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
 				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			}
 			if resp.StatusCode == http.StatusForbidden {
-				// A 403 is unambiguous about repo access; a stale grant (if
+				// A is unambiguous about repo access; a stale grant (if
 				// any survived) must go.
 				if err := h.store.RevokeGrant(ctx, principal, owner, repo); err != nil {
 					slog.Warn("reveal probe: revoke grant failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
@@ -190,7 +168,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		return revealDenied, v, false
 
 	default:
-		// Transient (5xx, 429, rate-limited 403): never cached as a deny.
+		// Transient (5xx,, rate-limited): never cached as a deny.
 		slog.Warn("reveal probe: transient upstream answer", "repo", owner+"/"+repo, "status", resp.StatusCode)
 		return revealError, ghdata.DenyVerdict{}, false
 	}
@@ -215,7 +193,7 @@ func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v gh
 
 // revealFailed reports a reveal-layer transient failure (probe/store error):
 // the mirror cannot decide access right now, so the request fails without
-// caching anything. 502 mirrors the cached routes' upstream-error handling.
+// caching anything. mirrors the cached routes' upstream-error handling.
 func (h *handlers) revealFailed(w http.ResponseWriter, r *http.Request) {
 	h.reqlog.observeStatus(r, DispError, http.StatusBadGateway)
 	http.Error(w, "bad gateway: could not verify repository access with GitHub", http.StatusBadGateway)

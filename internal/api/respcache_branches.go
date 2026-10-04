@@ -14,41 +14,13 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// This file implements the cached branches-list route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/branches
-//
-// pr-minder's auto_open_pr fork-point detection lists every branch tip
-// (listBranchHeads) per repo, and the pr-minder-reconcile hook repeats that
-// over a fleet slice every 5 minutes -- the second-largest passthrough slice
-// before this route existed. The whole trimmed branches page is rendered
-// ONCE at absorb time and stored verbatim per exact request shape (owner,
-// repo, per_page, page), like the compare doc, so hit and miss serve
-// identical bytes. Consumers read name + commit.sha; protected rides along
-// (a cheap, always-present bool). commit.url, the protection object, and
-// protection_url are dropped.
-//
-// A listing moves whenever a branch is created, deleted, or its tip
-// advances -- all of which arrive as push events (a delete carries
-// deleted=true) -- so push/repository webhooks flush a repo's snapshots
-// repo-wide, with the 24h TTL as the missed-delivery backstop. There is no
-// doc-size cap: the item shape has no unbounded field, and the 8 MiB
-// fetchUpstream cap bounds the raw body. The single-branch read
-// /branches/{branch} is a different shape and stays passthrough.
+// Cached branches-list route (tier of the cache contract, like respcache.go).
 
 const (
-	// branchesCacheTTL bounds how long a MISSED push delivery could leave a
-	// stale listing being served. Webhooks flush sooner; this is the
-	// backstop.
-	branchesCacheTTL = 24 * time.Hour
-
-	// branchesDefaultPerPage is GitHub's default page size for the branches
-	// list when the request does not send per_page.
+	// branchesDefaultPerPage is GitHub's default page size when per_page is absent.
 	branchesDefaultPerPage = 30
 
-	// branchesMaxCachedPage caps which pages are modeled. Consumers page
-	// shallowly; deeper pagination passes through.
+	// branchesMaxCachedPage caps which pages are modeled; deeper pagination passes through.
 	branchesMaxCachedPage = 10
 )
 
@@ -83,7 +55,7 @@ func parseBranchesListShape(q url.Values) (perPage, page int, ok bool) {
 	return perPage, page, true
 }
 
-// cachedBranchesList serves one page of a repo's branch list from a stored
+// cachedBranchesList serves page of a repo's branch list from a stored
 // whole-doc snapshot, fetching and absorbing on a miss. Unknown query shapes
 // and non-default Accepts pass through.
 func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
@@ -91,12 +63,12 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "repo")
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
 	perPage, page, ok := parseBranchesListShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
@@ -128,11 +100,11 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 
 	doc, absorbed := absorbBranchesList(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 and 5xx: relayed verbatim, never stored.
+		// Includes and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedBranchesList(r.Context(), owner, repo, int64(perPage), int64(page), doc, now, branchesCacheTTL); err != nil {
+	if err := h.store.PutCachedBranchesList(r.Context(), owner, repo, int64(perPage), int64(page), doc, now, ghdata.BranchesCacheTTL); err != nil {
 		slog.Warn("branches list cache write failed", "owner", owner, "repo", repo, "error", err)
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
@@ -140,17 +112,15 @@ func (h *handlers) cachedBranchesList(w http.ResponseWriter, r *http.Request) {
 	writeRebuilt(w, http.StatusOK, []byte(doc), false)
 }
 
-// branchListItemJSON is one trimmed entry of the branches page: exactly what
-// the consumers read (name + commit.sha) plus the always-present protected
-// bool. commit.url, the protection object, and protection_url stay dropped.
+// branchListItemJSON is trimmed entry: name + commit.sha + the always-present protected bool.
 type branchListItemJSON struct {
 	Name      string     `json:"name"`
 	Commit    gitSHAJSON `json:"commit"`
 	Protected bool       `json:"protected"`
 }
 
-// absorbBranchesList parses a /branches 200 array into the trimmed document,
-// rendered once here (hits serve the stored bytes, so hit and miss are
+// absorbBranchesList parses a /branches array into the trimmed document,
+// rendered here (hits serve the stored bytes, so hit and miss are
 // byte-identical). Reports false -- serve verbatim, store nothing -- for any
 // other status or any item the model cannot hold (name and a full-hex tip
 // sha are required; protected defaults false). An empty array (a page past

@@ -10,11 +10,7 @@ import (
 
 // Resource kind constants used in cache_metadata.
 const (
-	// KindOrgRepos is a PRINCIPAL's org list-sync marker (actor = principal,
-	// key = org login): freshness of that principal's grant set for the owner.
-	// The fetch refreshes global truth as a side effect. (The /pulls list's
-	// completeness marker lives in its own table, pulls_list_cache -- that
-	// route absorbs the caller's own request rather than running a fetcher.)
+	// KindOrgRepos is a principal's org list-sync freshness marker; see docs/reveal-layer.md.
 	KindOrgRepos = "org_repos"
 )
 

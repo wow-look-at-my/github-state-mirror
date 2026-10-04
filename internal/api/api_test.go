@@ -7,11 +7,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +27,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/inbox"
+	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/notify"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -31,12 +36,58 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
+var schemaTemplate struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := database.RunWithTxGuard(m)
+	if schemaTemplate.dir != "" {
+		_ = os.RemoveAll(schemaTemplate.dir)
+	}
+	os.Exit(code)
+}
+
+// openTestDB opens a throwaway cache DB at path, seeded from schemaTemplate.
+func openTestDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	schemaTemplate.once.Do(func() {
+		schemaTemplate.dir, schemaTemplate.err = os.MkdirTemp("", "gsm-schema-template")
+		if schemaTemplate.err != nil {
+			return
+		}
+		schemaTemplate.path = filepath.Join(schemaTemplate.dir, "template.db")
+		db, err := database.Open(schemaTemplate.path)
+		if err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		// The last connection to close checkpoints the WAL back into the main
+		if err := db.Close(); err != nil {
+			schemaTemplate.err = err
+			return
+		}
+		if _, err := os.Stat(schemaTemplate.path + "-wal"); !os.IsNotExist(err) {
+			schemaTemplate.err = fmt.Errorf("template DB still has a -wal after close (stat: %v)", err)
+		}
+	})
+	require.NoError(t, schemaTemplate.err)
+
+	blank, err := os.ReadFile(schemaTemplate.path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, blank, 0o600))
+
+	db, err := database.Open(path)
+	require.NoError(t, err)
+	return db
+}
+
 // testToken is the bearer token sent by authenticated test requests.
 const testToken = "test-token"
 
-// testUserID/testUserLogin are the identity the default fake GitHub answers on
-// GET /user for any token; testUserActor is therefore the principal every
-// authenticated test request resolves to ("user:<id>").
 const (
 	testUserID    = 7001
 	testUserLogin = "testuser"
@@ -69,8 +120,6 @@ func newTestStack(t *testing.T, authSvc *auth.Service) (http.Handler, *ghdata.St
 
 // newTestStackWithGitHub is like newTestStack but lets the caller supply the
 // fake upstream GitHub handler, and returns its URL — used by passthrough tests
-// that need to observe forwarded requests. requireAuth resolves the bearer
-// token against this same handler, so it must answer GET /user with a login.
 func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) (http.Handler, *ghdata.Store, *sql.DB, string) {
 	t.Helper()
 	s := newFullTestStack(t, authSvc, ghHandler)
@@ -79,7 +128,7 @@ func newTestStackWithGitHub(t *testing.T, authSvc *auth.Service, ghHandler http.
 
 // testStack is the full router assembly for tests that also need the
 // subscriber-notification pieces (the notifier for deterministic flushes) or
-// the timeline ring (for asserting timed traffic events).
+// the timeline ring.
 type testStack struct {
 	router   http.Handler
 	store    *ghdata.Store
@@ -87,14 +136,23 @@ type testStack struct {
 	ghURL    string
 	notifier *notify.Notifier
 	timeline *reqtimeline.Recorder
+	// debouncer is nil unless the test asked for passthrough coalescing via
+	debouncer *Debouncer
+	queue     *webhook.Queue
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
+	return newFullTestStackDebounced(t, authSvc, ghHandler, 0)
+}
+
+// newFullTestStackDebounced builds the stack with the passthrough debouncer
+// holding eligible reads for window (= disabled, the default everywhere
+// else).
+func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler http.Handler, window time.Duration) testStack {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	db, err := database.Open(dbPath)
-	require.Nil(t, err)
+	db := openTestDB(t, dbPath)
 
 	t.Cleanup(func() { db.Close() })
 
@@ -108,8 +166,6 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	dispatcher := syncpkg.NewWebhookDispatcher(mgr, store)
 
 	// Subscriptions live in their own DB file, like production. Single-attempt
-	// deliveries keep tests deterministic (retry behavior is covered by the
-	// notify package's own tests); Drain before the DB closes, like main.
 	subs, err := notify.Open(filepath.Join(dir, "subscriptions.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { subs.Close() })
@@ -124,19 +180,48 @@ func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handle
 	gh := ghclient.NewWithBaseURL(ghSrv.URL)
 
 	// Passive rate-limit meter, wired like cmd/server: the ghclient hook plus
-	// the router's proxy/fetch/probe paths all feed it.
 	meter := ratemeter.New()
 	gh.SetRateObserver(meter.Observe)
 
 	// nil app -> the consistency checker reports Available()==false, the realistic
-	// "no GitHub App configured" state for these tests.
 	checker := syncpkg.NewConsistencyChecker(gh, store, fStore, nil)
 	timeline := reqtimeline.New()
 	// Wire the client's exchange observer like cmd/server does, so tests see
-	// the ghclient calls (e.g. requireAuth's /user resolution) on the chart.
 	gh.SetExchangeObserver(TimelineExchangeObserver(timeline))
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline)
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline}
+	debouncer := NewDebouncer(window)
+	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
+	lat := latency.New()
+	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat)
+	webhookQueues.Store(router, queue)
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
+}
+
+// webhookQueues maps each test router to its webhook queue, so a test can wait for what it posted to apply.
+var webhookQueues sync.Map
+
+// newTestQueue runs a webhook queue over a throwaway inbox until the test ends.
+func newTestQueue(t *testing.T, dispatcher webhook.Dispatcher, rec webhook.DeliveryRecorder, notifiers ...webhook.IngestNotifier) *webhook.Queue {
+	t.Helper()
+	journal, err := inbox.Open(filepath.Join(t.TempDir(), "inbox.db"))
+	require.NoError(t, err)
+	q := webhook.NewQueue(journal, dispatcher, rec, notifiers...)
+	ctx, cancel := context.WithCancel(context.Background())
+	go q.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		q.Stopped(5 * time.Second)
+		journal.Close()
+	})
+	return q
+}
+
+// awaitWebhooks waits until every delivery posted to router has been applied.
+func awaitWebhooks(t *testing.T, router http.Handler) {
+	t.Helper()
+	q, ok := webhookQueues.Load(router)
+	require.True(t, ok, "router was not built by a test stack")
+	require.True(t, q.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
@@ -181,7 +266,7 @@ func authedReq(method, target string, body io.Reader) *http.Request {
 // TestRequireAuth_Unauthenticated verifies that data endpoints reject requests
 // with no Authorization header. Non-cached REST paths fall through to the
 // passthrough proxy, which itself enforces the token; the GraphQL route is
-// gated by requireAuth. Either way a tokenless request is 401.
+// gated by requireAuth. Either way a tokenless request is.
 func TestRequireAuth_Unauthenticated(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -206,7 +291,7 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestRevealIsolation verifies the reveal layer: global truth absorbed via one
+// TestRevealIsolation verifies the reveal layer: global truth absorbed via
 // principal's sync (a PRIVATE-by-default repo, since the GraphQL sync cannot
 // learn visibility) is NOT revealed to a different user with no grant, while
 // the syncing user sees it via their list_sync grant.
@@ -271,7 +356,6 @@ func TestRevealPublicFastPath(t *testing.T) {
 		Visibility: ghdata.VisibilityPublic,
 	}))
 	// The other user's org marker must be fresh or the stub fetcher runs (a
-	// no-op) — either way assembly filters; both users should see the repo.
 	body := `{"query":"{ organization(login: \"my-org\") { repositories { nodes { name } } } }","variables":{"org":"my-org"}}`
 	for _, token := range []string{testToken, "other-user-token"} {
 		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -288,8 +372,8 @@ func TestRevealPublicFastPath(t *testing.T) {
 }
 
 // TestWebhook_NoAuthRequired verifies the webhook endpoint is reachable without
-// a bearer token (it is authenticated by HMAC signature instead). A ping is an
-// untracked event, so it is accepted as a no-op (202), not rejected (401/403).
+// a bearer token (it is authenticated by HMAC signature instead): the delivery
+// is recorded and answered, not rejected.
 func TestWebhook_NoAuthRequired(t *testing.T) {
 	router, _ := setupTestRouter(t)
 
@@ -301,5 +385,6 @@ func TestWebhook_NoAuthRequired(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusAccepted, w.Code)
-	assert.Equal(t, webhook.DispIgnored, w.Header().Get("X-GSM-Disposition"))
+	assert.Equal(t, webhook.DispQueued, w.Header().Get("X-GSM-Disposition"))
+	awaitWebhooks(t, router)
 }

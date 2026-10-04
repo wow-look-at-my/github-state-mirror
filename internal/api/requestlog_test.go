@@ -74,8 +74,7 @@ func TestCallerLabel(t *testing.T) {
 	r3 := httptest.NewRequest("GET", "/x", nil)
 	assert.Equal(t, "anonymous", callerLabel(r3).Key)
 
-	// The requireAuth path: ctx carries the resolved actor AND its verified
-	// display name; callerLabel surfaces both.
+	// requireAuth resolves both the actor and its verified display name; callerLabel surfaces both.
 	r4 := httptest.NewRequest("GET", "/x", nil)
 	ctx := actor.WithName(actor.WithActor(r4.Context(), "app:99"), "pr-minder")
 	assert.Equal(t, callerIdent{Key: "app:99", Name: "pr-minder"}, callerLabel(r4.WithContext(ctx)))
@@ -149,8 +148,10 @@ func TestDashboard_Requests_ActorName(t *testing.T) {
 }
 
 // TestDashboard_Requests_Admin drives real requests through the router and
-// verifies the dashboard's /api/requests reports their cache dispositions: the
-// first org-repos query is a miss, the second a hit, and an uncached path a
+// verifies the dashboard's /api/requests reports their cache dispositions.
+//
+//	org-repos query is a miss, the a hit, and an uncached path a
+//
 // passthrough.
 func TestDashboard_Requests_Admin(t *testing.T) {
 	svc := configuredAuth(t)
@@ -164,8 +165,8 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.Equal(t, http.StatusOK, w.Code)
 	}
-	// Uncached path -> passthrough (the test upstream answers any path 200).
-	passReq := authedReq("GET", "/rate_limit", nil)
+	// Uncached path -> passthrough (the test upstream answers any path).
+	passReq := authedReq("GET", "/repos/o/r/releases", nil)
 	pw := httptest.NewRecorder()
 	router.ServeHTTP(pw, passReq)
 	require.Equal(t, http.StatusOK, pw.Code)
@@ -180,12 +181,10 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &snap))
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispMiss], int64(1), "first org query should be a cache miss")
 	assert.GreaterOrEqual(t, snap.ByDisposition[DispHit], int64(1), "second org query should be a cache hit")
-	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/rate_limit should be a passthrough")
+	assert.GreaterOrEqual(t, snap.ByDisposition[DispPassthrough], int64(1), "/repos/o/r/releases should be a passthrough")
 	assert.GreaterOrEqual(t, len(snap.Recent), 3)
 
-	// The same traffic is aggregated into route-shape groups, sorted by total
-	// desc and capped: both /graphql calls share one group (1 miss + 1 hit),
-	// and /rate_limit groups on its own.
+	// The same traffic aggregates into route-shape groups, sorted by total desc and capped.
 	require.NotEmpty(t, snap.Groups)
 	assert.LessOrEqual(t, len(snap.Groups), requestGroupsSnapshotCap)
 	byKey := map[string]requestGroupSnapshot{}
@@ -200,12 +199,11 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.GreaterOrEqual(t, gq.Hit, int64(1))
 	assert.GreaterOrEqual(t, gq.Miss, int64(1))
 	assert.Equal(t, "/graphql", gq.Sample)
-	rl, ok := byKey["GET /rate_limit"]
-	require.True(t, ok, "the rate_limit group exists")
+	rl, ok := byKey["GET /repos/{owner}/{repo}/releases"]
+	require.True(t, ok, "the releases group exists")
 	assert.GreaterOrEqual(t, rl.Passthrough, int64(1))
 
-	// The stack's real SQLite file is statted end to end: NewRouter threads the
-	// DB path through to the dashboard, which reports its on-disk size.
+	// NewRouter threads the DB path through to the dashboard, which stats the real SQLite file end to end.
 	assert.Positive(t, snap.DBSizeBytes, "the payload reports the SQLite DB's on-disk size")
 }
 
@@ -251,9 +249,9 @@ func TestDashboard_Requests_DBSize(t *testing.T) {
 	assert.NotContains(t, m, "db_wal_size_bytes")
 }
 
-// TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough records
-// the status GitHub returned (e.g. 502), so the dashboard shows whether the
-// forwarded call actually succeeded — not just that it was forwarded.
+// TestRequests_PassthroughRecordsUpstreamStatus verifies a passthrough
+// records the status GitHub returned (e.g.), so the dashboard shows whether
+// the forwarded call succeeded — not that it was forwarded.
 func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 	svc := configuredAuth(t)
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +259,7 @@ func TestRequests_PassthroughRecordsUpstreamStatus(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"login": testUserLogin, "id": testUserID})
 			return
 		}
-		w.WriteHeader(http.StatusBadGateway) // simulate GitHub 502 on the proxied path
+		w.WriteHeader(http.StatusBadGateway) // simulate GitHub on the proxied path
 		_, _ = w.Write([]byte("upstream boom"))
 	})
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)

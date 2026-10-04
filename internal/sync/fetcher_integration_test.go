@@ -113,12 +113,11 @@ func TestOrgReposFetcher_Fetch(t *testing.T) {
 	client, store := setupFetcherTest(t, mux)
 	f := &OrgReposFetcher{gh: client, store: store}
 
-	// The fetch runs as a principal: the snapshot lands in GLOBAL truth and
-	// the principal earns a list_sync grant for every repo GitHub returned.
+	// The fetch runs as a principal: truth is global, but the principal earns the grant.
 	ctx := actor.WithActor(context.Background(), "user:900")
 	result, err := f.Fetch(ctx, "org1", "")
 	require.NoError(t, err)
-	assert.Equal(t, 2, result.RecordsChanged) // 1 repo + 1 PR
+	assert.Equal(t, 2, result.RecordsChanged) //  repo + PR
 
 	repos, err := store.ListReposByOwner(context.Background(), "org1")
 	require.NoError(t, err)

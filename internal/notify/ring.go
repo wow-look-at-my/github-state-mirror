@@ -11,23 +11,18 @@ const (
 	OutcomeDelivered = "delivered"
 	// OutcomeFailed: every attempt failed (a terminal failure).
 	OutcomeFailed = "failed"
-	// OutcomeDisabled: a terminal failure that also tripped the auto-disable
-	// threshold.
+	// OutcomeDisabled: a terminal failure that also tripped auto-disable.
 	OutcomeDisabled = "disabled"
-	// OutcomeGated: the reveal gate blocked the notification (no public
-	// visibility and no live grant — or the gate could not decide, which
-	// fails closed).
+	// OutcomeGated: the reveal gate blocked the notification; see docs/notifications.md.
 	OutcomeGated = "gated"
 )
 
-// Attempt is one recorded delivery outcome for the admin view.
+// Attempt is recorded delivery outcome for the admin view.
 type Attempt struct {
 	At             string `json:"at"` // RFC3339Nano UTC
 	SubscriptionID string `json:"subscription_id"`
 	Principal      string `json:"principal"`
-	// PrincipalName is Principal's recorded display name. The notify package
-	// never sets it — the admin handler joins it from actor_identities when
-	// serving the activity view (display-only decoration).
+	// PrincipalName is joined in by the admin handler; see docs/notifications.md.
 	PrincipalName string `json:"principal_name,omitempty"`
 	Event         string `json:"event"`
 	Action        string `json:"action,omitempty"`
@@ -50,10 +45,7 @@ type Counters struct {
 // activityRingCap bounds the recent-attempts ring.
 const activityRingCap = 512
 
-// activityLog is the in-memory, bounded record of recent delivery attempts
-// plus cumulative counters — the requestLog stance: a live operational view,
-// not an audit log. Deliberately unpersisted (it resets on restart); methods
-// are safe for concurrent use and no-op on a nil receiver.
+// activityLog: a live operational view, not an audit log; see docs/notifications.md.
 type activityLog struct {
 	mu       sync.Mutex
 	counters Counters
@@ -87,8 +79,8 @@ func (l *activityLog) record(a Attempt) {
 	}
 }
 
-// snapshot returns the counters and up to limit recent attempts, newest
-// first. Nil-safe (returns zero values).
+// snapshot returns the counters and up to limit recent attempts, newest.
+// Nil-safe (returns values).
 func (l *activityLog) snapshot(limit int) (Counters, []Attempt) {
 	if l == nil {
 		return Counters{}, nil

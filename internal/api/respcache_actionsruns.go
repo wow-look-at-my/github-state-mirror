@@ -12,118 +12,126 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// This file implements the cached workflow-runs route (tier 2 of the cache
-// contract, like respcache.go):
-//
-//	GET /repos/{owner}/{repo}/actions/runs?head_sha=<sha>
-//
-// The per-sha runs listing is what both mirror-pointed consumers poll
-// (survey 2026-07-11): pr-minder's hasWorkflowRuns sends
-// `?head_sha=<hex>&per_page=1` and reads ONLY `total_count` (the zombie-PR
-// probe, repeated per bot PR by the reconcile hook's fleet sweep), and
-// required-builds' listWorkflowRuns pages `?head_sha=<hex>&per_page=100&
-// page=N` reading name/status/conclusion/html_url. Between CI events a sha's
-// listing is stable, so the whole trimmed page is snapshotted per exact
-// request (owner, repo, head_sha, per_page, page).
-//
-// head_sha is REQUIRED for a cacheable shape: an UNFILTERED runs listing
-// churns with every run anywhere in the repo and no consumer sends it, so it
-// is deliberately unmodeled (passthrough) rather than a cache row that would
-// be stale on arrival. Every other filter param (branch, event, status,
-// actor, created, exclude_pull_requests, ...) changes the body's contents
-// and passes through too. Deeper /actions/runs/{id}/... paths never reach
-// this route (the registration is the exact literal) and keep falling to the
-// NotFound passthrough.
-//
-// Staleness: run creation and state changes fire check_suite/check_run/
-// workflow_job events within seconds, and the round-2 dispatcher flushes the
-// sha's pages on all of them (workflow_job deliveries flush even when the
-// queued/waiting disposition drops them, since invalidation precedes the
-// disposition logic). Run DELETION emits no webhook at all, so a deleted
-// run's page can only age out via the 24h TTL -- acceptable because both
-// consumers fail safe on a stale answer (pr-minder's zombie revive is
-// additionally guarded by its commit-age deferral, and required-builds
-// re-aggregates on the next event). repository events flush repo-wide like
-// every response cache.
+// Implements the cached workflow-runs route (tier of the cache contract).
 
 const (
-	// workflowRunsCacheTTL bounds how long a stale runs page can be served.
-	// CI webhooks flush within seconds of any run change; the TTL is the
-	// backstop for the one signal GitHub never webhooks -- run DELETION --
-	// and for missed deliveries.
-	workflowRunsCacheTTL = 24 * time.Hour
+	// Backstop for run deletion (never webhooked) and missed deliveries.
+	workflowRunsCacheTTL = ghdata.WorkflowRunsCacheTTL
 
-	// workflowRunsDefaultPerPage is GitHub's default page size for the runs
-	// listing when the request does not send per_page.
+	// GitHub's default per_page for this listing.
 	workflowRunsDefaultPerPage = 30
 
-	// workflowRunsMaxCachedPage caps which pages are modeled. A sha rarely
-	// has more than a handful of runs; deeper pagination passes through.
+	// Caps modeled pages; deeper pagination passes through.
 	workflowRunsMaxCachedPage = 10
+
+	// Bounds the branch filter key; an unbounded key component is a cardinality footgun.
+	workflowRunsMaxBranchLen = 255
 )
 
+// Closed set for the status filter (it also matches conclusion); an unknown value passes through.
+var workflowRunStatuses = set.Of(
+	"completed", "action_required", "cancelled",
+	"failure", "neutral", "skipped", "stale",
+	"success", "timed_out", "in_progress", "queued",
+	"requested", "waiting", "pending",
+)
+
+// HeadSHA == "" selects the repo-wide listing (its own TTL and flush); otherwise Filters is the modeled-query key.
+type workflowRunsShape struct {
+	HeadSHA string
+	Status  string
+	Branch  string
+	Filters string
+	PerPage int
+	Page    int
+}
+
+// listing reports the repo-wide shape, rebuilt from truth; a per-commit sha is served from a snapshot instead.
+func (s workflowRunsShape) listing() bool { return s.HeadSHA == "" }
+
+// filter is this request expressed as a truth-table selection.
+func (s workflowRunsShape) filter() ghdata.WorkflowRunFilter {
+	return ghdata.WorkflowRunFilter{Status: s.Status, HeadBranch: s.Branch, HeadSHA: s.HeadSHA}
+}
+
 // parseWorkflowRunsShape reports the shape of an /actions/runs query and
-// whether the cache models it: head_sha REQUIRED (non-empty, a full hex
-// object id after lowercasing -- the returned value is the normalized form),
-// plus the standard per_page/page bounds. Unknown params, repeated params,
-// or an absent/malformed head_sha make it non-cacheable.
-func parseWorkflowRunsShape(q url.Values) (headSHA string, perPage, page int, ok bool) {
-	perPage, page = workflowRunsDefaultPerPage, 1
+// whether the cache models it. head_sha (a full hex object id, lowercased),
+// status (of GitHub's documented values), and branch (a bounded ref
+// name) are modeled, as are the standard per_page/page bounds; the modeled
+// filters are canonicalized into sorted, escaped key component. Unknown
+// params, repeated params, or a malformed value make it non-cacheable.
+func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
+	shape := workflowRunsShape{PerPage: workflowRunsDefaultPerPage, Page: 1}
+	filters := url.Values{}
 	for key, vals := range q {
 		if len(vals) != 1 {
-			return "", 0, 0, false
+			return workflowRunsShape{}, false
 		}
 		v := vals[0]
 		switch key {
 		case "head_sha":
-			headSHA = strings.ToLower(v)
-			if !isFullHexSHA(headSHA) {
-				return "", 0, 0, false
+			shape.HeadSHA = strings.ToLower(v)
+			if !isFullHexSHA(shape.HeadSHA) {
+				return workflowRunsShape{}, false
 			}
+		case "status":
+			if !workflowRunStatuses.Contains(v) {
+				return workflowRunsShape{}, false
+			}
+			shape.Status = v
+			filters.Set(key, v)
+		case "branch":
+			if v == "" || len(v) > workflowRunsMaxBranchLen || strings.ContainsFunc(v, isControlRune) {
+				return workflowRunsShape{}, false
+			}
+			shape.Branch = v
+			filters.Set(key, v)
 		case "per_page":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > 100 {
-				return "", 0, 0, false
+				return workflowRunsShape{}, false
 			}
-			perPage = n
+			shape.PerPage = n
 		case "page":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > workflowRunsMaxCachedPage {
-				return "", 0, 0, false
+				return workflowRunsShape{}, false
 			}
-			page = n
+			shape.Page = n
 		default:
-			return "", 0, 0, false
+			return workflowRunsShape{}, false
 		}
 	}
-	if headSHA == "" {
-		// No head_sha at all: the unfiltered listing, deliberately unmodeled
-		// (see the file comment).
-		return "", 0, 0, false
-	}
-	return headSHA, perPage, page, true
+	// Encode sorts by key, so the result does not depend on map or query order.
+	shape.Filters = filters.Encode()
+	return shape, true
 }
 
-// cachedWorkflowRuns serves one page of a sha's workflow-runs listing from a
-// stored whole-doc snapshot, fetching and absorbing on a miss. Shapes the
-// cache does not model pass through.
+// isControlRune rejects C0/DEL so a caller cannot smuggle control bytes into a cache key.
+func isControlRune(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// cachedWorkflowRuns serves page of a workflow-runs listing: the
+// repo-wide shape rebuilt from webhook-maintained truth rows, the per-commit
+// shape from a stored whole-doc snapshot. Both fetch and absorb on a miss;
+// shapes the cache does not model pass through.
 func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
 
 	if !acceptsDefaultJSON(r) {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassAccept)
 		return
 	}
-	headSHA, perPage, page, ok := parseWorkflowRunsShape(r.URL.Query())
+	shape, ok := parseWorkflowRunsShape(r.URL.Query())
 	if !ok {
-		h.ghProxy.ServeHTTP(w, r)
+		h.passthrough(w, r, PassQuery)
 		return
 	}
 
-	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindWorkflowRuns, owner+"/"+repo+"/actions/runs@"+headSHA); outcome {
+	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindWorkflowRuns, workflowRunsResourceKey(owner, repo, shape)); outcome {
 	case revealDenied:
 		h.serveDenyVerdict(w, r, verdict, cached)
 		return
@@ -133,8 +141,17 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	if doc, ok, err := h.store.GetCachedWorkflowRuns(r.Context(), owner, repo, headSHA, perPage, page, now); err != nil {
-		slog.Warn("workflow runs cache read failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
+
+	// HIT. The repo-wide listing is rebuilt from truth rows the dispatcher
+	// maintains per run; the per-commit shape reads its snapshot.
+	if shape.listing() {
+		if doc, ok := h.workflowRunsFromTruth(r, owner, repo, shape, now); ok {
+			h.reqlog.observe(r, DispHit)
+			writeRebuilt(w, http.StatusOK, doc, true)
+			return
+		}
+	} else if doc, ok, err := h.store.GetCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.PerPage, shape.Page, now); err != nil {
+		slog.Warn("workflow runs cache read failed", "owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "error", err)
 	} else if ok {
 		h.reqlog.observe(r, DispHit)
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
@@ -149,100 +166,199 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	doc, absorbed := absorbWorkflowRuns(resp.StatusCode, body)
+	parsed, absorbed := absorbWorkflowRuns(resp.StatusCode, body)
 	if overflow || !absorbed {
-		// Includes 404 and 5xx: relayed verbatim, never stored.
+		// Includes and 5xx: relayed verbatim, never stored.
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
-	if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, headSHA, perPage, page, doc, now, workflowRunsCacheTTL); err != nil {
-		slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", headSHA, "error", err)
+	doc, err := renderWorkflowRuns(parsed.TotalCount, parsed.items())
+	if err != nil {
+		h.replayUnstored(w, r, resp, body)
+		return
+	}
+
+	// Every listed run enters truth regardless of shape, keeping listing rows warm for free.
+	h.absorbWorkflowRunsIntoTruth(r, owner, repo, shape, parsed, now)
+	if !shape.listing() {
+		if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.PerPage, shape.Page, string(doc), now, workflowRunsCacheTTL); err != nil {
+			slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "error", err)
+		}
 	}
 	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
-	writeRebuilt(w, http.StatusOK, []byte(doc), false)
+	writeRebuilt(w, http.StatusOK, doc, false)
 }
 
-// workflowRunItemJSON is one trimmed entry of the workflow_runs array: the
-// state fields the consumers read (required-builds: name/status/conclusion/
-// html_url). name/conclusion/run_started_at are nullable and the keys are
-// always emitted, exactly as upstream; html_url is a PINNED consumer-read
-// exception to the no-URL doctrine (required-builds links the run's page
-// from its breakdown). Dropped: node_id, the head_branch/event/actor/
-// repository/head_commit objects, every other *_url, and the unbounded
-// pull_requests/referenced_workflows arrays.
-type workflowRunItemJSON struct {
-	ID           int64   `json:"id"`
-	Name         *string `json:"name"` // nullable (a run may have no name)
-	HeadSHA      string  `json:"head_sha"`
-	Status       string  `json:"status"`
-	Conclusion   *string `json:"conclusion"` // nullable until completed
-	HTMLURL      string  `json:"html_url"`   // pinned consumer-read exception
-	CreatedAt    string  `json:"created_at"`
-	UpdatedAt    string  `json:"updated_at"`
-	RunStartedAt *string `json:"run_started_at"` // nullable while queued
+// workflowRunsFromTruth rebuilds page only behind the completeness proof -- see docs/cache/rest-routes.md.
+func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, shape workflowRunsShape, now time.Time) ([]byte, bool) {
+	complete, err := h.store.WorkflowRunsListComplete(r.Context(), owner, repo, shape.Filters, now)
+	if err != nil {
+		slog.Warn("workflow runs completeness read failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
+		return nil, false
+	}
+	if !complete {
+		return nil, false
+	}
+	rows, total, err := h.store.ListWorkflowRuns(r.Context(), owner, repo, shape.filter(), shape.PerPage, shape.Page)
+	if err != nil {
+		slog.Warn("workflow runs listing read failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
+		return nil, false
+	}
+	items := make([]workflowRunItemJSON, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, workflowRunItemJSON{
+			ID: row.RunID, Name: nullIfEmpty(row.Name), HeadSHA: row.HeadSHA, Status: row.Status,
+			Conclusion: nullIfEmpty(row.Conclusion), HTMLURL: row.HTMLURL,
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+			RunStartedAt: nullIfEmpty(row.RunStartedAt),
+		})
+	}
+	doc, err := renderWorkflowRuns(total, items)
+	if err != nil {
+		slog.Warn("workflow runs listing render failed", "owner", owner, "repo", repo, "error", err)
+		return nil, false
+	}
+	return doc, true
 }
 
-// workflowRunsJSON is the trimmed rebuild of a runs listing: {total_count,
-// workflow_runs: [...]}. total_count is copied VERBATIM from upstream -- it
-// is GitHub's TOTAL matching-run count, NOT the page length (pr-minder's
-// hasWorkflowRuns sends per_page=1 and reads exactly this field as its
-// "does the sha have any runs?" answer).
-type workflowRunsJSON struct {
-	TotalCount   int64                 `json:"total_count"`
-	WorkflowRuns []workflowRunItemJSON `json:"workflow_runs"`
+// absorbWorkflowRunsIntoTruth records every listed run, and on a short page- answer marks the set complete -- see docs/cache/rest-routes.md.
+func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) {
+	ctx := r.Context()
+	for _, run := range parsed.Runs {
+		if err := h.store.ApplyWorkflowRun(ctx, run.truth(owner, repo), now); err != nil {
+			slog.Warn("workflow run absorb failed", "owner", owner, "repo", repo, "run", run.ID, "error", err)
+			return
+		}
+	}
+	if shape.Page != 1 || len(parsed.Runs) >= shape.PerPage {
+		return
+	}
+	kept := make([]int64, 0, len(parsed.Runs))
+	for _, run := range parsed.Runs {
+		kept = append(kept, run.ID)
+	}
+	if err := h.store.ReconcileWorkflowRuns(ctx, owner, repo, shape.filter(), kept); err != nil {
+		slog.Warn("workflow runs reconcile failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
+		return
+	}
+	if err := h.store.MarkWorkflowRunsListComplete(ctx, owner, repo, shape.Filters, now, ghdata.WorkflowRunsListTTL); err != nil {
+		slog.Warn("workflow runs completeness write failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
+	}
 }
 
-// absorbWorkflowRuns parses an /actions/runs 200 into the trimmed document
-// (rendered once here; hits serve the stored bytes). Reports false -- serve
+// nullIfEmpty renders "not reported" as upstream's JSON null, not a fabricated empty string.
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// workflowRunsResourceKey names the resource behind a runs request for the
+// reveal layer's deny cache. The shape is part of the key so a denial
+// recorded for query cannot be replayed for another.
+func workflowRunsResourceKey(owner, repo string, shape workflowRunsShape) string {
+	key := owner + "/" + repo + "/actions/runs@" + shape.HeadSHA
+	if shape.Filters != "" {
+		key += "?" + shape.Filters
+	}
+	return key
+}
+
+// workflowRunItemJSON is the trimmed workflow_runs entry consumers read.
+type (
+	workflowRunItemJSON = ghdata.StoredWorkflowRunItem
+	workflowRunsJSON    = ghdata.StoredWorkflowRunsPage
+)
+
+// parsedWorkflowRuns is absorbed answer: rebuild items plus truth-only fields (head_branch, run_attempt).
+type parsedWorkflowRuns struct {
+	TotalCount int64
+	Runs       []parsedWorkflowRun
+}
+
+// items is the response half: the trimmed entries, without the truth-only
+// fields.
+func (p parsedWorkflowRuns) items() []workflowRunItemJSON {
+	out := make([]workflowRunItemJSON, 0, len(p.Runs))
+	for _, run := range p.Runs {
+		out = append(out, run.workflowRunItemJSON)
+	}
+	return out
+}
+
+type parsedWorkflowRun struct {
+	workflowRunItemJSON
+	HeadBranch string
+	RunAttempt int64
+}
+
+// truth converts an absorbed run into its global-truth row. A REST answer
+// carries the run's own status and conclusion, so it is an authoritative
+// writer -- unlike a workflow_job delivery, which may only raise a floor.
+func (p parsedWorkflowRun) truth(owner, repo string) ghdata.WorkflowRun {
+	return ghdata.WorkflowRun{
+		Owner: owner, Repo: repo, RunID: p.ID, RunAttempt: p.RunAttempt,
+		Name: derefOrEmpty(p.Name), HeadSHA: p.HeadSHA, HeadBranch: p.HeadBranch,
+		Status: p.Status, Conclusion: derefOrEmpty(p.Conclusion), HTMLURL: p.HTMLURL,
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+		RunStartedAt: derefOrEmpty(p.RunStartedAt),
+	}
+}
+
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// renderWorkflowRuns marshals the trimmed runs document. Both sources go
+// through it -- an absorbed upstream answer and a rebuild from truth rows --
+// so a hit and a miss cannot drift apart in shape.
+func renderWorkflowRuns(total int64, items []workflowRunItemJSON) ([]byte, error) {
+	if items == nil {
+		items = []workflowRunItemJSON{}
+	}
+	return marshalTrimmed(workflowRunsJSON{TotalCount: total, WorkflowRuns: items})
+}
+
+// absorbWorkflowRuns parses an /actions/runs. Reports false -- serve
 // verbatim, store nothing -- for any other status or any shape the model
 // cannot hold: total_count and the workflow_runs array must both be PRESENT,
 // and every run must carry a positive id, a status, and a full-hex head sha.
-// An empty workflow_runs with total_count 0 is a valid, cacheable answer
+// An empty workflow_runs with total_count is a valid, cacheable answer
 // (exactly the "no runs yet" verdict the zombie probe is after).
-func absorbWorkflowRuns(status int, body []byte) (string, bool) {
+func absorbWorkflowRuns(status int, body []byte) (parsedWorkflowRuns, bool) {
 	if status != http.StatusOK {
-		return "", false
+		return parsedWorkflowRuns{}, false
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return "", false
+		return parsedWorkflowRuns{}, false
 	}
 	var raw struct {
-		TotalCount   *int64 `json:"total_count"`
-		WorkflowRuns *[]struct {
-			ID           int64   `json:"id"`
-			Name         *string `json:"name"`
-			HeadSHA      string  `json:"head_sha"`
-			Status       string  `json:"status"`
-			Conclusion   *string `json:"conclusion"`
-			HTMLURL      string  `json:"html_url"`
-			CreatedAt    string  `json:"created_at"`
-			UpdatedAt    string  `json:"updated_at"`
-			RunStartedAt *string `json:"run_started_at"`
-		} `json:"workflow_runs"`
+		TotalCount   *int64                   `json:"total_count"`
+		WorkflowRuns *[]ghdata.RawWorkflowRun `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(trimmed, &raw); err != nil || raw.TotalCount == nil || raw.WorkflowRuns == nil {
-		return "", false
+		return parsedWorkflowRuns{}, false
 	}
-	doc := workflowRunsJSON{
-		TotalCount:   *raw.TotalCount,
-		WorkflowRuns: make([]workflowRunItemJSON, 0, len(*raw.WorkflowRuns)),
+	out := parsedWorkflowRuns{
+		TotalCount: *raw.TotalCount,
+		Runs:       make([]parsedWorkflowRun, 0, len(*raw.WorkflowRuns)),
 	}
 	for _, run := range *raw.WorkflowRuns {
-		sha := strings.ToLower(run.HeadSHA)
-		if run.ID <= 0 || run.Status == "" || !isFullHexSHA(sha) {
-			return "", false
+		item, ok := ghdata.TrimWorkflowRunItem(run)
+		if !ok {
+			return parsedWorkflowRuns{}, false
 		}
-		doc.WorkflowRuns = append(doc.WorkflowRuns, workflowRunItemJSON{
-			ID: run.ID, Name: run.Name, HeadSHA: sha, Status: run.Status,
-			Conclusion: run.Conclusion, HTMLURL: run.HTMLURL,
-			CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, RunStartedAt: run.RunStartedAt,
+		out.Runs = append(out.Runs, parsedWorkflowRun{
+			workflowRunItemJSON: item,
+			HeadBranch:          derefOrEmpty(run.HeadBranch),
+			RunAttempt:          run.RunAttempt,
 		})
 	}
-	rendered, err := marshalTrimmed(doc)
-	if err != nil {
-		return "", false
-	}
-	return string(rendered), true
+	return out, true
 }

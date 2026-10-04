@@ -15,7 +15,7 @@ import (
 )
 
 // The list-tier stale-sha gate: the single-PR route refuses to serve a row
-// whose merge_commit_sha is the push-invalidated one (PRMergeShaStale, belt
+// whose merge_commit_sha is the push-invalidated (PRMergeShaStale, belt
 // and braces behind the guarded writes); the list rebuild must apply the
 // same belt -- a provably-stale sha renders as null in list items instead of
 // being served.
@@ -44,7 +44,7 @@ func TestPullsList_GatesPushInvalidatedMergeSha(t *testing.T) {
 	require.NoError(t, store.AbsorbPullsList(ctx, "org1", "repo1",
 		[]dbgen.PullRequest{pr}, nil, true, now, now, time.Hour))
 	// The belt case the guarded writes never produce: force the row's OWN
-	// sha to be the live-marked stale one (direct SQL, like a row written
+	// sha to be the live-marked stale (direct SQL, like a row written
 	// before the guard existed or by a raced writer).
 	_, err := db.ExecContext(ctx, `UPDATE pull_requests
 		SET merge_stale_sha = ?, merge_stale_at = ?

@@ -12,14 +12,28 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
+	"github.com/wow-look-at-my/go-containers/set"
 )
+
+// commitCIKinds is every kind commit_ci_cache stores, so a test can assert on
+// what a delivery leaves ALONE as precisely as on what it drops.
+var commitCIKinds = []string{
+	ghdata.CommitCIKindStatus,
+	ghdata.CommitCIKindCheckRuns,
+	ghdata.CommitCIKindStatusesList,
+}
 
 // TestDispatch_CIEventsFlushCommitCICache: status, check_run, and check_suite
 // events flush the commit-CI snapshots for exactly the ref spellings the
 // payload names -- the head branch(es) plus the sha itself -- while a ref the
-// payload does NOT name, and another repo's snapshots, survive (round 2's
+// payload does NOT name, and another repo's snapshots, survive (round 's
 // per-ref grain). A push with no usable ref and a repository event keep the
 // conservative repo-wide flush.
+//
+// Within a named ref the grain is the KIND. The surfaces are disjoint
+// upstream -- a status never appears in a check-runs listing and a check run
+// never appears in a commit's statuses -- so a delivery that flushed all
+// was re-fetching answers it could not have changed.
 func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -28,7 +42,7 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	seedRef := func(repo, ref string) {
 		t.Helper()
-		for _, kind := range []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindCheckRuns} {
+		for _, kind := range commitCIKinds {
 			require.NoError(t, store.PutCachedCommitCI(ctx, ghdata.CachedCommitCI{
 				Owner: "org1", Repo: repo, Ref: ref, Kind: kind,
 				Doc: `{"seeded":true}`,
@@ -47,28 +61,52 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 
 	// The CI events name refs: both named spellings (branch + sha) flush,
 	// the unnamed ref survives.
-	for _, tc := range []struct{ event, body string }{
-		{"status", `{"sha":"` + sha + `","state":"success","context":"ci/build",
-			"branches":[{"name":"main"}],
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
-		{"check_run", `{"action":"completed",
-			"check_run":{"head_sha":"` + sha + `","status":"completed","conclusion":"success","name":"build",
-				"check_suite":{"head_branch":"main"}},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
-		{"check_suite", `{"action":"completed",
-			"check_suite":{"head_sha":"` + sha + `","head_branch":"main","status":"completed","conclusion":"success"},
-			"repository":{"name":"repo1","owner":{"login":"org1"}}}`},
+	for _, tc := range []struct {
+		event string
+		moves []string // the kinds this delivery can have changed
+		body  json.RawMessage
+	}{
+		{"status", []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindStatusesList}, mustJSON(t, map[string]any{
+			"sha": sha, "state": "success", "context": "ci/build",
+			"branches":   []any{map[string]any{"name": "main"}},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
+		{"check_run", []string{ghdata.CommitCIKindCheckRuns}, mustJSON(t, map[string]any{
+			"action": "completed",
+			"check_run": map[string]any{
+				"head_sha": sha, "status": "completed", "conclusion": "success", "name": "build",
+				"check_suite": map[string]any{"head_branch": "main"},
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
+		{"check_suite", []string{ghdata.CommitCIKindCheckRuns}, mustJSON(t, map[string]any{
+			"action": "completed",
+			"check_suite": map[string]any{
+				"head_sha": sha, "head_branch": "main", "status": "completed", "conclusion": "success",
+			},
+			"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+		})},
 	} {
 		seedRef("repo1", "main")
 		seedRef("repo1", sha)
 		seedRef("repo1", "claude/dev")
 		seedRef("other-repo", "main")
-		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, []byte(tc.body)))
-		for _, kind := range []string{ghdata.CommitCIKindStatus, ghdata.CommitCIKindCheckRuns} {
+		dispatcher.Dispatch(ctx, webhook.ParseEvent(tc.event, tc.body))
+		moves := set.Of(tc.moves...)
+		for _, kind := range commitCIKinds {
+			if !moves.Contains(kind) {
+				assert.True(t, serves("repo1", "main", kind),
+					"a %s event cannot change %s answers and must leave them served", tc.event, kind)
+				assert.True(t, serves("repo1", sha, kind),
+					"a %s event cannot change %s answers and must leave them served", tc.event, kind)
+				continue
+			}
 			assert.False(t, serves("repo1", "main", kind),
 				"a %s event must flush the named branch's %s snapshots", tc.event, kind)
 			assert.False(t, serves("repo1", sha, kind),
 				"a %s event must flush the sha spelling's %s snapshots", tc.event, kind)
+		}
+		for _, kind := range commitCIKinds {
 			assert.True(t, serves("repo1", "claude/dev", kind),
 				"a %s event must leave an unnamed ref's %s snapshots intact", tc.event, kind)
 			assert.True(t, serves("other-repo", "main", kind),
@@ -96,13 +134,60 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	}
 }
 
+// A finishing CI run must not cost the commit its cached page. The last
+// deliveries of a run create a job and start a queued job, and dropping the
+// row for either sends the next reader to GitHub inside the window where
+// GitHub's own listing is furthest behind those deliveries -- so the refetch
+// stores a view older than the payloads already in hand, and a finished CI
+// sends nothing further to correct it. That is how an `all-builds` gate read
+// a finished job as in_progress for a day.
+func TestDispatch_CheckRunCreated_JoinsThePageInsteadOfFlushingIt(t *testing.T) {
+	dispatcher, _, _, store := setupDispatcher(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	started := "2026-07-01T10:00:00Z"
+	seed, err := ghdata.MarshalCacheDoc(ghdata.StoredCheckRunsPage{
+		TotalCount: 1,
+		CheckRuns: []ghdata.StoredCheckRun{
+			{ID: 100, HeadSHA: sha, Name: "build", Status: "completed", StartedAt: &started},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.PutCachedCommitCI(ctx, ghdata.CachedCommitCI{
+		Owner: "org1", Repo: "repo1", Ref: sha, Kind: ghdata.CommitCIKindCheckRuns, Status: 200, Doc: string(seed),
+	}, 30, 1, now, time.Hour))
+
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
+		"action": "created",
+		"check_run": map[string]any{
+			"id": 300, "head_sha": sha, "status": "queued", "name": "publish",
+			"check_suite": map[string]any{"head_branch": "main"},
+		},
+		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})))
+
+	got, ok, err := store.GetCachedCommitCI(ctx, "org1", "repo1", sha, ghdata.CommitCIKindCheckRuns, 30, 1, now)
+	require.NoError(t, err)
+	require.True(t, ok, "the page must survive a new job's creation -- the flush is what a stale refetch then fills")
+
+	var page ghdata.StoredCheckRunsPage
+	require.NoError(t, json.Unmarshal([]byte(got.Doc), &page))
+	require.Len(t, page.CheckRuns, 2)
+	assert.Equal(t, int64(300), page.CheckRuns[0].ID, "the newest id heads the id-descending listing")
+	assert.Equal(t, "publish", page.CheckRuns[0].Name)
+	assert.Equal(t, int64(100), page.CheckRuns[1].ID, "the job already there keeps its place and its state")
+	assert.Equal(t, "completed", page.CheckRuns[1].Status)
+}
+
 // TestDispatch_CheckSuite_PendingIgnored: a non-completed check_suite delivery
 // must record NO commit_checks row. GitHub auto-creates a suite per sha for
 // every app with checks:write, and an app that runs no checks leaves its empty
 // suite queued forever -- the PENDING row such a delivery used to mint was a
 // permanent ghost no event ever cleared, pinning the low-water-mark rollup at
 // PENDING and re-poisoning last_commit_status on every PR upsert (the
-// 2026-07-20 report's live-minting rollup cluster). The delivery reports
+// -- report's live-minting rollup cluster). The delivery reports
 // ignored while the response-cache flush still runs (invalidation precedes
 // the disposition logic -- the queued-workflow_job precedent). Completed
 // suites, and PENDING check_run/status events (which DO carry real pending
@@ -176,16 +261,20 @@ func TestDispatch_CheckSuite_PendingIgnored(t *testing.T) {
 
 	// A PENDING check_run still applies -- real pending state rides run events,
 	// which is exactly why dropping pending SUITES loses nothing.
-	res := dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", []byte(`{"action":"created",
-		"check_run":{"head_sha":"`+sha+`","status":"queued","name":"build","check_suite":{"head_branch":"main"}},
-		"repository":{"name":"my-repo","owner":{"login":"my-org"}}}`)))
+	res := dispatcher.Dispatch(ctx, webhook.ParseEvent("check_run", mustJSON(t, map[string]any{
+		"action": "created",
+		"check_run": map[string]any{
+			"head_sha": sha, "status": "queued", "name": "build",
+			"check_suite": map[string]any{"head_branch": "main"},
+		},
+		"repository": map[string]any{"name": "my-repo", "owner": map[string]any{"login": "my-org"}},
+	})))
 	assert.Equal(t, webhook.DispApplied, res.Disposition, "a queued check_run is real pending state and must apply")
 	pr, err := store.GetPullRequest(ctx, "my-org", "my-repo", 7)
 	require.NoError(t, err)
 	assert.Equal(t, "PENDING", pr.LastCommitStatus.String)
 
-	// A COMPLETED suite with a real conclusion applies exactly as before --
-	// and its terminal state wins the rollup over the queued run.
+	// A COMPLETED suite with a real conclusion applies, and its terminal state wins the rollup over the queued run.
 	res = dispatcher.Dispatch(ctx, webhook.ParseEvent("check_suite", suite("completed", "completed", "failure")))
 	assert.Equal(t, webhook.DispApplied, res.Disposition)
 	states, err := store.CommitCheckStates(ctx, "my-org", "my-repo", sha)

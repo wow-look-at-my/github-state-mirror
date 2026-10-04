@@ -1,11 +1,9 @@
 // Canned data for the standalone styling preview ONLY. Compiled by `npm run
-// build` (tsc) to ../assets/demo-data.js. The production site never loads this
-// file; the CI preview bundle injects a <script> tag for it so app.js renders
-// these payloads instead of calling the backend. Edit this .ts, not the .js.
+// build` (tsc) to ../assets/demo-data.js.
 
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
-    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, DemoConfig,
+    ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, LatencyResponse, DemoConfig,
     TimelineEvent, TimelineResponse,
 } from "./types";
 
@@ -17,7 +15,7 @@ function inFuture(seconds: number): string {
     return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-// The one global truth store's row counts (same numbers on every view).
+// The global truth store's row counts (same numbers on every view).
 const globalTotals: Counts = {
     repos: 55, pull_requests: 119, commit_checks: 471, contents: 38, git_commits: 204, grants: 61,
 };
@@ -104,12 +102,41 @@ const demoWebhooks: WebhooksResponse = {
         { delivery_id: "d607e048-6ce9-11f1-9529-df37c1489e44", event_type: "repository", action: "renamed", repo: "wow-look-at-my/old-name", received_at: ago(40), disposition: "applied", detail: "renamed to wow-look-at-my/new-name" },
         { delivery_id: "d4e4e508-6ce9-11f1-9233-8efd5d462518", event_type: "push", action: "", repo: "wow-look-at-my/buildhost", received_at: ago(62), disposition: "applied", detail: "updated pushed_at; un-resolved mergeable on branch master" },
     ],
+    // Ordering: mostly in order, a few older than a view already applied and
+    // refused. Out-of-order deliveries are a steady trickle, not an incident.
+    ordering: {
+        ordered: 1731,
+        superseded: 14,
+        unorderable: 62,
+        failed: 0,
+        superseded_within_grace: 9,
+        superseded_beyond_grace: 5,
+        grace_seconds: 10,
+        worst_lateness_seconds: 214,
+        mean_lateness_seconds: 27.5,
+        by_event: { pull_request: 8, status: 4, push: 2 },
+        recent: [
+            {
+                at: ago(7), event_type: "pull_request", action: "synchronize", repo: "wow-look-at-my/buildhost",
+                subject: "pr:wow-look-at-my/buildhost#318", delivery_id: "c1a0e2f4-6ce9-11f1-9454-861fa0b5e50d",
+                superseded_by: "ddfad8a0-6ce9-11f1-9454-861fa0b5e50d", lateness_seconds: 214, still_absorbed: false,
+                clock_field: "pull_request.updated_at", event_time: ago(221), watermark_time: ago(7),
+            },
+            {
+                at: ago(63), event_type: "push", action: "", repo: "wow-look-at-my/actions",
+                subject: "ref:wow-look-at-my/actions:refs/heads/master", delivery_id: "b2f1d3a6-6ce9-11f1-830a-4240fdd66fd2",
+                superseded_by: "d4e4e508-6ce9-11f1-9233-8efd5d462518", lateness_seconds: 4, still_absorbed: true,
+                clock_field: "repository.pushed_at", event_time: ago(67), watermark_time: ago(63),
+            },
+        ],
+    },
 };
 
-// --- request activity log (admin "Requests" tab) ---
-// The route-shape groups sum exactly to by_disposition (hit 1503, miss 71,
-// passthrough 226, write 38, error 4 -> total 1842), sorted by total desc like
-// the backend, so the preview's share percentages are coherent.
+// --- request activity log (admin "Requests" tab) --- Keep every route and
+// every pass_query shape REAL — a shape some consumer sends. Invented ones
+// read as genuine caching gaps to anyone looking at the preview: a fabricated
+// `/commits?author,since` here already cost a real investigation into a
+// filter no caller has ever sent.
 const demoRequests: RequestsResponse = {
     total: 1842,
     by_disposition: { hit: 1503, miss: 71, passthrough: 226, write: 38, error: 4 },
@@ -119,12 +146,12 @@ const demoRequests: RequestsResponse = {
     groups: [
         { key: "POST /graphql", method: "POST", route: "/graphql", total: 1146, hit: 1103, miss: 41, passthrough: 0, write: 0, error: 2, sample: "/graphql", last_seen: ago(2) },
         { key: "GET /repos/{owner}/{repo}/pulls/{number}", method: "GET", route: "/repos/{owner}/{repo}/pulls/{number}", total: 248, hit: 236, miss: 12, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318", last_seen: ago(3) },
-        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
-        { key: "GET /repos/{owner}/{repo}/commits", method: "GET", route: "/repos/{owner}/{repo}/commits", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, sample: "/repos/wow-look-at-my/actions/commits", last_seen: ago(31) },
-        { key: "GET /search/issues", method: "GET", route: "/search/issues", total: 58, hit: 0, miss: 0, passthrough: 58, write: 0, error: 0, sample: "/search/issues", last_seen: ago(6) },
+        { key: "GET /repos/{owner}/{repo}/compare/{basehead}", method: "GET", route: "/repos/{owner}/{repo}/compare/{basehead}", total: 149, hit: 102, miss: 9, passthrough: 38, write: 0, error: 0, by_reason: { "unmodeled-path": 38 }, sample: "/repos/wow-look-at-my/buildhost/compare/main...release", last_seen: ago(4) },
+        { key: "GET /repos/{owner}/{repo}/actions/runs", method: "GET", route: "/repos/{owner}/{repo}/actions/runs", total: 66, hit: 0, miss: 0, passthrough: 64, write: 0, error: 2, by_reason: { "unmodeled-query": 64 }, pass_query: "per_page,status", debounced: 64, upstream_saved: 41, sample: "/repos/wow-look-at-my/actions/actions/runs", last_seen: ago(31) },
+        { key: "GET /search/issues", method: "GET", route: "/search/issues", total: 58, hit: 0, miss: 0, passthrough: 58, write: 0, error: 0, by_reason: { "unrouted": 58 }, pass_query: "per_page,q", debounced: 58, upstream_saved: 0, sample: "/search/issues", last_seen: ago(6) },
         { key: "GET /repos/{owner}/{repo}/commits/{ref}/status", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/status", total: 49, hit: 44, miss: 5, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/master/status", last_seen: ago(12) },
-        { key: "GET /rate_limit", method: "GET", route: "/rate_limit", total: 41, hit: 0, miss: 0, passthrough: 41, write: 0, error: 0, sample: "/rate_limit", last_seen: ago(14) },
-        { key: "GET /repos/{owner}/{repo}/git/refs/heads/…", method: "GET", route: "/repos/{owner}/{repo}/git/refs/heads/…", total: 25, hit: 0, miss: 0, passthrough: 25, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/git/refs/heads/oci-cache", last_seen: ago(65) },
+        { key: "GET /rate_limit", method: "GET", route: "/rate_limit", total: 41, hit: 0, miss: 0, passthrough: 41, write: 0, error: 0, by_reason: { "unrouted": 41 }, sample: "/rate_limit", last_seen: ago(14) },
+        { key: "GET /repos/{owner}/{repo}/git/refs/heads/…", method: "GET", route: "/repos/{owner}/{repo}/git/refs/heads/…", total: 25, hit: 0, miss: 0, passthrough: 25, write: 0, error: 0, by_reason: { "unrouted": 25 }, sample: "/repos/wow-look-at-my/buildhost/git/refs/heads/oci-cache", last_seen: ago(65) },
         { key: "GET /repos/{owner}/{repo}/commits/{ref}/check-runs", method: "GET", route: "/repos/{owner}/{repo}/commits/{ref}/check-runs", total: 22, hit: 18, miss: 4, passthrough: 0, write: 0, error: 0, sample: "/repos/wow-look-at-my/buildhost/commits/9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b9f3c1a2b/check-runs", last_seen: ago(13) },
         { key: "PATCH /repos/{owner}/{repo}/pulls/{number}", method: "PATCH", route: "/repos/{owner}/{repo}/pulls/{number}", total: 21, hit: 0, miss: 0, passthrough: 0, write: 21, error: 0, sample: "/repos/wow-look-at-my/actions/pulls/92", last_seen: ago(20) },
         { key: "PUT /repos/{owner}/{repo}/pulls/{number}/update-branch", method: "PUT", route: "/repos/{owner}/{repo}/pulls/{number}/update-branch", total: 17, hit: 0, miss: 0, passthrough: 0, write: 17, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", last_seen: ago(24) },
@@ -132,12 +159,11 @@ const demoRequests: RequestsResponse = {
     recent: [
         { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },
-        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, at: ago(4) },
+        { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, reason: "unmodeled-query", at: ago(4) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/search/issues", disposition: "passthrough", status: 422, at: ago(6) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "miss", at: ago(9) },
         { actor: "user:583231", actor_name: "octocat", method: "GET", path: "/rate_limit", disposition: "passthrough", status: 200, at: ago(14) },
-        // Unresolved caller: a non-user token's fingerprint label has no name,
-        // so the Caller column falls back to the bare key.
+        // Unresolved caller: a non-user token's fingerprint label has no name, so the Caller column falls back to the bare key.
         { actor: "token:00ff11ee22dd", method: "GET", path: "/repos/wow-look-at-my/buildhost/branches", disposition: "passthrough", status: 200, at: ago(17) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
@@ -166,9 +192,7 @@ function demoTimelineEvents(): TimelineEvent[] {
             actor: actor ?? (actorName ? "app:3433933" : "token:00ff11ee22dd"), actor_name: actorName,
         });
     };
-    // Webhook pips across three event-type lanes — plus a rejected delivery
-    // on the fixed unverified lane (bad signature; claimed type is untrusted
-    // tooltip detail only).
+    // Webhook pips across event-type lanes — plus a rejected delivery on the fixed unverified lane.
     wh(3480, 12, "push", "", "wow-look-at-my/buildhost");
     wh(3100, 9, "check_run", "completed", "wow-look-at-my/buildhost");
     wh(2900, 21, "pull_request", "synchronize", "wow-look-at-my/buildhost");
@@ -183,7 +207,6 @@ function demoTimelineEvents(): TimelineEvent[] {
         id: ++id, kind: "webhook", lane: "⇐ (unverified)", start: ago(1450), dur_ms: 2,
         disposition: "unverified", detail: "claimed event: push",
     });
-    // Inbound request spans (one failed 502, plus sub-ms cache hits).
     rq(3300, 640, "GET", "/repos/{owner}/{repo}/compare/{basehead}", 200, "passthrough", "pr-minder");
     rq(2700, 410, "POST", "/graphql", 200, "miss", "pr-minder");
     rq(2200, 980, "GET", "/repos/{owner}/{repo}/pulls", 200, "miss", "pr-minder");
@@ -225,17 +248,30 @@ const demoTimeline: TimelineResponse = {
     now: ago(0),
 };
 
-// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus
-// --- passively observed X-RateLimit-* readings per (identity, resource) ---
+// --- Latency tab: bounds match internal/latency.Bounds (ms).
+const latBounds = [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
+const latKind = (kind: string, buckets: number[], p50: number, p95: number, p99: number, max: number) => {
+    const count = buckets.reduce((a, b) => a + b, 0);
+    return { kind, count, mean_ms: p50 * 1.4, p50_ms: p50, p95_ms: p95, p99_ms: p99, max_ms: max, buckets };
+};
+const demoLatency: LatencyResponse = {
+    since: ago(3 * 3600),
+    bounds_ms: latBounds,
+    webhook_timeout_ms: 10000,
+    kinds: [
+        latKind("db.begin", [5200, 310, 120, 60, 22, 14, 9, 6, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0], 0.1, 0.5, 5, 480),
+        latKind("db.commit", [0, 800, 3100, 1300, 420, 80, 12, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.5, 2.5, 5, 21),
+        latKind("db.exec", [9100, 6400, 2100, 700, 180, 60, 22, 9, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 88),
+        latKind("db.query", [14000, 8200, 3900, 1600, 520, 140, 40, 11, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.25, 1, 2.5, 46),
+        latKind("webhook.handle", [0, 0, 0, 12, 180, 640, 410, 220, 90, 44, 21, 9, 4, 2, 1, 1, 3, 0], 5, 50, 500, 12400),
+    ],
+};
+
+// --- GitHub rate limit (admin "Rate limit" tab): the App's live poll plus --- passively observed X-RateLimit-* readings.
 const resetIn = (secs: number): number => Math.floor(Date.now() / 1000) + secs;
 const demoRateLimit: RateLimitResponse = {
     live: [
         {
-            // A realistic full bucket set — GitHub's /rate_limit returns ~15
-            // resources for an App — including the long names that used to
-            // break the tile layout, plus buckets in the warn (≥70% used,
-            // yellow) and critical (≥90% used, red) bands so the preview
-            // demonstrates every meter state.
             installation: "wow-look-at-my", account_type: "Organization",
             resources: {
                 core: { limit: 15000, remaining: 14231, used: 769, reset: resetIn(2520) },
@@ -244,14 +280,14 @@ const demoRateLimit: RateLimitResponse = {
                 // Long resource names (real GitHub /rate_limit fields) that used to
                 // force the "X / Y left" count to wrap word-by-word in the card.
                 code_scanning_upload: { limit: 1000, remaining: 1000, used: 0, reset: resetIn(3540) },
-                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3600) },
+                actions_runner_registration: { limit: 10000, remaining: 10000, used: 0, reset: resetIn(3540) },
                 audit_log: { limit: 1750, remaining: 1737, used: 13, reset: resetIn(2942) },
                 audit_log_streaming: { limit: 15, remaining: 15, used: 0, reset: resetIn(3600) },
                 code_scanning_autofix: { limit: 10, remaining: 1, used: 9, reset: resetIn(48) },
                 code_search: { limit: 10, remaining: 2, used: 8, reset: resetIn(37) },
                 copilot_usage_records: { limit: 1750, remaining: 1750, used: 0, reset: resetIn(3600) },
                 dependency_sbom: { limit: 100, remaining: 96, used: 4, reset: resetIn(1210) },
-                dependency_snapshots: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
+                dependency_snapshots: { limit: 100, remaining: 94, used: 6, reset: resetIn(1800) },
                 integration_manifest: { limit: 5000, remaining: 5000, used: 0, reset: resetIn(3600) },
                 scim: { limit: 15000, remaining: 15000, used: 0, reset: resetIn(3600) },
                 source_import: { limit: 100, remaining: 100, used: 0, reset: resetIn(60) },
@@ -267,21 +303,13 @@ const demoRateLimit: RateLimitResponse = {
     ],
     observed: [
         // Sorted by identity then resource, matching the backend's snapshot.
-        // Resolved identities carry a display name; the token fingerprint and
-        // app-jwt rows stay nameless to demo the bare-key fallback.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "core", limit: 15000, remaining: 14980, used: 20, reset: resetIn(3300), observed_at: ago(300) },
-        // Zero-usage reading (nothing consumed this window, e.g. only 304s) —
-        // hidden by the client-side used > 0 filter, so the preview exercises it.
         { identity: "app-installation:481", name: "wow-look-at-my", resource: "graphql", limit: 12500, remaining: 12500, used: 0, reset: resetIn(3300), observed_at: ago(300) },
         { identity: "app-jwt", resource: "core", limit: 15000, remaining: 14999, used: 1, reset: resetIn(3400), observed_at: ago(75) },
         { identity: "app:3433933", name: "pr-minder", resource: "core", limit: 15000, remaining: 13890, used: 1110, reset: resetIn(2520), observed_at: ago(12) },
         { identity: "app:3433933", name: "pr-minder", resource: "graphql", limit: 5000, remaining: 4990, used: 10, reset: resetIn(540), observed_at: ago(95) },
         { identity: "token:00ff11ee22dd", resource: "core", limit: 60, remaining: 5, used: 55, reset: resetIn(900), observed_at: ago(600) },
-        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an
-        // identity that stopped calling). The server ages these out lazily, so
-        // the live dashboard should never show one; the backend-free preview
-        // keeps it visible to exercise the honest stale rendering
-        // ("reset 23h ago · stale", never "resets now").
+        // A dead observation — reset ~23h in the PAST, last seen ~24h ago (an identity that stopped calling).
         { identity: "token:44aa55bb66cc", resource: "core", limit: 5000, remaining: 4880, used: 120, reset: resetIn(-82800), observed_at: ago(86100) },
         { identity: "user:583231", name: "octocat", resource: "core", limit: 5000, remaining: 4300, used: 700, reset: resetIn(1800), observed_at: ago(30) },
     ],
@@ -407,6 +435,7 @@ const config: DemoConfig = {
             webhooks: demoWebhooks,
             timeline: demoTimeline,
             ratelimit: demoRateLimit,
+            latency: demoLatency,
             browse: demoBrowse,
             grants: adminGrants,
             check: demoCheck,

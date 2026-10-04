@@ -1,7 +1,9 @@
 // Package auth implements GitHub OAuth login and signed-cookie sessions for the
-// web dashboard. It is deliberately self-contained (stdlib only) and knows
-// nothing about the cache: it answers "who is this browser?" and "is this login
-// an admin?", and leaves all cache access to the caller.
+// web dashboard. It knows nothing about the cache: it answers "who is this
+// browser?" and "is this login an admin?", and leaves all cache access to the
+// caller. Its only non-stdlib import is internal/httpobs, itself a stdlib leaf,
+// so the GitHub calls a sign-in makes reach the dashboard's chart like
+// every other request this service sends.
 //
 // The dashboard's authorization model is distinct from the data API's. The data
 // API isolates by an opaque token fingerprint (see internal/api/router.go); the
@@ -24,6 +26,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/wow-look-at-my/github-state-mirror/internal/httpobs"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 const (
@@ -41,7 +46,7 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	SessionKey   []byte          // HMAC key for signing session cookies
-	AdminLogins  map[string]bool // logins granted the all-scopes admin view
+	AdminLogins  set.Set[string] // logins granted the all-scopes admin view
 
 	// Endpoints (defaults applied in New when empty).
 	AuthorizeURL string // GitHub OAuth authorize endpoint
@@ -49,6 +54,9 @@ type Config struct {
 	APIBaseURL   string // GitHub REST API base (for GET /user)
 
 	HTTPClient *http.Client
+
+	// Observer charts the GitHub calls a sign-in makes; applied to the default client only.
+	Observer httpobs.Observer
 }
 
 // Service performs the OAuth handshake and signs/verifies session cookies.
@@ -68,12 +76,9 @@ func New(cfg Config) *Service {
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.github.com"
 	}
-	if cfg.AdminLogins == nil {
-		cfg.AdminLogins = map[string]bool{}
-	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = httpobs.Client(15*time.Second, cfg.Observer)
 	}
 	return &Service{cfg: cfg, client: client}
 }
@@ -84,10 +89,9 @@ func (s *Service) Configured() bool {
 	return s.cfg.ClientID != "" && s.cfg.ClientSecret != ""
 }
 
-// IsAdmin reports whether the login may view all cache scopes. Matching is
-// case-insensitive; AdminLogins is expected to hold lowercased logins.
+// IsAdmin matches case-insensitively; AdminLogins is expected to hold lowercased logins.
 func (s *Service) IsAdmin(login string) bool {
-	return s.cfg.AdminLogins[strings.ToLower(login)]
+	return s.cfg.AdminLogins.Contains(strings.ToLower(login))
 }
 
 // AuthCodeURL builds the GitHub authorize URL for the given redirect URI and
