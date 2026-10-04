@@ -23,7 +23,7 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	rows, err := s.q.ListWorkflowJobsCacheForRun(ctx, dbgen.ListWorkflowJobsCacheForRunParams{
+	rows, err := s.qx(ctx).ListWorkflowJobsCacheForRun(ctx, dbgen.ListWorkflowJobsCacheForRunParams{
 		Owner: ownerKey, Repo: repoKey, RunID: runID,
 	})
 	if err != nil {
@@ -38,7 +38,7 @@ func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID 
 		patched, liveness, ok := patchWorkflowJobsDoc(row.Kind, row.Doc, job)
 		if !ok {
 			// A page that does not list the job means the run gained; only a fetch can settle membership.
-			if derr := s.q.DeleteWorkflowJobsCacheForRun(ctx, dbgen.DeleteWorkflowJobsCacheForRunParams{
+			if derr := s.qx(ctx).DeleteWorkflowJobsCacheForRun(ctx, dbgen.DeleteWorkflowJobsCacheForRunParams{
 				Owner: ownerKey, Repo: repoKey, RunID: runID,
 			}); derr != nil {
 				return false, derr

@@ -203,7 +203,8 @@ func TestWebhookDeliveryNotifiesSubscriber(t *testing.T) {
 	req.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(payload)))
 	rw := httptest.NewRecorder()
 	stack.router.ServeHTTP(rw, req)
-	require.Equal(t, http.StatusOK, rw.Code, "the push applies to global truth")
+	require.Equal(t, http.StatusAccepted, rw.Code, "the push is recorded")
+	awaitWebhooks(t, stack.router)
 
 	require.True(t, stack.notifier.Flush(5*time.Second), "notification must complete")
 
@@ -254,7 +255,8 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 	wh.Header.Set("X-Hub-Signature-256", sign(testWebhookSecret, []byte(payload)))
 	whw := httptest.NewRecorder()
 	stack.router.ServeHTTP(whw, wh)
-	require.Equal(t, http.StatusOK, whw.Code)
+	require.Equal(t, http.StatusAccepted, whw.Code)
+	awaitWebhooks(t, stack.router)
 	require.True(t, stack.notifier.Flush(5*time.Second), "delivery must complete")
 
 	// Anonymous:. Signed-in non-admin:.

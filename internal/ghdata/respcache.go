@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
@@ -67,7 +68,7 @@ type CachedContents struct {
 // hit refreshes the row's LRU timestamp. Callers must have passed the reveal
 // check before serving this.
 func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref string, now time.Time) (CachedContents, bool, error) {
-	row, err := s.q.GetContentsCache(ctx, dbgen.GetContentsCacheParams{
+	row, err := s.qx(ctx).GetContentsCache(ctx, dbgen.GetContentsCacheParams{
 		Owner: owner, Repo: repo, Path: path, Ref: ref,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -80,7 +81,7 @@ func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref st
 		return CachedContents{}, false, nil
 	}
 	// Best-effort LRU touch; a failure must not fail the read.
-	_ = s.q.TouchContentsCache(ctx, dbgen.TouchContentsCacheParams{
+	_ = s.qx(ctx).TouchContentsCache(ctx, dbgen.TouchContentsCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, Path: path, Ref: ref,
 	})
 	return CachedContents{
@@ -93,7 +94,7 @@ func (s *Store) GetCachedContents(ctx context.Context, owner, repo, path, ref st
 // PutCachedContents stores absorbed contents state with the given TTL, then
 // prunes expired + over-cap rows.
 func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertContentsCache(ctx, dbgen.UpsertContentsCacheParams{
+	if err := s.qx(ctx).UpsertContentsCache(ctx, dbgen.UpsertContentsCacheParams{
 		Owner: c.Owner, Repo: c.Repo, Path: c.Path, Ref: c.Ref,
 		Kind: c.Kind, Name: c.Name, Sha: c.SHA, Size: c.Size,
 		Encoding: c.Encoding, Content: c.Content, Entries: c.Entries, Message: c.Message,
@@ -101,22 +102,22 @@ func (s *Store) PutCachedContents(ctx context.Context, c CachedContents, now tim
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredContentsCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredContentsCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneContentsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneContentsCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateContentsCache is the conservative whole-repo flush a repository event (or an unknown-ref push) triggers.
 func (s *Store) InvalidateContentsCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
+	return s.qx(ctx).DeleteContentsCacheByRepo(ctx, dbgen.DeleteContentsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
 // InvalidateContentsForRef is the per-ref push flush (ref "" = default branch); other refs' rows survive.
 func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref string) error {
-	return s.q.DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
+	return s.qx(ctx).DeleteContentsCacheForRef(ctx, dbgen.DeleteContentsCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }
@@ -144,7 +145,7 @@ type CachedGitCommit struct {
 // GetCachedGitCommit returns the cached commit, or (, false) on a miss.
 // Commits are immutable: no TTL check. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string, now time.Time) (CachedGitCommit, bool, error) {
-	row, err := s.q.GetGitCommitCache(ctx, dbgen.GetGitCommitCacheParams{
+	row, err := s.qx(ctx).GetGitCommitCache(ctx, dbgen.GetGitCommitCacheParams{
 		Owner: owner, Repo: repo, Sha: sha,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -153,7 +154,7 @@ func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string,
 	if err != nil {
 		return CachedGitCommit{}, false, err
 	}
-	_ = s.q.TouchGitCommitCache(ctx, dbgen.TouchGitCommitCacheParams{
+	_ = s.qx(ctx).TouchGitCommitCache(ctx, dbgen.TouchGitCommitCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, Sha: sha,
 	})
 	return CachedGitCommit{
@@ -166,10 +167,10 @@ func (s *Store) GetCachedGitCommit(ctx context.Context, owner, repo, sha string,
 
 // PutCachedGitCommit stores commit, then prunes.
 func (s *Store) PutCachedGitCommit(ctx context.Context, c CachedGitCommit, now time.Time) error {
-	if err := s.upsertGitCommit(ctx, s.q, c, now); err != nil {
+	if err := s.upsertGitCommit(ctx, s.qx(ctx), c, now); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
 // UpsertGitCommits absorbs push-payload commits into global truth in
@@ -178,12 +179,12 @@ func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit,
 	if len(commits) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := s.q.WithTx(tx)
+	q := s.q.WithTx(tx.Tx)
 	for _, c := range commits {
 		if err := s.upsertGitCommit(ctx, q, c, now); err != nil {
 			return err
@@ -192,7 +193,7 @@ func (s *Store) UpsertGitCommits(ctx context.Context, commits []CachedGitCommit,
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.q.PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitCommitsCacheLRU(ctx, CacheMaxRows)
 }
 
 func (s *Store) upsertGitCommit(ctx context.Context, q *dbgen.Queries, c CachedGitCommit, now time.Time) error {
@@ -236,7 +237,7 @@ type CachedInstallToken struct {
 // GetCachedInstallToken returns the cached mint for the given app actor, or
 // (, false) on a miss. A row past its serve-until expiry is a miss.
 func (s *Store) GetCachedInstallToken(ctx context.Context, appActor, installationID, bodyHash string, now time.Time) (CachedInstallToken, bool, error) {
-	row, err := s.q.GetInstallTokenCache(ctx, dbgen.GetInstallTokenCacheParams{
+	row, err := s.qx(ctx).GetInstallTokenCache(ctx, dbgen.GetInstallTokenCacheParams{
 		Actor: appActor, InstallationID: installationID, BodyHash: bodyHash,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -258,7 +259,7 @@ func (s *Store) GetCachedInstallToken(ctx context.Context, appActor, installatio
 // PutCachedInstallToken stores a mint for the given app actor with the given
 // serve-until time, then prunes expired + over-cap rows.
 func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t CachedInstallToken, now, serveUntil time.Time) error {
-	if err := s.q.UpsertInstallTokenCache(ctx, dbgen.UpsertInstallTokenCacheParams{
+	if err := s.qx(ctx).UpsertInstallTokenCache(ctx, dbgen.UpsertInstallTokenCacheParams{
 		Actor: appActor, InstallationID: t.InstallationID, BodyHash: t.BodyHash,
 		Token: t.Token, TokenExpiresAt: t.TokenExpiresAt,
 		Permissions: t.Permissions, RepositorySelection: t.RepositorySelection,
@@ -266,15 +267,15 @@ func (s *Store) PutCachedInstallToken(ctx context.Context, appActor string, t Ca
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredInstallTokenCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredInstallTokenCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneInstallTokenCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneInstallTokenCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateInstallTokenCache drops every mint for an installation whose grants changed, per an installation event.
 func (s *Store) InvalidateInstallTokenCache(ctx context.Context, installationID string) error {
-	return s.q.DeleteInstallTokenCacheByInstallation(ctx, installationID)
+	return s.qx(ctx).DeleteInstallTokenCacheByInstallation(ctx, installationID)
 }
 
 // InvalidateInstallTokenByToken reacts to a / on the minted token itself, since a consumer App's own permission change reaches no webhook here.
@@ -282,5 +283,5 @@ func (s *Store) InvalidateInstallTokenByToken(ctx context.Context, token string)
 	if token == "" {
 		return nil
 	}
-	return s.q.DeleteInstallTokenCacheByToken(ctx, token)
+	return s.qx(ctx).DeleteInstallTokenCacheByToken(ctx, token)
 }

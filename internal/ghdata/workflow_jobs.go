@@ -48,7 +48,7 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 		// Defensive: an empty completed_at would sort as infinitely old and be swept immediately.
 		completedAt = updatedAt
 	}
-	if err := s.q.UpsertWorkflowJob(ctx, dbgen.UpsertWorkflowJobParams{
+	if err := s.qx(ctx).UpsertWorkflowJob(ctx, dbgen.UpsertWorkflowJobParams{
 		Owner:        j.Owner,
 		Repo:         j.Repo,
 		JobID:        j.JobID,
@@ -69,7 +69,7 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 		return err
 	}
 	cutoff := now.Add(-workflowJobRetention).Format(time.RFC3339)
-	return s.q.PruneWorkflowJobs(ctx, dbgen.PruneWorkflowJobsParams{
+	return s.qx(ctx).PruneWorkflowJobs(ctx, dbgen.PruneWorkflowJobsParams{
 		CompletedAt: cutoff,
 		UpdatedAt:   cutoff,
 	})
@@ -78,7 +78,7 @@ func (s *Store) RecordWorkflowJob(ctx context.Context, j WorkflowJob) error {
 // RecentWorkflowJobs returns recent jobs: running (newest started),
 // then completed (newest completed).
 func (s *Store) RecentWorkflowJobs(ctx context.Context, limit int64) ([]WorkflowJob, error) {
-	rows, err := s.q.ListRecentWorkflowJobs(ctx, limit)
+	rows, err := s.qx(ctx).ListRecentWorkflowJobs(ctx, limit)
 	if err != nil {
 		return nil, err
 	}

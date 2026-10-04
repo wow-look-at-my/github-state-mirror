@@ -1337,8 +1337,10 @@ async function loadRateLimits(silent = false): Promise<void> {
 
 // The kinds the server reports, in display order, with what each measures.
 const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
-    ["webhook.handle", "Webhook handling", "receipt to response, per dispatched delivery"],
-    ["db.begin", "SQLite write-lock wait", "BEGIN IMMEDIATE: the time spent waiting for the write lock"],
+    ["webhook.handle", "Webhook handling", "receipt to applied, per delivery; GitHub is answered once the delivery is recorded"],
+    ["db.write_wait", "Write-lock wait", "the time a writer queued for the write lock"],
+    ["db.write_hold", "Write-lock hold", "the time one writer kept the write lock: a transaction, or one autocommit write"],
+    ["db.begin", "SQLite begin", "BEGIN IMMEDIATE, once the write lock is ours"],
     ["db.exec", "SQLite exec", "one write statement, or a read-free statement"],
     ["db.query", "SQLite query", "one read, to its first row"],
     ["db.commit", "SQLite commit", "one transaction commit"],

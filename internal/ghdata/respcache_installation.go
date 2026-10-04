@@ -31,7 +31,7 @@ type CachedRepoInstallation struct {
 // GetCachedRepoInstallation returns the cached installation for the given app
 // actor, or (, false) on a miss. An expired row is a miss.
 func (s *Store) GetCachedRepoInstallation(ctx context.Context, appActor, owner, repo string, now time.Time) (CachedRepoInstallation, bool, error) {
-	row, err := s.q.GetRepoInstallationCache(ctx, dbgen.GetRepoInstallationCacheParams{
+	row, err := s.qx(ctx).GetRepoInstallationCache(ctx, dbgen.GetRepoInstallationCacheParams{
 		Actor: appActor, Owner: owner, Repo: repo,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -43,7 +43,7 @@ func (s *Store) GetCachedRepoInstallation(ctx context.Context, appActor, owner, 
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return CachedRepoInstallation{}, false, nil
 	}
-	_ = s.q.TouchRepoInstallationCache(ctx, dbgen.TouchRepoInstallationCacheParams{
+	_ = s.qx(ctx).TouchRepoInstallationCache(ctx, dbgen.TouchRepoInstallationCacheParams{
 		LastUsedAt: rfc3339(now), Actor: appActor, Owner: owner, Repo: repo,
 	})
 	return CachedRepoInstallation{
@@ -59,7 +59,7 @@ func (s *Store) GetCachedRepoInstallation(ctx context.Context, appActor, owner, 
 // PutCachedRepoInstallation stores repo-installation answer for the given
 // app actor with the given TTL, then prunes expired + over-cap rows.
 func (s *Store) PutCachedRepoInstallation(ctx context.Context, appActor string, c CachedRepoInstallation, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertRepoInstallationCache(ctx, dbgen.UpsertRepoInstallationCacheParams{
+	if err := s.qx(ctx).UpsertRepoInstallationCache(ctx, dbgen.UpsertRepoInstallationCacheParams{
 		Actor: appActor, Owner: c.Owner, Repo: c.Repo,
 		Status: int64(c.Status), Message: c.Message,
 		InstallationID: c.InstallationID, AccountLogin: c.AccountLogin, AccountType: c.AccountType,
@@ -69,19 +69,19 @@ func (s *Store) PutCachedRepoInstallation(ctx context.Context, appActor string, 
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredRepoInstallationCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredRepoInstallationCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneRepoInstallationCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneRepoInstallationCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateRepoInstallationCache drops every row for an installation, across all apps.
 func (s *Store) InvalidateRepoInstallationCache(ctx context.Context, installationID int64) error {
-	return s.q.DeleteRepoInstallationCacheByInstallation(ctx, installationID)
+	return s.qx(ctx).DeleteRepoInstallationCacheByInstallation(ctx, installationID)
 }
 
 // InvalidateAbsentRepoInstallations drops every cached "not installed here" verdict.
 // see docs/cache/rest-routes.md
 func (s *Store) InvalidateAbsentRepoInstallations(ctx context.Context) error {
-	return s.q.DeleteAbsentRepoInstallationCache(ctx)
+	return s.qx(ctx).DeleteAbsentRepoInstallationCache(ctx)
 }
