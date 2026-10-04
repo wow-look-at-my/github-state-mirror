@@ -181,7 +181,7 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 		return OutcomeHit, nil
 	}
 
-	// Detached from the caller's cancellation: the fetch is shared work, so an
+	// Detached from the caller's cancellation: the fetch is shared work.
 	m.inflight.Add(1)
 	m.inflightCount.Add(1)
 	defer func() {
@@ -198,8 +198,8 @@ func (m *Manager) doFetch(ctx context.Context, id ResourceID, trigger TriggerSou
 	defer mu.Unlock()
 
 	// Re-check after acquiring lock — another goroutine may have fetched, or
-	// just failed (in which case honor its retry-after backoff instead of
-	// retrying immediately from the pile-up behind the lock).
+	// failed (in which case honor its retry-after backoff instead of retrying
+	// immediately from the pile-up behind the lock).
 	if trigger == TriggerLazy {
 		meta, err := m.store.Get(persistCtx, id)
 		if err == nil && meta != nil {

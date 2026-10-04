@@ -244,7 +244,7 @@ func TestDispatch_TagPush_FlushesOnlyThatRef(t *testing.T) {
 
 // TestDispatch_UnparseablePush_FallsBackRepoWide: with no usable ref (here an
 // unparseable body -- the event still names the repo) every ref-keyed cache
-// keeps the old conservative repo-wide flush.
+// keeps the conservative repo-wide flush.
 func TestDispatch_UnparseablePush_FallsBackRepoWide(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -333,8 +333,8 @@ func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
 }
 
 // TestDispatch_PullRequest_ClearsPullDiff406: a pull_request event clears
-// that PR's cached diff verdict (its head just moved, so the diff
-// may have shrunk back under the boundary) and leaves another PR's verdict.
+// that PR's cached diff verdict (its head moved, so the diff may have shrunk
+// back under the boundary) and leaves another PR's verdict.
 func TestDispatch_PullRequest_ClearsPullDiff406(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

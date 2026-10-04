@@ -10,7 +10,7 @@ import (
 // currentFingerprint is schemaFingerprint(schemaSQL), computed. The input
 var currentFingerprint = sync.OnceValue(func() string { return schemaFingerprint(schemaSQL) })
 
-// schemaFingerprint reduces schema.sql to the tables it actually builds --
+// schemaFingerprint reduces schema.sql to the tables it builds --
 func schemaFingerprint(schema string) string {
 	sum := sha256.Sum256([]byte(scrubSQL(schema)))
 	return hex.EncodeToString(sum[:])
@@ -85,13 +85,13 @@ func (s *scrubbed) write(tok string) {
 	s.last = tok[len(tok)-1]
 }
 
-// selfDelimiting reports whether a character separates tokens by itself, so
+// selfDelimiting reports whether a character separates tokens by itself.
 func selfDelimiting(c byte) bool {
 	return c == '(' || c == ')' || c == ',' || c == ';'
 }
 
-// endOfQuoted returns the index just past the quoted run opening at sql[start].
-// A doubled closing quote is an escaped and does not end the run; an
+// endOfQuoted returns the index past the quoted run opening at sql[start]. A
+// doubled closing quote is an escaped and does not end the run.
 func endOfQuoted(sql string, start int, closer byte) int {
 	for i := start + 1; i < len(sql); i++ {
 		if sql[i] != closer {

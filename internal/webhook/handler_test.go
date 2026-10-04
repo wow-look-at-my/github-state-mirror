@@ -282,6 +282,81 @@ func TestHandler_RecordsEveryRejectionPath(t *testing.T) {
 	assert.True(t, rec.calls[0].durValid)
 }
 
+// blockingDispatcher holds each dispatch until release closes, and reports
+// whether the context it was given ended while it waited.
+type blockingDispatcher struct {
+	started   chan struct{}
+	release   chan struct{}
+	cancelled chan bool
+}
+
+func (d *blockingDispatcher) Dispatch(ctx context.Context, event Event) DispatchResult {
+	close(d.started)
+	select {
+	case <-d.release:
+		d.cancelled <- false
+	case <-ctx.Done():
+		d.cancelled <- true
+	}
+	return DispatchResult{Event: event.Type, Disposition: DispApplied, Detail: "written"}
+}
+
+// The delivery must still be applied in full and recorded: nothing
+// would ever resend it.
+func TestHandler_DeliveryOutlivesItsSender(t *testing.T) {
+	secret := "test-secret"
+	dispatcher := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{}), cancelled: make(chan bool, 1)}
+	rec := &recordingDeliveryRecorder{}
+	handlerReturned := make(chan struct{})
+	inner := Handler(secret, dispatcher, rec)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner.ServeHTTP(w, r)
+		close(handlerReturned)
+	}))
+	defer srv.Close()
+
+	body := `{"action":"completed","repository":{"name":"repo","owner":{"login":"org"}}}`
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("X-GitHub-Event", "check_run")
+	req.Header.Set("X-GitHub-Delivery", "d-hangup")
+	req.Header.Set("X-Hub-Signature-256", signPayload(secret, []byte(body)))
+
+	sent := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		sent <- err
+	}()
+	// The sender gives up while the dispatch is still running.
+	<-dispatcher.started
+	cancel()
+	require.Error(t, <-sent)
+
+	// The handler only returns before the dispatch finishes when its request context ended.
+	select {
+	case <-handlerReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never saw the sender go away")
+	}
+
+	close(dispatcher.release)
+	assert.False(t, <-dispatcher.cancelled, "the dispatch was cancelled when the sender went away")
+
+	require.Eventually(t, func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		return len(rec.calls) == 1
+	}, 5*time.Second, time.Millisecond, "the finished delivery must still be recorded")
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	assert.Equal(t, "d-hangup", rec.calls[0].event.DeliveryID)
+	assert.Equal(t, DispApplied, rec.calls[0].result.Disposition)
+}
+
 func TestHandler_WritesOutcome(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{

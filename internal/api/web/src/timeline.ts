@@ -1,34 +1,8 @@
 // The dashboard's "Timeline" tab: a swimlane chart of incoming GitHub webhook
-// deliveries (one lane per event type, "⇐ push") and outgoing proxied GitHub
-// requests (one lane per method + route shape, "GET /repos/{owner}/{repo}/pulls"),
-// rendered by the generic <timeline-view> canvas element from
-// wow-look-at-my/js-snippets. Every bar/pip is a REAL measured duration —
-// millisecond webhook handling renders as the component's native instant pips
-// at wide zooms and re-promotes to bars when zoomed in; nothing is faked.
-//
-// This file is the mirror-specific adapter, packaged as the self-registering
-// <gsm-timeline> custom element (the src/rate-meter.ts precedent: its own
-// standalone ES module, loaded by its own <script type="module"> tag before
-// app.js). app.ts creates one on the Timeline tab and keeps it ALIVE across
-// the shared silent refreshes — the element polls GET /api/timeline?since=<id>
-// itself (5s, paused while the page is hidden) and mergeData()s new events, so
-// the canvas never suffers the other tabs' wipe-and-rebuild refresh.
-//
-// The component itself is NOT part of this repo: the browser imports it at
-// RUNTIME from js-snippets' buildhost library site (live at master head —
-// republished on every js-snippets master push; replaced the quota-dead
-// GitHub Pages deploy 2026-07-20; the org's standard consumption model,
-// never vendored). A failed component fetch degrades
-// softly and never parks: the element shows "chart loading…" and retries the
-// dynamic import on a FIXED 5s cadence forever (cache-busted ?retry=N, because
-// browsers memoize failed module fetches). Fix component bugs upstream in
-// js-snippets — only adapter logic lives here. Types for the URL import come
-// from src/js-snippets-timeline.d.ts, an interim hand-maintained shim.
+// deliveries (one lane per event type, "⇐ push") and outgoing proxied
+// GitHub requests.
 
-// Types only — erased at compile time. Deliberately NOT a static value import:
-// a static import that fails would kill this module; the runtime load is the
-// retried dynamic import in loadComponentForever below (tsc emits dynamic
-// import() verbatim, so the component URL survives into the built module).
+// Types only — erased at compile time.
 import type {
     LoadRangeFn,
     TimelineHit,
@@ -37,10 +11,7 @@ import type {
     TimelineViewElement,
 } from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js';
 // The WIRE FORMAT lives with the timeline too: it exists to feed that chart,
-// so js-snippets owns the codec and the frame-paced driver. What stays here is
-// this mirror's vocabulary — which columns it sends, and what its events MEAN
-// (labels, states, lanes). The library decodes a layout; it has never heard of
-// a delivery id.
+// so js-snippets owns the codec and the frame-paced driver.
 import type {
     Columns,
     DecodedPage,
@@ -54,32 +25,18 @@ const COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/t
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
 const POLL_MS = 5000; // the dashboard's shared refresh cadence (app.ts REFRESH_MS)
 const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
-const STALE_AFTER_MS = 12000; // ~2.5 missed polls => the chart says "stale" instead of lying
+const STALE_AFTER_MS = 12000;
 const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
-// The first paint FETCHES exactly the hour it draws, and older ranges arrive
-// through the component's async history loader as the viewport reaches them.
-// This is not a bandwidth optimization — it is what makes the frame budget
-// reachable at all: a full 24h window is 100k intervals, and 100k live objects
-// cost GC pauses no amount of slicing can hide (measured: 4-7 ms scavenges
-// landing mid-decode). An hour is ~4k.
-// A history request is clamped to this span too, so one huge zoom-out becomes
-// several bounded loads rather than one 100k-interval stall; the component
-// re-asks for whatever stays uncovered.
+// The first paint FETCHES exactly the hour it draws.
 const HISTORY_SPAN_MS = 60 * 60 * 1000;
 
 // Bounded default fetcher. app.ts overrides `fetcher` only in demo mode (the
-// backend-free preview serves canned data); production uses this one — the
+// backend-free preview serves canned data); production uses this — the
 // AbortSignal bound is what keeps the single-flight poll guard un-wedgeable.
 //
-// This asks for the columnar encoding and ACCEPTS NOTHING ELSE: a content type
-// it does not recognize THROWS, surfacing as the chart's "feed is down" state.
-//
-// That strictness is load-bearing, not defensive tidiness. The endpoint also
-// serves readable JSON to callers that do not name the wire type (curl, an
-// operator with jq), and this is what keeps that harmless: an earlier version
-// FELL BACK to whatever came back, so an Accept that drifted quietly took a
-// decode costing ~10x the frames with nothing failing. The defect was the
-// fallback, not the JSON. TestTimelineClientRefusesJSON pins this.
+// This asks for the columnar encoding and ACCEPTS NOTHING ELSE: a content
+// type it does not recognize THROWS, surfacing as the chart's "feed is down"
+// state.
 export async function fetchTimelineBytes(path: string): Promise<Uint8Array> {
     const res = await fetch(path, {
         headers: { Accept: WIRE_TYPE },
@@ -113,19 +70,7 @@ function fmtDur(ms: number): string {
     return (ms / 60_000).toFixed(1) + " min";
 }
 
-// ---- the wire format ----
-//
-// The payload is COLUMNAR, and both halves of that format live elsewhere: the
-// Go encoder in internal/api/timelinewire.go, the decoder + frame-paced driver
-// in js-snippets (ui/timeline-wire.js), imported at RUNTIME like the component
-// beside it. Against the JSON it replaces it is ~10 B/event gzipped instead of
-// ~32, and ~5x cheaper to turn into intervals.
-//
-// The two implementations are pinned to each other by BYTES, not by running
-// one from the other: internal/api/timelinewire_golden_test.go asserts the
-// encoder emits an exact payload, and js-snippets' timeline-wire.test.ts
-// decodes that same payload. A change to the layout is a NEW version (new
-// magic, new media type), never an edit to this one.
+// ---- the wire format ---- The payload is COLUMNAR, and both halves of that format live elsewhere.
 
 const WIRE_TYPE = "application/vnd.gsm.timeline.v1";
 const WIRE_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js";
@@ -159,11 +104,7 @@ interface TimelinePage {
     now: number; // epoch ms
 }
 
-// The library module, loaded once at boot alongside the component. A dynamic
-// import (not a static URL import) for the same two reasons the component
-// uses one: a failed fetch must degrade to "chart loading…" rather than kill
-// this module, and node — which runs the harnesses against the built file —
-// cannot resolve an https specifier at load time.
+// The library module, loaded once at boot alongside the component.
 type WireModule = typeof import(
     'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js');
 let wire: WireModule | null = null;
@@ -174,27 +115,13 @@ function w(): WireModule {
     return wire;
 }
 
-/** Rows per generator step here — the library's own STEP governs its decode;
- *  this is for the interval building that stays on this side. */
+/** Rows per generator step here — the library's own STEP governs its decode. */
 const STEP = 1024;
 
 /** The ceiling a chunk is sized against, and what recordSlice warns on. */
 const FRAME_BUDGET_MS = 8;
 
-// Handing intervals to the component is main-thread work too — it ingests,
-// re-packs sub-tracks and marks the canvas dirty — so a feed is one chunk,
-// one frame. Unlike a decode step it CANNOT be accumulated to fill a chunk:
-// each call makes the component redraw, so several in a frame would draw the
-// whole grown chart at once. That is why a feed is the one thing still sized
-// adaptively — its cost per interval is not fixed.
-//
-// The CAP matters as much as the target, because the cost is not linear in the
-// feed alone: a merge gets dearer as the chart holds more, so an estimate from
-// an early cheap call overshoots later ones (measured: the size ran up to 2048
-// and those calls then cost 5.5-6.0 ms). 512 is the largest size measured to
-// stay comfortably inside the budget once the chart is full, and the adaptive
-// size still shrinks below it on a slower machine. The first call is smaller
-// again: it is the one that initializes the canvas.
+// Handing intervals to the component is main-thread work too — it ingests.
 const TARGET_FEED_MS = 4;
 const MAX_FEED_INTERVALS = 512;
 const START_FEED_INTERVALS = 128;
@@ -207,7 +134,7 @@ function nextFeedSize(size: number, ms: number): number {
     return Math.max(32, Math.min(ceiling, Math.round((size * TARGET_FEED_MS) / ms) || 32));
 }
 
-/** Walks [0,n) in STEP-sized ranges, yielding after each. */
+/* */
 function* chunked(n: number, work: (from: number, to: number) => void): Task<void> {
     for (let i = 0; i < n; ) {
         const to = Math.min(i + STEP, n);
@@ -327,8 +254,7 @@ function stateForPair(kind: string, disp: string): string {
         return "";
     }
     if (kind === "notify") return disp === "failed" ? "failed" : "";
-    // Requests/exchanges: a failed exchange is unmissable; the 5xx half of the
-    // rule is per-row (it reads the status) and is applied in the loop.
+    // Requests/exchanges: a failed exchange is unmissable; the 5xx half of the rule is per-row (it reads the status) and is applied.
     return disp === "error" ? "failed" : "";
 }
 
@@ -348,8 +274,7 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
     // state per (kind, disposition) pair — both dictionaries are tiny.
     const stateTable: string[][] = kindC.dict.map((kind) =>
         dispC.dict.map((disp) => stateForPair(kind, disp)));
-    // A webhook's label is its repo NAME; a request's is its status. Both
-    // resolve per dictionary entry, not per row.
+    // A webhook's label is its repo NAME; a request's is its status. Both resolve per dictionary entry, not per row.
     const isWebhook = kindC.dict.map((k) => k === "webhook");
     const repoLabel = repoC.dict.map((r) => (r ? r.slice(r.indexOf("/") + 1) : ""));
     const statusLabel = new Map<number, string>();
@@ -385,10 +310,7 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
                 id: String(idCol[i]),
                 laneId: lane,
                 start,
-                // end = start + the REAL measured duration. Never null (every
-                // recorded event finished) and never inflated: a sub-pixel
-                // span is the component's native instant pip, which is exactly
-                // right for a 3ms webhook dispatch.
+                // end = start + the REAL measured duration.
                 end: start + (durCol[i] > 0 ? durCol[i] : 0),
                 label,
                 category: lane, // stable hue per lane
@@ -508,8 +430,7 @@ class GsmTimeline extends HTMLElement {
     private timer: ReturnType<typeof setInterval> | undefined;
     private pollInFlight = false;
     private maxId = 0;
-    // The ring's retention floor (epoch ms) as of the last read — the point at
-    // which history is genuinely exhausted rather than merely unfetched.
+    // The ring's retention floor (epoch ms) as of the last read — the point at which history is genuinely exhausted.
     private retentionStart = 0;
     // Oldest instant the chart has data for; the live path's coverage floor.
     private coveredFrom = 0;
@@ -517,18 +438,14 @@ class GsmTimeline extends HTMLElement {
     // laneId -> kind, for the grouped lane ordering (webhooks first).
     private laneKinds = new Map<string, string>();
     private laneOrderKey = "";
-    // Longest synchronous slice this element has run, exposed for the bench
-    // and for anyone wondering whether the frame budget is being met.
+    // Longest synchronous slice this element has run.
     worstSliceMs = 0;
-    // How many intervals to hand the component per call; steered by what the
-    // last call actually cost (see TARGET_FEED_MS).
+    // How many intervals to hand the component per call; steered by what the last call cost (see TARGET_FEED_MS).
     private feedSize = START_FEED_INTERVALS;
 
     connectedCallback(): void {
         if (this.view || this.note) {
-            // Reconnect of an already-booted instance (app.ts never moves the
-            // element, but be correct anyway): resume the poll the disconnect
-            // stopped.
+            // Reconnect of an already-booted instance (app.ts never moves the element, but be correct anyway).
             this.startPolling();
             return;
         }
@@ -538,8 +455,7 @@ class GsmTimeline extends HTMLElement {
     }
 
     disconnectedCallback(): void {
-        // The tab was left (loadView wipes #scope-body): stop polling. A fresh
-        // element is created on the next visit; this one is garbage.
+        // The tab was left (loadView wipes #scope-body): stop polling.
         if (this.timer !== undefined) clearInterval(this.timer);
         this.timer = undefined;
     }
@@ -548,23 +464,13 @@ class GsmTimeline extends HTMLElement {
         if (!(await this.loadLibraryForever())) return; // disconnected while retrying
         const tl = document.createElement("timeline-view") as TimelineViewElement;
         tl.tooltipFor = tooltipFor;
-        // Async history: the chart asks for older ranges as the viewport
-        // reaches them, instead of the page paying for 24h up front.
-        // Feature-detected so an older component build still renders.
+        // Async history: the chart asks for older ranges as the viewport reaches them.
         if ("loadRange" in tl) tl.loadRange = this.loadRange;
-        // Feature-detected staleness marking: with a 5s poll, ~2.5 missed
-        // polls means the feed is genuinely dead — say so on the chart
-        // instead of extrapolating.
         if (typeof tl.markFresh === "function") tl.staleAfterMs = STALE_AFTER_MS;
         tl.setAttribute("empty-text", "no traffic recorded yet");
         this.view = tl;
         this.appendChild(tl);
-        // Let the EMPTY chart paint once before any data arrives. That first
-        // paint is where the cold costs live — font metrics for the axis and
-        // gutter, the canvas backing store, the component's own warm-up — and
-        // paying them on an empty frame keeps them out of the frame that also
-        // ingests and draws real data. In production the network round-trip
-        // usually provides this gap; a fast (or cached) response does not.
+        // Let the EMPTY chart paint once before any data arrives.
         await w().nextFrame();
         await this.poll(); // first page: setData + initial viewport
         this.note?.remove();
@@ -581,13 +487,12 @@ class GsmTimeline extends HTMLElement {
     }
 
     // Dynamic-import the Pages component, retrying forever on a fixed cadence
-    // (cache-busted — browsers memoize failed module fetches). Bails out only
-    // if the element left the DOM (tab switched away mid-retry).
-    // Both library modules — the component and the wire codec — on one
+    // (cache-busted — browsers memoize failed module fetches). Bails out
+    // only if the element left the DOM (tab switched away mid-retry). Both
+    // library modules — the component and the wire codec — on one
     // forever-retrying loop. Neither is vendored and neither may kill this
-    // module if the site is briefly unreachable: the element just keeps saying
-    // "chart loading…". The cache-buster is required because browsers memoize
-    // a FAILED module fetch, so a bare retry of the same URL never re-requests.
+    // module if the site is briefly unreachable: the element keeps saying
+    // "chart loading…".
     private async loadLibraryForever(): Promise<boolean> {
         for (let attempt = 0; ; attempt++) {
             if (!this.isConnected) return false;
@@ -611,8 +516,7 @@ class GsmTimeline extends HTMLElement {
         if (!tl || this.pollInFlight) return;
         this.pollInFlight = true;
         try {
-            // First read: the hour the chart paints. After that the live
-            // cursor, which returns only what is new (a handful of events).
+            // First read: the hour the chart paints.
             let path: string;
             if (this.maxId > 0) {
                 path = "/api/timeline?since=" + this.maxId;
@@ -620,9 +524,7 @@ class GsmTimeline extends HTMLElement {
                 this.coveredFrom = Date.now() - INITIAL_WINDOW_MS;
                 path = "/api/timeline?from=" + this.coveredFrom;
             }
-            // A demo-mode override serves canned JSON; production takes the
-            // negotiated (columnar) path. Both decode into the same columns,
-            // in slices, so neither can freeze the tab on a full window.
+            // A demo-mode override serves canned JSON; production takes the negotiated (columnar) path.
             const fetcher = this.fetcher;
             const decoded = fetcher
                 ? await w().runSliced(pageFromJSONGen(await fetcher(path)), this.recordSlice)
@@ -630,26 +532,21 @@ class GsmTimeline extends HTMLElement {
             if (!this.isConnected || this.view !== tl) return; // tab left mid-decode
             if (decoded.maxId > this.maxId) this.maxId = decoded.maxId;
             this.retentionStart = decoded.retentionStart;
-            // The live read covers [what it asked for, now]. On the first poll
-            // that is the initial window; afterwards the cursor's events all
-            // postdate it, so the covered end simply advances.
+            // The live read covers [what it asked for, now].
             await this.merge(tl, decoded, {
                 start: this.coveredFrom || decoded.now - INITIAL_WINDOW_MS,
                 end: decoded.now,
             });
         } catch (e) {
-            // Keep the last data; the component's staleness marking says the
-            // feed is down once STALE_AFTER_MS passes without a markFresh.
+            // Keep the last data; the component's staleness marking says the feed is down once STALE_AFTER_MS passes without.
             console.error("timeline: poll failed:", e);
         } finally {
             this.pollInFlight = false;
         }
     }
 
-    // recordSlice enforces the frame budget in the only place that can see it.
-    // A slice that overruns is a real defect (a chunk that got too expensive,
-    // or a phase that forgot to yield) and says so in the console rather than
-    // silently dropping frames.
+    // recordSlice enforces the frame budget in the only place that can see it. A slice that overruns is a real defect (a chunk that got too expensive, or a phase that forgot to yield) and says so in the
+    // console rather than silently dropping frames.
     private readonly recordSlice = (ms: number): void => {
         if (ms > this.worstSliceMs) this.worstSliceMs = ms;
         if (ms > FRAME_BUDGET_MS) {
@@ -660,26 +557,20 @@ class GsmTimeline extends HTMLElement {
     // Feeds the chart in BATCHES, yielding between them: the first batch
     // paints (and sets the viewport) while the rest is still being built, and
     // no single setData/mergeData call ever sees 100k intervals — the
-    // component's own ingestion is main-thread work too.
-    // merge feeds one decoded page into the chart. Used by BOTH paths — the
-    // live poll and the history loader — which differ only in what they cover
-    // and whether they advance the live cursor (the caller decides; see
-    // loadRange).
+    // component's own ingestion is main-thread work too. merge feeds one
+    // decoded page into the chart. Used by BOTH paths — the live poll and
+    // the history loader — which differ only in what they cover and whether
+    // they advance the live cursor (the caller decides; see loadRange).
     private async merge(tl: TimelineViewElement, page: DecodedPage,
                         coverage: { start: number; end: number }): Promise<void> {
 
         // Declare every lane this page carries BEFORE the first feed: a lane
-        // appearing later is a structural change that costs the component a
-        // whole-chart relayout (see laneKindsOf).
+        // appearing later is a structural change that costs the component.
         for (const { lane, kind } of laneKindsOf(page.c)) {
             if (!this.laneKinds.has(lane)) this.laneKinds.set(lane, kind);
         }
 
-        // ONE unit of work per frame — either build the next chunk of
-        // intervals, or hand one feed to the component (which redraws off it,
-        // so a feed owns its frame). Ready intervals are fed before more are
-        // built, so the chart paints early and the queue never runs ahead of
-        // what has been handed over.
+        // ONE unit of work per frame — either build the next chunk of intervals, or hand one feed to the component.
         const ready: TimelineInterval[] = [];
         const task = intervalsGen(page.c, (b) => {
             for (const { lane, kind } of b.lanes) {
@@ -701,8 +592,7 @@ class GsmTimeline extends HTMLElement {
                 this.feedSize = nextFeedSize(this.feedSize, ms);
                 this.recordSlice(ms);
             } else {
-                // A chunk here is the same thing runSliced makes it: keep
-                // building until a frame's worth of work is done.
+                // A chunk here is the same thing runSliced makes it.
                 const t0 = performance.now();
                 do {
                     building = !task.next().done;
@@ -711,7 +601,7 @@ class GsmTimeline extends HTMLElement {
             }
         }
 
-        // An empty poll is still proof the feed is alive — and the very first
+        // An empty poll is still proof the feed is alive — and the first
         // one still has to seed the chart, or an idle mirror renders nothing.
         if (empty && !this.seeded) {
             this.seeded = true;
@@ -738,9 +628,7 @@ class GsmTimeline extends HTMLElement {
         const decoded = await fetchDecoded(
             `/api/timeline?from=${from}&to=${Math.round(end)}`, this.recordSlice);
         if (!this.isConnected || this.view !== tl) return;
-        // History NEVER advances the live cursor: this response was assembled
-        // from an older window, and adopting its max_id would skip every event
-        // recorded between the last live poll and now.
+        // History NEVER advances the live cursor.
         await this.merge(tl, decoded, { start: from, end: Math.round(end) });
         if (this.coveredFrom === 0 || from < this.coveredFrom) this.coveredFrom = from;
         return from <= this.retentionStart ? { exhausted: true } : undefined;
@@ -790,7 +678,7 @@ class GsmTimeline extends HTMLElement {
         return [...webhooks, ...requests, ...notify].map((id) => ({ id, label: id }));
     }
 
-    // Re-apply lane order only when it actually changed (setLanes re-ingests).
+    // Re-apply lane order only when it changed (setLanes re-ingests).
     private syncLanes(tl: TimelineViewElement): void {
         const lanes = this.computeLanes();
         const key = lanes.map((l) => l.id).join("\n");

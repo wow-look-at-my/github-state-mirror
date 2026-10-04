@@ -24,14 +24,14 @@ func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	// A completed job well past the -day retention, last touched just as
-	// long ago (the explicit UpdatedAt models a row recorded days back).
+	// A completed job well past the -day retention, last touched as long ago
+	// (the explicit UpdatedAt models a row recorded days back).
 	require.NoError(t, s.RecordWorkflowJob(ctx, WorkflowJob{
 		Owner: "o", Repo: "r", JobID: 1, Name: "ancient", Status: "completed",
 		Conclusion: "success", StartedAt: ts(t, 16*24*time.Hour), CompletedAt: ts(t, 15*24*time.Hour),
 		UpdatedAt: ts(t, 15*24*time.Hour),
 	}))
-	// A running job that is just as old — must never be pruned.
+	// A running job that is as old — must never be pruned.
 	require.NoError(t, s.RecordWorkflowJob(ctx, WorkflowJob{
 		Owner: "o", Repo: "r", JobID: 2, Name: "stuck", Status: "in_progress",
 		StartedAt: ts(t, 15*24*time.Hour),
@@ -53,14 +53,13 @@ func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 }
 
 // TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress pins the
-// out-of-order guarantee against the retention prune (the -- CI
-// incident): a completed event whose completed_at is already past the -day
-// horizon (a replayed/redelivered old delivery) is still fresh telemetry --
-// the on-write prune keys on updated_at too, so it cannot delete the row it
-// just wrote -- and a late in_progress for that job is absorbed by the upsert
-// guard instead of INSERTing a fresh running row (which would regress status
-// to "in_progress" and blank the conclusion, the incident's exact failure
-// shape).
+// out-of-order guarantee against the retention prune (the -- CI incident): a
+// completed event whose completed_at is already past the -day horizon (a
+// replayed/redelivered old delivery) is still fresh telemetry -- the on-write
+// prune keys on updated_at too, so it cannot delete the row it wrote -- and a
+// late in_progress for that job is absorbed by the upsert guard instead of
+// INSERTing a fresh running row (which would regress status to "in_progress"
+// and blank the conclusion, the incident's exact failure shape).
 func TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

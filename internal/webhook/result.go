@@ -2,13 +2,8 @@ package webhook
 
 import "net/http"
 
-// Disposition values describe what the dispatcher did with a delivery.
-// log shown on the dashboard.
-//
-// There is deliberately no "skipped" anymore: since the global-cache
-// re-architecture every stateful event applies straight to global truth (there
-// is no per-scope gate to skip on). "ignored" remains only for event types and
-// actions the mirror genuinely does not track.
+// Disposition values describe what the dispatcher did with a delivery. log
+// shown on the dashboard.
 const (
 	DispApplied     = "applied"     // webhook data was written to global truth
 	DispInvalidated = "invalidated" // marked freshness stale (fallback / structural change)

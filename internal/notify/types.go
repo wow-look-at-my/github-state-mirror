@@ -99,7 +99,7 @@ type Patch struct {
 	Active *bool     `json:"active"`
 }
 
-// ValidationError describes a rejected subscription field; the API maps it to
+// ValidationError describes a rejected subscription field.
 type ValidationError struct{ msg string }
 
 func (e *ValidationError) Error() string { return e.msg }

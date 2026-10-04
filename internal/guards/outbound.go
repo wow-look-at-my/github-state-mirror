@@ -23,7 +23,6 @@ const (
 	KindPackageLevel OutboundKind = "net/http package-level request"
 )
 
-// packageLevelSenders are the net/http helpers that send on
 var packageLevelSenders = set.Of("Get", "Post", "PostForm", "Head")
 
 // Outbound is construct that can send a request.

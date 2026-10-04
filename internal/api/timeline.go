@@ -18,10 +18,9 @@ import (
 // requestStartKey carries the instant the router received a request, stamped
 type requestStartKey struct{}
 
-// stampRequestStart is the router middleware: it stamps the receipt
-// time into the request context. observeStatus reads it back so every
-// inbound data-API event on the timeline carries the request's real
-// end-to-end duration.
+// stampRequestStart is the router middleware: it stamps the receipt time into
+// the request context. observeStatus reads it back so every inbound data-API
+// event on the timeline carries the request's real end-to-end duration.
 func stampRequestStart(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestStartKey{}, time.Now())))
@@ -36,12 +35,10 @@ func requestStartFrom(ctx context.Context) (time.Time, bool) {
 }
 
 // The dashboard's "Timeline" tab: every exchange the mirror participates in,
-// each with its real measured duration. A gap here is a bug.
-// see docs/dashboard/request-visibility.md, docs/dashboard/timeline-ring.md
+// each with its real measured duration.
 
 // Timeline-only dispositions for exchanges that are not inbound cache
-// answers. Inbound events keep the request-log vocabulary (hit / miss /
-// passthrough / write / error).
+// answers.
 const (
 	dispUpstream = "upstream" // the mirror→GitHub leg of a cached-route miss
 	dispProbe    = "probe"    // a reveal-layer authorization probe
@@ -162,10 +159,8 @@ func parseUnixMs(v string) (time.Time, bool) {
 	return time.UnixMilli(ms).UTC(), true
 }
 
-// timelineResponse is the READABLE encoding of the payload — what any caller
-// that does not ask for the columnar media type by name receives. The chart
-// never parses it (see the handler); it exists so the endpoint stays
-// inspectable with curl and jq.
+// timelineResponse is the READABLE encoding of the payload — what any
+// caller that does not ask for the columnar media type by name receives.
 type timelineResponse struct {
 	Events []reqtimeline.Event `json:"events"`
 	// Newest id; pass back as ?since=.

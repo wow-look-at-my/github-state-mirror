@@ -41,11 +41,10 @@ func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
 	]`))
 }
 
-// TestCachedPullFiles_MissAbsorbHit covers the core flow: the read
-// fetches + absorbs the whole trimmed page (miss), the serves the
-// byte-identical stored doc (hit, upstream calls), and the rebuild
-// drops sha + every URL field while preserving patch/previous_filename
-// present-vs-absent exactly.
+// TestCachedPullFiles_MissAbsorbHit covers the core flow: the read fetches +
+// absorbs the whole trimmed page (miss), the serves the byte-identical stored
+// doc (hit, upstream calls), and the rebuild drops sha + every URL field
+// while preserving patch/previous_filename present-vs-absent exactly.
 func TestCachedPullFiles_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7/files"
@@ -161,8 +160,8 @@ func TestCachedPullFiles_PushEventFlushesRepoWide(t *testing.T) {
 
 // TestCachedPullFiles_ShapePassthroughs: shapes the cache does not model --
 // unknown params, out-of-range paging, and a non-numeric {number} segment
-// (GitHub's /pulls/comments/files really exists) -- pass through verbatim,
-// uncached, every time.
+// (GitHub's /pulls/comments/files exists) -- pass through verbatim, uncached,
+// every time.
 func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 

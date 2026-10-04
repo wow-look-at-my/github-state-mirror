@@ -50,10 +50,9 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 
 // TestRateLimit_NeverCallsUpstream: the route must be answered ENTIRELY from
 // memory. A fake GitHub that fails the test on any GET /rate_limit call
-// proves the route never fetches it, even on the very request for a
-// credential the meter has never observed (still with an empty
-// resources object — see TestRateLimit_EmptyWhenNoObservation — never a
-// fetch attempt).
+// proves the route never fetches it, even on the request for a credential the
+// meter has never observed (still with an empty resources object — see
+// TestRateLimit_EmptyWhenNoObservation — never a fetch attempt).
 func TestRateLimit_NeverCallsUpstream(t *testing.T) {
 	var rateLimitHits int32
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

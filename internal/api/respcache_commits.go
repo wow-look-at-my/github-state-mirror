@@ -14,8 +14,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier).
-// See docs/cache/rest-routes.md for the key shape, hit gate, and invalidation.
+// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits
+// (tier).
 
 const (
 	// commitsListCacheTTL is the backstop for a missed push delivery.

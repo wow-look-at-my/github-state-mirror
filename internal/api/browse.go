@@ -307,7 +307,7 @@ func (d *dashboard) loginForActor(ctx context.Context, principal string) string 
 }
 
 // actorNames returns the recorded principal->display-name map, or an empty
-// map when the lookup fails — callers then simply render no names.
+// map when the lookup fails — callers then render no names.
 func (d *dashboard) actorNames(ctx context.Context) map[string]string {
 	names := make(map[string]string)
 	identities, err := d.store.ListActorIdentities(ctx)

@@ -3,9 +3,9 @@ package sync
 import "context"
 
 // Live progress for the consistency check / reconcile. A real fleet run takes
-// minutes (per owner: a paginated repo+PR fetch at repos/page, a visibility
-// fetch, the diff, and in apply mode the corrections), so the run reports its
-// phase boundaries through an optional, nil-safe callback. The streaming
+// minutes (: a paginated repo+PR fetch at repos/page, a visibility fetch, the
+// diff, and in apply mode the corrections), so the run reports its phase
+// boundaries through an optional, nil-safe callback. The streaming
 // /api/cache/check?stream= handler relays these events to the operator as
 // NDJSON lines; events are emitted synchronously, in order, on the run's own
 // goroutine.

@@ -248,8 +248,7 @@ func (h *handlers) serveContentsHit(w http.ResponseWriter, r *http.Request, c gh
 }
 
 // serveContentsRaw decodes a cached FILE row's base64 content and serves the
-// exact file bytes, not the JSON wrapper.
-// see docs/cache/rest-routes.md
+// exact file bytes, not the JSON wrapper. see docs/cache/rest-routes.md
 func (h *handlers) serveContentsRaw(w http.ResponseWriter, r *http.Request, c ghdata.CachedContents, hit bool) {
 	// c.Content includes GitHub's embedded line breaks, which base64 does not accept, so they are stripped before decoding.
 	clean := strings.NewReplacer("\r", "", "\n", "").Replace(c.Content)

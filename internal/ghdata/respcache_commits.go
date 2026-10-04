@@ -15,15 +15,14 @@ import (
 //	GET /repos/{owner}/{repo}/commits
 //
 // Following the absorb-don't-byte-cache doctrine, the listed commits
-// themselves live in the SAME global git_commits_cache rows the single
-// git-commit route and push payloads maintain (respcache.go). What is here is
-// only the per-query ORDERING/COMPLETENESS proof: a commits_list_cache
-// snapshot holding the response's shas in order, keyed by the exact modeled
-// query shape (owner, repo, ref_param, per_page, page) -- the same rows +
-// marker split the pulls list uses. A snapshot whose commits were LRU-pruned
-// out of git_commits_cache degrades to a miss (self-healing) rather than
-// serving a hole. WHO may read a rebuilt list is the reveal layer's job
-// (internal/api).
+// themselves live in the SAME global git_commits_cache rows the git-commit
+// route and push payloads maintain (respcache.go). What is here is only the
+// per-query ORDERING/COMPLETENESS proof: a commits_list_cache snapshot
+// holding the response's shas in order, keyed by the exact modeled query
+// shape (owner, repo, ref_param, per_page, page) -- the same rows + marker
+// split the pulls list uses. A snapshot whose commits were LRU-pruned out of
+// git_commits_cache degrades to a miss (self-healing) rather than serving a
+// hole. WHO may read a rebuilt list is the reveal layer's job (internal/api).
 
 // GetCachedCommitsList returns the commits of cached list page in
 // response order, or (nil, false) on a miss: no snapshot, an expired

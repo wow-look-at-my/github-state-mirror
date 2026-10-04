@@ -172,8 +172,8 @@ func TestDoJSON_SetsContentType(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// retryTestServer is testServer with retry backoff, so the transient
-// retries under test never really sleep.
+// retryTestServer is testServer with retry backoff, so the transient retries
+// under test never sleep.
 func retryTestServer(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	c := testServer(t, handler)

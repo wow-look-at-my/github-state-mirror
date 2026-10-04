@@ -14,12 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached webhook CONFIGURATION listings (tier of the cache contract):
-//
-//	GET /repos/{owner}/{repo}/hooks
-//	GET /orgs/{org}/hooks
-//
-// Keyed by the bearer's fingerprint: an admin-only read, so a global row
+// The cached webhook CONFIGURATION listings (tier of the cache contract).
 
 const (
 	// hooksCacheTTL stays short: a reconciler working from a stale listing could create a duplicate webhook.

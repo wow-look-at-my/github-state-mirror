@@ -37,7 +37,7 @@ func mergeStaleMarkerLive(pr dbgen.PullRequest, now time.Time) bool {
 }
 
 // staleShaOffered reports whether offered is exactly the test-merge sha a
-// recent push invalidated on the existing row -- presumed pre-push, because
+// recent push invalidated on the existing row -- presumed pre-push.
 func staleShaOffered(existing dbgen.PullRequest, offered sql.NullString, now time.Time) bool {
 	return mergeStaleMarkerLive(existing, now) &&
 		offered.Valid && offered.String != "" && offered.String == existing.MergeStaleSha.String
@@ -129,9 +129,9 @@ func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time
 }
 
 // HasLivePullsListMarker reports whether the repo's "open-PR list complete"
-// marker is currently valid, WITHOUT touching its LRU timestamp -- a pure
-// read for the consistency check (which must not mutate the cache), unlike
-// PullsListFresh whose hit refreshes last_used_at.
+// marker is valid, WITHOUT touching its LRU timestamp -- a pure read for the
+// consistency check (which must not mutate the cache), unlike PullsListFresh
+// whose hit refreshes last_used_at.
 func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, now time.Time) (bool, error) {
 	row, err := s.q.GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
@@ -248,7 +248,6 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 			}); err != nil {
 				return err
 			}
-			// No closure recorded: inferred from absence, not a statement that it closed.
 		}
 		if err := q.UpsertPullsListMarker(ctx, dbgen.UpsertPullsListMarkerParams{
 			Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
@@ -271,25 +270,6 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // including null ("GitHub is recomputing") -- so it is force-set after the
 // upsert: a null answer must keep the single-PR route missing (and
 // re-fetching) until GitHub resolves it, never resurrect a stale value.
-//
-//	answer is NOT authoritative: a response whose merge_commit_sha is the
-//
-// exact sha a branch push just invalidated (a live merge_stale_sha marker).
-// The push moved the PR's base or head, and a tip change always changes the
-// sha of a SUCCESSFUL test merge -- so GitHub re-offering the invalidated sha
-// means its recompute hasn't landed and the WHOLE answer (resolved mergeable
-// included) predates the push. Such an answer is stored UNRESOLVED (mergeable
-// NULL, merge_commit_sha NULL, marker kept), so reads keep missing -- each
-//
-//	re-triggering the recompute -- until GitHub serves a NEW sha, which
-//
-// clears the marker. exemptions overrule that presumption and accept the
-// answer, sha and all, marker cleared: () the push-tip proof
-// (pushProvenPostPush) -- the answer's reported tip for the marked branch
-// equals the marking push's after sha, so it demonstrably post-dates the push
-// -- which heals a WRONG mark (the race where the fresh post-push answer was
-// absorbed before the late push delivery, which then stamped it stale) on the
-// very next poll; and () the dirty-retained pattern
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

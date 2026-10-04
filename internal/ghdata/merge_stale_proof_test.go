@@ -36,7 +36,7 @@ func TestNullPRMergeableByBranch_RecordsPushProof(t *testing.T) {
 // TestNullPRMergeableByBranch_NoProofWithoutUsableAfter: an empty after (an
 // unknowing caller) and git's all-zeros null id (a deleted ref) name no real
 // tip, so the marker is recorded WITHOUT proof columns -- nothing can match
-// them, and only the TTL unwedges (the old bound).
+// them, and only the TTL unwedges (the bound).
 func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 	for name, after := range map[string]string{"empty": "", "zeros": zeroSHA} {
 		t.Run(name, func(t *testing.T) {
@@ -56,9 +56,9 @@ func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 }
 
 // TestAbsorbSinglePull_WrongMarkHealsOnPushProof locks the wrong-mark race
-// fix. The race: GitHub recomputes mergeability within seconds of a push
-// a read triggers it, and pr-minder polls the mirror right after pushing --
-// so a poll-driven absorb can land GitHub's POST-push answer (fresh sha, base
+// fix. The race: GitHub recomputes mergeability within seconds of a push a
+// read triggers it, and pr-minder polls the mirror right after pushing -- so
+// a poll-driven absorb can land GitHub's POST-push answer (fresh sha, base
 // tip already at the push's after) BEFORE the push delivery reaches the
 // mirror, and the late delivery then stamps that FRESH sha stale. Pre-fix
 // this wedged the row for the whole MergeStaleTTL hour: every refetch
@@ -66,8 +66,7 @@ func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 // mergeable:null while github.com showed it computed -- pr-minder's
 // conflict-settle burned its full in-run ceiling on every touch of the PR.
 // Now the re-offered answer's base tip equals the push's recorded after:
-// post-push proof, accepted, marker fully cleared -- healed on the very next
-// poll.
+// post-push proof, accepted, marker fully cleared -- healed on the next poll.
 func TestAbsorbSinglePull_WrongMarkHealsOnPushProof(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -132,8 +131,8 @@ func TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof(t *testing.T) {
 
 // TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof: recording the
 // proof must not weaken the guard's whole point -- a genuinely PRE-push
-// answer (the invalidated sha with the OLD base tip) demonstrates nothing and
-// is rejected exactly as before, marker and proof kept.
+// answer (the invalidated sha with the base tip) demonstrates nothing and is
+// rejected exactly as before, marker and proof kept.
 func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -143,7 +142,7 @@ func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
 	// The push moved the base to pushedBaseTip; the marker carries the proof.
 	require.NoError(t, s.NullPRMergeableByBranch(ctx, "org1", "repo1", "main", pushedBaseTip, now))
 
-	// GitHub's recompute lags: the refetch re-offers the invalidated sha with the OLD base tip.
+	// GitHub's recompute lags: the refetch re-offers the invalidated sha with the base tip.
 	stale, err := s.AbsorbSinglePull(ctx, restPR(7, "MERGEABLE", staleShaA), nil, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.True(t, stale, "a pre-push answer must stay rejected")
@@ -265,10 +264,10 @@ func TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected(t *testing.T) {
 }
 
 // TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL: the exemption is scoped
-// to CONFLICTING only. A successful test merge really does always mint a new
-// sha, so a MERGEABLE answer re-offering the marker sha is pre-push however
-// old the marker is (within MergeStaleTTL) and stays rejected -- lag-window
-// age buys it nothing.
+// to CONFLICTING only. A successful test merge does always mint a new sha, so
+// a MERGEABLE answer re-offering the marker sha is pre-push however old the
+// marker is (within MergeStaleTTL) and stays rejected -- lag-window age buys
+// it nothing.
 func TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

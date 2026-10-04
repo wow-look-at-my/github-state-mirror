@@ -169,10 +169,10 @@ func TestDebounce_KeyedByRequestShape(t *testing.T) {
 }
 
 // TestDebounce_IneligibleRequestsForwardImmediately: the exclusions are not
-// just uncoalesced, they are UNDELAYED — an ineligible request must not pay
-// the window. Writes are excluded because identical POSTs are intents;
-// conditional and Range reads because their answer depends on caller state the
-// key cannot capture (a against someone else's etag is a wrong answer).
+// uncoalesced, they are UNDELAYED — an ineligible request must not pay the
+// window. Writes are excluded because identical POSTs are intents;
+// conditional and Range reads because their answer depends on caller state
+// the key cannot capture (a against someone else's etag is a wrong answer).
 func TestDebounce_IneligibleRequestsForwardImmediately(t *testing.T) {
 	for _, tc := range []struct {
 		name string

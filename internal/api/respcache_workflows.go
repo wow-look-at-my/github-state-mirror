@@ -14,9 +14,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached Actions WORKFLOW definitions, listing and single. A definition is
-// not a run: it changes only when a push edits .github/workflows.
-// see docs/cache/rest-routes.md
+// The cached Actions WORKFLOW definitions, listing and single.
 
 const (
 	// GitHub's default per_page for the workflows listing.
@@ -52,7 +50,7 @@ func (h *handlers) cachedWorkflowsList(w http.ResponseWriter, r *http.Request) {
 
 // cachedWorkflow serves a single workflow definition. The id is whatever the
 // caller asked with, a numeric id or a file name, and each spelling keys its
-// own row: resolving between them needs the very answer this caches.
+// own row: resolving between them needs the answer this caches.
 func (h *handlers) cachedWorkflow(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))

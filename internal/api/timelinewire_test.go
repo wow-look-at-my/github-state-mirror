@@ -118,10 +118,9 @@ var (
 	tsCols = `(?s)const SCHEMA: WireSchema = \{.*?\n\};`
 )
 
-// tsList reads array field out of the chart's SCHEMA literal. A regex
-// rather than a TypeScript parser: the literal is a flat list of string
-// constants, and a field this cannot find fails the test rather than passing
-// vacuously.
+// tsList reads array field out of the chart's SCHEMA literal. A regex rather
+// than a TypeScript parser: the literal is a flat list of string constants,
+// and a field this cannot find fails the test rather than passing vacuously.
 func tsList(t *testing.T, src []byte, field string) []string {
 	t.Helper()
 	block := regexp.MustCompile(tsCols).Find(src)
