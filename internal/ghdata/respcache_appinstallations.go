@@ -17,7 +17,7 @@ const AppInstallationsCacheTTL = time.Hour
 // GetCachedAppInstallations returns page's cached document, or (empty,
 // false) on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedAppInstallations(ctx context.Context, appKey string, perPage, page int64, now time.Time) (string, bool, error) {
-	row, err := s.q.GetAppInstallationsCache(ctx, dbgen.GetAppInstallationsCacheParams{
+	row, err := s.qx(ctx).GetAppInstallationsCache(ctx, dbgen.GetAppInstallationsCacheParams{
 		AppKey: appKey, PerPage: perPage, Page: page,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -29,7 +29,7 @@ func (s *Store) GetCachedAppInstallations(ctx context.Context, appKey string, pe
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchAppInstallationsCache(ctx, dbgen.TouchAppInstallationsCacheParams{
+	_ = s.qx(ctx).TouchAppInstallationsCache(ctx, dbgen.TouchAppInstallationsCacheParams{
 		LastUsedAt: rfc3339(now), AppKey: appKey, PerPage: perPage, Page: page,
 	})
 	return row.Doc, true, nil
@@ -38,19 +38,19 @@ func (s *Store) GetCachedAppInstallations(ctx context.Context, appKey string, pe
 // PutCachedAppInstallations stores page, then prunes (expired rows + LRU
 // beyond the cap).
 func (s *Store) PutCachedAppInstallations(ctx context.Context, appKey string, perPage, page int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertAppInstallationsCache(ctx, dbgen.UpsertAppInstallationsCacheParams{
+	if err := s.qx(ctx).UpsertAppInstallationsCache(ctx, dbgen.UpsertAppInstallationsCacheParams{
 		AppKey: appKey, PerPage: perPage, Page: page, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredAppInstallationsCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredAppInstallationsCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneAppInstallationsCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneAppInstallationsCacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateAppInstallationsForApp drops every cached page for App --
 func (s *Store) InvalidateAppInstallationsForApp(ctx context.Context, appKey string) error {
-	return s.q.DeleteAppInstallationsCacheForApp(ctx, appKey)
+	return s.qx(ctx).DeleteAppInstallationsCacheForApp(ctx, appKey)
 }

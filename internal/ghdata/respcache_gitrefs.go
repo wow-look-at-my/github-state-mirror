@@ -49,7 +49,7 @@ type CachedGitRef struct {
 // row, or an expired). A hit refreshes the row's LRU timestamp.
 func (s *Store) GetCachedGitRef(ctx context.Context, owner, repo, ref string, now time.Time) (CachedGitRef, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	row, err := s.qx(ctx).GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
 	if errors.Is(err, sql.ErrNoRows) {
 		return CachedGitRef{}, false, nil
 	}
@@ -59,7 +59,7 @@ func (s *Store) GetCachedGitRef(ctx context.Context, owner, repo, ref string, no
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return CachedGitRef{}, false, nil
 	}
-	_ = s.q.TouchGitRefCache(ctx, dbgen.TouchGitRefCacheParams{
+	_ = s.qx(ctx).TouchGitRefCache(ctx, dbgen.TouchGitRefCacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Ref: ref,
 	})
 	return CachedGitRef{
@@ -90,11 +90,11 @@ func (s *Store) GetCachedGitRefChecked(ctx context.Context, owner, repo, ref str
 		return c, true, "", nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	row, err := s.qx(ctx).GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
 	if err != nil {
 		return c, true, "", nil // the read above already succeeded; this is the row's own metadata
 	}
-	base, err := s.q.ContradictingPRBaseTip(ctx, dbgen.ContradictingPRBaseTipParams{
+	base, err := s.qx(ctx).ContradictingPRBaseTip(ctx, dbgen.ContradictingPRBaseTipParams{
 		Owner: ownerKey, Repo: repoKey, BaseRefName: sql.NullString{String: branch, Valid: true},
 		BaseRefOid: sql.NullString{String: doc.Object.SHA, Valid: true}, TouchedAt: row.FetchedAt,
 	})
@@ -124,7 +124,7 @@ func branchNameFromRefPath(ref string) string {
 // PutCachedGitRef records fetched ref answer, then prunes the table
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedGitRef(ctx context.Context, c CachedGitRef, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertGitRefCache(ctx, dbgen.UpsertGitRefCacheParams{
+	if err := s.qx(ctx).UpsertGitRefCache(ctx, dbgen.UpsertGitRefCacheParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Ref: c.Ref,
 		Status: int64(c.Status), Doc: c.Doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
@@ -132,10 +132,10 @@ func (s *Store) PutCachedGitRef(ctx context.Context, c CachedGitRef, now time.Ti
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredGitRefCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredGitRefCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneGitRefCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneGitRefCacheLRU(ctx, CacheMaxRows)
 }
 
 // storedGitRefDoc's field order is the wire order and must match the api package's render exactly, so hit, miss, and an applied tip serve identical bytes.
@@ -166,7 +166,7 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	row, err := s.qx(ctx).GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -202,7 +202,7 @@ func (s *Store) ApplyMergedBaseTip(ctx context.Context, owner, repo, ref, mergeC
 		return false, nil
 	}
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
+	row, err := s.qx(ctx).GetGitRefCache(ctx, dbgen.GetGitRefCacheParams{Owner: ownerKey, Repo: repoKey, Ref: ref})
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -263,7 +263,7 @@ func (s *Store) KnownBranchTip(ctx context.Context, owner, repo, name string, no
 
 // InvalidateGitRefForRef drops spelling of a ref -- the last resort here, for a deletion or a creation clearing a verdict.
 func (s *Store) InvalidateGitRefForRef(ctx context.Context, owner, repo, ref string) error {
-	return s.q.DeleteGitRefCacheForRef(ctx, dbgen.DeleteGitRefCacheForRefParams{
+	return s.qx(ctx).DeleteGitRefCacheForRef(ctx, dbgen.DeleteGitRefCacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }
@@ -272,7 +272,7 @@ func (s *Store) InvalidateGitRefForRef(ctx context.Context, owner, repo, ref str
 // repository-event flush (rename/delete/visibility) and the fallback for a
 // push payload that names no usable ref.
 func (s *Store) InvalidateGitRefCache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteGitRefCacheByRepo(ctx, dbgen.DeleteGitRefCacheByRepoParams{
+	return s.qx(ctx).DeleteGitRefCacheByRepo(ctx, dbgen.DeleteGitRefCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

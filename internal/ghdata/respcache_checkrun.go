@@ -15,7 +15,7 @@ const CheckRunCacheTTL = 24 * time.Hour
 // GetCachedCheckRun returns the cached single-check-run document, or (empty,
 // false) on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedCheckRun(ctx context.Context, owner, repo string, checkRunID int64, now time.Time) (string, bool, error) {
-	row, err := s.q.GetCheckRunCache(ctx, dbgen.GetCheckRunCacheParams{
+	row, err := s.qx(ctx).GetCheckRunCache(ctx, dbgen.GetCheckRunCacheParams{
 		Owner: owner, Repo: repo, CheckRunID: checkRunID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -27,7 +27,7 @@ func (s *Store) GetCachedCheckRun(ctx context.Context, owner, repo string, check
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchCheckRunCache(ctx, dbgen.TouchCheckRunCacheParams{
+	_ = s.qx(ctx).TouchCheckRunCache(ctx, dbgen.TouchCheckRunCacheParams{
 		LastUsedAt: rfc3339(now), Owner: owner, Repo: repo, CheckRunID: checkRunID,
 	})
 	return row.Doc, true, nil
@@ -36,16 +36,16 @@ func (s *Store) GetCachedCheckRun(ctx context.Context, owner, repo string, check
 // PutCachedCheckRun stores check run's rendered document, then prunes
 // (expired rows + LRU beyond the cap).
 func (s *Store) PutCachedCheckRun(ctx context.Context, owner, repo string, checkRunID int64, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertCheckRunCache(ctx, dbgen.UpsertCheckRunCacheParams{
+	if err := s.qx(ctx).UpsertCheckRunCache(ctx, dbgen.UpsertCheckRunCacheParams{
 		Owner: owner, Repo: repo, CheckRunID: checkRunID, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredCheckRunCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredCheckRunCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneCheckRunCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneCheckRunCacheLRU(ctx, CacheMaxRows)
 }
 
 // ApplyCheckRunByID rewrites (or creates) the single-check-run row for a
@@ -68,7 +68,7 @@ func (s *Store) ApplyCheckRunByID(ctx context.Context, owner, repo string, run S
 // repo -- the repository-event/unparseable-payload backstop, the same
 // conservative fallback commit_ci_cache uses.
 func (s *Store) InvalidateCheckRunCacheByRepo(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteCheckRunCacheByRepo(ctx, dbgen.DeleteCheckRunCacheByRepoParams{
+	return s.qx(ctx).DeleteCheckRunCacheByRepo(ctx, dbgen.DeleteCheckRunCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }

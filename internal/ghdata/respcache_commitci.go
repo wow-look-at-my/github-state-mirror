@@ -37,7 +37,7 @@ type CachedCommitCI struct {
 // GetCachedCommitCI returns the cached snapshot, or (, false) on a miss; a hit refreshes its LRU timestamp.
 func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind string, perPage, page int, now time.Time) (CachedCommitCI, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
-	row, err := s.q.GetCommitCICache(ctx, dbgen.GetCommitCICacheParams{
+	row, err := s.qx(ctx).GetCommitCICache(ctx, dbgen.GetCommitCICacheParams{
 		Owner: ownerKey, Repo: repoKey, Ref: ref, Kind: kind,
 		PerPage: int64(perPage), Page: int64(page),
 	})
@@ -50,7 +50,7 @@ func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind st
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return CachedCommitCI{}, false, nil
 	}
-	_ = s.q.TouchCommitCICache(ctx, dbgen.TouchCommitCICacheParams{
+	_ = s.qx(ctx).TouchCommitCICache(ctx, dbgen.TouchCommitCICacheParams{
 		LastUsedAt: rfc3339(now), Owner: ownerKey, Repo: repoKey, Ref: ref, Kind: kind,
 		PerPage: int64(perPage), Page: int64(page),
 	})
@@ -64,7 +64,7 @@ func (s *Store) GetCachedCommitCI(ctx context.Context, owner, repo, ref, kind st
 // shape, then prunes the table (expired rows + LRU beyond the cap). c must
 // carry normalized owner/repo (the API layer's absorb does).
 func (s *Store) PutCachedCommitCI(ctx context.Context, c CachedCommitCI, perPage, page int, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertCommitCICache(ctx, dbgen.UpsertCommitCICacheParams{
+	if err := s.qx(ctx).UpsertCommitCICache(ctx, dbgen.UpsertCommitCICacheParams{
 		Owner: NormalizeRepoKey(c.Owner), Repo: NormalizeRepoKey(c.Repo), Ref: c.Ref, Kind: c.Kind,
 		PerPage: int64(perPage), Page: int64(page),
 		Status:    int64(c.Status),
@@ -73,22 +73,22 @@ func (s *Store) PutCachedCommitCI(ctx context.Context, c CachedCommitCI, perPage
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredCommitCICache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredCommitCICache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneCommitCICacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneCommitCICacheLRU(ctx, CacheMaxRows)
 }
 
 // InvalidateCommitCICache drops every kind, ref, and page for a repo: the repository flush and the no-refs fallback.
 func (s *Store) InvalidateCommitCICache(ctx context.Context, owner, repo string) error {
-	return s.q.DeleteCommitCICacheByRepo(ctx, dbgen.DeleteCommitCICacheByRepoParams{
+	return s.qx(ctx).DeleteCommitCICacheByRepo(ctx, dbgen.DeleteCommitCICacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
 	})
 }
 
 // InvalidateCommitCIForRef drops verbatim ref spelling's snapshots (all kinds, all pages).
 func (s *Store) InvalidateCommitCIForRef(ctx context.Context, owner, repo, ref string) error {
-	return s.q.DeleteCommitCICacheForRef(ctx, dbgen.DeleteCommitCICacheForRefParams{
+	return s.qx(ctx).DeleteCommitCICacheForRef(ctx, dbgen.DeleteCommitCICacheForRefParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref,
 	})
 }

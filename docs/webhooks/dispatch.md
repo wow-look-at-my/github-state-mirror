@@ -76,6 +76,12 @@ Invalidation through `MarkStaleByKindKey` is only a **fallback**, for a structur
 
 `UpsertPRWithChecks` additionally derives `last_commit_status` from the commit checks already recorded for the PR's head sha. A PR opened *after* its head commit's CI finished therefore does not sit at NULL forever. That is what pr-minder's auto-opened PRs look like.
 
-The handler dispatches **synchronously**. It returns a `DispatchResult` whose disposition is the response GitHub records. The dispositions are `applied` at 200, `ignored` and `invalidated` at 202, and `error` at 500. There is NO `skipped`. Every delivery is also written to the global `webhook_deliveries` log. Do not restore the old fire-and-forget 200.
+## Receipt and apply
+
+The handler verifies the signature, writes the raw delivery to the inbox (`internal/inbox`, its own SQLite file, `synchronous(FULL)`), and answers. GitHub records `queued` at 202 for a new delivery id and `duplicate` at 202 for one the inbox already holds. A delivery the inbox can not record is answered `error` at 500, so it appears in GitHub's failure log and the replayer asks for it again. GitHub never waits on an apply: a burst queues in the inbox, not in front of the write lock with GitHub's 10s deadline running.
+
+One worker (`webhook.Queue`) applies inbox rows in arrival order. Each apply is one transaction (`ghdata.Store.InTx`). The watermark claim, the cache flushes, the repo absorb, the event's own writes and the `webhook_deliveries` row commit together. As a result, the write lock is taken once per delivery. The applied disposition (`applied`, `ignored`, `invalidated`, `superseded`, `error`) goes to the `webhook_deliveries` log, the Timeline and the subscriber notifiers. An `error` is retried twice, then set aside with an ERROR log.
+
+A row is marked applied after its apply. A process that stops between the applies the row again on start. Every apply is idempotent under the watermark. On start the worker applies whatever the last process left unapplied before anything new. Applied rows are kept 72h, the window in which GitHub lets a delivery be redelivered. As a result, a redelivery of an applied delivery is answered `duplicate` and not applied twice.
 
 The dispatcher also maintains the response caches, disposition-neutral and best-effort, at the finest grain each payload supports. The full per-event matrix lives in **docs/webhooks/response-cache-invalidation.md**. It states which delivery flushes which table, whether the grain is per-ref or repo-wide, and why each grain is what it is.

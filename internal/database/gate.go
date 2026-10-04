@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -23,8 +24,20 @@ type writeGate struct {
 	// queue holds one channel per waiting writer, oldest first; release closes the head's.
 	queue []chan struct{}
 	// holder is the admitted writer's goroutine id while holder tracking is on.
-	holder atomic.Int64
+	holder    atomic.Int64
+	heldSince atomic.Int64
+	// obs receives the wait for the gate and the time it was held; nil times nothing.
+	obs Observer
 }
+
+// Kinds the gate reports: the wait for the write lock, and how long each writer kept it.
+const (
+	KindWriteWait = "db.write_wait"
+	KindWriteHold = "db.write_hold"
+)
+
+// slowHold is the hold past which the releasing writer's stack is logged.
+const slowHold = time.Second
 
 // writeGateWait matches busy_timeout: a writer that cannot get in fails after the same wait it had.
 const writeGateWait = 30 * time.Second
@@ -32,14 +45,15 @@ const writeGateWait = 30 * time.Second
 // ErrWriteGateTimeout is returned by a write that waited writeGateWait for the write lock without getting it.
 var ErrWriteGateTimeout = errors.New("database is locked: waited " + writeGateWait.String() + " for the write lock")
 
-func newWriteGate() *writeGate { return &writeGate{} }
+func newWriteGate(obs Observer) *writeGate { return &writeGate{obs: obs} }
 
 func (g *writeGate) acquire(ctx context.Context) error {
+	start := time.Now()
 	g.mu.Lock()
 	if !g.held {
 		g.held = true
 		g.mu.Unlock()
-		g.admitted()
+		g.admitted(start)
 		return nil
 	}
 	turn := make(chan struct{})
@@ -50,7 +64,7 @@ func (g *writeGate) acquire(ctx context.Context) error {
 	defer timer.Stop()
 	select {
 	case <-turn:
-		g.admitted()
+		g.admitted(start)
 		return nil
 	case <-ctx.Done():
 		return g.abandon(turn, ctx.Err())
@@ -75,7 +89,12 @@ func (g *writeGate) abandon(turn chan struct{}, err error) error {
 	return err
 }
 
-func (g *writeGate) admitted() {
+func (g *writeGate) admitted(start time.Time) {
+	now := time.Now()
+	g.heldSince.Store(now.UnixNano())
+	if g.obs != nil {
+		g.obs.Observe(KindWriteWait, now.Sub(start))
+	}
 	if trackHolders.Load() {
 		id := goroutineID()
 		g.holder.Store(id)
@@ -85,6 +104,9 @@ func (g *writeGate) admitted() {
 
 // release hands the gate straight to the oldest waiter, or frees it when nobody waits.
 func (g *writeGate) release() {
+	if since := g.heldSince.Swap(0); since != 0 {
+		g.recordHold(time.Duration(time.Now().UnixNano() - since))
+	}
 	if id := g.holder.Swap(0); id != 0 {
 		holders.remove(id)
 	}
@@ -97,6 +119,19 @@ func (g *writeGate) release() {
 	next := g.queue[0]
 	g.queue = g.queue[1:]
 	close(next)
+}
+
+// recordHold times one writer's hold, and names a slow holder by the stack that released it.
+func (g *writeGate) recordHold(d time.Duration) {
+	if g.obs != nil {
+		g.obs.Observe(KindWriteHold, d)
+	}
+	if d < slowHold {
+		return
+	}
+	stack := make([]byte, 8<<10)
+	stack = stack[:runtime.Stack(stack, false)]
+	slog.Warn("database: write lock held past the slow-hold threshold", "held", d, "threshold", slowHold, "queued", g.queued(), "holder", string(stack))
 }
 
 // queued reports how many writers wait for the gate.

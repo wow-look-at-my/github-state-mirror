@@ -31,7 +31,7 @@ func SearchIssuesQueryKey(q string, perPage, page int64) string {
 // GetCachedSearchIssues returns the cached document for (tokenFP, queryKey),
 // or (empty, false) on a miss/expiry. A hit refreshes the LRU timestamp.
 func (s *Store) GetCachedSearchIssues(ctx context.Context, tokenFP, queryKey string, now time.Time) (string, bool, error) {
-	row, err := s.q.GetSearchIssuesCache(ctx, dbgen.GetSearchIssuesCacheParams{
+	row, err := s.qx(ctx).GetSearchIssuesCache(ctx, dbgen.GetSearchIssuesCacheParams{
 		TokenFp: tokenFP, QueryKey: queryKey,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -43,7 +43,7 @@ func (s *Store) GetCachedSearchIssues(ctx context.Context, tokenFP, queryKey str
 	if exp, perr := time.Parse(time.RFC3339, row.ExpiresAt); perr != nil || !exp.After(now) {
 		return "", false, nil
 	}
-	_ = s.q.TouchSearchIssuesCache(ctx, dbgen.TouchSearchIssuesCacheParams{
+	_ = s.qx(ctx).TouchSearchIssuesCache(ctx, dbgen.TouchSearchIssuesCacheParams{
 		LastUsedAt: rfc3339(now), TokenFp: tokenFP, QueryKey: queryKey,
 	})
 	return row.Doc, true, nil
@@ -52,14 +52,14 @@ func (s *Store) GetCachedSearchIssues(ctx context.Context, tokenFP, queryKey str
 // PutCachedSearchIssues stores query's result, then prunes (expired rows
 // + LRU beyond the cap).
 func (s *Store) PutCachedSearchIssues(ctx context.Context, tokenFP, queryKey, doc string, now time.Time, ttl time.Duration) error {
-	if err := s.q.UpsertSearchIssuesCache(ctx, dbgen.UpsertSearchIssuesCacheParams{
+	if err := s.qx(ctx).UpsertSearchIssuesCache(ctx, dbgen.UpsertSearchIssuesCacheParams{
 		TokenFp: tokenFP, QueryKey: queryKey, Doc: doc,
 		FetchedAt: rfc3339(now), ExpiresAt: rfc3339(now.Add(ttl)), LastUsedAt: rfc3339(now),
 	}); err != nil {
 		return err
 	}
-	if err := s.q.DeleteExpiredSearchIssuesCache(ctx, rfc3339(now)); err != nil {
+	if err := s.qx(ctx).DeleteExpiredSearchIssuesCache(ctx, rfc3339(now)); err != nil {
 		return err
 	}
-	return s.q.PruneSearchIssuesCacheLRU(ctx, CacheMaxRows)
+	return s.qx(ctx).PruneSearchIssuesCacheLRU(ctx, CacheMaxRows)
 }
