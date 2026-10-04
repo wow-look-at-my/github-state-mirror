@@ -232,7 +232,7 @@ func TestGetOwnerData_PageHook(t *testing.T) {
 // enum (an owner-only extra the locked org query must never grow) and
 // convertRepo lowercases it into the repo row, so the fleet refresher's
 // SyncOrgTruth stamps it into truth. Without this every refresher-synced row
-// sat at '' = fail-closed unknown (the -- report's
+// sat at ” = fail-closed unknown (the -- report's
 // visibility_unknown entries).
 func TestGetOwnerData_CarriesVisibility(t *testing.T) {
 	assert.Contains(t, ownerDataQuery, "visibility",

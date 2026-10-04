@@ -114,18 +114,18 @@ type OrgSkip struct {
 
 // CheckSummary is the headline tally.
 type CheckSummary struct {
-	OrgsChecked       int `json:"orgs_checked"`
-	ReposCached       int `json:"repos_cached"`
-	OpenPRsCached     int `json:"open_prs_cached"`
-	Discrepancies     int `json:"discrepancies"`
-	ReposOnlyInCache  int `json:"repos_only_in_cache"`
-	ReposOnlyOnGitHub int `json:"repos_only_on_github"`
+	OrgsChecked              int `json:"orgs_checked"`
+	ReposCached              int `json:"repos_cached"`
+	OpenPRsCached            int `json:"open_prs_cached"`
+	Discrepancies            int `json:"discrepancies"`
+	ReposOnlyInCache         int `json:"repos_only_in_cache"`
+	ReposOnlyOnGitHub        int `json:"repos_only_on_github"`
 	ReposOnlyOnGitHubPrivate int `json:"repos_only_on_github_private"`
 	ReposOnlyInCacheArchived int `json:"repos_only_in_cache_archived"`
 	PRsOnlyInCache           int `json:"prs_only_in_cache"`
 	PRsOnlyOnGitHub          int `json:"prs_only_on_github"`
 	FieldMismatches          int `json:"field_mismatches"`
-	VisibilityLeaks int `json:"visibility_leaks"`
+	VisibilityLeaks          int `json:"visibility_leaks"`
 	// RacedDuringCheck counts informational raced_during_check entries.
 	RacedDuringCheck int `json:"raced_during_check"`
 }
@@ -153,13 +153,13 @@ type Discrepancy struct {
 	Issue string `json:"issue"`        // only_in_cache | only_on_github | field_mismatch | visibility_leak | visibility_unknown | raced_during_check
 	Field string `json:"field,omitempty"`
 	// Which field differs (issue==field_mismatch / visibility_*)
-	Cached string `json:"cached,omitempty"`
-	GitHub string `json:"github,omitempty"`
+	Cached     string `json:"cached,omitempty"`
+	GitHub     string `json:"github,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
-	Archived bool `json:"archived,omitempty"`
-	Title     string `json:"title,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	TouchedAt string `json:"touched_at,omitempty"`
+	Archived   bool   `json:"archived,omitempty"`
+	Title      string `json:"title,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	TouchedAt  string `json:"touched_at,omitempty"`
 	// ServedNow marks a PR-existence discrepancy whose repo has a LIVE
 	ServedNow bool   `json:"served_now,omitempty"`
 	Note      string `json:"note,omitempty"`
@@ -367,7 +367,6 @@ func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
 	return names
 }
 
-//
 //	owner into the report (read-only). An owner with NO marker rows is
 //
 // surfaced explicitly as "never_synced" -- silently omitting it hid "the fleet

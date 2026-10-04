@@ -111,11 +111,11 @@ func TestIsWriteSQL(t *testing.T) {
 	for q, want := range map[string]bool{
 		"-- name: ClaimWebhookWatermark :one\nINSERT INTO t VALUES (1) RETURNING a": true,
 		"/* c */ update t set a = 1 returning a":                                    true,
-		"DELETE FROM t RETURNING a":                                                  true,
-		"WITH x AS (SELECT 1) DELETE FROM t WHERE a IN x RETURNING a":                true,
-		"-- name: GetRepo :one\nSELECT * FROM repos WHERE owner = ?":                 false,
-		"WITH x AS (SELECT 1) SELECT * FROM x":                                       false,
-		"PRAGMA busy_timeout":                                                        false,
+		"DELETE FROM t RETURNING a":                                                 true,
+		"WITH x AS (SELECT 1) DELETE FROM t WHERE a IN x RETURNING a":               true,
+		"-- name: GetRepo :one\nSELECT * FROM repos WHERE owner = ?":                false,
+		"WITH x AS (SELECT 1) SELECT * FROM x":                                      false,
+		"PRAGMA busy_timeout":                                                       false,
 	} {
 		assert.Equal(t, want, isWriteSQL(q), q)
 	}
