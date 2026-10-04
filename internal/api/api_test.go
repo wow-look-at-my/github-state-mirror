@@ -43,7 +43,7 @@ var schemaTemplate struct {
 }
 
 func TestMain(m *testing.M) {
-	code := m.Run()
+	code := database.RunWithTxGuard(m)
 	if schemaTemplate.dir != "" {
 		_ = os.RemoveAll(schemaTemplate.dir)
 	}

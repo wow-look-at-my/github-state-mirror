@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,8 +18,10 @@ import (
 // writeGate admits one of this process's writers to a database file at a
 // time, in arrival order.
 type writeGate struct {
-	// slot holds one token while a writer is admitted.
-	slot chan struct{}
+	mu   sync.Mutex
+	held bool
+	// queue holds one channel per waiting writer, oldest first; release closes the head's.
+	queue []chan struct{}
 	// holder is the admitted writer's goroutine id while holder tracking is on.
 	holder atomic.Int64
 }
@@ -29,35 +32,78 @@ const writeGateWait = 30 * time.Second
 // ErrWriteGateTimeout is returned by a write that waited writeGateWait for the write lock without getting it.
 var ErrWriteGateTimeout = errors.New("database is locked: waited " + writeGateWait.String() + " for the write lock")
 
-func newWriteGate() *writeGate { return &writeGate{slot: make(chan struct{}, 1)} }
+func newWriteGate() *writeGate { return &writeGate{} }
 
 func (g *writeGate) acquire(ctx context.Context) error {
+	g.mu.Lock()
+	if !g.held {
+		g.held = true
+		g.mu.Unlock()
+		g.admitted()
+		return nil
+	}
+	turn := make(chan struct{})
+	g.queue = append(g.queue, turn)
+	g.mu.Unlock()
+
+	timer := time.NewTimer(writeGateWait)
+	defer timer.Stop()
 	select {
-	case g.slot <- struct{}{}:
-	default:
-		timer := time.NewTimer(writeGateWait)
-		defer timer.Stop()
-		select {
-		case g.slot <- struct{}{}:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return ErrWriteGateTimeout
+	case <-turn:
+		g.admitted()
+		return nil
+	case <-ctx.Done():
+		return g.abandon(turn, ctx.Err())
+	case <-timer.C:
+		return g.abandon(turn, ErrWriteGateTimeout)
+	}
+}
+
+// abandon leaves the queue. A turn handed over while the waiter was giving up
+// is passed on to the next writer, so the gate is never left held by nobody.
+func (g *writeGate) abandon(turn chan struct{}, err error) error {
+	g.mu.Lock()
+	for i, ch := range g.queue {
+		if ch == turn {
+			g.queue = append(g.queue[:i], g.queue[i+1:]...)
+			g.mu.Unlock()
+			return err
 		}
 	}
+	g.mu.Unlock()
+	g.release()
+	return err
+}
+
+func (g *writeGate) admitted() {
 	if trackHolders.Load() {
 		id := goroutineID()
 		g.holder.Store(id)
 		holders.add(id)
 	}
-	return nil
 }
 
+// release hands the gate straight to the oldest waiter, or frees it when nobody waits.
 func (g *writeGate) release() {
 	if id := g.holder.Swap(0); id != 0 {
 		holders.remove(id)
 	}
-	<-g.slot
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.queue) == 0 {
+		g.held = false
+		return
+	}
+	next := g.queue[0]
+	g.queue = g.queue[1:]
+	close(next)
+}
+
+// queued reports how many writers wait for the gate.
+func (g *writeGate) queued() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.queue)
 }
 
 // isWriteSQL reports whether a statement run through QueryContext writes (an
@@ -206,4 +252,21 @@ func WriteHeldRequests() []string {
 	violations.mu.Lock()
 	defer violations.mu.Unlock()
 	return append([]string(nil), violations.list...)
+}
+
+// RunWithTxGuard runs a test binary with http.DefaultTransport wrapped in
+// NoWriteHeldTransport, and fails it if any test sent a request while holding
+// a database write lock. Every outbound client here bottoms out in
+// http.DefaultTransport. Call it from TestMain before anything builds a client.
+func RunWithTxGuard(m interface{ Run() int }) int {
+	http.DefaultTransport = NoWriteHeldTransport(http.DefaultTransport)
+	code := m.Run()
+	held := WriteHeldRequests()
+	for _, v := range held {
+		fmt.Fprintf(os.Stderr, "FAIL: request sent while holding the database write lock: %s\n", v)
+	}
+	if len(held) > 0 && code == 0 {
+		return 1
+	}
+	return code
 }
