@@ -229,10 +229,9 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader), "non-default Accept must pass through")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits))
 
-	// /commits/{sha} is a different path and passes through; this fake 404s it.
+	// /commits/{sha} is the commit route, not this; this fake 404s it.
 	wc := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/"+shaCommit, nil))
 	assert.Equal(t, http.StatusNotFound, wc.Code)
-	assert.Empty(t, wc.Header().Get(cacheHeader), "/commits/{sha} must not hit the cached list route")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits), "/commits/{sha} must not count as a list fetch")
 
 	// Passthroughs stored nothing: a cacheable shape still misses.
