@@ -199,6 +199,12 @@ func NewRouter(
 		// Cached bare-repo read, rebuilt from the repos truth row; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
 
+		// Cached archive redirects; the ref may carry slashes. See docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/tarball", h.cachedArchive(ghdata.RepoAnswerKindTarball))
+		r.Get("/repos/{owner}/{repo}/tarball/*", h.cachedArchive(ghdata.RepoAnswerKindTarball))
+		r.Get("/repos/{owner}/{repo}/zipball", h.cachedArchive(ghdata.RepoAnswerKindZipball))
+		r.Get("/repos/{owner}/{repo}/zipball/*", h.cachedArchive(ghdata.RepoAnswerKindZipball))
+
 		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
 
