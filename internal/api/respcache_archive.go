@@ -67,4 +67,3 @@ func absorbArchive(resp *http.Response, _ []byte, now time.Time) (ghdata.RepoAns
 	}
 	return redirectAnswer(loc, now.Add(archiveUnsignedTTL))
 }
-

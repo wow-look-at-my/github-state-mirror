@@ -19,8 +19,8 @@ const (
 	RepoAnswerKindCommitsPath       = "commits_path"
 	RepoAnswerKindCommitsVerdict    = "commits_verdict"
 	RepoAnswerKindPullDiff          = "pull_diff"
-	RepoAnswerKindTarball = "tarball"
-	RepoAnswerKindZipball = "zipball"
+	RepoAnswerKindTarball           = "tarball"
+	RepoAnswerKindZipball           = "zipball"
 )
 
 // RepoAnswerKey addresses one stored answer.
