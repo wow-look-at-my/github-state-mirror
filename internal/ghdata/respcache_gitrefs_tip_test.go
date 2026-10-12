@@ -71,7 +71,7 @@ func TestKnownBranchTip(t *testing.T) {
 	})
 
 	// An annotated tag's ref object is the TAG object, not the commit it
-	// points at, so its sha would never equal a comparison's base tip and
+	// points at. Its sha would never equal a comparison's base tip and
 	// every tag-based comparison would read as moved forever.
 	t.Run("tags are out of scope", func(t *testing.T) {
 		s := testStore(t)
@@ -92,7 +92,7 @@ func TestKnownBranchTip(t *testing.T) {
 	})
 
 	// A row whose document cannot be read, or whose object sha is not a real
-	// oid, is not evidence of anything -- least of all of a move.
+	// oid, is not evidence of anything. Least of all of a move.
 	t.Run("unreadable rows report no information", func(t *testing.T) {
 		for name, doc := range map[string]string{
 			"not json":  `{`,

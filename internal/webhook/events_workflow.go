@@ -94,7 +94,7 @@ func ParseWorkflowRunHeadSHA(raw json.RawMessage) string {
 
 // ParseWorkflowRunIdentity extracts a workflow_run payload's head_sha and run
 // id (values when absent or unparseable). The run id is what flushes the
-// run's cached JOB answers: a re-run replaces a run's jobs under the SAME id,
+// run's cached JOB answers. A re-run replaces a run's jobs under the SAME id,
 // and the workflow_run delivery is the signal that happened.
 func ParseWorkflowRunIdentity(raw json.RawMessage) (headSHA string, runID int64) {
 	var body struct {
@@ -129,7 +129,7 @@ type WorkflowRunPayload struct {
 
 // ParseWorkflowRunPayload extracts a run's whole state from a workflow_run
 // webhook. A payload missing the run or repository object is an error: the
-// dispatcher applies this to global truth, and a run with no identity is not
+// dispatcher applies this to global truth. A run with no identity is not
 // something to guess at.
 func ParseWorkflowRunPayload(raw json.RawMessage) (WorkflowRunPayload, error) {
 	var body struct {

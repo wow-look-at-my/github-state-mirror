@@ -3,14 +3,14 @@
 //
 // Every request this service sends has to be visible on the dashboard. A
 // request nobody can see is a request nobody can account for -- it spends
-// rate-limit budget, it can be slow, it can fail, and none of that reaches
+// rate-limit budget. It can be slow. It can fail, and none of that reaches
 // the operator looking at the chart to answer "what is this thing doing?".
 //
 // Instrumenting call sites does not achieve that, because the property is
 // about the ones nobody remembered. A client wrapped here reports every real
-// attempt it makes, through any helper, present or future -- which is the
-// same reason ghclient times its own exchanges at the transport rather than
-// in each method.
+// attempt it makes. That client is through any helper, present or future.
+// Which is the same reason ghclient times its own exchanges at the transport
+// rather than in each method.
 package httpobs
 
 import (

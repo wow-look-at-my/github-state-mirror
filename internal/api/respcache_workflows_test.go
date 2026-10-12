@@ -87,8 +87,8 @@ func TestCachedWorkflowsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.workflowsHits))
 }
 
-// The listing and the read are separate grains, and a file-name spelling is
-// its own row: resolving it to the numeric id needs this answer.
+// The listing and the read are separate grains. A file-name spelling is its
+// own row: resolving it to the numeric id needs this answer.
 func TestCachedWorkflows_GrainsAndSpellingsAreDistinctRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -162,6 +162,40 @@ func TestCachedWorkflows_ShapeGuardsPassThrough(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader))
 
 	assert.Equal(t, int32(4), atomic.LoadInt32(&u.workflowsHits), "all must have reached GitHub")
+}
+
+// ghCLIAccept is the Accept the gh CLI sends on every request.
+const ghCLIAccept = "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview"
+
+// The gh CLI's graduated preview media types do not change the body, so the
+// route serves them from the cache like the default Accept.
+func TestCachedWorkflow_GHCLIAcceptIsCached(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	for i, want := range []string{"miss", "hit"} {
+		req := authedReq("GET", workflowSingleTarget, nil)
+		req.Header.Set("Accept", ghCLIAccept)
+		w := do(t, router, req)
+		require.Equal(t, http.StatusOK, w.Code, "request %d", i)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "request %d", i)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.workflowsHits))
+}
+
+func TestAcceptsDefaultJSON_Previews(t *testing.T) {
+	for accept, want := range map[string]bool{
+		"":          true,
+		ghCLIAccept: true,
+		"application/vnd.github.merge-info-preview":    true,
+		"application/vnd.github.nebula-preview+json":   true,
+		"application/vnd.github.nebula-preview; q=1":   true,
+		"application/vnd.github.squirrel-girl-preview": false,
+		ghCLIAccept + ", application/vnd.github.diff":  false,
+	} {
+		req := authedReq("GET", "/", nil)
+		req.Header.Set("Accept", accept)
+		assert.Equal(t, want, acceptsDefaultJSON(req), "Accept %q", accept)
+	}
 }
 
 // A deleted workflow relays verbatim and stores nothing, so the next read still

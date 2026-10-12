@@ -22,7 +22,7 @@ const maxGraphQLBodyBytes = 10 << 20 //  MiB
 // The mirror only serves the org-repos query shape from its cache. It extracts
 // the org from the query variables (or the query text), ensures freshness, and
 // assembles a response matching that shape. Any other GraphQL query — a viewer
-// query, a repo query, a different org field — is an "unknown" the cache cannot
+// query, a repo query, a different org field. It is an "unknown" the cache cannot
 // answer, so it is forwarded to GitHub uncached.
 func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -93,12 +93,13 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the refresh failed and there is no cached data to fall back on, surface
-	// the upstream error instead of returning an empty-but-" OK" success — a
-	// silent empty result is indistinguishable from "this org has no repos" and
-	// hides real failures (bad token, GitHub 5xx, rate limit, ...). When cached
-	// repos DO exist we serve them (stale is better than an error). The body is a
-	// GitHub-style GraphQL error envelope so clients can read errors[].message.
+	// Surface the upstream error instead of returning an empty-but-" OK" success
+	// — a silent empty result is indistinguishable from "this org has no repos"
+	// and hides real failures (bad token, GitHub 5xx, rate limit, ...). Do this
+	// if the refresh failed and there is no cached data to fall back on. When
+	// cached repos DO exist we serve them (stale is better than an error). The
+	// body is a GitHub-style GraphQL error envelope so clients can read
+	// errors[].message.
 	if ensureErr != nil && len(repos) == 0 {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)

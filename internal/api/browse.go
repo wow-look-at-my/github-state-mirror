@@ -244,7 +244,7 @@ type rateLimitResponse struct {
 }
 
 // handleRateLimit reports a live per-installation poll plus passively
-// observed rate limits (admin only); without a GitHub App, Live is empty
+// observed rate limits (admin only). Without a GitHub App, Live is empty
 // with a Note and Observed still renders.
 func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {

@@ -1,6 +1,6 @@
 # Why the published binary drops darwin/arm64
 
-`ci.yml`'s `build` job pins `cosmo-platforms: linux/amd64,windows/amd64` — narrower than `wow-look-at-my/go-toolchain@v1`'s own default (`linux/amd64,darwin/arm64,windows/amd64`). This is a temporary mitigation, not a design choice. Any cosmo cross-build for `arm64` fails while compiling this repo's `modernc.org/sqlite` dependency, for reasons entirely outside this repo.
+`ci.yml`'s `build` job pins `cosmo-platforms: linux/amd64,windows/amd64` — narrower than `wow-look-at-my/go-toolchain@v1`'s own default (`linux/amd64,darwin/arm64,windows/amd64`). This is a temporary mitigation, not a design choice. Any cosmo cross-build for `arm64` fails while compiling this repo's `modernc.org/sqlite` dependency, for reasons fully outside this repo.
 
 ## The mechanism
 
