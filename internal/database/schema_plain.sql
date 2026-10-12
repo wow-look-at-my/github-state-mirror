@@ -21,3 +21,29 @@ CREATE TABLE workflow_run_details (
 );
 
 CREATE INDEX idx_workflow_run_details_at ON workflow_run_details (detail_at);
+
+-- Whole-document answers for the repo-scoped routes that share one row space.
+-- kind names the route. ref_id is the resource inside the repo, VERBATIM as
+-- requested; shape is the canonical modeled query. subject is what a delivery
+-- names to flush the row (a check run id, a branch). status is the answer's
+-- HTTP status: a 200 document, a 302 whose doc holds the Location, or a
+-- stored verdict. expires_at is per row, because a signed redirect expires on
+-- its own clock.
+CREATE TABLE repo_answer_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        TEXT NOT NULL,              -- lowercased
+    repo         TEXT NOT NULL,              -- lowercased
+    kind         TEXT NOT NULL,              -- ghdata.RepoAnswerKind*
+    ref_id       TEXT NOT NULL DEFAULT '',   -- the resource inside the repo, verbatim
+    shape        TEXT NOT NULL DEFAULT '',   -- canonical modeled query
+    subject      TEXT NOT NULL DEFAULT '',   -- what a delivery names to flush this row
+    status       INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- rendered trimmed document
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_repo_answer_cache_key ON repo_answer_cache (owner, repo, kind, ref_id, shape);
+CREATE INDEX idx_repo_answer_cache_subject ON repo_answer_cache (owner, repo, kind, subject);
+CREATE INDEX idx_repo_answer_cache_lru ON repo_answer_cache (last_used_at);

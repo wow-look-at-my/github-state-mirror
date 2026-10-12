@@ -25,6 +25,7 @@ Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers
 | `workflows_cache` | **Justified** | the payload names changed FILES. A map from `.github/workflows/ci.yml` to a workflow id needs the listing this table is the cache of. There is no finer grain to flush at, and nothing to write. A repo holds few workflows. |
 | `pull_files_cache`, `pull_diff406_cache` | **Justified** | a base push moves every open PR's merge-base-relative file list, and the payload carries no per-PR signal at all — not even which PRs exist. The repo-wide flush is the belt for the per-PR flush that `pull_request` deliveries do carry. |
 | `pull_commits` snapshots | **Justified** | same shape: a fork head's pushes never reach us, so this is the repo-wide belt for a missed `pull_request` delivery. |
+| tags pages (`repo_answer_cache`, kind `tags`) | **applied** | a tag push that moves an existing tag states its new commit (`after`); `ApplyPushedTagTip` rewrites the entry in every page that lists it. A tip move changes no page's membership or order. A created or deleted tag (an all-zeros `before` or `after`) changes the SET, and GitHub's page for a name is not in the payload, so the repo's tags pages flush. An unparseable push flushes them too. A branch push touches none. |
 | PR `mergeable` fields | **applied-as-unresolved** | GitHub recomputes mergeability asynchronously and no webhook ever carries the recomputed value, so the stored answer is un-resolved rather than dropped, with the invalidated test-merge sha remembered so a refetch re-offering it is recognized as pre-push. |
 
 ## create / delete (`onRefLifecycle`)
@@ -38,6 +39,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `branches_list_cache`, matching-refs rows | **Justified** | a create and a delete both move page MEMBERSHIP. The payload carries no sha for a created branch, so no entry can be written, and the delete case is the same fallback `invalidateForPush` already takes. A tag touches neither row family and flushes neither. |
 | `contents_cache`, `commits_list_cache` | **Justified** | both are keyed by ref and both hold content. The payload carries no content, exactly as it carries none on a push. |
 | `compare_cache`, `commit_ci_cache` (branch-form rows) | **Justified** | both describe whatever the ref points at. A deleted ref points at nothing, and a created one points at a sha the payload never states. |
+| tags pages (tag create/delete) | **Justified** | the tags listing is a set. A created tag needs a sha the payload does not state and a page position nothing states; a deleted tag shifts every later page. The repo's tags pages flush. |
 
 ## pull_request / pull_request_review
 

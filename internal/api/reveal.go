@@ -44,6 +44,7 @@ const (
 	denyKindReadme         = "readme"        // GET /repos/{owner}/{repo}/readme[/{dir}]
 	denyKindWorkflows      = "workflows"     // GET /repos/{owner}/{repo}/actions/workflows[/{id}]
 	denyKindWorkflowRun    = "workflow_run"  // GET /repos/{owner}/{repo}/actions/runs/{run_id}
+	denyKindTags           = "tags"          // GET /repos/{owner}/{repo}/tags
 )
 
 // revealOutcome is the reveal decision for request.

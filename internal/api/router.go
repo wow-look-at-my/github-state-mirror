@@ -190,6 +190,9 @@ func NewRouter(
 		// Cached bare-repo read, rebuilt from the repos truth row; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
 
+		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
+
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
 

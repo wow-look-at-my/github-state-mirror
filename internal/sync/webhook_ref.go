@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
@@ -38,6 +39,9 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 	// in it. There is no tip to apply into a page, so the pages go.
 	if !payload.IsTag() {
 		flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
+	} else {
+		// The tags listing is a set too; the payload does not say which page holds the name.
+		flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
 	}
 	// A matching-refs answer is a prefix search over the same refs.
 	flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))

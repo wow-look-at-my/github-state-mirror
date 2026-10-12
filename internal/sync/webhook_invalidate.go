@@ -52,6 +52,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("hooks cache", scope, d.store.InvalidateHooksForTarget(ctx, ghdata.RepoHooksTarget(owner, repo)))
 		flush("check run cache", scope, d.store.InvalidateCheckRunCacheByRepo(ctx, owner, repo))
 		flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
+		flush("repo answer cache", scope, d.store.InvalidateRepoAnswers(ctx, owner, repo))
 	case "label":
 		// Every action, repo-wide (a rename can carry names in delivery); runs before the disposition logic.
 		owner, repo := event.RepoOwner(), event.RepoName()
@@ -152,11 +153,12 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 // repo-wide only when it does not.
 func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook.Event, owner, repo string) {
 	scope := owner + "/" + repo
-	refName, defaultBranch, after, isTag := "", "", "", false
+	refName, defaultBranch, before, after, isTag := "", "", "", "", false
 	if payload, err := webhook.ParsePushPayload(event.Raw); err == nil {
-		refName, defaultBranch, after = payload.RefName, payload.DefaultBranch, payload.After
+		refName, defaultBranch, before, after = payload.RefName, payload.DefaultBranch, payload.Before, payload.After
 		isTag = strings.HasPrefix(payload.Ref, "refs/tags/")
 	}
+	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
 	// (onPush re-parses the payload for the apply side; the parse is a few
 	// microseconds of JSON and keeping this function self-contained beats
 	// threading a parsed payload through handle().)
@@ -222,6 +224,28 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
+
+// applyOrFlushTags lands a push on the stored tags pages. A moved tag is
+// rewritten in place from the push's after sha. A created or deleted tag
+// changes page membership, and the listing's page for a name is not in the
+// payload, so the pages go. A branch push leaves them alone.
+// see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) applyOrFlushTags(ctx context.Context, scope, owner, repo, refName, before, after string, isTag bool) {
+	if refName != "" && !isTag {
+		return
+	}
+	if refName != "" && !zeroSHA(before) && !zeroSHA(after) {
+		applied, err := d.store.ApplyPushedTagTip(ctx, owner, repo, refName, after, time.Now())
+		flush("tags tip apply", scope, err)
+		if err == nil && applied {
+			return
+		}
+	}
+	flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
+}
+
+// zeroSHA reports the all-zeros object id a push uses for a missing side.
+func zeroSHA(sha string) bool { return sha == "" || strings.Trim(sha, "0") == "" }
 
 func flush(what, scope string, err error) {
 	if err != nil {
