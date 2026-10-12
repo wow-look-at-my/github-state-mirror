@@ -373,7 +373,7 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	// Unknown, out-of-range, and repeated params are not modeled.
 	for _, target := range []string{
 		"/repos/org1/repo1/commits/main/status?per_page=101",
-		"/repos/org1/repo1/commits/main/status?page=11",
+		"/repos/org1/repo1/commits/main/status?page=41",
 		"/repos/org1/repo1/commits/main/status?per_page=50&per_page=50",
 		"/repos/org1/repo1/commits/main/check-runs?check_name=build",
 		"/repos/org1/repo1/commits/main/check-runs?filter=latest",

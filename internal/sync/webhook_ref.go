@@ -33,6 +33,7 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 		flush("git ref cache", scope, d.store.InvalidateGitRefForRef(ctx, owner, repo, spelling))
 		flush("contents cache", scope, d.store.InvalidateContentsForRef(ctx, owner, repo, spelling))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, spelling))
+		d.flushCommitsAnswers(ctx, scope, owner, repo, []string{spelling})
 		flush("compare cache", scope, d.store.InvalidateCompareForRef(ctx, owner, repo, spelling))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCIForRef(ctx, owner, repo, spelling))
 	}

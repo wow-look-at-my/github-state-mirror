@@ -208,7 +208,7 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 
 	for i, target := range []string{
-		"/repos/org1/repo1/commits?path=src",                   // unmodeled filter
+		"/repos/org1/repo1/commits?committer=alice",             // unmodeled filter
 		"/repos/org1/repo1/commits?since=2026-01-01T00:00:00Z", // unmodeled filter
 		"/repos/org1/repo1/commits?author=alice",               // unmodeled filter
 		"/repos/org1/repo1/commits?sha=",                       // empty ref value

@@ -35,6 +35,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
 		flush("owner repos cache", scope, d.store.InvalidateOwnerReposCache(ctx, owner))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
+		d.flushCommitsAnswers(ctx, scope, owner, repo, nil)
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
 		flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
@@ -173,6 +174,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
 		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
+		d.flushCommitsAnswers(ctx, scope, owner, repo, nil)
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
 		flush("commit CI cache", scope, d.store.InvalidateCommitCICache(ctx, owner, repo))
 		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
@@ -189,6 +191,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 			flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
 			flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 			flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
+			d.flushCommitsAnswers(ctx, scope, owner, repo, nil)
 		} else {
 			refs := spellings
 			if refName == defaultBranch {
@@ -199,6 +202,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 				// readme rows key the requested ref as contents rows do, so they share the grain.
 				flush("readme cache", scope, d.store.InvalidateReadmeForRef(ctx, owner, repo, ref))
 				flush("commits list cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, ref))
+				d.flushCommitsAnswers(ctx, scope, owner, repo, []string{ref})
 			}
 		}
 		for _, ref := range spellings {
@@ -298,6 +302,22 @@ func (d *WebhookDispatcher) flushCheckRunAnnotations(ctx context.Context, scope,
 		return
 	}
 	flush("annotations", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindAnnotations))
+}
+
+// flushCommitsAnswers drops the path-filtered commits pages and the
+// unknown-ref verdicts for the given ref spellings, or every one when refs is
+// nil. Each rides the commits list's own grain: the payload carries no
+// path-filtered history, and a created ref ends the verdict.
+func (d *WebhookDispatcher) flushCommitsAnswers(ctx context.Context, scope, owner, repo string, refs []string) {
+	for _, kind := range []string{ghdata.RepoAnswerKindCommitsPath, ghdata.RepoAnswerKindCommitsVerdict} {
+		if refs == nil {
+			flush("commits answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, kind))
+			continue
+		}
+		for _, ref := range refs {
+			flush("commits answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, kind, ref))
+		}
+	}
 }
 
 // zeroSHA reports the all-zeros object id a push uses for a missing side.

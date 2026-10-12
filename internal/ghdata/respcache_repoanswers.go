@@ -16,6 +16,8 @@ const (
 	RepoAnswerKindBranchesWhereHead = "branches_where_head"
 	RepoAnswerKindAnnotations       = "annotations"
 	RepoAnswerKindBranchRules       = "branch_rules"
+	RepoAnswerKindCommitsPath       = "commits_path"
+	RepoAnswerKindCommitsVerdict    = "commits_verdict"
 )
 
 // RepoAnswerKey addresses one stored answer.
