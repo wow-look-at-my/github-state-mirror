@@ -129,7 +129,10 @@ func TestCachedTags_TagMoveApplies(t *testing.T) {
 	w := do(t, router, authedReq("GET", tagsTarget, nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader))
-	assert.Contains(t, w.Body.String(), `{"name":"v1","commit":{"sha":"`+shaTip+`"}`)
+	assert.JSONEq(t, mustJSONString([]any{
+		map[string]any{"name": "v1", "commit": map[string]any{"sha": shaTip}, "node_id": "REF_v1"},
+		map[string]any{"name": "v0", "commit": map[string]any{"sha": shaTree1}, "node_id": "REF_v0"},
+	}), w.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
 }
 
