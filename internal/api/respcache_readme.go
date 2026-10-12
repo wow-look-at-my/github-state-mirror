@@ -150,7 +150,6 @@ func absorbReadme(status int, body []byte) (ghdata.CachedReadme, bool) {
 	}
 }
 
-// readmeBlockedJSON is the 451 answer; block.html_url is a link and is dropped.
 type readmeBlockedJSON struct {
 	Message string `json:"message"`
 	Block   struct {

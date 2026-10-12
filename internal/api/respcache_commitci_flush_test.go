@@ -294,12 +294,7 @@ func TestCachedCommitCI_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
 }
 
-// TestCachedCommitCI_ForbiddenAndErrorNotStored: a -- the caller's OWN
-// credential lacking Checks API scope entirely, a fact about the CALLER, not
-// the ref -- and a 5xx are relayed. Verbatim and store nothing, on both
-// routes. Unlike a (see TestCachedCommitCI_404VerdictCached below), a here
-// must never mint a row: this table has no actor column. A cached denial
-// would wrongly answer a differently-scoped caller too.
+// It lands in the caller's own deny cache. A 5xx stores nothing anywhere.
 func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	router, _, db, u := commitCIStack(t)
 	forbidden := func(w http.ResponseWriter, r *http.Request) {
@@ -312,20 +307,17 @@ func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	}
 	u.status, u.checkRuns = forbidden, serverError
 
-	for _, tc := range []struct {
-		target string
-		status int
-	}{
-		{"/repos/org1/repo1/commits/ghostbranch/status", http.StatusForbidden},
-		{"/repos/org1/repo1/commits/ghostbranch/check-runs", http.StatusInternalServerError},
-	} {
-		for i := 1; i <= 2; i++ {
-			w := do(t, router, authedReq("GET", tc.target, nil))
-			require.Equal(t, tc.status, w.Code, tc.target)
-			assert.Empty(t, w.Header().Get(cacheHeader), "a 403/5xx must be replayed unstored: %s", tc.target)
-		}
+	for i, want := range []string{"miss", "hit"} {
+		w := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/ghostbranch/status", nil))
+		require.Equal(t, http.StatusForbidden, w.Code)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "request %d", i)
 	}
-	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
+	for i := 1; i <= 2; i++ {
+		w := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/ghostbranch/check-runs", nil))
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Empty(t, w.Header().Get(cacheHeader), "a 5xx must be replayed unstored")
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.statusHits))
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.checkRunsHits))
 
 	var count int
