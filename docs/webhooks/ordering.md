@@ -41,7 +41,9 @@ The `pull_request_review` row keys on the REVIEW, not the PR: two reviews on one
 
 ## The watermark
 
-Every delivery is applied the moment it arrives. Nothing is held. Ordering is the watermark's job (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone. The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
+Every delivery is applied the moment the worker reaches it, and none is held for a clock. The worker applies the client lane ahead of the Actions bulk lane, and each lane in arrival order (docs/webhooks/lanes.md). No subject spans both lanes. Ordering is the watermark's job (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone.
+
+The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
 
 Refusing is not a lesser outcome for a snapshot. GitHub payloads are full views, not deltas, so applying only the newest lands on the same last state ordering them will have.
 

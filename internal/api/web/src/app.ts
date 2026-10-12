@@ -1326,7 +1326,10 @@ async function loadRateLimits(silent = false): Promise<void> {
 // The kinds the server reports, in display order, with what each measures.
 const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
     ["webhook.handle", "Webhook handling", "receipt to applied, per delivery; GitHub is answered once the delivery is recorded"],
-    ["db.write_wait", "Write-lock wait", "the time a writer queued for the write lock"],
+    ["webhook.handle.client", "Webhook handling: client lane", "receipt to applied for the deliveries clients wait on, which the worker applies first"],
+    ["webhook.handle.bulk", "Webhook handling: bulk lane", "receipt to applied for workflow_job and workflow_run deliveries"],
+    ["db.write_wait", "Write-lock wait", "the time a foreground writer, such as a request, queued for the write lock"],
+    ["db.write_wait.background", "Write-lock wait: background", "the time a background writer, such as the webhook worker, queued for the write lock; it yields to foreground writers"],
     ["db.write_hold", "Write-lock hold", "the time one writer kept the write lock: a transaction, or one autocommit write"],
     ["db.begin", "SQLite begin", "BEGIN IMMEDIATE, once the write lock is ours"],
     ["db.exec", "SQLite exec", "one write statement, or a read-free statement"],
@@ -1366,7 +1369,7 @@ async function loadLatency(silent = false): Promise<void> {
             body.appendChild(el("div", { class: "empty" }, el("p", { text: "Nothing observed yet." }), el("p", { class: "sub", text: what })));
             continue;
         }
-        body.appendChild(latencyCard(k, data.bounds_ms, what, kind === "webhook.handle" ? data.webhook_timeout_ms : 0));
+        body.appendChild(latencyCard(k, data.bounds_ms, what, kind.startsWith("webhook.handle") ? data.webhook_timeout_ms : 0));
     }
 }
 

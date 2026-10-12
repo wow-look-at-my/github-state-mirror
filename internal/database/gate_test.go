@@ -45,6 +45,94 @@ func TestWriteGate_AdmitsWritersInArrivalOrder(t *testing.T) {
 	g.release()
 }
 
+// A foreground writer that queues behind a waiting background writer is
+// admitted first, while the background writer is still inside backgroundMaxWait.
+func TestWriteGate_ForegroundGoesBeforeBackground(t *testing.T) {
+	g := newWriteGate(nil)
+	require.NoError(t, g.acquire(context.Background()))
+
+	order := make(chan string, 2)
+	enter := func(ctx context.Context, name string) {
+		go func() {
+			if !assert.NoError(t, g.acquire(ctx), name) {
+				return
+			}
+			order <- name
+			g.release()
+		}()
+	}
+	enter(WithBackgroundWrites(context.Background()), "background")
+	require.Eventually(t, func() bool { return g.queued() == 1 }, 5*time.Second, time.Millisecond)
+	enter(context.Background(), "foreground")
+	require.Eventually(t, func() bool { return g.queued() == 2 }, 5*time.Second, time.Millisecond)
+
+	g.release()
+	assert.Equal(t, "foreground", <-order)
+	assert.Equal(t, "background", <-order)
+}
+
+// A background writer that has waited backgroundMaxWait goes next, ahead of
+// foreground writers, so a steady stream of requests cannot starve it.
+func TestWriteGate_BackgroundIsNotStarved(t *testing.T) {
+	g := newWriteGate(nil)
+	require.NoError(t, g.acquire(context.Background()))
+
+	order := make(chan string, 2)
+	enter := func(ctx context.Context, name string) {
+		go func() {
+			if !assert.NoError(t, g.acquire(ctx), name) {
+				return
+			}
+			order <- name
+			g.release()
+		}()
+	}
+	enter(WithBackgroundWrites(context.Background()), "background")
+	require.Eventually(t, func() bool { return g.queued() == 1 }, 5*time.Second, time.Millisecond)
+	time.Sleep(backgroundMaxWait)
+	enter(context.Background(), "foreground")
+	require.Eventually(t, func() bool { return g.queued() == 2 }, 5*time.Second, time.Millisecond)
+
+	g.release()
+	assert.Equal(t, "background", <-order)
+	assert.Equal(t, "foreground", <-order)
+}
+
+// Background writers keep arrival order among themselves.
+func TestWriteGate_BackgroundWritersKeepArrivalOrder(t *testing.T) {
+	g := newWriteGate(nil)
+	require.NoError(t, g.acquire(context.Background()))
+	const writers = 4
+	order := make(chan int, writers)
+	for i := range writers {
+		go func() {
+			if !assert.NoError(t, g.acquire(WithBackgroundWrites(context.Background())), "writer %d", i) {
+				return
+			}
+			order <- i
+			g.release()
+		}()
+		require.Eventually(t, func() bool { return g.queued() == i+1 }, 5*time.Second, time.Millisecond)
+	}
+	g.release()
+	for want := range writers {
+		assert.Equal(t, want, <-order)
+	}
+}
+
+// A background writer's wait is reported under its own kind, so the
+// foreground kind measures what a request waits.
+func TestWriteGate_ReportsBackgroundWaitApart(t *testing.T) {
+	obs := &countingObserver{n: map[string]int{}}
+	g := newWriteGate(obs)
+	require.NoError(t, g.acquire(context.Background()))
+	g.release()
+	require.NoError(t, g.acquire(WithBackgroundWrites(context.Background())))
+	g.release()
+	assert.Equal(t, 1, obs.count(KindWriteWait))
+	assert.Equal(t, 1, obs.count(KindWriteWaitBackground))
+}
+
 // A waiter whose context ends leaves the queue; the gate still reaches the next writer.
 func TestWriteGate_CancelledWaiterLeavesTheQueue(t *testing.T) {
 	g := newWriteGate(nil)

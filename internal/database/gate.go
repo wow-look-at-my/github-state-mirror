@@ -17,12 +17,14 @@ import (
 )
 
 // writeGate admits one of this process's writers to a database file at a
-// time, in arrival order.
+// time. Foreground writers go first, in arrival order.
 type writeGate struct {
 	mu   sync.Mutex
 	held bool
-	// queue holds one channel per waiting writer, oldest first; release closes the head's.
-	queue []chan struct{}
+	// queue holds one waiter per waiting foreground writer, oldest first; release closes the head's turn.
+	queue []*gateWaiter
+	// background holds the waiting background writers, oldest first.
+	background []*gateWaiter
 	// holder is the admitted writer's goroutine id while holder tracking is on.
 	holder    atomic.Int64
 	heldSince atomic.Int64
@@ -30,10 +32,12 @@ type writeGate struct {
 	obs Observer
 }
 
-// Kinds the gate reports: the wait for the write lock, and how long each writer kept it.
+// Kinds the gate reports: a foreground writer's wait for the write lock, a
+// background writer's wait, and how long each writer kept it.
 const (
-	KindWriteWait = "db.write_wait"
-	KindWriteHold = "db.write_hold"
+	KindWriteWait           = "db.write_wait"
+	KindWriteWaitBackground = "db.write_wait.background"
+	KindWriteHold           = "db.write_hold"
 )
 
 // slowHold is the hold past which the releasing writer's stack is logged.
@@ -45,6 +49,28 @@ const writeGateWait = 30 * time.Second
 // ErrWriteGateTimeout is returned by a write that waited writeGateWait for the write lock without getting it.
 var ErrWriteGateTimeout = errors.New("database is locked: waited " + writeGateWait.String() + " for the write lock")
 
+// backgroundMaxWait bounds how long foreground writers may keep passing a waiting background writer.
+const backgroundMaxWait = 500 * time.Millisecond
+
+// gateWaiter is one queued writer: its turn closes when the gate is handed to it.
+type gateWaiter struct {
+	turn  chan struct{}
+	since time.Time
+}
+
+type backgroundKey struct{}
+
+// WithBackgroundWrites marks every write made with ctx as background work.
+func WithBackgroundWrites(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundKey{}, true)
+}
+
+// IsBackgroundWrite reports whether ctx was marked by WithBackgroundWrites.
+func IsBackgroundWrite(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundKey{}).(bool)
+	return bg
+}
+
 func newWriteGate(obs Observer) *writeGate { return &writeGate{obs: obs} }
 
 func (g *writeGate) acquire(ctx context.Context) error {
@@ -53,48 +79,81 @@ func (g *writeGate) acquire(ctx context.Context) error {
 	if !g.held {
 		g.held = true
 		g.mu.Unlock()
-		g.admitted(start)
+		g.admitted(start, IsBackgroundWrite(ctx))
 		return nil
 	}
-	turn := make(chan struct{})
-	g.queue = append(g.queue, turn)
+	w := &gateWaiter{turn: make(chan struct{}), since: start}
+	if IsBackgroundWrite(ctx) {
+		g.background = append(g.background, w)
+	} else {
+		g.queue = append(g.queue, w)
+	}
 	g.mu.Unlock()
 
 	timer := time.NewTimer(writeGateWait)
 	defer timer.Stop()
 	select {
-	case <-turn:
-		g.admitted(start)
+	case <-w.turn:
+		g.admitted(start, IsBackgroundWrite(ctx))
 		return nil
 	case <-ctx.Done():
-		return g.abandon(turn, ctx.Err())
+		return g.abandon(w, ctx.Err())
 	case <-timer.C:
-		return g.abandon(turn, ErrWriteGateTimeout)
+		return g.abandon(w, ErrWriteGateTimeout)
 	}
 }
 
 // abandon leaves the queue. Consider a turn handed over while the waiter.
 // That turn was giving up is passed on to the next writer, so the gate is
 // never left held by nobody.
-func (g *writeGate) abandon(turn chan struct{}, err error) error {
+func (g *writeGate) abandon(w *gateWaiter, err error) error {
 	g.mu.Lock()
-	for i, ch := range g.queue {
-		if ch == turn {
-			g.queue = append(g.queue[:i], g.queue[i+1:]...)
-			g.mu.Unlock()
-			return err
-		}
+	if removeWaiter(&g.queue, w) || removeWaiter(&g.background, w) {
+		g.mu.Unlock()
+		return err
 	}
 	g.mu.Unlock()
 	g.release()
 	return err
 }
 
-func (g *writeGate) admitted(start time.Time) {
+func removeWaiter(list *[]*gateWaiter, w *gateWaiter) bool {
+	for i, x := range *list {
+		if x == w {
+			*list = append((*list)[:i], (*list)[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// next pops the writer the gate goes to: the oldest foreground writer, unless
+// none waits or the oldest background writer has waited backgroundMaxWait.
+// Callers hold g.mu.
+func (g *writeGate) next(now time.Time) *gateWaiter {
+	bgDue := len(g.background) > 0 && (len(g.queue) == 0 || now.Sub(g.background[0].since) >= backgroundMaxWait)
+	if bgDue {
+		w := g.background[0]
+		g.background = g.background[1:]
+		return w
+	}
+	if len(g.queue) == 0 {
+		return nil
+	}
+	w := g.queue[0]
+	g.queue = g.queue[1:]
+	return w
+}
+
+func (g *writeGate) admitted(start time.Time, background bool) {
 	now := time.Now()
 	g.heldSince.Store(now.UnixNano())
 	if g.obs != nil {
-		g.obs.Observe(KindWriteWait, now.Sub(start))
+		kind := KindWriteWait
+		if background {
+			kind = KindWriteWaitBackground
+		}
+		g.obs.Observe(kind, now.Sub(start))
 	}
 	if trackHolders.Load() {
 		id := goroutineID()
@@ -103,7 +162,7 @@ func (g *writeGate) admitted(start time.Time) {
 	}
 }
 
-// release hands the gate straight to the oldest waiter, or frees it when nobody waits.
+// release hands the gate straight to the next waiter, or frees it when nobody waits.
 func (g *writeGate) release() {
 	if since := g.heldSince.Swap(0); since != 0 {
 		g.recordHold(time.Duration(time.Now().UnixNano() - since))
@@ -113,13 +172,12 @@ func (g *writeGate) release() {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.queue) == 0 {
+	w := g.next(time.Now())
+	if w == nil {
 		g.held = false
 		return
 	}
-	next := g.queue[0]
-	g.queue = g.queue[1:]
-	close(next)
+	close(w.turn)
 }
 
 // recordHold times one writer's hold, and names a slow holder by the stack that released it.
@@ -139,7 +197,7 @@ func (g *writeGate) recordHold(d time.Duration) {
 func (g *writeGate) queued() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return len(g.queue)
+	return len(g.queue) + len(g.background)
 }
 
 // isWriteSQL reports whether a statement run through QueryContext writes (an
