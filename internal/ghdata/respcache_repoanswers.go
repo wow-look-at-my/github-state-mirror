@@ -18,7 +18,7 @@ const (
 	RepoAnswerKindBranchRules       = "branch_rules"
 	RepoAnswerKindCommitsPath       = "commits_path"
 	RepoAnswerKindCommitsVerdict    = "commits_verdict"
-	RepoAnswerKindPullDiff = "pull_diff"
+	RepoAnswerKindPullDiff          = "pull_diff"
 )
 
 // RepoAnswerKey addresses one stored answer.
