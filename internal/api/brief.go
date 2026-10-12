@@ -171,8 +171,8 @@ func joinCounts(m map[string]int64) string {
 }
 
 // debounceVerdict names the debounce reading that is otherwise easy to
-// misread. It held-with-nothing-saved is pure added latency, because the
-// polls arrive further apart than the window.
+// misread: held-with-nothing-saved is pure added latency, because the polls
+// arrive further apart than the window.
 func debounceVerdict(held, saved int64) string {
 	switch {
 	case held == 0:
@@ -251,12 +251,11 @@ const briefChecklist = "## How to model one of these (the tier-2 contract)\n\n" 
 	"- Tests: a hit/miss pair, the shape-guard passthroughs, the invalidation, and the no-URL-keys " +
 	"assertion. Then `just build && go-toolchain`.\n"
 
-// handleBrief renders the implementation brief (brief.go). Every uncached
+// handleBrief renders the implementation brief (brief.go): every uncached
 // route joined to its captured request/response shape, plus the tier-
-// checklist — the whole input for modeling the next cached route. That
-// route is in copyable document. Admin-only like every other operator view;
-// the payload carries no values (query parameters by name, bodies as key/type
-// skeletons).
+// checklist — the whole input for modeling the next cached route, in
+// copyable document. Admin-only like every other operator view; the payload
+// carries no values (query parameters by name, bodies as key/type skeletons).
 func (d *dashboard) handleBrief(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return

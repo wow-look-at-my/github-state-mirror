@@ -35,9 +35,9 @@ func (f *recordingFetcher) calls() []string {
 }
 
 // TestPeriodicRefresher_SyncsFreshInstallation is the fleet-sync regression
-// guard. A brand-new installation session -- NO pre-seeded cache_metadata
+// guard: a brand-new installation session -- NO pre-seeded cache_metadata
 // row, which was exactly the production state -- must be fetched on the
-// cycle. The fetch must create its freshness marker under the session's
+// cycle, and the fetch must create its freshness marker under the session's
 // actor. (The RefreshAllOfKind shape only re-fetched rows that already
 // existed, and nothing ever created: a permanent no-op.)
 func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
@@ -74,12 +74,12 @@ func TestPeriodicRefresher_SyncsFreshInstallation(t *testing.T) {
 	assert.Equal(t, freshness.StateFresh, meta.State)
 }
 
-// TestPeriodicRefresher_StartRunsImmediately: Start's fleet refresh runs at
-// startup, not full interval in. The interval here is an hour, so any fetch
-// observed within the test window can only be the startup cycle. The
-// production regression was exactly a bare ticker whose fire sat 6h away
-// while near-daily schema-change deploys (which also nuke the freshness
-// markers) restarted the clock. No cycle ever completed.
+// TestPeriodicRefresher_StartRunsImmediately: Start's fleet refresh runs
+// at startup, not full interval in. The interval here is an hour, so any
+// fetch observed within the test window can only be the startup cycle -- the
+// production regression was exactly a bare ticker whose fire sat 6h
+// away while near-daily schema-change deploys (which also nuke the freshness
+// markers) restarted the clock, so no cycle ever completed.
 func TestPeriodicRefresher_StartRunsImmediately(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))

@@ -114,8 +114,8 @@ func TestCachedPull_WebhookNullMergeableKeepsGateHonest(t *testing.T) {
 }
 
 // TestCachedPull_BranchPushUnresolvesMergeable: a push to a PR's base branch
-// makes GitHub recompute mergeability (with no webhook carrying the result).
-// The dispatcher un-resolves the cached value and the next single-PR read
+// makes GitHub recompute mergeability (with no webhook carrying the result),
+// so the dispatcher un-resolves the cached value and the next single-PR read
 // re-fetches instead of serving the pre-push answer.
 func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -139,14 +139,14 @@ func TestCachedPull_BranchPushUnresolvesMergeable(t *testing.T) {
 
 // TestCachedPull_StaleShaRefetchNeverReresolves: the webhooks# frozen-sha
 // scenario end to end. A base push un-resolves the row AND remembers the
-// invalidated test-merge sha. GitHub's recompute lags, so the refetch
+// invalidated test-merge sha; GitHub's recompute lags, so the refetch
 // re-offers the SAME sha with a resolved mergeable -- a pre-push answer by
 // definition (a tip change always changes the test-merge sha). The mirror
-// must NOT re-resolve from it (the behavior. The mirror lagged refetch
-// re-resolved the stale sha and every later read was a hit serving it frozen,
-// never touching GitHub again). The answer is stored AND served unresolved,
-// every poll keeps missing -- each miss re-triggering GitHub's recompute --
-// until GitHub serves a NEW sha. This resolves the row and hits again.
+// must NOT re-resolve from it (the behavior: lagged refetch re-resolved the
+// stale sha and every later read was a hit serving it frozen, never touching
+// GitHub again): the answer is stored AND served unresolved, every poll keeps
+// missing -- each miss re-triggering GitHub's recompute -- until GitHub
+// serves a NEW sha, which resolves the row and hits again.
 func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -206,14 +206,15 @@ func TestCachedPull_StaleShaRefetchNeverReresolves(t *testing.T) {
 // TestCachedPull_PostPushProvenAnswerHealsWrongMark is the mirror image of
 // TestCachedPull_StaleShaRefetchNeverReresolves: the wrong-mark race, end to
 // end. GitHub recomputes mergeability within seconds of a push a read
-// triggers it. Pr-minder polls right after pushing -- so a poll-driven miss
-// absorbs GitHub's POST-push answer (base tip already at the push's after)
-// BEFORE the push delivery reaches the mirror. The late delivery then stamps
-// that FRESH sha stale. Pre-fix the route served mergeable:null for up to
-// MergeStaleTTL (an hour) while github.com showed the PR computed. Now the
-// marker carries the push's after tip: the next poll's answer demonstrates
-// it post-dates the push (its base tip matches). It is accepted, served
-// RESOLVED, and the row hits again -- healed on the next poll.
+// triggers it, and pr-minder polls right after pushing -- so a poll-driven
+// miss absorbs GitHub's POST-push answer (base tip already at the push's
+// after) BEFORE the push delivery reaches the mirror, and the late delivery
+// then stamps that FRESH sha stale. Pre-fix the route served mergeable:null
+// for up to MergeStaleTTL (an hour) while github.com showed the PR computed.
+// Now the marker carries the push's after tip: the next poll's answer
+// demonstrates it post-dates the push (its base tip matches), so it is
+// accepted, served RESOLVED, and the row hits again -- healed on the next
+// poll.
 func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -256,8 +257,8 @@ func TestCachedPull_PostPushProvenAnswerHealsWrongMark(t *testing.T) {
 	assertNoURLKeys(t, w3.Body.Bytes())
 }
 
-// TestCachedPull_GraphQLRowIncompleteMisses. A GraphQL-sourced row -- known
-// mergeable but missing the REST-only fields. It can never be rebuilt, so the
+// TestCachedPull_GraphQLRowIncompleteMisses: a GraphQL-sourced row -- known
+// mergeable but missing the REST-only fields -- can never be rebuilt, so the
 // single-PR route must miss (fetch + absorb) instead of serving a partial body.
 func TestCachedPull_GraphQLRowIncompleteMisses(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)

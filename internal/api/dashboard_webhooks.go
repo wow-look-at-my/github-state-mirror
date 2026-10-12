@@ -60,8 +60,8 @@ func (d *dashboard) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 // missingSubscriptions asks the App which events it is subscribed to and
 // reports the required ones it lacks. Returns nil -- the panel disappears --
 // whenever the answer cannot be obtained (no App configured, or the call
-// failed). This is because the alternative is asserting a configuration
-// problem the mirror has no evidence for.
+// failed), because the alternative is asserting a configuration problem the
+// mirror has no evidence for.
 func (d *dashboard) missingSubscriptions(r *http.Request) []missingSubscription {
 	if d.appEvents == nil {
 		return nil // no App credential: unknowable, so claim nothing

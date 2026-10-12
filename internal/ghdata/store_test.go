@@ -112,9 +112,9 @@ func TestSyncOrgTruth_StampsVisibility(t *testing.T) {
 }
 
 // TestSyncOrgTruth_ReconcilesOpenPRsWithGrace: for repos the fetch RETURNED,
-// its open-PR list is authoritative -- stale open rows are deleted. Except rows
-// touched inside the grace window (a webhook racing the fetch's eventual
-// consistency must never be clobbered. This exact race was hit in prototyping).
+// its open-PR list is authoritative -- stale open rows are deleted -- except
+// rows touched inside the grace window (a webhook racing the fetch's eventual
+// consistency must never be clobbered; this exact race was hit in prototyping).
 func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -151,9 +151,9 @@ func TestSyncOrgTruth_ReconcilesOpenPRsWithGrace(t *testing.T) {
 }
 
 // TestSyncOrgTruth_GrantsReplaceSynced: every repo a principal's fetch returned
-// earns them a list_sync grant. This also covers absence from the next sync
-// revokes it. This also covers probe grants survive a list replace (an archived
-// repo is absent from org fetches but still probe-accessible).
+// earns them a list_sync grant; absence from the next sync revokes it; probe
+// grants survive a list replace (an archived repo is absent from org fetches
+// but still probe-accessible).
 func TestSyncOrgTruth_GrantsReplaceSynced(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -268,8 +268,8 @@ func TestPruneAccessControl(t *testing.T) {
 
 // TestWritePathsPruneOpportunistically: RecordGrant and SyncOrgTruth sweep
 // expired access-control rows as a best-effort side effect, throttled to at
-// most per pruneInterval. So expired rows never accumulate unboundedly yet
-// the hot write path doesn't sweep on every call.
+// most per pruneInterval — so expired rows never accumulate unboundedly
+// yet the hot write path doesn't sweep on every call.
 func TestWritePathsPruneOpportunistically(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

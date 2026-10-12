@@ -29,9 +29,7 @@ The dashboard JS is not committed, so this job compiles it from the TypeScript b
 
 ## `image-smoke`
 
-START the image and require it to serve. Nothing did that before. `build` tests the HOST binary, and `publish-ghcr` builds and pushes without ever running the result. The first execution of the entrypoint was thus production. An image whose binary the kernel cannot exec once shipped green this way. The whole fleet's GitHub traffic routes through this service, so every route 404'd.
-
-See CLAUDE.md's APE-staging bullet and `docker/imagecheck.test.ts`.
+START the image and require it to serve. Nothing did that before. `build` tests the HOST binary, and `publish-ghcr` builds and pushes without ever running the result. The first execution of the entrypoint was thus production. An image whose binary the kernel cannot exec once shipped green this way. The whole fleet's GitHub traffic routes through this service, so every route 404'd. See CLAUDE.md's APE-staging bullet and `docker/imagecheck.test.ts`.
 
 `path: build` must match what `publish-ghcr` passes. The hand-off holds the binaries themselves, not a `build/` directory. A restore into the workspace root thus leaves the Dockerfile's `COPY` with nothing to find.
 

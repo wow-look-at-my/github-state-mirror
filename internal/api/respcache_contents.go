@@ -236,9 +236,9 @@ func renderContents(c ghdata.CachedContents) (int, []byte, error) {
 	}
 }
 
-// serveContentsHit renders whichever Accept shape the caller asked for. A
+// serveContentsHit renders whichever Accept shape the caller asked for; a
 // stored file row always has base64 content, decodable for a raw-Accept
-// caller too. There is no partial-row case to fall back from.
+// caller too, so there is no partial-row case to fall back from.
 func (h *handlers) serveContentsHit(w http.ResponseWriter, r *http.Request, c ghdata.CachedContents, rawAccept bool) {
 	if rawAccept && c.Kind == ghdata.ContentsKindFile {
 		h.serveContentsRaw(w, r, c, true)

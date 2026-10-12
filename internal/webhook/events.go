@@ -212,7 +212,7 @@ func ParseRepositoryObject(raw []byte) (dbgen.Repo, bool) {
 // ParseInstallationAppID returns the app_id of the delivery's own
 // `installation` object ("" when absent or unparseable) -- an
 // `installation`/`installation_repositories` delivery's app-installations
-// cache flush target, since GitHub's installation. Object carries the owning
+// cache flush target, since GitHub's installation object carries the owning
 // App's id directly.
 func ParseInstallationAppID(raw json.RawMessage) string {
 	var body struct {

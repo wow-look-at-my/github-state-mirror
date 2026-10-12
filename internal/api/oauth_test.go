@@ -27,7 +27,7 @@ func swapRelayURL(t *testing.T, target *string, url string) {
 }
 
 // TestOAuthAccessToken_RelaysToGitHubWithCORS verifies the OAuth token-exchange
-// relay. It forwards the form body to github.com's token endpoint with no bearer
+// relay: it forwards the form body to github.com's token endpoint with no bearer
 // token, returns GitHub's response verbatim, and carries exactly
 // Access-Control-Allow-Origin (the mirror's) so a browser can read the token.
 func TestOAuthAccessToken_RelaysToGitHubWithCORS(t *testing.T) {
@@ -86,10 +86,10 @@ func TestOAuthAccessToken_Preflight(t *testing.T) {
 	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 }
 
-// TestOAuthDeviceCode_RelaysToGitHubWithCORS verifies the device-code relay.
-// It forwards the SPA's JSON body to github.com's device authorization
+// TestOAuthDeviceCode_RelaysToGitHubWithCORS verifies the device-code relay:
+// it forwards the SPA's JSON body to github.com's device authorization
 // endpoint byte-identical with no bearer token, returns GitHub's device-code
-// response verbatim. It carries exactly Access-Control-Allow-Origin (the
+// response verbatim, and carries exactly Access-Control-Allow-Origin (the
 // mirror's) so a browser can start the device flow.
 func TestOAuthDeviceCode_RelaysToGitHubWithCORS(t *testing.T) {
 	deviceJSON := `{"device_code":"3584d83530557fdd1f46af8289938c8ef79f9dc5","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}`
@@ -154,7 +154,7 @@ func TestOAuthDeviceCode_Preflight(t *testing.T) {
 }
 
 // TestOAuthAccessToken_DeviceGrantPassthrough pins the device flow's polling
-// leg on the EXISTING access-token relay. The JSON device_code grant body must
+// leg on the EXISTING access-token relay: the JSON device_code grant body must
 // reach GitHub byte-identical (the relay filters nothing by grant type or
 // content type) and GitHub's "authorization_pending" answer must come back
 // verbatim with GitHub's status.

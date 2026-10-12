@@ -10,9 +10,9 @@ import (
 )
 
 // docker-updater probes these with no credential. Registering them inside the
-// authenticated group -- or not at all -- makes them answer through the GitHub
-// passthrough, and the contract reads any non- as "implemented". The container
-// would report as permanently unhealthy instead of unconfigured.
+// authenticated group -- or not at all -- makes them answer through the
+// GitHub passthrough, and the contract reads any non- as "implemented", so
+// the container would report as permanently unhealthy instead of unconfigured.
 func TestUpdateCheckEndpointsAnswerWithoutAToken(t *testing.T) {
 	router, _ := setupTestRouter(t)
 

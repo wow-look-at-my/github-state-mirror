@@ -139,7 +139,7 @@ func TestRepoFieldDiffs_Table(t *testing.T) {
 // TestDefaultBranchDiff_CarriesGitHubValue: a default_branch mismatch entry
 // must ALWAYS name both sides. GraphQL's defaultBranchRef is null for a repo
 // with no commits (REST still reports the CONFIGURED default_branch name,
-// which is what the cache holds). The shared add() rendered that as "" --
+// which is what the cache holds), and the shared add() rendered that as "" --
 // silently dropped from the report JSON by omitempty, so the -- entries
 // carried no github value at all.
 func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
@@ -181,8 +181,8 @@ func TestDefaultBranchDiff_CarriesGitHubValue(t *testing.T) {
 
 // TestPRFieldDiffs_RacedHeadMove: a head_ref_oid difference whose PR was
 // updated at/after the check's start (the in-flight-movement proof the
-// owner-query snapshot carries) is raced_during_check. This also covers
-// strictly before -- or unprovable -- stays field_mismatch.
+// owner-query snapshot carries) is raced_during_check; strictly before -- or
+// unprovable -- stays field_mismatch.
 func TestPRFieldDiffs_RacedHeadMove(t *testing.T) {
 	checkStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	base := func() dbgen.PullRequest {
@@ -217,11 +217,10 @@ func TestPRFieldDiffs_RacedHeadMove(t *testing.T) {
 	}
 }
 
-// TestConsistencyChecker_RacedDuringCheck. End to end. Consider a repo pushed
-// -- and a PR head. That repo moved -- WHILE the check runs (GitHub-side
-// timestamps at/after the run's check_started_at) classify as informational
-// raced_during_check with their own summary tally, never as field_mismatch
-// drift.
+// TestConsistencyChecker_RacedDuringCheck: end to end, a repo pushed -- and a
+// PR head moved -- WHILE the check runs (GitHub-side timestamps at/after the
+// run's check_started_at) classify as informational raced_during_check with
+// their own summary tally, never as field_mismatch drift.
 func TestConsistencyChecker_RacedDuringCheck(t *testing.T) {
 	future := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
 	pr := livePR(1, "newsha", "", "")

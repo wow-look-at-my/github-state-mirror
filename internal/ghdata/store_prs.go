@@ -28,10 +28,10 @@ func (s *Store) UpsertPR(ctx context.Context, pr dbgen.PullRequest, now time.Tim
 
 // UpsertPRWithChecks upserts a PR plus its labels and re-derives
 // last_commit_status from the commit checks already recorded for the PR's head
-// commit. A PR payload carries no CI state, so a PR seen AFTER its head
+// commit: a PR payload carries no CI state, so a PR seen AFTER its head
 // commit's checks finished (e.g. a pr-minder auto-opened PR) would otherwise
-// stay NULL. This applies until a later check event. When no checks are
-// recorded the (COALESCE-preserved) status is left untouched.
+// stay NULL until a later check event. When no checks are recorded the
+// (COALESCE-preserved) status is left untouched.
 func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) error {
 	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Store) UpsertPRWithChecks(ctx context.Context, pr dbgen.PullRequest, la
 // DeletePR removes a PR and its labels (a closed/merged PR leaves the cache)
 // and records the closure, at closedUpdatedAt -- the updated_at of the view
 // that reported the close. Without that record the deleted row is absent, and
-// absent loses to a later write carrying OLDER state. The PR comes back open
+// absent loses to a later write carrying OLDER state: the PR comes back open
 // and nothing restates the close.
 func (s *Store) DeletePR(ctx context.Context, owner, repo string, number int64, closedUpdatedAt string, now time.Time) error {
 	tx, err := database.Begin(ctx, s.db)

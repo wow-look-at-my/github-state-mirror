@@ -136,6 +136,7 @@ const (
 // TrimWorkflowJob converts raw job, reporting false only when the model
 // cannot hold it (no id, no status). A job that is still queued or running
 // trims exactly like a finished -- what its LIVENESS decides is how long
+// the row may be served without a delivery (WorkflowJobsLiveTTL), not whether
 // it can be represented.
 func TrimWorkflowJob(j RawWorkflowJob) (StoredWorkflowJob, bool) {
 	if j.ID <= 0 || j.Status == "" {

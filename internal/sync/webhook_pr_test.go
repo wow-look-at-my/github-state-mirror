@@ -17,7 +17,7 @@ import (
 )
 
 // Dispatcher tests for the pull_request and status events -- the payloads
-// that apply straight to PR truth. Plus the delivery-log records every
+// that apply straight to PR truth -- plus the delivery-log records every
 // dispatch leaves behind.
 
 func TestDispatch_PullRequest_PayloadApplied(t *testing.T) {
@@ -242,7 +242,7 @@ func TestDispatch_Push_UpdatesPushedAt(t *testing.T) {
 }
 
 // TestDispatch_Push_DefaultBranchNullsStatus: a push to the DEFAULT branch
-// un-resolves the repo's default_branch_status. The stored rollup describes
+// un-resolves the repo's default_branch_status -- the stored rollup describes
 // the tip, and a tip with no CI would otherwise keep it forever (the COALESCE
 // upsert can never clear it). A non-default-branch push leaves it.
 func TestDispatch_Push_DefaultBranchNullsStatus(t *testing.T) {
@@ -295,7 +295,7 @@ func TestDispatch_Push_DefaultBranchNullsStatus(t *testing.T) {
 
 // TestDispatch_Push_UnresolvesMergeableByBranch: a push to a branch un-resolves
 // mergeable for every open PR based on (or heading from) it -- GitHub is
-// recomputing. GitHub never webhooks the result.
+// recomputing and never webhooks the result.
 func TestDispatch_Push_UnresolvesMergeableByBranch(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

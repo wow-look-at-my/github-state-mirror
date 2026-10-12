@@ -14,7 +14,7 @@ Look at what this service actually persists. The truth tables are `repos`, `pull
 
 So there is no upsert to write. The `organization` object in the payload duplicates fields already absorbed from every delivery's own `repository` object — `absorbRepoFromPayload` runs on every event. It keeps the owner login and avatar on the repo rows current — and the member accounts have no representation to update.
 
-What a membership change genuinely moves is not state. It is **freshness**: who may see the org's repos changed. As a result, a principal's cached org-repos list-sync may no longer describe what GitHub will return them. That is a staleness fact, not a data fact, and the mirror has exactly one mechanism for it.
+What a membership change genuinely moves is not state. It is **freshness**: who may see the org's repos has changed. As a result, a principal's cached org-repos list-sync may no longer describe what GitHub will return them. That is a staleness fact, not a data fact, and the mirror has exactly one mechanism for it.
 
 ## What we do instead, and what that costs
 

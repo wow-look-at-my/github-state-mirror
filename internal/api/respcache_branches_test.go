@@ -41,11 +41,11 @@ func defaultBranchesUpstream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// TestCachedBranchesList_MissAbsorbHit covers the core flow. The read
-// fetches + absorbs the whole trimmed page (miss). The serves the
-// byte-identical stored doc (hit, upstream calls), and the rebuild keeps
-// exactly {name, commit.sha, protected} -- commit.url, the protection
-// object, protection_url. It _links all dropped.
+// TestCachedBranchesList_MissAbsorbHit covers the core flow: the read
+// fetches + absorbs the whole trimmed page (miss), the serves the
+// byte-identical stored doc (hit, upstream calls), and the rebuild
+// keeps exactly {name, commit.sha, protected} -- commit.url, the protection
+// object, protection_url, and _links all dropped.
 func TestCachedBranchesList_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/branches"
@@ -157,9 +157,9 @@ func TestCachedBranchesList_EmptyArrayCacheable(t *testing.T) {
 }
 
 // A tip-move is APPLIED into the stored pages from the push's own `after`,
-// costing upstream calls: the payload states the branch's new sha. Flushing
-// here would re-list every branch of the repo to buy that same sha back
-// over HTTP (CLAUDE.md's apply-don't-invalidate rule).
+// costing upstream calls: the payload states the branch's new sha, so
+// flushing here would re-list every branch of the repo to buy that same sha
+// back over HTTP (CLAUDE.md's apply-don't-invalidate rule).
 func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/branches"
@@ -186,9 +186,8 @@ func TestCachedBranchesList_PushAppliesTip(t *testing.T) {
 	assert.Contains(t, w2.Body.String(), shaMid, "the unpushed branch's tip must be untouched")
 }
 
-// What the pages cannot be edited into still flushes. This is a create and
-// a delete both move page MEMBERSHIP, which no in-place tip rewrite can
-// express.
+// What the pages cannot be edited into still flushes: a create and a delete
+// both move page MEMBERSHIP, which no in-place tip rewrite can express.
 func TestCachedBranchesList_MembershipChangesFlush(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -12,7 +12,7 @@ import (
 // TestConsistencyChecker_ForeignCollaboratorNodesDropped: a User owner's
 // repositoryOwner listing can include repos the login merely collaborates on
 // (GitHub's [OWNER, COLLABORATOR] ownerAffiliations default) -- under their
-// real owners. The client-side guard drops those nodes. The checker must
+// real owners. The client-side guard drops those nodes, so the checker must
 // neither report nor (in apply mode, via SyncOrgTruth) absorb anything keyed
 // "<queried>/<foreign name>" -- the junk rows the collaborator-repo bleed
 // used to create. The foreign name must be absent from the visibility map

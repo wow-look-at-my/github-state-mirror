@@ -120,9 +120,9 @@ func TestDeliveryReplayer_RequestsUnseenFailures(t *testing.T) {
 	assert.Contains(t, gh.listQuery, "status=failure", "only the failures are ours to replay")
 }
 
-// GitHub keeps a failed delivery listed forever. "already asked" has to be
-// remembered -- otherwise every cycle re-requests the same delivery and lost
-// push becomes a permanent replay loop.
+// GitHub keeps a failed delivery listed forever, so "already asked" has to be
+// remembered -- otherwise every cycle re-requests the same delivery and
+// lost push becomes a permanent replay loop.
 func TestDeliveryReplayer_AsksOncePerDelivery(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(7, "push", time.Minute)}}
 	r := NewDeliveryReplayer(gh.server(t), newReplayStore(), time.Minute)
@@ -166,8 +166,8 @@ func TestDeliveryReplayer_CapsOneCycleAndResumesOnTheNext(t *testing.T) {
 
 // A redelivery GitHub refuses stays recorded as asked. The request may well
 // have been accepted before the error surfaced, and a repeat every cycle is
-// the worse failure. The delivery stays in GitHub's own failure log for an
-// operator to see. The error is logged.
+// the worse failure; the delivery stays in GitHub's own failure log for an
+// operator to see, and the error is logged.
 func TestDeliveryReplayer_RefusedRequestIsNotRetriedInALoop(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(9, "push", time.Minute)}, attemptErr: true}
 	r := NewDeliveryReplayer(gh.server(t), newReplayStore(), time.Minute)
@@ -231,7 +231,7 @@ func TestDeliveryReplayer_ZeroIntervalDisables(t *testing.T) {
 }
 
 // The startup cycle is the point: a restart is itself a window in which
-// deliveries fail. A fresh process asks what it missed straight away
+// deliveries fail, so a fresh process asks what it missed straight away
 // rather than an interval later.
 func TestDeliveryReplayer_StartRunsACycleImmediately(t *testing.T) {
 	gh := &fakeHooks{failures: []map[string]any{failure(11, "push", time.Minute)}}

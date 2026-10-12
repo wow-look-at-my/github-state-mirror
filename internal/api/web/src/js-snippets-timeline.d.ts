@@ -1,16 +1,16 @@
-// INTERIM type shim for the buildhost-served <timeline-view> module. The same
-// stopgap webhook-runner's dashboard uses, trimmed to exactly the surface this
-// repo's adapter (src/timeline.ts) consumes. Temporary until the build fetches
-// js-snippets' published declarations mechanically (the library site already
-// serves a .d.ts next to every .js); never grow it beyond what the adapter
-// touches.
+// INTERIM type shim for the buildhost-served <timeline-view> module — the
+// same stopgap webhook-runner's dashboard uses, trimmed to exactly the surface
+// this repo's adapter (src/timeline.ts) consumes. Temporary until the build
+// fetches js-snippets' published declarations mechanically (the library site
+// already serves a .d.ts next to every .js); never grow it beyond what the
+// adapter touches.
 //
 // The component is NOT vendored: the browser imports it at runtime from
-// js-snippets' buildhost library site (live at master head. This also covers
-// replaced the quota-dead GitHub Pages deploy. The org's standard js-snippets
-// consumption model), and component fixes reach this dashboard on js-snippets
-// merge with no mirror change. TypeScript can't fetch types from a URL, so this
-// ambient declaration provides them — TYPES ONLY, no implementation.
+// js-snippets' buildhost library site (live at master head; replaced the
+// quota-dead GitHub Pages deploy — the org's standard js-snippets consumption
+// model), and component fixes reach this dashboard on js-snippets merge with
+// no mirror change. TypeScript can't fetch types from a URL, so this ambient
+// declaration provides them — TYPES ONLY, no implementation.
 declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js' {
     /** A swimlane: one labeled horizontal band of the timeline. */
     export interface TimelineLane {
@@ -93,9 +93,8 @@ declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline
 
 // The wire format the chart is fed with — same library, same runtime-import
 // model, same reason for a hand-maintained shim. Types only, trimmed to what
-// the adapter touches: the codec decodes a LAYOUT. The codec takes this
-// mirror's column names as a schema, so nothing here carries mirror
-// vocabulary.
+// the adapter touches: the codec decodes a LAYOUT and takes this mirror's
+// column names as a schema, so nothing here carries mirror vocabulary.
 declare module 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js' {
     /** How a payload's columns are named and encoded — the consumer's own. */
     export interface WireSchema {

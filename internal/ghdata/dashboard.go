@@ -138,8 +138,8 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 // RequiredWebhookEvents is the set of GitHub App event subscriptions the
 // mirror's correctness depends on, each with what breaks without it. A
 // missing subscription degrades SILENTLY -- the affected caches re-fetch
-// forever, or serve within their TTL. Which is exactly the shape of failure
-// that never gets noticed. The dashboard reports it instead.
+// forever, or serve within their TTL -- which is exactly the shape of failure
+// that never gets noticed, so the dashboard reports it instead.
 //
 // Keep this list honest: an entry belongs here only when a handler consumes
 // the event and something is measurably worse without it.

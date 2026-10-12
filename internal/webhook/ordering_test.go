@@ -30,7 +30,7 @@ func repoObj(extra map[string]any) map[string]any {
 
 // A push's clock is GitHub's record of the push, never the commit date the
 // committer's machine wrote. head_commit.timestamp survives a rebase unchanged
-// and can be arbitrarily far in the future. Ordering on it would let a crafted
+// and can be arbitrarily far in the future; ordering on it would let a crafted
 // commit date pin a branch's watermark ahead of every real push.
 func TestOrderOf_PushUsesPushedAtNotTheCommitDate(t *testing.T) {
 	pushedAt := time.Date(2026, 8, 14, 15, 35, 26, 0, time.UTC)
@@ -112,7 +112,7 @@ func TestOrderOf_SubjectGrain(t *testing.T) {
 }
 
 // Events the mirror stores nothing orderable for, and payloads missing their
-// own clock, report unorderable -- which applies them. It is not refusing
+// own clock, report unorderable -- which applies them, rather than refusing
 // state over a timestamp that was never there.
 func TestOrderOf_UnorderableEvents(t *testing.T) {
 	for _, tc := range []struct {

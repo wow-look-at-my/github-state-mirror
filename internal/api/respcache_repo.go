@@ -16,15 +16,15 @@ import (
 //
 //	GET /repos/{owner}/{repo}
 //
-// Unlike every other cached route there is NO snapshot table. The rebuild
+// Unlike every other cached route there is NO snapshot table: the rebuild
 // comes straight from the `repos` TRUTH row -- the same webhook-maintained
-// (repository events), fleet-synced, consistency-checked state tier already
-// serves. So there is deliberately no per-row TTL either. Truth freshness IS
-// the service's core model; a reveal probe additionally re-absorbs the row
-// per principal within the <=24h grant TTL. The pinned consumers read only
-// fields the row carries: the pr-minder-reconcile hook's getDefaultBranch
-// (default_branch) and status-only access checks (buildhost's canAccessRepo
-// pattern -- the is the answer).
+// (repository events), fleet-synced, consistency-checked state tier
+// already serves -- so there is deliberately no per-row TTL either. Truth
+// freshness IS the service's core model; a reveal probe additionally
+// re-absorbs the row per principal within the <=24h grant TTL. The pinned
+// consumers read only fields the row carries: the pr-minder-reconcile hook's
+// getDefaultBranch (default_branch) and status-only access checks
+// (buildhost's canAccessRepo pattern -- the is the answer).
 
 // cachedRepo serves the bare repository read from the repos truth row,
 // fetching and absorbing on an incomplete or missing row.

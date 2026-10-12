@@ -6,7 +6,7 @@ The GitHub App has one webhook URL, and it points at this service. `WEBHOOK_RELA
 
 - Only a delivery whose `X-Hub-Signature-256` verified. A rejected delivery never leaves the service.
 - Every verified delivery, whatever this service's own dispatch outcome was. The relay queues it before dispatch.
-- The body, byte-same, because the signature covers those exact bytes.
+- The body, byte-identical, because the signature covers those exact bytes.
 - GitHub's own headers and nothing else: `X-GitHub-Event`, `X-GitHub-Delivery`, `X-GitHub-Hook-ID`, `X-GitHub-Hook-Installation-Target-ID`, `X-GitHub-Hook-Installation-Target-Type`, `X-Hub-Signature`, `X-Hub-Signature-256`, `Content-Type`, `User-Agent`.
 
 The target holds the same webhook secret and verifies the signature itself.
@@ -21,7 +21,7 @@ The answer to GitHub never waits on a target. Each target has its own bounded in
 | 4xx other than 408 or 429 | permanent: logged at error level with the delivery id, counted, not retried |
 | anything else, or no answer | retried on a fixed interval, until a 2xx or a permanent 4xx |
 
-The retry interval never grows, and there is no try cap. A redirect is not followed and counts as a retryable failure, because it means the target URL is incorrect.
+The retry interval never grows, and there is no attempt cap. A redirect is not followed and counts as a retryable failure, because it means the target URL is wrong.
 
 A full queue drops the delivery. The relay logs it at error level with the delivery id and the target, and counts it.
 
@@ -35,12 +35,12 @@ A retry after a timeout can deliver the same delivery twice. A target dedupes on
 
 ## Limits
 
-- **The queue is memory-only.** A start loses every queued delivery. At shutdown the relay drains for up to 30s, then logs each target's undelivered count at error level.
+- **The queue is memory-only.** A restart loses every queued delivery. At shutdown the relay drains for up to 30s, then logs each target's undelivered count at error level.
 - **Nothing recovers a lost relay delivery.** GitHub's failure log records this service's answer, not the relay's, so a target's gap replayer never sees the loss. The counters below are the only record.
 
 ## Visibility
 
-- Every try is on the Timeline, on the `⇒ relay` lane. The client is built through `internal/httpobs`.
+- Every attempt is on the Timeline, on the `⇒ relay` lane. The client is built through `internal/httpobs`.
 - The admin Webhooks tab shows each target: queued, in flight, delivered, retried, permanently failed, dropped, and the last error. The `relay` field of `/api/webhooks` carries the same data.
 
 ## Configuration

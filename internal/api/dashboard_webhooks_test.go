@@ -45,12 +45,12 @@ func TestDashboard_Webhooks_Admin(t *testing.T) {
 
 // The missing-subscription report must come from the APP, never from the
 // delivery log. Inferring it from traffic reads "this event has not arrived
-// lately" as "this event is not configured". The retained log is bounded by
-// row count, so on a CI-heavy fleet it spans minutes. And every low-frequency
-// required event (repository, label) is reported missing forever while
-// correctly subscribed. That guard cried wolf on every page load, which is
-// strictly worse than no guard. It trains the operator to skim past the time
-// a subscription is gone.
+// lately" as "this event is not configured" -- and the retained log is
+// bounded by row count, so on a CI-heavy fleet it spans minutes and every
+// low-frequency required event (repository, label) is reported missing
+// forever while correctly subscribed. That guard cried wolf on every page
+// load, which is strictly worse than no guard: it trains the operator to skim
+// past the time a subscription is gone.
 func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 	// excludes "label"
 	subscribed := []string{}
@@ -85,9 +85,9 @@ func TestMissingSubscriptions_SilentButSubscribedReportsNothing(t *testing.T) {
 		"an idle but subscribed fleet must produce no subscription warnings")
 }
 
-// Unknowable is not the same as missing: with no App configured. Otherwise,
-// when the call fails, the panel says nothing rather than asserting a
-// configuration problem the mirror has no evidence for.
+// Unknowable is not the same as missing: with no App configured, or when the
+// call fails, the panel says nothing rather than asserting a configuration
+// problem the mirror has no evidence for.
 func TestMissingSubscriptions_UnknownIsNotMissing(t *testing.T) {
 	r := httptest.NewRequest("GET", "/api/webhooks", nil)
 

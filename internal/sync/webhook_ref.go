@@ -10,7 +10,7 @@ import (
 // usually sends a push alongside it, and a push carries a tip this service can
 // WRITE, so that path still does the applying. This handler is what remains
 // when no push arrives: a ref created from an existing commit, and every
-// delete, whose payload names the ref. It carries no sha at all.
+// delete, whose payload names the ref and carries no sha at all.
 //
 // A delete is the shape invalidation genuinely fits. The row must GO, and no
 // value replaces it: serving a branch that stopped existing is the failure.

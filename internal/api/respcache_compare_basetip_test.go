@@ -14,8 +14,8 @@ import (
 
 // The base-tip belt. A comparison's `behind_by` is the answer whose staleness
 // stops its own repair: pr-minder reads it to decide whether a PR's branch
-// needs updating. A stale "not behind" ends the work that would have produced
-// a fresh answer. Every test here therefore moves the base branch
+// needs updating, so a stale "not behind" ends the work that would have
+// produced a fresh answer. Every test here therefore moves the base branch
 // WITHOUT running the flush -- exactly the state a missed push delivery
 // leaves -- and asserts on what the route serves next.
 
@@ -115,7 +115,7 @@ func TestCachedCompare_MovedBaseDetectedFromAnyRefSpelling(t *testing.T) {
 	}
 }
 
-// The push's own tip is the input this belt exists to consume. Applying it to
+// The push's own tip is the input this belt exists to consume: applying it to
 // the ref rows is enough to retire every comparison against that branch, with
 // no compare-side flush involved at all.
 func TestCachedCompare_AppliedPushTipRetiresTheComparison(t *testing.T) {

@@ -65,9 +65,9 @@ type storedBranchListItem struct {
 }
 
 // ApplyPushedBranchTip writes a push's own `after` tip into every cached page
-// that already lists the branch. That ApplyPushedBranchTip is reporting false
-// where a page cannot be edited into the answer (the caller invalidates
-// instead). see docs/webhooks/dispatch.md
+// that already lists the branch, reporting false where a page cannot be
+// edited into the answer (the caller invalidates instead).
+// see docs/webhooks/dispatch.md
 func (s *Store) ApplyPushedBranchTip(ctx context.Context, owner, repo, branch, afterSHA string, now time.Time, ttl time.Duration) (bool, error) {
 	// The all-zeros oid is valid hex and means "no such ref": a deletion, which
 	// removes the entry rather than moving it.

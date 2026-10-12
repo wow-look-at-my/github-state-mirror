@@ -126,7 +126,7 @@ func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref s
 
 // CachedGitCommit is the absorbed state of git commit. Rows come from sources
 // -- an upstream fetch, or a push webhook payload -- and both rebuild to the
-// same trimmed shape. The struct is the source of truth.
+// same trimmed shape, so the struct is the source of truth.
 type CachedGitCommit struct {
 	Owner          string // lowercased
 	Repo           string // lowercased

@@ -52,8 +52,7 @@ func TestCachedReadme_MissAbsorbHit(t *testing.T) {
 }
 
 // The absent verdict is an answer about the repo, and a fleet polling every
-// repo's README spends a large minority of its calls on repos. That repos
-// have none.
+// repo's README spends a large minority of its calls on repos that have none.
 func TestCachedReadme_AbsentIsStored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.readme = absentReadmeUpstream
@@ -72,7 +71,7 @@ func TestCachedReadme_AbsentIsStored(t *testing.T) {
 }
 
 // The path names a DIRECTORY, so the response's own path is what the rebuild
-// reports. The row is keyed by the subtree the caller asked under.
+// reports; the row is keyed by the subtree the caller asked under.
 func TestCachedReadme_SubtreeIsItsOwnRow(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.readme = func(w http.ResponseWriter, r *http.Request) {

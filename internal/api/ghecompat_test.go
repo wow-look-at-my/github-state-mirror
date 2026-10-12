@@ -13,7 +13,7 @@ import (
 )
 
 // TestGHECanonicalPath pins the mapping itself, including the paths that must
-// keep their own meaning. /api/timeline is the dashboard's own route. A rewrite
+// keep their own meaning. /api/timeline is the dashboard's own route: a rewrite
 // there would take the Timeline chart off the air.
 func TestGHECanonicalPath(t *testing.T) {
 	cases := []struct {
@@ -43,7 +43,7 @@ func TestGHECanonicalPath(t *testing.T) {
 }
 
 // TestGHECompat_RESTPrefixHitsTheCachedRoute is the whole point: gh sends
-// /api/v3/user to a non-github.com host. That must reach the same cached
+// /api/v3/user to a non-github.com host, and that must reach the same cached
 // route as /user rather than the passthrough proxy.
 func TestGHECompat_RESTPrefixHitsTheCachedRoute(t *testing.T) {
 	router, _ := setupTestRouter(t)

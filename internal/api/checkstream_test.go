@@ -216,7 +216,7 @@ func TestCacheCheckStream_Apply(t *testing.T) {
 
 // TestCacheCheckStream_RunError: a run failing after the stream opened (here:
 // the installations listing 500s) surfaces as a terminal {"phase":"error"}
-// line -- the is already committed. The line IS the error channel.
+// line -- the is already committed, so the line IS the error channel.
 func TestCacheCheckStream_RunError(t *testing.T) {
 	svc := configuredAuth(t)
 	gh := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -243,8 +243,8 @@ func TestCacheCheckStream_RunError(t *testing.T) {
 // TestCacheCheckStream_FlushesIncrementally: the whole point of the stream is
 // that lines reach the client WHILE the run works. Over a real HTTP server
 // (real flusher, full middleware stack), the start/owner lines must be
-// readable while the fake GitHub is still holding the owner's repo fetch. A
-// handler that buffered the run would deliver nothing until the end.
+// readable while the fake GitHub is still holding the owner's repo fetch --
+// a handler that buffered the run would deliver nothing until the end.
 func TestCacheCheckStream_FlushesIncrementally(t *testing.T) {
 	svc := configuredAuth(t)
 	fake := checkerFakeGitHub(t)
@@ -297,7 +297,7 @@ func TestCacheCheckStream_FlushesIncrementally(t *testing.T) {
 	assert.Equal(t, "report", last["phase"])
 }
 
-// TestCacheCheckStream_GatesStillApply. Stream= changes the response format
+// TestCacheCheckStream_GatesStillApply: stream= changes the response format
 // only -- the admin gate, the apply-needs-POST gate, and the no-App all
 // fire before any streaming starts.
 func TestCacheCheckStream_GatesStillApply(t *testing.T) {

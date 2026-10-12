@@ -10,16 +10,16 @@ import (
 )
 
 // mergeable_state was parsed off upstream and then dropped by the rebuild, on
-// every path. The rebuilt document is what the MISS path serves too, so no
+// every path -- the rebuilt document is what the MISS path serves too, so no
 // fetch ever healed it and a consumer could not read the field. It is the
 // only place GitHub says a strict up-to-date rule is what blocks a merge
-// ("behind"). Its absence is what pushed pr-minder onto inferring behindness
-// from a compare, an answer this cache can serve stale.
+// ("behind"), so its absence is what pushed pr-minder onto inferring
+// behindness from a compare, an answer this cache can serve stale.
 
 // TestRenderedSinglePullCarriesConsumerFields pins the superset promise the
 // rebuilt shape makes. The fields listed here are read off mirror-served PR
-// objects by pr-minder. A rebuild that omits hands back undefined, which is
-// indistinguishable from "GitHub said nothing" and fails silently forever.
+// objects by pr-minder; a rebuild that omits hands back undefined, which
+// is indistinguishable from "GitHub said nothing" and fails silently forever.
 func TestRenderedSinglePullCarriesConsumerFields(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	u.single = func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +69,7 @@ func TestSinglePullMergeableStateSurvivesHitAndMiss(t *testing.T) {
 // TestSinglePullUnresolvedStateKeepsMissing: "unknown" is GitHub's word for
 // "still computing", not an answer. Caching it would serve a resolved-looking
 // document that nothing re-asks -- and mergeable_state is the field with the
-// weakest invalidation. It must gate the hit rather than ride along.
+// weakest invalidation, so it must gate the hit rather than ride along.
 func TestSinglePullUnresolvedStateKeepsMissing(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	state := "unknown"

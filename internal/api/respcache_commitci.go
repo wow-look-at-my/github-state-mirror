@@ -59,13 +59,13 @@ func parseCommitCIShape(q url.Values) (perPage, page int, ok bool) {
 }
 
 // commitsSubtree dispatches GET /repos/{owner}/{repo}/commits/* by its path
-// tail. A `{ref}/status` tail is the cached combined-status route. The
-// `{ref}/status` tail also is a `{ref}/check-runs` tail the cached check-runs
-// route, and a `{ref}/statuses` tail the cached raw statuses list. The suffix
-// anchor is what lets a ref carry slashes (claude/my-branch/status), which a
-// single-segment route parameter could never match. Every other tail (the
-// single-commit read, /check-suites,...) is forwarded to the passthrough
-// proxy, exactly as it was before this subtree was registered.
+// tail: a `{ref}/status` tail is the cached combined-status route, a
+// `{ref}/check-runs` tail the cached check-runs route, and a `{ref}/statuses`
+// tail the cached raw statuses list -- the suffix anchor is what lets a ref
+// carry slashes (claude/my-branch/status), which a single-segment route
+// parameter could never match. Every other tail (the single-commit read,
+// /check-suites,...) is forwarded to the passthrough proxy, exactly as it
+// was before this subtree was registered.
 func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	tail := chi.URLParam(r, "*")
 	if ref, ok := strings.CutSuffix(tail, "/status"); ok && ref != "" {

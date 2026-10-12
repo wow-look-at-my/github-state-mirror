@@ -243,7 +243,7 @@ func seedCtx() context.Context {
 }
 
 // seedOrgTruth merges repos (and optional PRs) into global truth AS IF the
-// given principal had run an org list-sync: truth rows are written. The
+// given principal had run an org list-sync: truth rows are written and the
 // principal earns list_sync grants for every repo.
 func seedOrgTruth(t *testing.T, store *ghdata.Store, principal, owner string, repos []dbgen.Repo, prsByRepo map[string][]dbgen.PullRequest) {
 	t.Helper()
@@ -293,8 +293,8 @@ func TestRequireAuth_Unauthenticated(t *testing.T) {
 
 // TestRevealIsolation verifies the reveal layer: global truth absorbed via
 // principal's sync (a PRIVATE-by-default repo, since the GraphQL sync cannot
-// learn visibility) is NOT revealed to a different user with no grant. This
-// happens while the syncing user sees it via their list_sync grant.
+// learn visibility) is NOT revealed to a different user with no grant, while
+// the syncing user sees it via their list_sync grant.
 func TestRevealIsolation(t *testing.T) {
 	// Fake GitHub resolves each token to its own user.
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

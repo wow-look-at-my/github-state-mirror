@@ -10,13 +10,13 @@ After each apply the queue hands the outcome to any `IngestNotifier`. The parame
 
 ## What the recorder observes
 
-An optional `DeliveryRecorder` observes EVERY delivery try, with its real measured duration, for the dashboard's Timeline chart. A nil recorder keeps it inert. `internal/api` adapts it onto `reqtimeline`.
+An optional `DeliveryRecorder` observes EVERY delivery attempt, with its real measured duration, for the dashboard's Timeline chart. A nil recorder keeps it inert. `internal/api` adapts it onto `reqtimeline`.
 
 It records a verified delivery after its apply, timed from receipt to applied. It records a `duplicate` and a delivery the inbox can not record at the moment of the answer. It records a rejected delivery at the moment of refusal, under a disposition only the recorder ever sees.
 
 - `unverified` — a bad or missing signature, or an unset secret.
 - `unparseable` — verified, but no event type.
-- `rejected` — the incorrect method, or an unreadable body.
+- `rejected` — the wrong method, or an unreadable body.
 
 ## Rejection metadata is untrusted
 

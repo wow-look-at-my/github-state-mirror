@@ -9,15 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A nuke has to survive the shutdown that never got to close the DB. The
-// container is killed. The -wal keeps committed frames the main file has not
+// A nuke has to survive the shutdown that never got to close the DB: the
+// container is killed, the -wal keeps committed frames the main file has not
 // absorbed, and the next boot is the that finds a schema it does not
-// recognize. things are load-bearing there, and neither is visible at the call
-// site. The recorded fingerprint is read AFTER WAL recovery. The decision is
-// made on the file's real latest state rather than on a stale main file. And
-// the mismatch branch closes the handle before deleting the file, which is
-// what clears the sidecars. Deleting the main file alone would leave that WAL
-// sitting beside a brand-new database.
+// recognize. things are load-bearing there, and neither is visible at the
+// call site. The recorded fingerprint is read AFTER WAL recovery, so the
+// decision is made on the file's real latest state rather than on a stale main
+// file. And the mismatch branch closes the handle before deleting the file,
+// which is what clears the sidecars -- deleting the main file alone would
+// leave that WAL sitting beside a brand-new database.
 func TestOpen_NukesAcrossAnUncleanShutdown(t *testing.T) {
 	live := filepath.Join(t.TempDir(), "test.db")
 

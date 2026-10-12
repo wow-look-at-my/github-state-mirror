@@ -185,11 +185,10 @@ type MergedPRBaseTip struct {
 // branch's tip, and reports false for any delivery that does not make.
 //
 // Only a MERGED PR does. `merge_commit_sha` on an open PR is the throwaway
-// test-merge commit, which is on no branch at all -- reading. That as a
-// tip would write a commit nobody can reach. Consider the merged flag plus
-// merged_at. That flag is what separates the, and merged_at is also what
-// orders the statement against what the mirror already holds
-// (ghdata.ApplyMergedBaseTip).
+// test-merge commit, which is on no branch at all -- reading that as a tip
+// would write a commit nobody can reach. The merged flag plus merged_at is
+// what separates the, and merged_at is also what orders the statement
+// against what the mirror already holds (ghdata.ApplyMergedBaseTip).
 func ParseMergedPRBaseTip(raw json.RawMessage) (MergedPRBaseTip, bool) {
 	var body struct {
 		PullRequest *struct {

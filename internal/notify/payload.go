@@ -8,8 +8,8 @@ import (
 
 // Notification is the compact JSON body POSTed to a subscriber after the
 // mirror ingested a GitHub delivery. MirrorDelivery is unique per
-// subscription x delivery. GitHubDelivery is the X-GitHub-Delivery GUID the
-// MIRROR received. It differs from the GUID GitHub sent the subscriber for
+// subscription x delivery; GitHubDelivery is the X-GitHub-Delivery GUID the
+// MIRROR received — it differs from the GUID GitHub sent the subscriber for
 // the same event, so owner/repo plus the identifier fields (pr_number, ref,
 // sha) are the correlation keys.
 type Notification struct {
@@ -36,7 +36,7 @@ type identifiers struct {
 }
 
 // extractIdentifiers pulls the correlation identifiers the event type
-// carries. PR events yield pr_number + head sha, pushes yield ref + after
+// carries: PR events yield pr_number + head sha, pushes yield ref + after
 // sha, CI events yield the commit sha. Anything else includes what is cheaply
 // available and omits the rest; a malformed payload yields fewer fields.
 func extractIdentifiers(event webhook.Event) identifiers {

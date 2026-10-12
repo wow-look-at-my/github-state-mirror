@@ -12,9 +12,9 @@ import (
 )
 
 // TestRateLimit_ServedFromObservedState verifies GET /rate_limit answers from
-// the ratemeter's passively observed X-RateLimit-* headers. Fed here by a
+// the ratemeter's passively observed X-RateLimit-* headers -- fed here by a
 // cached-route MISS on the SAME resolved identity ("user:<id>", since both
-// requests carry testToken). Proving the identity keying lines up between
+// requests carry testToken) -- proving the identity keying lines up between
 // requireAuth's principal and what fetchUpstream's meter.Observe recorded.
 func TestRateLimit_ServedFromObservedState(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -50,8 +50,8 @@ func TestRateLimit_ServedFromObservedState(t *testing.T) {
 
 // TestRateLimit_NeverCallsUpstream: the route must be answered ENTIRELY from
 // memory. A fake GitHub that fails the test on any GET /rate_limit call
-// proves the route never fetches it, even on the request. For a credential
-// the meter has never observed (still with an empty resources object — see
+// proves the route never fetches it, even on the request for a credential the
+// meter has never observed (still with an empty resources object — see
 // TestRateLimit_EmptyWhenNoObservation — never a fetch attempt).
 func TestRateLimit_NeverCallsUpstream(t *testing.T) {
 	var rateLimitHits int32
@@ -71,7 +71,7 @@ func TestRateLimit_NeverCallsUpstream(t *testing.T) {
 
 // TestRateLimit_EmptyWhenNoObservation: a credential the meter has never
 // observed gets an honestly empty `resources` object, never stale or
-// fabricated numbers. The same "omit, don't guess" stance
+// fabricated numbers -- the same "omit, don't guess" stance
 // ratemeter.Store.ObservationsFor documents.
 func TestRateLimit_EmptyWhenNoObservation(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
@@ -87,9 +87,8 @@ func TestRateLimit_EmptyWhenNoObservation(t *testing.T) {
 }
 
 // TestRateLimit_UnmodeledShapePassesThrough: GET /rate_limit takes no query
-// parameters. This also covers an unexpected is not this route's shape to
-// answer, so it forwards uncached rather than silently ignoring the
-// parameter.
+// parameters; an unexpected is not this route's shape to answer, so it
+// forwards uncached rather than silently ignoring the parameter.
 func TestRateLimit_UnmodeledShapePassesThrough(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
 	w := do(t, router, authedReq("GET", "/rate_limit?foo=bar", nil))

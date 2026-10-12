@@ -44,12 +44,11 @@ func TestCachedGitCommit_HitImmuneToPush(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.commitHits), "immutable commit must survive push events")
 }
 
-// TestCachedGitCommit_AbsorbedFromPushWebhook. Consider a push payload's
-// commits. Those commits are upserted into GLOBAL truth — for a repo
-// nobody ever fetched — so the post-push read hits WITHOUT. Any GitHub
-// fetch ever having happened, and rebuilds to the same trimmed shape a
-// fetch-sourced row does. (The reader still pays the reveal probe: their
-// own proof of repo access.)
+// TestCachedGitCommit_AbsorbedFromPushWebhook: a push payload's commits are
+// upserted into GLOBAL truth — for a repo nobody ever fetched — so the
+// post-push read hits WITHOUT any GitHub fetch ever having happened, and
+// rebuilds to the same trimmed shape a fetch-sourced row does. (The reader
+// still pays the reveal probe: their own proof of repo access.)
 func TestCachedGitCommit_AbsorbedFromPushWebhook(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -144,7 +143,7 @@ func gitCommit404Upstream(u *respCacheUpstream) {
 }
 
 // TestCachedGitCommit_404MissMarker: round 's stance change -- round never
-// cached a git-commit ("a missing sha can be pushed later"). However, the
+// cached a git-commit ("a missing sha can be pushed later"), but the
 // dominant traffic is pr-minder's mergeWouldBeEmpty re-reading GC'd
 // test-merge shas on every fleet sweep, each read a fresh upstream
 // forever. The is now absorbed as an EXPIRING miss marker (rebuilt in the
@@ -176,9 +175,9 @@ func TestCachedGitCommit_404MissMarker(t *testing.T) {
 // TestCachedGitCommit_404MarkerClearedByAbsorb: the un-miss invariant. A sha
 // carrying a marker later materializes -- here via a push webhook whose
 // payload absorbs the commit (every absorb path funnels through
-// ghdata.upsertGitCommit, which clears the marker). The next read serves the
-// rebuild immediately, from the absorbed row, rather than the stale or a
-// refetch.
+// ghdata.upsertGitCommit, which clears the marker) -- and the next read
+// serves the rebuild immediately, from the absorbed row, rather than the
+// stale or a refetch.
 func TestCachedGitCommit_404MarkerClearedByAbsorb(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
 	gitCommit404Upstream(u)

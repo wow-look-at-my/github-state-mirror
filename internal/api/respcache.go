@@ -134,8 +134,8 @@ func copyForwardHeaders(dst, src http.Header) {
 
 // replayUnstored writes an upstream response the cache could not absorb back
 // to the client — status, headers (minus GitHub's CORS copies, which the
-// mirror's corsMiddleware owns), and body — and records it as a passthrough.
-// It was forwarded, uncached.
+// mirror's corsMiddleware owns), and body — and records it as a passthrough:
+// it was forwarded, uncached.
 func (h *handlers) replayUnstored(w http.ResponseWriter, r *http.Request, resp *http.Response, body []byte) {
 	_ = stripUpstreamCORS(resp)
 	for k, vv := range resp.Header {

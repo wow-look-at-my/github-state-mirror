@@ -27,8 +27,8 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// TestOwnerQueriesPinOwnerAffiliation locks the fetch-side half of the fix.
-// Both checker/sync-private owner queries request ONLY owned repos, while the
+// TestOwnerQueriesPinOwnerAffiliation locks the fetch-side half of the fix:
+// both checker/sync-private owner queries request ONLY owned repos, while the
 // identity-locked org query stays byte-untouched (its protection is purely
 // the client-side drop guard).
 func TestOwnerQueriesPinOwnerAffiliation(t *testing.T) {
@@ -40,8 +40,8 @@ func TestOwnerQueriesPinOwnerAffiliation(t *testing.T) {
 
 // TestGetOwnerData_DropsForeignOwnerNode: a foreign-owner node in the owner
 // listing is dropped with its PRs (no key under the real owner, no re-key
-// under the queried login, no follow-up PR pagination). The drop is logged
-// with the node's real identity.
+// under the queried login, no follow-up PR pagination), and the drop is
+// logged with the node's real identity.
 func TestGetOwnerData_DropsForeignOwnerNode(t *testing.T) {
 	logs := captureSlog(t)
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,7 @@ func TestGetOwnerData_ForeignGuardCaseInsensitive(t *testing.T) {
 
 // TestGetOrgData_DropsForeignOwnerNode: the identity-locked org query cannot
 // gain an ownerAffiliations argument (see TestOrgQueryUntouched), so its
-// protection is purely the client-side guard. A synthetic foreign node in the
+// protection is purely the client-side guard: a synthetic foreign node in the
 // org listing is dropped with its PRs, and logged.
 func TestGetOrgData_DropsForeignOwnerNode(t *testing.T) {
 	logs := captureSlog(t)
@@ -117,9 +117,9 @@ func TestGetOrgData_DropsForeignOwnerNode(t *testing.T) {
 }
 
 // TestOwnerRepoVisibilities_DropsForeignOwnerNode: the visibility map is
-// keyed by BARE name. A foreign collaborator node with the same bare name as
-// an owned repo would otherwise clobber the owned entry (last write wins). It
-// is including flipping a private repo's recorded visibility. The guard drops
+// keyed by BARE name, so a foreign collaborator node with the same bare name
+// as an owned repo would otherwise clobber the owned entry (last write wins)
+// -- including flipping a private repo's recorded visibility. The guard drops
 // foreign nodes before they reach the map.
 func TestOwnerRepoVisibilities_DropsForeignOwnerNode(t *testing.T) {
 	logs := captureSlog(t)

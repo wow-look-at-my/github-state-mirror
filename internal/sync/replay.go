@@ -38,10 +38,10 @@ func NewDeliveryReplayer(app *ghclient.AppAuthenticator, store ReplayStore, inte
 	return &DeliveryReplayer{app: app, store: store, interval: interval}
 }
 
-// Start runs recovery cycle immediately, then per interval, until ctx is
-// canceled. The immediate run is the point: a restart is itself a window in
-// which deliveries fail. The thing a fresh process should do is ask what it
-// missed while it was not listening.
+// Start runs recovery cycle immediately, then per interval, until ctx
+// is canceled. The immediate run is the point: a restart is itself a window in
+// which deliveries fail, so the thing a fresh process should do is ask
+// what it missed while it was not listening.
 func (d *DeliveryReplayer) Start(ctx context.Context) {
 	if d == nil || d.app == nil || d.store == nil || d.interval <= 0 {
 		return

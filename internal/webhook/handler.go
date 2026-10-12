@@ -48,13 +48,16 @@ type Relayer interface {
 	RelayDelivery(header http.Header, body []byte)
 }
 
-// Handler returns an http.Handler that receives GitHub webhook POSTs.
+// Handler returns an http.Handler that receives GitHub webhook POSTs. A
+// verified delivery is answered once q's journal holds it; q's worker applies
+// it. A delivery id already in the journal is answered without recording it twice.
 func Handler(secret string, q *Queue) http.HandlerFunc {
 	return handlerWithRelayQueue(secret, q, nil)
 }
 
 // HandlerWithRelayQueue is Handler plus a relay that gets each verified
-// delivery before it is journaled, whatever its outcome.
+// delivery before it is journaled, whatever its outcome. A nil relay relays
+// nothing.
 func HandlerWithRelayQueue(secret string, q *Queue, relay Relayer) http.HandlerFunc {
 	return handlerWithRelayQueue(secret, q, relay)
 }
@@ -156,7 +159,7 @@ func handlerWithRelayQueue(secret string, q *Queue, relay Relayer) http.HandlerF
 }
 
 // HandlerWithRelay is the relay-aware form of the webhook endpoint that
-// dispatches synchronously. It hands every verified delivery to relay before
+// dispatches synchronously: it hands every verified delivery to relay before
 // dispatch, whatever the outcome, and answers with the dispatch result itself.
 // A nil relay relays nothing.
 func HandlerWithRelay(secret string, dispatcher Dispatcher, recorder DeliveryRecorder, relay Relayer, notifiers ...IngestNotifier) http.HandlerFunc {
@@ -255,8 +258,8 @@ func localDeliveryID() string {
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
-// distinguishes "applied" () from a no-op () and an internal error (). The body
-// and headers carry the detail so it shows up in GitHub's delivery UI.
+// distinguishes "applied" () from a no-op () and an internal error ();
+// the body and headers carry the detail so it shows up in GitHub's delivery UI.
 func writeResult(w http.ResponseWriter, result DispatchResult) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-GSM-Disposition", result.Disposition)

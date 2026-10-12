@@ -147,8 +147,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 }
 
 // invalidateForPush flushes the response caches a push makes stale, at the
-// finest grain the payload supports. A push moves exactly ref, so tables
-// keyed by a requested ref. Flush per-ref when the payload names it and
+// finest grain the payload supports: a push moves exactly ref, so tables
+// keyed by a requested ref flush per-ref when the payload names it and
 // repo-wide only when it does not.
 func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook.Event, owner, repo string) {
 	scope := owner + "/" + repo
@@ -157,7 +157,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		refName, defaultBranch, after = payload.RefName, payload.DefaultBranch, payload.After
 		isTag = strings.HasPrefix(payload.Ref, "refs/tags/")
 	}
-	// (onPush re-parses the payload for the apply side. The parse is a few
+	// (onPush re-parses the payload for the apply side; the parse is a few
 	// microseconds of JSON and keeping this function self-contained beats
 	// threading a parsed payload through handle().)
 
@@ -173,12 +173,12 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	default:
 		// Every per-ref flush below covers the pushed ref in each spelling GitHub accepts for it, since caches key rows verbatim.
 		spellings := refSpellings(refName, isTag)
-		// contents and commits-list rows key the REQUESTED ref. This happens where
-		// the empty ref means "the default branch" -- so a default-branch push also
-		// moves the empty-ref rows and flushes that spelling too. Be conservative
-		// for exactly these empty-ref-keyed tables (repo-wide) rather than guess,
-		// the tables with no empty-ref key stay per-ref below. Do this when the
-		// payload does not say which branch is the default.
+		// contents and commits-list rows key the REQUESTED ref, where the empty ref
+		// means "the default branch" -- so a default-branch push also moves the
+		// empty-ref rows and flushes that spelling too. When the payload does not
+		// say which branch is the default, be conservative for exactly these
+		// empty-ref-keyed tables (repo-wide) rather than guess; the tables with no
+		// empty-ref key stay per-ref below.
 		if defaultBranch == "" {
 			flush("contents cache", scope, d.store.InvalidateContentsCache(ctx, owner, repo))
 			flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
@@ -210,7 +210,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		}
 	}
 
-	// A push names changed FILES. A file maps to a workflow id only through the answer this caches, so repo-wide is the finest grain there is.
+	// A push names changed FILES, and a file maps to a workflow id only through the answer this caches, so repo-wide is the finest grain there is.
 	flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
 
 	d.applyOrFlushBranchesList(ctx, scope, owner, repo, refName, after, isTag)
@@ -243,10 +243,10 @@ func pullCommitsRefKey(number int64) string {
 	return "pull/" + strconv.FormatInt(number, 10) + "/commits"
 }
 
-// flushWorkflowJobsForRun drops run's cached job answers -- its jobs pages
-// AND the single-job rows under it -- widening to the repo-wide flush. This
-// happens when the payload named no run. An id of would exact-match nothing
-// (a silent no-op) while the delivery still said SOME run's jobs moved.
+// flushWorkflowJobsForRun drops run's cached job answers -- its jobs
+// pages AND the single-job rows under it -- widening to the repo-wide flush
+// when the payload named no run: an id of would exact-match nothing (a
+// silent no-op) while the delivery still said SOME run's jobs moved.
 func (d *WebhookDispatcher) flushWorkflowJobsForRun(ctx context.Context, scope, owner, repo string, runID int64) {
 	if runID <= 0 {
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))

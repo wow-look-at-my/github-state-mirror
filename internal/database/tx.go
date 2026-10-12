@@ -49,7 +49,7 @@ type Tx struct {
 const savepointName = "nested"
 
 // Begin opens a transaction on db. When ctx already carries one on db, it
-// opens a savepoint inside it instead. Commit and Rollback keep their
+// opens a savepoint inside it instead, so Commit and Rollback keep their
 // meaning for the inner scope and the outer transaction stays the only
 // holder of the write lock.
 func Begin(ctx context.Context, db *sql.DB) (*Tx, error) {

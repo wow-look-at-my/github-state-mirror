@@ -295,7 +295,7 @@ func TestNotificationsAdminEndpoint(t *testing.T) {
 
 // pushPayloadJSON marshals a push delivery for my-org/open. Marshalling rather
 // than splicing the shas into a literal is what internal/guards' json-splice
-// check requires. And what makes the body correct for any value.
+// check requires -- and what makes the body correct for any value.
 func pushPayloadJSON(t *testing.T, before, after string) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{

@@ -35,7 +35,7 @@ func TestNullPRMergeableByBranch_RecordsPushProof(t *testing.T) {
 
 // TestNullPRMergeableByBranch_NoProofWithoutUsableAfter: an empty after (an
 // unknowing caller) and git's all-zeros null id (a deleted ref) name no real
-// tip. The marker is recorded WITHOUT proof columns -- nothing can match
+// tip, so the marker is recorded WITHOUT proof columns -- nothing can match
 // them, and only the TTL unwedges (the bound).
 func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 	for name, after := range map[string]string{"empty": "", "zeros": zeroSHA} {
@@ -57,13 +57,13 @@ func TestNullPRMergeableByBranch_NoProofWithoutUsableAfter(t *testing.T) {
 
 // TestAbsorbSinglePull_WrongMarkHealsOnPushProof locks the wrong-mark race
 // fix. The race: GitHub recomputes mergeability within seconds of a push a
-// read triggers it. Pr-minder polls the mirror right after pushing -- so a
-// poll-driven absorb can land GitHub's POST-push answer (fresh sha, base tip
-// already at the push's after). This happens BEFORE the push delivery reaches
-// the mirror. The late delivery then stamps that FRESH sha stale. Pre-fix
+// read triggers it, and pr-minder polls the mirror right after pushing -- so
+// a poll-driven absorb can land GitHub's POST-push answer (fresh sha, base
+// tip already at the push's after) BEFORE the push delivery reaches the
+// mirror, and the late delivery then stamps that FRESH sha stale. Pre-fix
 // this wedged the row for the whole MergeStaleTTL hour: every refetch
 // re-offered the (correct!) sha, was rejected, and the route served
-// mergeable:null while github.com showed it computed. Pr-minder's
+// mergeable:null while github.com showed it computed -- pr-minder's
 // conflict-settle burned its full in-run ceiling on every touch of the PR.
 // Now the re-offered answer's base tip equals the push's recorded after:
 // post-push proof, accepted, marker fully cleared -- healed on the next poll.
@@ -98,8 +98,8 @@ func TestAbsorbSinglePull_WrongMarkHealsOnPushProof(t *testing.T) {
 }
 
 // TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof: the head-side variant --
-// the wrong-marking push moved the PR's HEAD branch. The proof matches on the
-// answer's reported head tip instead.
+// the wrong-marking push moved the PR's HEAD branch, so the proof matches on
+// the answer's reported head tip instead.
 func TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestAbsorbSinglePull_WrongMarkHealsOnHeadPushProof(t *testing.T) {
 
 // TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof: recording the
 // proof must not weaken the guard's whole point -- a genuinely PRE-push
-// answer (the invalidated sha with the base tip) demonstrates nothing. It is
+// answer (the invalidated sha with the base tip) demonstrates nothing and is
 // rejected exactly as before, marker and proof kept.
 func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
 	s := testStore(t)
@@ -155,8 +155,8 @@ func TestAbsorbSinglePull_PrePushAnswerStillRejectedUnderProof(t *testing.T) {
 }
 
 // TestUpsertPRWithChecks_WebhookProofParity: the SQL stale guard (the
-// webhook/list/sync writers' path) shares the tip proof with the Go check. A
-// webhook-shaped upsert offering the marked sha resolves the row and clears
+// webhook/list/sync writers' path) shares the tip proof with the Go check --
+// a webhook-shaped upsert offering the marked sha resolves the row and clears
 // the marker iff its reported tip matches the push's after.
 func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 	s := testStore(t)
@@ -191,22 +191,22 @@ func TestUpsertPRWithChecks_WebhookProofParity(t *testing.T) {
 // ---- The dirty-retained CONFLICTING exemption ----
 //
 // The invariant behind the marker holds only for SUCCESSFUL test merges: a
-// conflicted (dirty) PR gets NO new test merge. GitHub keeps returning the
-// RETAINED last-good merge_commit_sha with a fresh mergeable:false. Its
+// conflicted (dirty) PR gets NO new test merge, so GitHub keeps returning the
+// RETAINED last-good merge_commit_sha with a fresh mergeable:false -- and its
 // reported base.sha stays FROZEN at the last clean evaluation, so the
-// push-tip proof cannot rescue it (live evidence --: wow-look-at-my/webhooks#
-// and #, both dirty on GitHub with retained shas and frozen base.sha values
-// while the mirror served mergeable:null on consecutive miss-reads). Without
-// the exemption, every base push over a conflicted PR deterministically
-// wedged it to null for the whole
+// push-tip proof cannot rescue it (live evidence --:
+// wow-look-at-my/webhooks# and #, both dirty on GitHub with retained
+// shas and frozen base.sha values while the mirror served mergeable:null on
+// consecutive miss-reads). Without the exemption, every base push over a
+// conflicted PR deterministically wedged it to null for the whole
 // MergeStaleTTL -- the reported pr-minder conflict-settle stall.
 
-// TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow. (the
+// TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow: (the
 // deterministic wedge fix) a CONFLICTING answer re-offering the marker sha is
-// accepted the marker outlives MergeStaleConflictingWindow. Replica lag can
-// no longer explain the match, so the dirty-retained pattern is the only
-// remaining explanation. Even when the push-tip proof is recorded but does
-// NOT match the doc (the frozen-base.sha live case).
+// accepted the marker outlives MergeStaleConflictingWindow -- replica
+// lag can no longer explain the match, so the dirty-retained pattern is the
+// only remaining explanation -- even when the push-tip proof is recorded but
+// does NOT match the doc (the frozen-base.sha live case).
 func TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -238,8 +238,8 @@ func TestAbsorbSinglePull_DirtyRetainedConflictHealsPastLagWindow(t *testing.T) 
 
 // TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected: within
 // MergeStaleConflictingWindow a CONFLICTING same-sha answer could still be a
-// genuinely pre-push read served by a lagging replica, so it stays rejected.
-// The marker (proof included) survives.
+// genuinely pre-push read served by a lagging replica, so it stays rejected
+// and the marker (proof included) survives.
 func TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -264,10 +264,10 @@ func TestAbsorbSinglePull_ConflictSameShaInsideLagWindowRejected(t *testing.T) {
 }
 
 // TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL: the exemption is scoped
-// to CONFLICTING only. A successful test merge does always mint a new sha. A
-// MERGEABLE answer re-offering the marker sha is pre-push however old the
-// marker is (within MergeStaleTTL) and stays rejected. Lag-window age buys it
-// nothing.
+// to CONFLICTING only. A successful test merge does always mint a new sha, so
+// a MERGEABLE answer re-offering the marker sha is pre-push however old the
+// marker is (within MergeStaleTTL) and stays rejected -- lag-window age buys
+// it nothing.
 func TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -287,10 +287,10 @@ func TestAbsorbSinglePull_MergeableSameShaKeepsFullTTL(t *testing.T) {
 }
 
 // TestUpsertPRWithChecks_DirtyRetainedParity: the SQL stale guard shares the
-// '- seconds' CONFLICTING exemption with the Go check. Through the
+// '- seconds' CONFLICTING exemption with the Go check -- through the
 // webhook-shaped upsert path a MERGEABLE same-sha payload stays rejected past
-// the lag window, while a CONFLICTING resolves the row. It clears the whole
-// marker.
+// the lag window, while a CONFLICTING resolves the row and clears the
+// whole marker.
 func TestUpsertPRWithChecks_DirtyRetainedParity(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

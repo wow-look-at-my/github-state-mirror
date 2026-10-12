@@ -237,16 +237,16 @@ type appResp struct {
 }
 
 // VerifyAppIdentity validates a GitHub App JWT by calling GET /app with it. The
-// App JWT is signed with the app's private key (RS256). GitHub only returns if
-// that signature checks out against the public key it holds for the app. A
+// App JWT is signed with the app's private key (RS256); GitHub only returns
+// if that signature checks out against the public key it holds for the app, so a
 // successful response is unforgeable proof that the caller holds the app's
 // private key — exactly the "GitHub agrees you are app X" assertion. The result
 // is cached per JWT (a caller reuses JWT for its ~-minute validity), so this
 // costs upstream call per JWT, not per request.
 //
-// The returned identity is meant to be used as a stable cache partition. For
-// a trusted -party app caller (e.g. a webhook handler) whose underlying
-// installation tokens rotate hourly. Every of those tokens proves the same
+// The returned identity is meant to be used as a stable cache partition for a
+// trusted -party app caller (e.g. a webhook handler) whose underlying
+// installation tokens rotate hourly: every of those tokens proves the same
 // app identity, so they all share bucket.
 func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity, error) {
 	if v, ok := c.appIdentityCache.Load(jwt); ok {

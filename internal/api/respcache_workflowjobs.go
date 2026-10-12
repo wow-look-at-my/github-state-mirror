@@ -177,13 +177,13 @@ type (
 type rawJob = ghdata.RawWorkflowJob
 
 // absorbRunJobs renders a run's jobs page. A page with a job still moving is
-// absorbed too, marked live. The fetch is what proves the page's MEMBERSHIP,
+// absorbed too, marked live: the fetch is what proves the page's MEMBERSHIP,
 // and the `workflow_job` deliveries that follow rewrite each job's entry in
-// place. The stored answer tracks the run instead of expiring against it.
+// place, so the stored answer tracks the run instead of expiring against it.
 //
-// An empty page (past the end) is a valid cacheable answer. However, it carries
-// no run id — so it is deliberately NOT stored, since a row nothing can flush
-// is a row that outlives its truth.
+// An empty page (past the end) is a valid cacheable answer, but it carries no
+// run id — so it is deliberately NOT stored, since a row nothing can flush is
+// a row that outlives its truth.
 func absorbRunJobs(status int, body []byte) (absorbedJobs, bool) {
 	if status != http.StatusOK {
 		return absorbedJobs{}, false

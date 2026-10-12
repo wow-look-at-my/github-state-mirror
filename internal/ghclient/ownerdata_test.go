@@ -71,9 +71,9 @@ func ownerPage(hasNext bool, cursor string, nodes ...map[string]any) map[string]
 }
 
 // TestGetOwnerData_UserAccountAndFields: the owner-agnostic query resolves a
-// User login (the org query cannot) and carries the extra fields. A > label
-// set, the armed auto-merge method (lowercased from the GraphQL enum), and
-// isArchived.
+// User login (the org query cannot) and carries the extra fields -- a >
+// label set, the armed auto-merge method (lowercased from the GraphQL enum),
+// and isArchived.
 func TestGetOwnerData_UserAccountAndFields(t *testing.T) {
 	labels := make([]map[string]string, 0, 12)
 	for i := 0; i < 12; i++ {
@@ -140,9 +140,9 @@ func TestGetOwnerData_Pagination(t *testing.T) {
 	assert.Equal(t, "repo-b", data.Repos[1].Name)
 }
 
-// TestGetOwnerData_PRPagination: a repo whose PR page reports hasNextPage is
-// completed via the owner-agnostic per-repo PR query. The follow-up pages
-// carry the owner-only fields too.
+// TestGetOwnerData_PRPagination: a repo whose PR page reports
+// hasNextPage is completed via the owner-agnostic per-repo PR query, and the
+// follow-up pages carry the owner-only fields too.
 func TestGetOwnerData_PRPagination(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -251,10 +251,9 @@ func TestGetOwnerData_CarriesVisibility(t *testing.T) {
 		"GraphQL enum lowercased to the stored/REST form")
 }
 
-// TestGetOwnerData_NullOwnerFailsLoudly: repositoryOwner is nullable. An
-// unknown login answers data.repositoryOwner=null with NO GraphQL error. This
-// also covers that must be an error, never an empty (every-repo-is-drift)
-// result.
+// TestGetOwnerData_NullOwnerFailsLoudly: repositoryOwner is nullable, so an
+// unknown login answers data.repositoryOwner=null with NO GraphQL error; that
+// must be an error, never an empty (every-repo-is-drift) result.
 func TestGetOwnerData_NullOwnerFailsLoudly(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repositoryOwner": nil}})

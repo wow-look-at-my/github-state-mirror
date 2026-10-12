@@ -37,7 +37,7 @@ func (h *handlers) cachedOrgHooks(w http.ResponseWriter, r *http.Request) {
 
 // serveHooks is the shared flow. The routes differ only in the target they
 // name: the request shape, the rebuild, the key, and the invalidation are
-// identical. This is because GitHub answers both with the same hook object.
+// identical, because GitHub answers both with the same hook object.
 func (h *handlers) serveHooks(w http.ResponseWriter, r *http.Request, target ghdata.HooksTarget) {
 	token := bearerToken(r)
 	if token == "" {

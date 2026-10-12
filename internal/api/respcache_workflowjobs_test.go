@@ -98,11 +98,11 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 }
 
 // A RUNNING run is served, and its own deliveries are what keep the answer
-// true. This is the load-bearing behavior of the whole route. The fetch
-// settles which jobs belong to the run. The workflow_job delivery states the
-// new value of of them. The stored page is rewritten rather than dropped. So
-// the runner coordinator reads current job state without the fleet re-asking
-// GitHub for what it was already told.
+// true. This is the load-bearing behavior of the whole route: the fetch
+// settles which jobs belong to the run, the workflow_job delivery states the
+// new value of of them, and the stored page is rewritten rather than
+// dropped — so the runner coordinator reads current job state without the
+// fleet re-asking GitHub for what it was already told.
 func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
@@ -141,8 +141,8 @@ func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 
 // The live TTL is the LOST-DELIVERY bound, and only that. A page whose
 // movement is a job WAITING to start carries it (the deliveries keep such a
-// page exactly right, since a queued job has no steps yet). A running job's
-// steps advance unreported and earn the shorter. A settled page keeps the
+// page exactly right, since a queued job has no steps yet); a running job's
+// steps advance unreported and earn the shorter; a settled page keeps the
 // long. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all.
 func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
@@ -182,9 +182,9 @@ func TestCachedWorkflowJob_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.jobHits))
 }
 
-// A re-run replaces. Consider a run's jobs under the SAME run id — so a
-// workflow_job delivery naming the run. Those jobs must flush the run's jobs
-// page AND the single-job rows under it. This is why both kinds carry run_id.
+// A re-run replaces a run's jobs under the SAME run id — so a workflow_job
+// delivery naming the run must flush the run's jobs page AND the single-job
+// rows under it, which is why both kinds carry run_id.
 func TestCachedWorkflowJobs_RerunFlushesRunAndJobRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -227,8 +227,7 @@ func TestCachedWorkflowJobs_WorkflowRunFlushes(t *testing.T) {
 }
 
 // Shape guards: the `filter` parameter selects a DIFFERENT set of jobs for a
-// re-run. The `filter` parameter also guards deep pages are unmodeled, and
-// non-numeric ids are not this route's.
+// re-run, deep pages are unmodeled, and non-numeric ids are not this route's.
 func TestCachedWorkflowJobs_ShapeGuardsPassThrough(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
 

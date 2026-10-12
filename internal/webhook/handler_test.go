@@ -263,7 +263,7 @@ func (r *recordingDeliveryRecorder) RecordDelivery(event Event, result DispatchR
 
 // TestHandler_RecordsDelivery verifies the recorder observes a verified
 // delivery with its real fields and a measured (non-negative, non-faked)
-// duration. And that the response is unchanged by the recording.
+// duration — and that the response is unchanged by the recording.
 func TestHandler_RecordsDelivery(t *testing.T) {
 	secret := "test-secret"
 	dispatcher := &recordingDispatcher{result: DispatchResult{Event: "pull_request", Disposition: DispApplied}}
@@ -326,8 +326,8 @@ func TestHandler_RecordsUnverified(t *testing.T) {
 }
 
 // TestHandler_RecordsEveryRejectionPath: no delivery attempt escapes the
-// recorder. Unset secret, wrong method, and a verified delivery missing its
-// event type each record with their own disposition. Every response is
+// recorder — unset secret, wrong method, and a verified delivery missing its
+// event type each record with their own disposition, and every response is
 // byte-for-byte what it was before recording existed.
 func TestHandler_RecordsEveryRejectionPath(t *testing.T) {
 	secret := "test-secret"

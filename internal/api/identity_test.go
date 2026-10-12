@@ -24,7 +24,7 @@ const orgReposQuery = `{"query":"{ organization(login: \"my-org\") { repositorie
 
 // TestModeB_AppIdentityPartition verifies that a caller asserting an App JWT in
 // X-Mirror-Identity resolves to the verified app principal (app:<id>), not the
-// token. And that the credential is NOT validated via /user — so a rotating
+// token, and that the credential is NOT validated via /user — so a rotating
 // installation token (which cannot call /user) works. It uses /graphql, the only
 // cached route: the app principal's grants reveal the private repo to it.
 func TestModeB_AppIdentityPartition(t *testing.T) {
@@ -90,7 +90,7 @@ func TestModeB_InvalidIdentityRejected(t *testing.T) {
 }
 
 // TestModeB_AppIdentityName: a VERIFIED X-Mirror-Identity caller's slug is
-// recorded in actor_identities. It rides the request log as actor_name — the
+// recorded in actor_identities and rides the request log as actor_name — the
 // dashboard shows "pr-minder" instead of a bare app:<id>.
 func TestModeB_AppIdentityName(t *testing.T) {
 	svc := configuredAuth(t) // admin session support for /api/requests

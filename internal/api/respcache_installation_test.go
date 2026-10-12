@@ -14,7 +14,7 @@ import (
 // Repo-installation route tests (GET /repos/{owner}/{repo}/installation);
 // shared fixtures (pullsCacheStack,...) live in respcache_pulls_test.go.
 
-// TestCachedRepoInstallation_HitAndFlush. The App-JWT-authed repo-installation
+// TestCachedRepoInstallation_HitAndFlush: the App-JWT-authed repo-installation
 // lookup is cached per app, rebuilt without URL fields, flushed by
 // installation events, and unverifiable bearers pass through.
 func TestCachedRepoInstallation_HitAndFlush(t *testing.T) {
@@ -63,7 +63,7 @@ func TestCachedRepoInstallation_HitAndFlush(t *testing.T) {
 // TestCachedRepoInstallation_RecordsAppIdentity: this route self-verifies its
 // App JWT outside requireAuth, so it must record the verified app:<id> ->
 // slug mapping itself — otherwise the principal never reaches
-// actor_identities. The dashboard shows "(unknown)".
+// actor_identities and the dashboard shows "(unknown)".
 func TestCachedRepoInstallation_RecordsAppIdentity(t *testing.T) {
 	router, store, _, _ := pullsCacheStack(t)
 

@@ -136,7 +136,7 @@ func TestUpsertPRWithChecksRefusesAPreCloseView(t *testing.T) {
 }
 
 // A reconcile sweep infers the close from ABSENCE from an eventually
-// consistent snapshot. A wrong inference recorded as a closure would
+// consistent snapshot, and a wrong inference recorded as a closure would
 // refuse the PR's real deliveries for a day. Only a statement that the PR
 // closed records.
 func TestSyncOrgTruthSweepRecordsNoClosure(t *testing.T) {

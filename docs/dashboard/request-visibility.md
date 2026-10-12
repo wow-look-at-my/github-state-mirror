@@ -1,6 +1,6 @@
 # Every request this service sends is on the dashboard
 
-A request nobody can see is a request nobody can account for. It spends rate-limit budget the operator tries to explain. It can be slow. It can fail, and none of that reaches the chart they look at to answer "what is this thing doing right now?".
+A request nobody can see is a request nobody can account for. It spends rate-limit budget the operator is trying to explain. It can be slow. It can fail, and none of that reaches the chart they are looking at to answer "what is this thing doing right now?".
 
 This is an operator ruling, not a preference (restated): **everything the mirror exchanges is on the Timeline chart. A gap is a bug.** The first cut of the chart scoped out ghclient's background traffic as "deliberately not recorded" and was reverted for it. Never reintroduce an observability exclusion.
 
@@ -8,7 +8,11 @@ This is an operator ruling, not a preference (restated): **everything the mirror
 
 Recording at the call site covers the calls you thought of. The ones that go missing are the ones nobody thought of. That includes every call site added later by someone who did not know the rule.
 
-The mirror had a live example. `internal/auth` built its own `http.Client` for the OAuth handshake, so **every dashboard sign-in made real GitHub calls that appeared nowhere**. On the very page they serv. Nothing was incorrect with the code that made them. Nobody wrote the recording line, and nothing can told them to.
+The mirror had a live example. `internal/auth` built its own `http.Client` for
+the OAuth handshake, so **every dashboard sign-in made two real GitHub calls
+that appeared nowhere** — on the very page they were serving. Nothing was
+wrong with the code that made them; nobody had written the recording line, and
+nothing could have told them to.
 
 So the property is held at the **client**, not the call. An outbound HTTP client either reports what it sends, from its transport, or it is a hole. `internal/httpobs` is the wrapper. Four of the senders below use it or an equivalent transport hook.
 
@@ -23,7 +27,7 @@ So the property is held at the **client**, not the call. An outbound HTTP client
 | `relayGitHubLogin` (github.com login relays for browser clients) | one call site, records itself | `relay` |
 | `internal/notify` (subscriber notifications) | the notifier records each attempt with its attempt number and terminal flag — which a transport cannot know | `⇒ notify` lane |
 
-RequestLog.observe*` end-to-end from the router's receipt stamp charts Inbound traffic, and webhook deliveries by the handler. A passthrough therefore produces **two** events: the inbound request the mirror served, and the call it made to serve it. That is deliberate — under debouncing the counts stop matching, which is exactly the thing worth seeing (many inbound bars, one call to GitHub inside them).
+Inbound traffic is charted separately by `requestLog.observe*` end-to-end from the router's receipt stamp, and webhook deliveries by the handler. A passthrough therefore produces **two** events: the inbound request the mirror served, and the call it made to serve it. That is deliberate — under debouncing the counts stop matching, which is exactly the thing worth seeing (many inbound bars, one call to GitHub inside them).
 
 ## The build gate
 

@@ -286,8 +286,7 @@ func TestDoJSON_ContextCancellationNotRetried(t *testing.T) {
 
 // TestRetryDelay_RetryAfterFloorAndCap: a parseable Retry-After raises the
 // backoff floor but is capped so a huge value can't wedge a deadline-bounded
-// fetch. This also covers absent/garbage headers leave the configured
-// backoff alone.
+// fetch; absent/garbage headers leave the configured backoff alone.
 func TestRetryDelay_RetryAfterFloorAndCap(t *testing.T) {
 	resp := func(retryAfter string) *http.Response {
 		r := &http.Response{Header: http.Header{}}
@@ -437,9 +436,9 @@ func TestRateObserver_Unset(t *testing.T) {
 	require.NoError(t, c.doJSON(context.Background(), "GET", "/test", nil, nil))
 }
 
-// TestSetExchangeObserver_TimesEveryCall. The transport-level observer sees
+// TestSetExchangeObserver_TimesEveryCall: the transport-level observer sees
 // every exchange the client performs — with method, path, status, a real
-// non-negative duration, and the credential-shape identity. And a ctx
+// non-negative duration, and the credential-shape identity — and a ctx
 // principal (with verified name) takes precedence.
 func TestSetExchangeObserver_TimesEveryCall(t *testing.T) {
 	type obs struct {

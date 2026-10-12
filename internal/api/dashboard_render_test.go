@@ -55,9 +55,8 @@ func TestShortAndTime(t *testing.T) {
 }
 
 // TestToRecent_SurfacesError verifies a failed refresh carries its captured
-// error_message through to the dashboard response. This happens while a
-// successful does not — so the UI can show *why* a refresh errored, not
-// that it did.
+// error_message through to the dashboard response, while a successful does
+// not — so the UI can show *why* a refresh errored, not that it did.
 func TestToRecent_SurfacesError(t *testing.T) {
 	logs := []dbgen.CacheRefreshLog{
 		{

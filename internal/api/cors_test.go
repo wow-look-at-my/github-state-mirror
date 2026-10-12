@@ -64,8 +64,8 @@ func TestCORS_Allowlist(t *testing.T) {
 
 // TestCORS_ExposeHeaders verifies a browser can read the mirror's own response
 // headers cross-origin. Rebuilt (cached) responses are written by the mirror
-// alone -- nothing upstream contributes an Expose-Headers list to inherit. So
-// without this the cache-status and rate-limit headers were invisible to a
+// alone -- nothing upstream contributes an Expose-Headers list to inherit --
+// so without this the cache-status and rate-limit headers were invisible to a
 // cross-origin app on every hit.
 func TestCORS_ExposeHeaders(t *testing.T) {
 	mw := corsMiddleware(nil)

@@ -1,6 +1,6 @@
 // <rate-meter> — one GitHub rate-limit bucket rendered as a self-contained
 // web component (custom element + shadow DOM owning its markup and styles).
-// Used by the admin "Rate limit" tab, self-registers on load. Index.html
+// Used by the admin "Rate limit" tab; self-registers on load, so index.html
 // adds <script type="module" src="assets/rate-meter.js"></script> and app.ts
 // creates <rate-meter> elements with plain attributes:
 //

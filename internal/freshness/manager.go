@@ -78,7 +78,7 @@ func (m *Manager) EnsureFresh(ctx context.Context, id ResourceID) error {
 	return err
 }
 
-// EnsureFreshOutcome is EnsureFresh that also reports the cache outcome. Hit when
+// EnsureFreshOutcome is EnsureFresh that also reports the cache outcome: Hit when
 // the resource was already fresh (no upstream call), Miss when a fetch was
 // triggered, Error on failure.
 func (m *Manager) EnsureFreshOutcome(ctx context.Context, id ResourceID) (Outcome, error) {
@@ -109,10 +109,9 @@ func (m *Manager) Metadata(ctx context.Context, id ResourceID) (*Metadata, error
 	return m.store.Get(ctx, m.fillActor(ctx, id))
 }
 
-// backoffError returns a non-nil error. This happens when meta is an error-state
-// row whose retry-after moment has not yet arrived — the fetch must not be
-// re-attempted. It is carrying the stored upstream error. Nil otherwise (including
-// nil meta).
+// backoffError returns a non-nil error when meta is an error-state row whose
+// retry-after moment has not yet arrived — the fetch must not be re-attempted —
+// carrying the stored upstream error. Nil otherwise (including nil meta).
 func backoffError(meta *Metadata) error {
 	if meta == nil || meta.State != StateError || meta.RetryAfter == nil || !time.Now().Before(*meta.RetryAfter) {
 		return nil

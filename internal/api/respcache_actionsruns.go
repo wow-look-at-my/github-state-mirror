@@ -59,8 +59,8 @@ func (s workflowRunsShape) filter() ghdata.WorkflowRunFilter {
 
 // parseWorkflowRunsShape reports the shape of an /actions/runs query and
 // whether the cache models it. head_sha (a full hex object id, lowercased),
-// status (of GitHub's documented values), and branch (a bounded ref name)
-// are modeled, as are the standard per_page/page bounds. The modeled
+// status (of GitHub's documented values), and branch (a bounded ref
+// name) are modeled, as are the standard per_page/page bounds; the modeled
 // filters are canonicalized into sorted, escaped key component. Unknown
 // params, repeated params, or a malformed value make it non-cacheable.
 func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
@@ -113,10 +113,10 @@ func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 // isControlRune rejects C0/DEL so a caller cannot smuggle control bytes into a cache key.
 func isControlRune(r rune) bool { return r < 0x20 || r == 0x7f }
 
-// cachedWorkflowRuns serves page of a workflow-runs listing. The repo-wide
-// shape rebuilt from webhook-maintained truth rows, the per-commit shape
-// from a stored whole-doc snapshot. Both fetch and absorb on a miss; shapes
-// the cache does not model pass through.
+// cachedWorkflowRuns serves page of a workflow-runs listing: the
+// repo-wide shape rebuilt from webhook-maintained truth rows, the per-commit
+// shape from a stored whole-doc snapshot. Both fetch and absorb on a miss;
+// shapes the cache does not model pass through.
 func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
@@ -223,8 +223,9 @@ func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, sh
 }
 
 // absorbWorkflowRunsIntoTruth records every listed run, and on a short page- answer marks the set complete -- see docs/cache/rest-routes.md.
-// It reports true when truth holds a recently delivered run the answer omits. The answer is behind truth, so neither its snapshot nor its
-// completeness is recorded. now is the instant before the fetch began.
+// It reports true when truth holds a recently delivered run the answer omits:
+// the answer is behind truth, so neither its snapshot nor its completeness is recorded.
+// now is the instant before the fetch began.
 func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) bool {
 	ctx := r.Context()
 	for _, run := range parsed.Runs {
@@ -304,7 +305,7 @@ type parsedWorkflowRun struct {
 }
 
 // truth converts an absorbed run into its global-truth row. A REST answer
-// carries the run's own status and conclusion. It is an authoritative
+// carries the run's own status and conclusion, so it is an authoritative
 // writer -- unlike a workflow_job delivery, which may only raise a floor.
 func (p parsedWorkflowRun) truth(owner, repo string) ghdata.WorkflowRun {
 	return ghdata.WorkflowRun{
@@ -324,8 +325,8 @@ func derefOrEmpty(s *string) string {
 }
 
 // renderWorkflowRuns marshals the trimmed runs document. Both sources go
-// through it -- an absorbed upstream answer and a rebuild from truth rows.
-// So a hit and a miss cannot drift apart in shape.
+// through it -- an absorbed upstream answer and a rebuild from truth rows --
+// so a hit and a miss cannot drift apart in shape.
 func renderWorkflowRuns(total int64, items []workflowRunItemJSON) ([]byte, error) {
 	if items == nil {
 		items = []workflowRunItemJSON{}
@@ -334,11 +335,11 @@ func renderWorkflowRuns(total int64, items []workflowRunItemJSON) ([]byte, error
 }
 
 // absorbWorkflowRuns parses an /actions/runs. Reports false -- serve
-// verbatim, store nothing. For any other status or any shape the model
-// cannot hold: total_count and the workflow_runs array must both be PRESENT.
-// Every run must carry a positive id, a status, and a full-hex head sha. An
-// empty workflow_runs with total_count is a valid, cacheable answer (exactly
-// the "no runs yet" verdict the zombie probe is after).
+// verbatim, store nothing -- for any other status or any shape the model
+// cannot hold: total_count and the workflow_runs array must both be PRESENT,
+// and every run must carry a positive id, a status, and a full-hex head sha.
+// An empty workflow_runs with total_count is a valid, cacheable answer
+// (exactly the "no runs yet" verdict the zombie probe is after).
 func absorbWorkflowRuns(status int, body []byte) (parsedWorkflowRuns, bool) {
 	if status != http.StatusOK {
 		return parsedWorkflowRuns{}, false

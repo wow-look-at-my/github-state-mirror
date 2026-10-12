@@ -60,10 +60,10 @@ type legacyTimelineJSON struct {
 	Now            string              `json:"now"`
 }
 
-// realisticRing builds a ring shaped like real mirror traffic. It mostly
-// requests across a handful of route shapes, ~% webhook deliveries carrying
-// UNIQUE delivery GUIDs (the field no dictionary can compress — leaving them
-// out would flatter the format), a few outbound notifications. Deterministic.
+// realisticRing builds a ring shaped like real mirror traffic: mostly requests
+// across a handful of route shapes, ~% webhook deliveries carrying UNIQUE
+// delivery GUIDs (the field no dictionary can compress — leaving them out
+// would flatter the format), a few outbound notifications. Deterministic.
 func realisticRing(n int, span time.Duration) *reqtimeline.Recorder {
 	rng := rand.New(rand.NewSource(7))
 	step := span / time.Duration(n)

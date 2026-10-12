@@ -169,8 +169,8 @@ func TestCacheCheckApply_UnavailableWithoutApp(t *testing.T) {
 }
 
 // TestRateLimit_NoAppStillServesObserved: without a GitHub App the endpoint no
-// longer 503s — it answers with an empty live half, an explanatory note. It
-// whatever the passive meter observed (nothing yet, here).
+// longer 503s — it answers with an empty live half, an explanatory note,
+// and whatever the passive meter observed (nothing yet, here).
 func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
 	svc := configuredAuth(t)
 	router, _, _ := newTestStack(t, svc) // test stack wires a checker with a nil app
@@ -190,7 +190,7 @@ func TestRateLimit_NoAppStillServesObserved(t *testing.T) {
 }
 
 // TestRateLimit_ObservesPassthroughHeaders drives a passthrough request whose
-// upstream response carries X-RateLimit-* headers. It asserts the reading
+// upstream response carries X-RateLimit-* headers and asserts the reading
 // surfaces on /api/ratelimit — the end-to-end passive-observation path.
 func TestRateLimit_ObservesPassthroughHeaders(t *testing.T) {
 	svc := configuredAuth(t)

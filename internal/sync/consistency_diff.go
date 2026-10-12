@@ -23,8 +23,8 @@ import (
 // visibility (repo name -> live visibility + archive state, as the App sees it,
 // INCLUDING archived repos) classifies missing repos and feeds the visibility/
 // is_archived diffs; nil means it could not be fetched and no classification is
-// added. checkStart is when the whole run began (captured before any fetch). A
-// GitHub-side timestamp at or after it proves the resource moved WHILE the
+// added. checkStart is when the whole run began (captured before any fetch):
+// a GitHub-side timestamp at or after it proves the resource moved WHILE the
 // check ran, which is classified raced_during_check instead of drift.
 func (c *ConsistencyChecker) diffOwner(
 	ctx context.Context,
@@ -142,7 +142,7 @@ func (c *ConsistencyChecker) diffOwner(
 	}
 
 	// Cached-open PRs under repos ABSENT from GitHub's fetched set are never
-	// visited above. Sweep them so stale-but-servable rows can't hide behind
+	// visited above -- sweep them so stale-but-servable rows can't hide behind
 	// the repo-level only_in_cache entry.
 	for repoKey, prs := range cachedPRs {
 		if !strings.HasPrefix(repoKey, owner+"/") {
@@ -227,9 +227,9 @@ func repoFieldDiffs(owner, name string, c, g dbgen.Repo, visibility map[string]g
 	add("default_branch_status", ns(c.DefaultBranchStatus), ns(g.DefaultBranchStatus))
 
 	// default_branch gets its own constructor so the entry ALWAYS carries an
-	// explicit github value. GraphQL's defaultBranchRef is null for a repo with
+	// explicit github value: GraphQL's defaultBranchRef is null for a repo with
 	// no commits (REST still reports the CONFIGURED default_branch name, which
-	// is what the webhook/REST absorb paths cache). The bare add() rendered
+	// is what the webhook/REST absorb paths cache), and the bare add() rendered
 	// that as "" -- dropped from the JSON by omitempty, leaving a -sided entry.
 	if ns(c.DefaultBranch) != ns(g.DefaultBranch) {
 		d := Discrepancy{
@@ -326,7 +326,7 @@ func prFieldDiffs(repoKey string, num int64, c, g dbgen.PullRequest, checkStart 
 	add("is_draft", boolStr(c.IsDraft), boolStr(g.IsDraft))
 	add("last_commit_status", ns(c.LastCommitStatus), ns(g.LastCommitStatus))
 
-	// head_ref_oid. A differing head sha whose PR was updated at/after the
+	// head_ref_oid: a differing head sha whose PR was updated at/after the
 	// check's start moved WHILE the check ran (the push's webhook had no time to
 	// land) -- raced_during_check, not drift.
 	if ns(c.HeadRefOid) != ns(g.HeadRefOid) {

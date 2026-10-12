@@ -16,10 +16,9 @@ func ts(t *testing.T, ago time.Duration) string {
 
 // TestRecordWorkflowJob_PrunesOldCompleted verifies the on-write prune: a
 // completed job stale on both clocks (completed_at AND updated_at past the
-// retention window) is deleted by the next write. This happens while a fresh
-// completed job and an old-but-still-running job survive. Rows whose
-// updated_at is fresh are NOT pruned however old their completed_at is --
-// that case is pinned by
+// retention window) is deleted by the next write, while a fresh completed job
+// and an old-but-still-running job survive. Rows whose updated_at is fresh
+// are NOT pruned however old their completed_at is -- that case is pinned by
 // TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress.
 func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 	s := testStore(t)
@@ -54,11 +53,11 @@ func TestRecordWorkflowJob_PrunesOldCompleted(t *testing.T) {
 }
 
 // TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress pins the
-// out-of-order guarantee against the retention prune (the -- CI incident). A
+// out-of-order guarantee against the retention prune (the -- CI incident): a
 // completed event whose completed_at is already past the -day horizon (a
-// replayed/redelivered old delivery) is still fresh telemetry. The on-write
-// prune keys on updated_at too. It cannot delete the row it wrote. A late
-// in_progress for that job is absorbed by the upsert guard instead of
+// replayed/redelivered old delivery) is still fresh telemetry -- the on-write
+// prune keys on updated_at too, so it cannot delete the row it wrote -- and a
+// late in_progress for that job is absorbed by the upsert guard instead of
 // INSERTing a fresh running row (which would regress status to "in_progress"
 // and blank the conclusion, the incident's exact failure shape).
 func TestRecordWorkflowJob_LateInProgressPastRetentionDoesNotRegress(t *testing.T) {

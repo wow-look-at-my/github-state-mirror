@@ -1,9 +1,9 @@
 // Package auth implements GitHub OAuth login and signed-cookie sessions for the
 // web dashboard. It knows nothing about the cache: it answers "who is this
 // browser?" and "is this login an admin?", and leaves all cache access to the
-// caller. Its only non-stdlib import is internal/httpobs, itself a stdlib leaf.
-// The GitHub calls a sign-in makes reach the dashboard's chart like every other
-// request this service sends.
+// caller. Its only non-stdlib import is internal/httpobs, itself a stdlib leaf,
+// so the GitHub calls a sign-in makes reach the dashboard's chart like
+// every other request this service sends.
 //
 // The dashboard's authorization model is distinct from the data API's. The data
 // API isolates by an opaque token fingerprint (see internal/api/router.go); the

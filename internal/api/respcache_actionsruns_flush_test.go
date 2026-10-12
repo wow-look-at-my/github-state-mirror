@@ -15,12 +15,12 @@ import (
 // non-200s. The fixtures and the core miss/absorb/hit flow live in
 // respcache_actionsruns_test.go.
 
-// TestCachedWorkflowRuns_WebhookFlush. A CI/job event flushes exactly. The
+// TestCachedWorkflowRuns_WebhookFlush: a CI/job event flushes exactly the
 // payload-named sha's pages -- including a QUEUED workflow_job, whose
-// delivery the dispatcher drops as ignored but whose invalidation runs (a
-// queued job is a run the cached listing may not have shown yet, the exact
-// staleness pr-minder's zombie probe must not read). This is while another
-// sha's pages survive. Repository events flush repo-wide.
+// delivery the dispatcher drops as ignored but whose invalidation runs
+// (a queued job is a run the cached listing may not have shown yet, the
+// exact staleness pr-minder's zombie probe must not read) -- while another
+// sha's pages survive; repository events flush repo-wide.
 func TestCachedWorkflowRuns_WebhookFlush(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 	tipTarget := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
@@ -117,7 +117,7 @@ func TestCachedWorkflowRuns_WorkflowRunEventRewritesThePage(t *testing.T) {
 }
 
 // A run the pages do not list is a NEW run for the sha -- a membership change
-// only a fetch settles. This is so that delivery still flushes.
+// only a fetch settles -- so that delivery still flushes.
 func TestCachedWorkflowRuns_UnlistedRunStillFlushes(t *testing.T) {
 	router, _, _, _ := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
@@ -136,9 +136,9 @@ func TestCachedWorkflowRuns_UnlistedRunStillFlushes(t *testing.T) {
 
 // GitHub's listing trails its own workflow_run.requested delivery. An answer
 // fetched after the delivery that omits the delivered run is behind truth: it
-// is served. However, it stored neither as the sha's page nor as truth's
-// correction. The next read fetches again instead of serving "no run" until
-// the run's next delivery.
+// is served, but stored neither as the sha's page nor as truth's correction,
+// so the next read fetches again instead of serving "no run" until the run's
+// next delivery.
 func TestCachedWorkflowRuns_AnswerBehindDeliveryNotStored(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
@@ -198,7 +198,7 @@ func TestCachedWorkflowRuns_TTLBackstopExpiry(t *testing.T) {
 
 // TestCachedWorkflowRuns_Non200NotStored: anything but a well-formed --
 // and a whose body lacks total_count or the workflow_runs array -- is
-// relayed verbatim. It stores nothing.
+// relayed verbatim and stores nothing.
 func TestCachedWorkflowRuns_Non200NotStored(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip

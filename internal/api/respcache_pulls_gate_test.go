@@ -15,9 +15,9 @@ import (
 )
 
 // The list-tier stale-sha gate: the single-PR route refuses to serve a row
-// whose merge_commit_sha is the push-invalidated (PRMergeShaStale, belt and
-// braces behind the guarded writes). The list rebuild must apply the same
-// belt -- a provably-stale sha renders as null in list items instead of
+// whose merge_commit_sha is the push-invalidated (PRMergeShaStale, belt
+// and braces behind the guarded writes); the list rebuild must apply the
+// same belt -- a provably-stale sha renders as null in list items instead of
 // being served.
 func TestPullsList_GatesPushInvalidatedMergeSha(t *testing.T) {
 	router, store, db, _ := respCacheStack(t)

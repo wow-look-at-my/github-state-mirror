@@ -15,7 +15,7 @@ import (
 //
 //  row per (owner, repo, VERBATIM requested name). The name is never
 // canonicalized -- GitHub resolves label names case-insensitively but the
-// mirror does not model that. Each requested spelling keys its own row and
+// mirror does not model that, so each requested spelling keys its own row and
 // every flush is repo-wide, which covers all of them. WHO may read a row is
 // the reveal layer's job (internal/api).
 

@@ -1,4 +1,4 @@
-// Package notify implements subscriber notifications. Authenticated API
+// Package notify implements subscriber notifications: authenticated API
 // clients register webhook endpoints with the mirror, and after the mirror's
 // synchronous dispatcher applies a GitHub delivery to global truth, the mirror
 // POSTs a compact, HMAC-signed notification to every matching, authorized

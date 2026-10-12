@@ -71,8 +71,8 @@ func seedResolvedPR(t *testing.T, s *Store, now time.Time) {
 
 // TestNullPRMergeableByBranch_RemembersInvalidatedSha: the push-time
 // un-resolve nulls mergeable + merge_commit_sha AND records the nulled sha
-// with its stamp. This also covers a push before re-resolution keeps the
-// remembered sha (there is no newer to remember).
+// with its stamp; a push before re-resolution keeps the remembered sha
+// (there is no newer to remember).
 func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -92,11 +92,11 @@ func TestNullPRMergeableByBranch_RemembersInvalidatedSha(t *testing.T) {
 	assert.Equal(t, staleShaA, row.MergeStaleSha.String, "a second push must keep the remembered sha")
 }
 
-// TestAbsorbSinglePull_RejectsReofferedInvalidatedSha is the H2 core. A
-// refetch whose answer still carries the invalidated sha (GitHub's recompute
-// lag) is stored UNRESOLVED -- the row keeps missing, each miss re-triggering
-// the recompute. This happens until GitHub serves a NEW sha. This happens
-// after a push nulls the row. This resolves the row and clears the marker.
+// TestAbsorbSinglePull_RejectsReofferedInvalidatedSha is the H2 core: after a
+// push nulls the row, a refetch whose answer still carries the invalidated
+// sha (GitHub's recompute lag) is stored UNRESOLVED -- the row keeps missing,
+// each miss re-triggering the recompute -- until GitHub serves a NEW sha,
+// which resolves the row and clears the marker.
 func TestAbsorbSinglePull_RejectsReofferedInvalidatedSha(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -126,9 +126,9 @@ func TestAbsorbSinglePull_RejectsReofferedInvalidatedSha(t *testing.T) {
 
 // TestAbsorbSinglePull_NullShaAnswerKeepsMarker: a resolved CONFLICTING
 // answer legitimately carries NO test-merge sha (a failed test merge). It is
-// not same-sha-stale, so it resolves the row. However, the marker stays (no
-// new sha vouched for a recompute), still guarding against a later lagged
-// answer re-offering the invalidated sha.
+// not same-sha-stale, so it resolves the row -- but the marker stays (no new
+// sha vouched for a recompute), still guarding against a later lagged answer
+// re-offering the invalidated sha.
 func TestAbsorbSinglePull_NullShaAnswerKeepsMarker(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -147,9 +147,9 @@ func TestAbsorbSinglePull_NullShaAnswerKeepsMarker(t *testing.T) {
 
 // TestAbsorbSinglePull_ExpiredMarkerAccepts: past the marker window the
 // re-offered sha is accepted again (and the marker cleared). The window is
-// what stops a sha WRONGLY marked stale. This is a fetch absorbed the fresh
-// post-push sha before the late push delivery landed, which then stamped
-// it. This is from wedging the row into missing forever.
+// what stops a sha WRONGLY marked stale -- a fetch absorbed the fresh
+// post-push sha before the late push delivery landed, which then stamped it
+// -- from wedging the row into missing forever.
 func TestAbsorbSinglePull_ExpiredMarkerAccepts(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -169,9 +169,9 @@ func TestAbsorbSinglePull_ExpiredMarkerAccepts(t *testing.T) {
 
 // TestAbsorbPullsList_CannotStoreInvalidatedSha: the pulls-LIST absorb path
 // carries merge_commit_sha (though never mergeable) -- re-offering the
-// invalidated sha must not store it. Otherwise, the list rebuild would serve
-// a provably-stale sha and the sync re-arm (H3) would have a stale sha to
-// pair with.
+// invalidated sha must not store it, or the list rebuild would serve a
+// provably-stale sha and the sync re-arm (H3) would have a stale sha to pair
+// with.
 func TestAbsorbPullsList_CannotStoreInvalidatedSha(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

@@ -16,7 +16,7 @@ import (
 // single-job row. Reports false when NOTHING could be rewritten and the caller
 // should flush the run instead.
 //
-// A repo with no cached rows for the run also reports false. There is no stale
+// A repo with no cached rows for the run also reports false; there is no stale
 // answer to correct, and the caller's flush is then a no-op.
 func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID int64, job StoredWorkflowJob, now time.Time) (bool, error) {
 	if runID <= 0 || job.ID <= 0 || job.Status == "" {

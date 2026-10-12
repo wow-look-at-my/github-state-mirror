@@ -15,7 +15,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// commitCIKinds is every kind commit_ci_cache stores. A test can assert on
+// commitCIKinds is every kind commit_ci_cache stores, so a test can assert on
 // what a delivery leaves ALONE as precisely as on what it drops.
 var commitCIKinds = []string{
 	ghdata.CommitCIKindStatus,
@@ -23,17 +23,17 @@ var commitCIKinds = []string{
 	ghdata.CommitCIKindStatusesList,
 }
 
-// TestDispatch_CIEventsFlushCommitCICache. Status, check_run, and check_suite
+// TestDispatch_CIEventsFlushCommitCICache: status, check_run, and check_suite
 // events flush the commit-CI snapshots for exactly the ref spellings the
-// payload names. This is the head branch(es) plus the sha itself -- while a
-// ref the payload does NOT name, and another repo's snapshots, survive (round
-// 's per-ref grain). A push with no usable ref and a repository event keep
-// the conservative repo-wide flush.
+// payload names -- the head branch(es) plus the sha itself -- while a ref the
+// payload does NOT name, and another repo's snapshots, survive (round 's
+// per-ref grain). A push with no usable ref and a repository event keep the
+// conservative repo-wide flush.
 //
 // Within a named ref the grain is the KIND. The surfaces are disjoint
 // upstream -- a status never appears in a check-runs listing and a check run
-// never appears in a commit's statuses. So a delivery that flushed all was
-// re-fetching answers it could not have changed.
+// never appears in a commit's statuses -- so a delivery that flushed all
+// was re-fetching answers it could not have changed.
 func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -135,12 +135,12 @@ func TestDispatch_CIEventsFlushCommitCICache(t *testing.T) {
 }
 
 // A finishing CI run must not cost the commit its cached page. The last
-// deliveries of a run create a job and start a queued job. Dropping the row
-// for either sends the next reader to GitHub inside the window. This happens
-// where GitHub's own listing is furthest behind those deliveries -- so the
-// refetch stores a view older than the payloads already in hand. A finished
-// CI sends nothing further to correct it. That is how an `all-builds` gate
-// read a finished job as in_progress for a day.
+// deliveries of a run create a job and start a queued job, and dropping the
+// row for either sends the next reader to GitHub inside the window where
+// GitHub's own listing is furthest behind those deliveries -- so the refetch
+// stores a view older than the payloads already in hand, and a finished CI
+// sends nothing further to correct it. That is how an `all-builds` gate read
+// a finished job as in_progress for a day.
 func TestDispatch_CheckRunCreated_JoinsThePageInsteadOfFlushingIt(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -183,15 +183,15 @@ func TestDispatch_CheckRunCreated_JoinsThePageInsteadOfFlushingIt(t *testing.T) 
 
 // TestDispatch_CheckSuite_PendingIgnored: a non-completed check_suite delivery
 // must record NO commit_checks row. GitHub auto-creates a suite per sha for
-// every app with checks:write. An app that runs no checks leaves its empty
-// suite queued forever. Consider the PENDING row such a delivery used to mint.
-// That row was a permanent ghost. No event ever cleared, pinning the
-// low-water-mark rollup at PENDING and re-poisoning last_commit_status on
-// every PR upsert (the -- report's live-minting rollup cluster). The delivery
-// reports ignored while the response-cache flush still runs (invalidation
-// precedes the disposition logic -- the queued-workflow_job precedent).
-// Completed suites, and PENDING check_run/status events (which DO carry real
-// pending state), keep applying exactly as before.
+// every app with checks:write, and an app that runs no checks leaves its empty
+// suite queued forever -- the PENDING row such a delivery used to mint was a
+// permanent ghost no event ever cleared, pinning the low-water-mark rollup at
+// PENDING and re-poisoning last_commit_status on every PR upsert (the
+// -- report's live-minting rollup cluster). The delivery reports
+// ignored while the response-cache flush still runs (invalidation precedes
+// the disposition logic -- the queued-workflow_job precedent). Completed
+// suites, and PENDING check_run/status events (which DO carry real pending
+// state), keep applying exactly as before.
 func TestDispatch_CheckSuite_PendingIgnored(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

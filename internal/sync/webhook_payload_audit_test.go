@@ -195,8 +195,8 @@ func TestWebhookHandlersConsumeTheirPayload(t *testing.T) {
 }
 
 // An exception must be an explanation, not a silencer. These are the questions
-// a reader needs answered. An author who cannot answer them does not have an
-// exception. They have an event whose payload should be getting used.
+// a reader needs answered; an author who cannot answer them does not have an
+// exception, they have an event whose payload should be getting used.
 func assertExceptionDoc(t *testing.T, event, docPath, doc string) {
 	t.Helper()
 	for _, heading := range []string{
