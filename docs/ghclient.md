@@ -30,7 +30,9 @@ As a result, there is no version to bump for a data problem.
 
 `orgDataQuery` fetches a page of non-archived repos and the first page of each repo's open PRs. It pages repositories small (`first: 5`) on purpose: requesting all repos at once, each with `statusCheckRollup` on the default branch. This is on every open PR's last commit, produces a response large enough that an intermediary (or GitHub itself) returns "502 Bad Gateway" for active orgs. Small pages keep each response within those limits. The `repoCursor` loop in `GetOrgData` stitches them back together. RepoPRsQuery` (`fetchRemainingPRs`) complets a repo with more than 100 open PRs.
 
-The owner-agnostic query selects. GqlRepo.IsArchived`. The identity-locked `orgDataQuery` never returns it, leaving it `false` — which matches its own `repositories(isArchived: false)` filter anyway. `gqlRepo.Visibility` is likewise owner-agnostic-only, left `""` by the identity-locked query. `UpsertRepo`'s guard only overwrites the stored column with a non-empty value. As a result, an org-query-sourced sync can never blank a known visibility while an owner-sourced sync stamps it.
+Only the owner-agnostic query selects `gqlRepo.IsArchived`. The identity-locked `orgDataQuery` never returns it. The field stays `false`. That matches the query's own `repositories(isArchived: false)` filter anyway. `gqlRepo.Visibility` is likewise owner-agnostic-only, left `""` by the identity-locked query. `UpsertRepo`'s guard only overwrites the stored column with a non-empty value.
+
+As a result, an org-query-sourced sync can never blank a known visibility while an owner-sourced sync stamps it.
 
 The owner-agnostic `owne selects gqlPR.AutoMergeRequest`rPRFields`.
 
