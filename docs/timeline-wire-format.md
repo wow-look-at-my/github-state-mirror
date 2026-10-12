@@ -153,13 +153,7 @@ traffic) through the SHIPPED module: **~3 ms of work per frame on average over
 averages 4.4 ms per frame over 34-39 frames — the ~10x-more-frames downgrade
 the chart's content-type refusal exists to prevent.
 
-<<<<<<< HEAD
-The measurement used the real first-paint payload: 4,166 events, one hour of realistic traffic. It ran through the SHIPPED module: **~3 ms of work per frame on average over a few frames**, worst chunk ~4 ms. Consider the JSON fallback over a full 100k-event window. That fallback averages 4.4 ms per frame over 34-39 frames — the ~10x-more-frames downgrade the chart's content-type refusal exists to prevent.
-
-The node gate that measured this (`TestTimelineFrameBudget` + `framecheck.ts`) went with the bake-off. It drove a decoder that now lives in js-snippets, and its numbers were environment-dominated. Browsercheck.ts` below covers the pacing contract it checked.
-=======
 The node gate that measured this (`TestTimelineFrameBudget` + `framecheck.ts`) went with the bake-off. It drove a decoder that now lives in js-snippets, and its numbers were environment-dominated. The pacing contract it checked is covered where the code is — js-snippets' `runSliced` tests — and end to end by `browsercheck.ts` below.
->>>>>>> parent of 8cd0a75 (all: apply slopfix's repairs across the tree)
 
 ### What node could not see
 

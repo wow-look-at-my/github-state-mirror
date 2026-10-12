@@ -49,13 +49,6 @@ Reports whether the incoming answer is a CONFLICTING one offered against a marke
 
 `AbsorbSinglePull` upserts one fetched OPEN PR into global truth. Unlike the COALESCE-ing webhook upsert, the fetched `mergeable` is authoritative — including null ("GitHub is recomputing") — so it is force-set after the upsert. A null answer must keep the single-PR route missing (and re-fetching) until GitHub resolves it, not resurrect a stale value.
 
-<<<<<<< HEAD
-One answer is NOT authoritative: a response whose `merge_commit_sha` is the exact sha a branch push just invalidated (a live `merge_stale_sha` marker). The push moved the PR's base or head. A tip change always changes the sha of a SUCCESSFUL test merge — so GitHub re-offering the invalidated sha means its recompute has not landed. The WHOLE answer (resolved mergeable included) predates the push. Such an answer is stored UNRESOLVED (mergeable NULL, `merge_commit_sha` NULL, marker kept), so reads keep missing — each one re-triggering the recompute — until GitHub serves a NEW sha. This clears the marker.
-
-Exemptions overrule that presumption and accept the answer, sha and all, marker cleared. (1) The push-tip proof (`pushProvenPostPush`): the answer's reported tip for the marked branch equals the marking push's after sha. The answer therefore post-dates the push. This heals a wrong mark on the very next poll. A wrong mark comes from a race: the fresh post-push answer is absorbed first, and the late push delivery then stamps it stale. (2) The dirty-retained pattern (`conflictingPastReplicaLag`) — a CONFLICTED PR gets NO new test merge. GitHub legitimately re-offers the RETAINED last-good sha with `mergeable:false` forever, and once the marker outlives `MergeStaleConflictingWindow` that is the only remaining explanation. The upsert's SQL guard nulls the columns. The Go check here exists because the authoritative force-set below will otherwise resurrect the rejected value.
-
-So the route can serve the response unresolved too. `staleRejected` reports that outcome to the caller.
-=======
 One answer is NOT authoritative: a response whose `merge_commit_sha` is the
 exact sha a branch push just invalidated (a live `merge_stale_sha` marker).
 The push moved the PR's base or head, and a tip change always changes the
@@ -78,4 +71,3 @@ upsert's SQL guard nulls the columns; the Go check here exists because the
 authoritative force-set below would otherwise resurrect the rejected value,
 and so the route can serve the response unresolved too. `staleRejected`
 reports that outcome to the caller.
->>>>>>> parent of 8cd0a75 (all: apply slopfix's repairs across the tree)

@@ -22,9 +22,6 @@ The identity-locked `GetOrgData` (`organization(login:)`, the lazy /graphql rout
 
 Both owner queries pin **`ownerAffiliations: OWNER`** — the connection's default `[OWNER, COLLABORATOR]` made a User's listing include repos the login merely *collaborates* on, under their real owners. This `convertRepo`/`convertPR` then keyed by the QUERY login (the collaborator-repo bleed: junk `<user>/<name>` truth rows with foreign `name_with_owner`/`url`, double-counted PRs).
 
-<<<<<<< HEAD
-As belt and braces, every repo-conversion loop also **DROPS any node whose real owner differs case-insensitively from the queried login**. That covers the org and owner loops and the visibility loop. The real owner is the `nameWithOwner` prefix, else `owner.login`. Each drop is logged (`dropForeignRepoNode` in `queries.go`). It is a drop, not a re-key, so one owner's sync can never absorb truth rows or mint grants across owners. This also covers the identity-locked org query with zero query-text change (`TestOrgQueryUntouched` still passes) and kills the visibility map's bare-name collision hazard (a same-named foreign node clobbering an owned repo's visibility entry). A deploy-time nuke (schema history, entry 14) cleaned up the junk rows a corrected re-run can never delete (sync never deletes repo rows. The PR reconcile only visits fetched repos). Reconcile, not a nuke, is the tool for that today — the DB is rebuilt only by a schema change now. There is no version to bump for a data problem.
-=======
 Belt-and-braces, every repo-conversion loop (org and owner alike, plus the
 visibility loop) also **DROPS any node whose real owner** (`nameWithOwner`
 prefix, else `owner.login`) **differs case-insensitively from the queried
@@ -38,21 +35,12 @@ history, entry 14) cleaned up the junk rows a corrected re-run could never
 delete (sync never deletes repo rows; the PR reconcile only visits fetched
 repos). Reconcile, not a nuke, is the tool for that today — the DB is rebuilt
 only by a schema change now, so there is no version to bump for a data problem.
->>>>>>> parent of 8cd0a75 (all: apply slopfix's repairs across the tree)
 
 ## Query shapes and conversion (`queries.go`)
 
 `orgDataQuery` fetches a page of non-archived repos and the first page of each repo's open PRs. It pages repositories small (`first: 5`) on purpose: requesting all repos at once, each with `statusCheckRollup` on the default branch. This is on every open PR's last commit, produces a response large enough that an intermediary (or GitHub itself) returns "502 Bad Gateway" for active orgs. Small pages keep each response within those limits. The `repoCursor` loop in `GetOrgData` stitches them back together. A repo with more than 100 open PRs is completed by `repoPRsQuery` (`fetchRemainingPRs`).
 
-<<<<<<< HEAD
-The owner-agnostic query selects `gqlRepo.IsArchived`. The identity-locked `orgDataQuery` never returns it, leaving it `false` — which matches its own `repositories(isArchived: false)` filter anyway. `gqlRepo.Visibility` is likewise owner-agnostic-only, left `""` by the identity-locked query. `UpsertRepo`'s guard only overwrites the stored column with a non-empty value. As a result, an org-query-sourced sync can never blank a known visibility while an owner-sourced sync stamps it.
-
-The owner-agnostic `owne selects gqlPR.AutoMergeRequest`rPRFields`.
-
-`convertPR` lowercases `mergeMethod` (a GraphQL enum) to match the REST `auto_merge.merge_method` values the cache stores and rebuilds — `SyncOrgTruth`'s upsert deliberately does not apply this column. This is from GraphQL-shaped rows (`node_id` is NULL). It is carried for the consistency checker's diff, and apply mode writes it via the explicit `SetPRAutoMergeMethod`.
-=======
 `gqlRepo.IsArchived` is selected only by the owner-agnostic query. The identity-locked `orgDataQuery` never returns it, leaving it `false` — which matches its own `repositories(isArchived: false)` filter anyway. `gqlRepo.Visibility` is likewise owner-agnostic-only, left `""` by the identity-locked query. `UpsertRepo`'s guard only overwrites the stored column with a non-empty value. As a result, an org-query-sourced sync can never blank a known visibility while an owner-sourced sync stamps it. `gqlPR.AutoMergeRequest` is selected only by the owner-agnostic `ownerPRFields`. `convertPR` lowercases `mergeMethod` (a GraphQL enum) to match the REST `auto_merge.merge_method` values the cache stores and rebuilds — `SyncOrgTruth`'s upsert deliberately does not apply this column. This is from GraphQL-shaped rows (`node_id` is NULL). It is carried for the consistency checker's diff, and apply mode writes it via the explicit `SetPRAutoMergeMethod`.
->>>>>>> parent of 8cd0a75 (all: apply slopfix's repairs across the tree)
 
 `realNodeOwner` extracts a fetched repo node's real owner login: the `nameWithOwner` prefix when present, else the node's own `owner.login`. Every repo-listing selection (org, owner, visibility twin) carries at least one of the two, so a real GitHub response always yields a non-empty answer. `""` (possible only for minimal test fixtures) disables the foreign-node guard for that node.
 
