@@ -50,9 +50,9 @@ func (h *handlers) cachedArchive(kind string) http.HandlerFunc {
 	}
 }
 
-// absorbArchive stores the archive redirect. A location with a readable
-// expiry lives until it; one with no query at all carries no credential and
-// lives archiveUnsignedTTL; a credential with no stated expiry is relayed.
+// absorbArchive stores the archive redirect until its readable expiry. A
+// expiry lives until it. One with no query at all carries no credential and
+// lives archiveUnsignedTTL. A credential with no stated expiry is relayed.
 func absorbArchive(resp *http.Response, _ []byte, now time.Time) (ghdata.RepoAnswer, bool) {
 	if resp.StatusCode != http.StatusFound {
 		return ghdata.RepoAnswer{}, false
