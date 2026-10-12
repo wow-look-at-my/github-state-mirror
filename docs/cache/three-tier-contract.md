@@ -24,9 +24,18 @@ Every data route falls into exactly one tier. Extracted verbatim from CLAUDE.md.
 
      Anything a route cannot model passes through verbatim, unstored, recorded as `passthrough`. Non-default `Accept` media types, unknown query params, symlink/submodule objects, >`"encoding":"none"` files, oversized bodies, unexpected statuses. The v1 routes. The route families, each with its absorb/rebuild/guard/invalidation detail in **docs/cache/rest-routes.md**.
 
-     Repo `contents` (+ the 404 absent answer) · immutable `git/commits/{sha}` (+ expiring 404 miss markers) · the `commits` LIST · `compare/{basehead}` (+ unknown-ref verdicts) · the commit-CI trio (`commits/{ref}/status`, `/check-runs`, the statuses list under both spellings) · the `access_tokens` mint · the open-PR list · the single PR (+ closed-PR docs, merge-field staleness, a later diff verdicts) · repo and owner `installation` lookups (+ the 404 "not installed here" verdict) · `installation/repositories` · the repo and org webhook-config listings (`hooks`)
-
-     · PR `files` · PR `commits` · `branches` · the single `labels/{name}` read · `actions/runs` (shapes: the per-commit `?head_sha=` SNAPSHOT, and the repo-wide `?status=`/`?branch=` listing REBUILT from webhook-maintained `workflow_runs` truth behind a completeness marker — never a snapshot, because clearing one per job delivery is invalidate-and-refetch) · the Actions job reads (`actions/runs/{id}/jobs`, `actions/jobs/{id}`) · `git/ref/{ref}` · Code Quality `setup` (config with no webhook: flushed by the PATCH the mirror proxies, short TTL) · the bare repo read.
+     - Repo `contents`, with the 404 absent answer.
+     - Immutable `git/commits/{sha}`, with expiring 404 miss markers.
+     - The `commits` LIST.
+     - `compare/{basehead}`, with unknown-ref verdicts.
+     - The commit-CI trio: `commits/{ref}/status`, `/check-runs`, and the statuses list under both spellings.
+     - The `access_tokens` mint.
+     - The open-PR list.
+     - The PR, with closed-PR docs, merge-field staleness, and diff verdicts.
+     - Repo and owner `installation` lookups, with the 404 "not installed here" verdict.
+     - `installation/repositories`.
+     - The repo and org webhook-config listings (`hooks`).
+     - PR `files` · PR `commits` · `branches` · the single `labels/{name}` read · `actions/runs` (shapes: the per-commit `?head_sha=` SNAPSHOT, and the repo-wide `?status=`/`?branch=` listing REBUILT from webhook-maintained `workflow_runs` truth behind a completeness marker — never a snapshot, because clearing one per job delivery is invalidate-and-refetch) · the Actions job reads (`actions/runs/{id}/jobs`, `actions/jobs/{id}`) · `git/ref/{ref}` · Code Quality `setup` (config with no webhook: flushed by the PATCH the mirror proxies, short TTL) · the bare repo read.
 
      `GET /rate_limit` is in this tier but has no store row and no miss: it is answered fully from `internal/ratemeter`'s passively observed `X-RateLimit-*` headers. The route NEVER calls upstream — a credential the meter has not observed gets an honestly empty `resources` object rather than a fetch. Why a TTL-bounded row will be incorrect for it, and what the mirror still cannot see: **docs/cache/uncacheable-routes.md**.
 

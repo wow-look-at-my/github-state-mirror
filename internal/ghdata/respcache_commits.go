@@ -15,9 +15,9 @@ import (
 //
 //	GET /repos/{owner}/{repo}/commits
 //
-// Following the absorb-don't-byte-cache doctrine, the listed commits
-// themselves live in the SAME global git_commits_cache rows the git-commit
-// route and push payloads maintain (respcache.go). What is here is only the
+// The listed commits follow the absorb-don't-byte-cache doctrine. They live
+// in the SAME global git_commits_cache rows that the git-commit route and
+// push payloads maintain (respcache.go). What is here is only the
 // per-query ORDERING/COMPLETENESS proof: a commits_list_cache snapshot
 // holding the response's shas in order. That order is keyed by the exact
 // modeled query shape (owner, repo, ref_param, per_page, page). The exact the

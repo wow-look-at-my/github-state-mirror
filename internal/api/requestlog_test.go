@@ -209,8 +209,7 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 
 // TestDashboard_Requests_DBSize verifies /api/requests reports the SQLite
 // database's on-disk footprint: the DB file plus its -wal sidecar when
-// present, with each field omitted — never an error — when its file is
-// missing.
+// present. A field whose file is missing is omitted, never an error.
 func TestDashboard_Requests_DBSize(t *testing.T) {
 	svc := configuredAuth(t)
 	dir := t.TempDir()
