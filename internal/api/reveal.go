@@ -49,8 +49,8 @@ const (
 	denyKindJobLogs           = "job_logs"            // GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
 	denyKindCommit            = "commit"              // GET /repos/{owner}/{repo}/commits/{ref}
 	denyKindBranchesWhereHead = "branches_where_head" // GET /repos/{owner}/{repo}/commits/{sha}/branches-where-head
-	denyKindAnnotations    = "annotations"   // GET /repos/{owner}/{repo}/check-runs/{id}/annotations
-	denyKindBranchRules    = "branch_rules"  // GET /repos/{owner}/{repo}/rules/branches/{branch}
+	denyKindAnnotations       = "annotations"         // GET /repos/{owner}/{repo}/check-runs/{id}/annotations
+	denyKindBranchRules       = "branch_rules"        // GET /repos/{owner}/{repo}/rules/branches/{branch}
 )
 
 // revealOutcome is the reveal decision for request.
