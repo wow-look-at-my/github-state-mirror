@@ -193,7 +193,7 @@ type rawJob = ghdata.RawWorkflowJob
 // place. The stored answer tracks the run instead of expiring against it.
 //
 // An empty page is stored too, keyed by the run the PATH names. It is the
-// answer for a run with no jobs yet, so it lives on the queued TTL, and the
+// answer for a run with no jobs yet. It lives on the queued TTL, and the
 // first job delivery for the run flushes it.
 func absorbRunJobs(status int, body []byte, runID int64) (absorbedJobs, bool) {
 	if status != http.StatusOK {

@@ -79,10 +79,6 @@ func acceptsDefaultJSON(r *http.Request) bool {
 
 // fetchUpstream forwards the (buffered-body) request to GitHub with the
 // caller's own headers and returns the response plus its buffered body.
-// overflow reports that the body exceeded maxAbsorbBodyBytes — the remainder
-// is still readable from resp.Body, and such a response must be replayed, not
-// absorbed. The URL is rebuilt from the request's escaped path + raw query so
-// encoding reaches GitHub exactly as the caller sent it.
 func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, []byte, bool, error) {
 	return h.fetchUpstreamWith(h.upstream, r, body)
 }

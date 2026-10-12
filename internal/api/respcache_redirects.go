@@ -13,12 +13,10 @@ import (
 // The cached redirects: Actions log downloads.
 
 const (
-	// redirectExpiryMargin is taken off a signed location's stated expiry, so
-	// a client that follows a served redirect still has time to use it.
+	// redirectExpiryMargin is taken off a signed location's stated expiry.
 	redirectExpiryMargin = 15 * time.Second
 
-	// Expired logs do not come back, so this only bounds a re-run that
-	// writes new ones.
+	// Expired logs do not come back, so this only bounds a re-run that writes new ones.
 	logsGoneTTL = 24 * time.Hour
 )
 
