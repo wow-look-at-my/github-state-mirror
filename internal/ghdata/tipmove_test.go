@@ -25,7 +25,7 @@ func synchronizePayload(number int64) dbgen.PullRequest {
 	return pr
 }
 
-// The head-move core: the stored row's resolved merge fields are nulled, the
+// The head-move core: the stored row's resolved merge fields are nulled. The
 // invalidated sha is remembered, and the payload's own head ref+sha land as
 // the marker proof.
 func TestNullPRMergeableOnTipMove_HeadMove(t *testing.T) {
@@ -105,8 +105,8 @@ func TestNullPRMergeableOnTipMove_BaseRetarget(t *testing.T) {
 }
 
 // Base ref OID drift alone never triggers: a conflicted PR's payload freezes
-// base.sha at the last clean evaluation, so OID comparison would
-// false-positive on every dirty PR and wedge it unresolved.
+// base.sha at the last clean evaluation. OID comparison would false-positive
+// on every dirty PR and wedge it unresolved.
 func TestNullPRMergeableOnTipMove_BaseOidDriftIgnored(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

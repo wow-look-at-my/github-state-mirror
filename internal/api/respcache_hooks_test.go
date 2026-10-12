@@ -14,7 +14,7 @@ import (
 )
 
 // Hook-listing route tests, repo and org. The default body is GitHub's
-// documented `hook` schema with every API self-link present, so the rebuild
+// documented `hook` schema with every API self-link present. The rebuild
 // has something to drop -- and with config.url present, which it must KEEP.
 
 func defaultHooksUpstream(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +297,7 @@ func TestCachedHooks_EmptyListingIsCacheable(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.hooksHits))
 }
 
-// insecure_ssl is documented as a string OR a number, so it rides as raw JSON:
+// insecure_ssl is documented as a string OR a number. It rides as raw JSON:
 // coercing it would change the shape for whichever form the caller sent.
 func TestCachedHooks_InsecureSSLKeepsItsJSONType(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -317,7 +317,7 @@ func TestCachedHooks_InsecureSSLKeepsItsJSONType(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.hooksHits))
 }
 
-// hooksReq builds a request to a hook path with a DISTINCT bearer, so the
+// hooksReq builds a request to a hook path with a DISTINCT bearer. The
 // per-credential key can be exercised across the read and write verbs.
 func hooksReq(method, target, bearer string) *http.Request {
 	var body io.Reader

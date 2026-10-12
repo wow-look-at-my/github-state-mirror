@@ -309,7 +309,7 @@ func TestDebounce_WaiterCancellationDoesNotKillTheBatch(t *testing.T) {
 }
 
 // TestDebounce_OversizedResponseFallsBackPerWaiter: a body too large to hold
-// in memory cannot be fanned out, so the batch is abandoned and each waiter
+// in memory cannot be fanned out. The batch is abandoned and each waiter
 // pays for its own call — never a truncated shared answer.
 func TestDebounce_OversizedResponseFallsBackPerWaiter(t *testing.T) {
 	big := strings.Repeat("x", debounceMaxBodyBytes+1024)
@@ -347,7 +347,7 @@ func TestDebounce_SharesNon200Answers(t *testing.T) {
 }
 
 // TestDebounce_DrainCutsTheWindowShort: at shutdown the waiters are still on
-// the wire, so Drain must answer them NOW rather than making shutdown sit out
+// the wire. Drain must answer them NOW rather than making shutdown sit out
 // the full hold.
 func TestDebounce_DrainCutsTheWindowShort(t *testing.T) {
 	u := &countingUpstream{}

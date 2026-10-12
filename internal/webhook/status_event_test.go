@@ -29,8 +29,8 @@ func TestParseStatusEvent(t *testing.T) {
 }
 
 // A null description and target_url are what GitHub sends for a status without
-// them, and the stored documents emit both keys as null -- so they must arrive
-// as absent pointers rather than empty strings.
+// them. The stored documents emit both keys as null -- so they must arrive as
+// absent pointers rather than empty strings.
 func TestParseStatusEvent_NullsStayNull(t *testing.T) {
 	got, ok := ParseStatusEvent(json.RawMessage(`{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"context":"lint","state":"pending","description":null,"target_url":null,
@@ -41,7 +41,7 @@ func TestParseStatusEvent_NullsStayNull(t *testing.T) {
 }
 
 // A payload missing any field the stored documents need reports false, and the
-// caller keeps the flush: a rewrite from an incomplete account of the status
+// caller keeps the flush. A rewrite from an incomplete account of the status
 // would invent the parts it did not get.
 func TestParseStatusEvent_IncompletePayloadsRefuse(t *testing.T) {
 	for name, body := range map[string]string{

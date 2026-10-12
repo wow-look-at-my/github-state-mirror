@@ -106,10 +106,10 @@ func (c *ConsistencyChecker) applyOwner(
 						return err
 					}
 					// Only ROWS that contradict the terminal verdict need the correction:
-					// with rows there is nothing to poison the next recompute, and the
-					// sync's COALESCE upsert already stamped the non-null verdict on the
-					// column -- correcting anyway would tally every checks-less PR as
-					// "corrected" on every apply, forever.
+					// with rows there is nothing to poison the next recompute. The sync's
+					// COALESCE upsert already stamped the non-null verdict on the column.
+					// Correcting anyway would tally every checks-less PR as "corrected"
+					// on every apply, forever.
 					if len(states) > 0 && ghdata.RollupState(states) != ghRollup {
 						if err := c.store.ForceCheckRollup(ctx, owner, r.Name, sha, sql.NullString{String: ghRollup, Valid: true}); err != nil {
 							return fmt.Errorf("force rollup %s#%d: %w", repoKey, fpr.Number, err)

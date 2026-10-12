@@ -98,11 +98,11 @@ func TestCachedRunJobs_MissAbsorbHit(t *testing.T) {
 }
 
 // A RUNNING run is served, and its own deliveries are what keep the answer
-// true. This is the load-bearing behavior of the whole route: the fetch
-// settles which jobs belong to the run, the workflow_job delivery states the
-// new value of of them, and the stored page is rewritten rather than
-// dropped — so the runner coordinator reads current job state without the
-// fleet re-asking GitHub for what it was already told.
+// true. This is the load-bearing behavior of the whole route. The fetch
+// settles which jobs belong to the run. The workflow_job delivery states the
+// new value of of them. The stored page is rewritten rather than dropped. So
+// the runner coordinator reads current job state without the fleet re-asking
+// GitHub for what it was already told.
 func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
@@ -141,8 +141,8 @@ func TestCachedRunJobs_LiveJobIsServedAndRewrittenByDeliveries(t *testing.T) {
 
 // The live TTL is the LOST-DELIVERY bound, and only that. A page whose
 // movement is a job WAITING to start carries it (the deliveries keep such a
-// page exactly right, since a queued job has no steps yet); a running job's
-// steps advance unreported and earn the shorter; a settled page keeps the
+// page exactly right, since a queued job has no steps yet). A running job's
+// steps advance unreported and earn the shorter. A settled page keeps the
 // long. ghdata's TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving walks all.
 func TestCachedRunJobs_LiveRowExpiresOnTheShortTTL(t *testing.T) {
 	router, _, db, u := respCacheStack(t)
@@ -182,9 +182,9 @@ func TestCachedWorkflowJob_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.jobHits))
 }
 
-// A re-run replaces a run's jobs under the SAME run id — so a workflow_job
-// delivery naming the run must flush the run's jobs page AND the single-job
-// rows under it, which is why both kinds carry run_id.
+// A re-run replaces. Consider a run's jobs under the SAME run id — so a
+// workflow_job delivery naming the run. Those jobs must flush the run's jobs
+// page AND the single-job rows under it. This is why both kinds carry run_id.
 func TestCachedWorkflowJobs_RerunFlushesRunAndJobRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
@@ -226,13 +226,13 @@ func TestCachedWorkflowJobs_WorkflowRunFlushes(t *testing.T) {
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
 }
 
-// Shape guards: the `filter` parameter selects a DIFFERENT set of jobs for a
-// re-run, deep pages are unmodeled, and non-numeric ids are not this route's.
+// Shape guards: an unknown filter value, deep pages, and non-numeric ids are
+// not modeled.
 func TestCachedWorkflowJobs_ShapeGuardsPassThrough(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
 
 	for _, tc := range []struct{ name, target, accept string }{
-		{"filter parameter", runJobsTarget() + "?filter=all", ""},
+		{"unknown filter value", runJobsTarget() + "?filter=bogus", ""},
 		{"deep page", runJobsTarget() + "?page=99", ""},
 		{"per_page out of range", runJobsTarget() + "?per_page=500", ""},
 		{"query on the single job", jobTarget() + "?x=1", ""},
@@ -247,4 +247,45 @@ func TestCachedWorkflowJobs_ShapeGuardsPassThrough(t *testing.T) {
 			assert.Empty(t, w.Header().Get(cacheHeader), "must be forwarded, not served from the cache")
 		})
 	}
+}
+
+// filter=latest is the default spelling and shares its row; filter=all is a
+// different set with its own row, rewritten by the same deliveries.
+func TestCachedRunJobs_FilterIsModeled(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	require.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget()+"?filter=latest", nil)).Header().Get(cacheHeader))
+	require.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget()+"?filter=all", nil)).Header().Get(cacheHeader))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget()+"?filter=all&per_page=30", nil)).Header().Get(cacheHeader))
+	require.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
+
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action": "completed", "workflow_job": jobDoc("completed", "failure"), "repository": fixtureRepo(),
+	})
+	w := do(t, router, authedReq("GET", runJobsTarget()+"?filter=all", nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the delivery rewrote the filter=all page")
+	assert.Contains(t, w.Body.String(), `"conclusion":"failure"`)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
+}
+
+// A run with no jobs yet answers an empty page. It is stored on the queued
+// TTL, and the first job delivery for the run drops it.
+func TestCachedRunJobs_EmptyPageIsStoredUntilAJobArrives(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
+		writeGitHubJSON(w, map[string]any{"total_count": 0, "jobs": []any{}})
+	}
+
+	w1 := do(t, router, authedReq("GET", runJobsTarget(), nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.JSONEq(t, `{"total_count":0,"jobs":[]}`, w1.Body.String())
+	assert.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action": "queued", "workflow_job": jobDoc("queued", ""), "repository": fixtureRepo(),
+	})
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
 }

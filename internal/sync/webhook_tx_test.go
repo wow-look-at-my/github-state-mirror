@@ -33,7 +33,7 @@ func (c *kindCounter) get(kind string) int {
 }
 
 // A delivery's writes -- watermark, cache flushes, repo absorb, the apply,
-// and its log row -- commit together: the write lock is taken once per
+// and its log row -- commit together. The write lock is taken once per
 // delivery, not once per statement.
 func TestDispatch_OneDeliveryTakesTheWriteLockOnce(t *testing.T) {
 	obs := &kindCounter{n: map[string]int{}}

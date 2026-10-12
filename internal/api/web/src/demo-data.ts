@@ -87,10 +87,10 @@ const unknownPrincipal: PrincipalStats = {
     kinds: [],
 };
 
-// --- webhook delivery log (admin "Webhooks" tab) ---
-// Under the global model every stateful delivery applies (or invalidates on a
-// structural change) — there is no "skipped": truth is maintained for repos
-// nobody has fetched yet too.
+// --- webhook delivery log (admin "Webhooks" tab) --- Under the global model
+// every stateful delivery applies (or invalidates on a structural change) —
+// there is no "skipped". Truth is maintained for repos nobody has fetched yet
+// too.
 const demoWebhooks: WebhooksResponse = {
     deliveries: [
         { delivery_id: "ddfad8a0-6ce9-11f1-9454-861fa0b5e50d", event_type: "pull_request", action: "edited", repo: "wow-look-at-my/buildhost", received_at: ago(5), disposition: "applied", detail: "upserted PR #318" },

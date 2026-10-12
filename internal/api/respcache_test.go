@@ -18,12 +18,12 @@ import (
 
 // The install-token route tests plus the cross-route cache assertions (the row
 // cap, the request-log dispositions). The contents route has its own file,
-// respcache_contents_test.go; the fake GitHub and the shared assertions they
+// respcache_contents_test.go. The fake GitHub and the shared assertions they
 // all use live in respcache_fixture_test.go.
 
 // TestCachedInstallToken_HitVariantsAndFlush covers the token-mint cache: the
-// same app+installation+body serves from cache until expiry; a different body
-// is a different token (its own mint); an installation event flushes.
+// same app+installation+body serves from cache until expiry. A different body
+// is a different token (its own mint). An installation event flushes.
 func TestCachedInstallToken_HitVariantsAndFlush(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/app/installations/42/access_tokens"
@@ -73,7 +73,7 @@ func TestCachedInstallToken_HitVariantsAndFlush(t *testing.T) {
 }
 
 // TestCachedInstallToken_ExpiryBufferRemint: a token whose expires_at is
-// inside the safety buffer is served but never cached, so every request
+// inside the safety buffer is served but never cached. Every request
 // re-mints — a cached mint always has usable lifetime left.
 func TestCachedInstallToken_ExpiryBufferRemint(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -122,9 +122,10 @@ func TestRespCache_PruneCap(t *testing.T) {
 	assert.Greater(t, count, 0)
 }
 
-// TestCachedRoutes_RequestLogDispositions: the dashboard's request log must
-// reflect the cached routes — a miss records `miss`, a repeat records `hit` —
-// so the hit/miss counters finally show real numbers for REST traffic.
+// TestCachedRoutes_RequestLogDispositions. Consider the dashboard's request log.
+// That log must reflect the cached routes — a miss records `miss`, a repeat
+// records `hit`. So the hit/miss counters finally show real numbers for REST
+// traffic.
 func TestCachedRoutes_RequestLogDispositions(t *testing.T) {
 	svc := configuredAuth(t)
 	u := newRespCacheUpstream()
