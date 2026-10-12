@@ -382,7 +382,7 @@ func TestParseCommitsListShape_Defaults(t *testing.T) {
 
 	for _, bad := range []string{
 		"sha=", "per_page=0", "per_page=101", "page=0", "page=11",
-		"path=src", "since=2026-01-01T00:00:00Z", "until=2026-01-02T00:00:00Z",
+		"path=", "since=2026-01-01T00:00:00Z", "until=2026-01-02T00:00:00Z",
 		"author=alice", "committer=bob", "first_parent=true", "sha=main&sha=dev",
 	} {
 		q, _ := url.ParseQuery(bad)
