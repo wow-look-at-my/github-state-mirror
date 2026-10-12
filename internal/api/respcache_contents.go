@@ -297,8 +297,7 @@ func acceptsRawContents(r *http.Request) bool {
 }
 
 // contentsSubmoduleJSON is the trimmed submodule object. submodule_git_url is
-// a pinned exception on the hook config.url grounds: it is not a link into
-// the API but the identity of the submodule, which the answer is about.
+// a pinned exception: it names the submodule and is not a link into the API.
 type contentsSubmoduleJSON struct {
 	Type            string `json:"type"`
 	SubmoduleGitURL string `json:"submodule_git_url"`

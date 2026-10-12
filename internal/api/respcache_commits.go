@@ -277,8 +277,7 @@ func absorbCommitsList(owner, repo string, status int, body []byte) ([]ghdata.Ca
 }
 
 // cachedCommitsByPath serves a commits page filtered by path. The answer is
-// not a prefix of the ref's history, so it is a whole stored page of its
-// own, whose subject is the ref a push to it drops.
+// a whole stored page of its own. A push to its ref drops it.
 func (h *handlers) cachedCommitsByPath(w http.ResponseWriter, r *http.Request, owner, repo string, shape commitsListShape) {
 	q := url.Values{"path": {shape.path}, "per_page": {strconv.Itoa(shape.perPage)}, "page": {strconv.Itoa(shape.page)}}
 	h.serveRepoAnswer(w, r, repoAnswerRoute{
