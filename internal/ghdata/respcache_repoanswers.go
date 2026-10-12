@@ -9,10 +9,10 @@ import (
 
 // The routes on repo_answer_cache; see docs/cache/rest-routes.md.
 const (
-	RepoAnswerKindTags    = "tags"
-	RepoAnswerKindRunLogs = "run_logs"
-	RepoAnswerKindJobLogs = "job_logs"
-	RepoAnswerKindCommit = "commit"
+	RepoAnswerKindTags              = "tags"
+	RepoAnswerKindRunLogs           = "run_logs"
+	RepoAnswerKindJobLogs           = "job_logs"
+	RepoAnswerKindCommit            = "commit"
 	RepoAnswerKindBranchesWhereHead = "branches_where_head"
 )
 

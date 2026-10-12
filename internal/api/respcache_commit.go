@@ -92,13 +92,6 @@ func (h *handlers) cachedBranchesWhereHead(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// gitPersonJSON is a git author or committer.
-type gitPersonJSON struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Date  string `json:"date"`
-}
-
 // commitVerificationJSON is the signature verification. Every field but
 // verified is nullable.
 type commitVerificationJSON struct {
