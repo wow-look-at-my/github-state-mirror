@@ -226,14 +226,13 @@ func TestCachedWorkflowJobs_WorkflowRunFlushes(t *testing.T) {
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
 }
 
-// Shape guards: the `filter` parameter selects a DIFFERENT set of jobs for a
-// re-run. The `filter` parameter also guards deep pages are unmodeled, and
-// non-numeric ids are not this route's.
+// Shape guards: an unknown filter value, deep pages, and non-numeric ids are
+// not modeled.
 func TestCachedWorkflowJobs_ShapeGuardsPassThrough(t *testing.T) {
 	router, _, _, _ := respCacheStack(t)
 
 	for _, tc := range []struct{ name, target, accept string }{
-		{"filter parameter", runJobsTarget() + "?filter=all", ""},
+		{"unknown filter value", runJobsTarget() + "?filter=bogus", ""},
 		{"deep page", runJobsTarget() + "?page=99", ""},
 		{"per_page out of range", runJobsTarget() + "?per_page=500", ""},
 		{"query on the single job", jobTarget() + "?x=1", ""},
@@ -248,4 +247,45 @@ func TestCachedWorkflowJobs_ShapeGuardsPassThrough(t *testing.T) {
 			assert.Empty(t, w.Header().Get(cacheHeader), "must be forwarded, not served from the cache")
 		})
 	}
+}
+
+// filter=latest is the default spelling and shares its row; filter=all is a
+// different set with its own row, rewritten by the same deliveries.
+func TestCachedRunJobs_FilterIsModeled(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	require.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget()+"?filter=latest", nil)).Header().Get(cacheHeader))
+	require.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget()+"?filter=all", nil)).Header().Get(cacheHeader))
+	require.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget()+"?filter=all&per_page=30", nil)).Header().Get(cacheHeader))
+	require.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
+
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action": "completed", "workflow_job": jobDoc("completed", "failure"), "repository": fixtureRepo(),
+	})
+	w := do(t, router, authedReq("GET", runJobsTarget()+"?filter=all", nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the delivery rewrote the filter=all page")
+	assert.Contains(t, w.Body.String(), `"conclusion":"failure"`)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
+}
+
+// A run with no jobs yet answers an empty page. It is stored on the queued
+// TTL, and the first job delivery for the run drops it.
+func TestCachedRunJobs_EmptyPageIsStoredUntilAJobArrives(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.runJobs = func(w http.ResponseWriter, _ *http.Request) {
+		writeGitHubJSON(w, map[string]any{"total_count": 0, "jobs": []any{}})
+	}
+
+	w1 := do(t, router, authedReq("GET", runJobsTarget(), nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	assert.JSONEq(t, `{"total_count":0,"jobs":[]}`, w1.Body.String())
+	assert.Equal(t, "hit", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action": "queued", "workflow_job": jobDoc("queued", ""), "repository": fixtureRepo(),
+	})
+	assert.Equal(t, "miss", do(t, router, authedReq("GET", runJobsTarget(), nil)).Header().Get(cacheHeader))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.runJobsHits))
 }

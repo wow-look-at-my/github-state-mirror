@@ -9,7 +9,9 @@ import (
 
 // The routes on repo_answer_cache; see docs/cache/rest-routes.md.
 const (
-	RepoAnswerKindTags = "tags"
+	RepoAnswerKindTags    = "tags"
+	RepoAnswerKindRunLogs = "run_logs"
+	RepoAnswerKindJobLogs = "job_logs"
 )
 
 // RepoAnswerKey addresses one stored answer.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -19,9 +20,12 @@ type repoAnswerRoute struct {
 	resource string // the deny-cache resource key
 	// absorb decides what to store from an upstream answer. now is the instant.
 	absorb   func(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool)
+	// refusals are statuses besides a 403 that are stored per principal.
 	refusals []int
 	// fetch, when set, is the upstream request in place of the caller's.
 	fetch *http.Request
+	// noRedirect fetches without following a 302, for a route whose answer is the redirect.
+	noRedirect bool
 }
 
 func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route repoAnswerRoute) {
@@ -51,7 +55,15 @@ func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route
 	if fetch == nil {
 		fetch = r
 	}
-	resp, body, overflow, err := h.fetchUpstream(fetch, nil)
+	var resp *http.Response
+	var body []byte
+	var overflow bool
+	var err error
+	if route.noRedirect {
+		resp, body, overflow, err = h.fetchUpstreamNoRedirect(fetch)
+	} else {
+		resp, body, overflow, err = h.fetchUpstream(fetch, nil)
+	}
 	if err != nil {
 		h.upstreamError(w, r, err)
 		return
@@ -104,4 +116,14 @@ func (h *handlers) writeRepoAnswer(w http.ResponseWriter, r *http.Request, a ghd
 		w.Header().Set(cacheHeader, "miss")
 	}
 	w.WriteHeader(http.StatusFound)
+}
+
+// verdictAnswer stores an authoritative error answer in the trimmed shape the
+// other verdict routes serve.
+func verdictAnswer(status int, body []byte, expires time.Time) (ghdata.RepoAnswer, bool) {
+	doc, err := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: strconv.Itoa(status)})
+	if err != nil {
+		return ghdata.RepoAnswer{}, false
+	}
+	return ghdata.RepoAnswer{Status: status, Doc: string(doc), ExpiresAt: expires}, true
 }

@@ -172,6 +172,10 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
 
+		// Cached log redirects, each until its signed location expires; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/logs", h.cachedRunLogs)
+		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", h.cachedJobLogs)
+
 		// Cached SINGLE check-run read, keyed by the run's own id; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}", h.cachedCheckRun)
 
