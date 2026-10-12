@@ -6,12 +6,11 @@
 //
 // Like the request log and the rate meter it is deliberately IN-MEMORY (a live
 // operational view, not an audit log — and a DB table would put sub-day-
-// ephemeral data behind a cache-nuking schema change): it resets on
-// restart. It is bounded ways — events older than the retention window
-// (24h) are evicted lazily on write and on read, and a hard count cap (100k)
-// drops the oldest as a memory backstop against a traffic flood. There is
-// deliberately NO background goroutine or timer; laziness is the whole
-// eviction story.
+// ephemeral data behind a cache-nuking schema change): it resets on restart.
+// It is bounded ways — events older than the retention window (24h) are
+// evicted lazily on write and on read. A hard count cap (100k) drops the
+// oldest as a memory backstop against a traffic flood. There is deliberately
+// NO background goroutine or timer; laziness is the whole eviction story.
 package reqtimeline
 
 import (
@@ -40,7 +39,7 @@ const (
 // write/error).
 //
 // The `wire:` tags are this repo's whole half of the Timeline chart's columnar
-// format: the column names and their encodings, declared on the fields they
+// format. The column names and their encodings, declared on the fields they
 // describe. js-snippets' timelinewire does the rest. Field order within a kind
 // IS wire order, and the chart's SCHEMA literal must match — pinned by
 // TestTimelineSchemaMatchesChart, since a mismatch encodes perfectly and only
@@ -207,9 +206,9 @@ func clampDisplay(s string) string {
 	return string(runes[:maxDisplay]) + "…"
 }
 
-// RecordRequest records HTTP exchange on the GitHub data plane — an
-// inbound data-API request the mirror served, or an upstream call the mirror
-// made (cached-route fetch, reveal probe, ghclient exchange, login relay) —
+// RecordRequest records HTTP exchange on the GitHub data plane — an inbound
+// data-API request the mirror served, or an upstream call the mirror made
+// (cached-route fetch, reveal probe, ghclient exchange, login relay). This is
 // with its real measured duration. route must already be a normalized route
 // SHAPE (normalizeRoute), never a raw path — lanes stay bounded.
 func (r *Recorder) RecordRequest(start time.Time, dur time.Duration, method, route string, status int, disposition, actorKey, actorName string) {
@@ -280,11 +279,11 @@ type Snapshot struct {
 // the retention floor and a `to` means now, so SnapshotRange(,) is the
 // whole window.
 //
-// It exists because a full window is 100k events, and the client cannot turn
-// 100k events into chart rows without blowing its frame budget: the chart
-// paints hour, asks for older ranges as the viewport reaches them, and
-// pays for each in a bounded chunk. MaxID is still the ring's newest id (the
-// live cursor is independent of which range was read).
+// It exists because a full window is 100k events. The client cannot turn
+// 100k events into chart rows without blowing its frame budget. The chart
+// paints hour, asks for older ranges as the viewport reaches them, and pays
+// for each in a bounded chunk. MaxID is still the ring's newest id (the live
+// cursor is independent of which range was read).
 func (r *Recorder) SnapshotRange(from, to time.Time) Snapshot {
 	if r == nil {
 		return Snapshot{Events: []Event{}}

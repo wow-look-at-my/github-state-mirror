@@ -18,11 +18,11 @@ countingUpstream is a stand-in for the GitHub passthrough proxy: it records ever
 
 ## TestDebounce_IneligibleRequestsForwardImmediately
 
-The exclusions are not uncoalesced. They are UNDELAYED — an ineligible request must not pay the window. Writes are excluded because identical POSTs are intents. Conditional and Range reads because their answer depends on caller state the key cannot capture (a 304 against someone else's etag is a wrong answer).
+The exclusions are not uncoalesced. They are UNDELAYED — an ineligible request must not pay the window. Writes are excluded because same POSTs are intents. Conditional and Range reads because their answer depends on caller state the key cannot capture (a 304 against someone else's etag is a incorrect answer).
 
 ## TestDebounce_ThroughRouterRecordsStats
 
-The window must outlast the spread between the first and last waiter ARRIVING at the debouncer, or the batch splits. Only n-2 calls are saved. Through the real router that spread is real work, not scheduling noise: an unseen token costs requireAuth a GET /user round trip. The reveal layer a repo probe plus its grant write, and goroutines race each other for the same SQLite writer to do it. So the test warms both before firing, and keeps a window wide enough to absorb what a loaded runner still adds. This assertion has failed in CI at 100ms.
+The window must outlast the spread between the first and last waiter ARRIVING at the debouncer, or the batch splits. Only n-2 calls are saved. Through the real router that spread is real work, not scheduling noise: an unseen token costs requireAuth a GET /user round trip. The show layer a repo probe plus its grant write, and goroutines race each other for the same SQLite writer to do it. So the test warms both before firing, and keeps a window wide enough to absorb what a loaded runner still adds. This assertion failed in CI at 100ms.
 
 ## workflowRunsUpstream.runs (internal/api/respcache_actionsruns_test.go)
 

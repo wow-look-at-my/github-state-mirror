@@ -11,14 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// PR-files route tests (GET /repos/{owner}/{repo}/pulls/{number}/files); the
+// PR-files route tests (GET /repos/{owner}/{repo}/pulls/{number}/files). The
 // shared fake upstream (respCacheUpstream) lives in respcache_test.go, and
 // the PR webhook fixtures (upstreamPR, prEvent) in respcache_pulls_test.go.
 
 // defaultPullFilesUpstream is respCacheUpstream's default /pulls/{n}/files
-// answer: files -- modified with a patch, renamed WITHOUT a patch
-// (the binary/oversized case) but with previous_filename -- so the rebuild
-// must preserve exactly that presence split while dropping sha and every URL.
+// answer. Files -- modified with a patch, renamed WITHOUT a patch (the
+// binary/oversized case) but with previous_filename -- so the rebuild must
+// preserve exactly that presence split. This happens while dropping sha and
+// every URL.
 func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = w.Write([]byte(`[
@@ -41,10 +42,11 @@ func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
 	]`))
 }
 
-// TestCachedPullFiles_MissAbsorbHit covers the core flow: the read fetches +
+// TestCachedPullFiles_MissAbsorbHit covers the core flow. The read fetches +
 // absorbs the whole trimmed page (miss), the serves the byte-identical stored
-// doc (hit, upstream calls), and the rebuild drops sha + every URL field
-// while preserving patch/previous_filename present-vs-absent exactly.
+// doc (hit, upstream calls), and the rebuild drops sha + every URL field.
+// This happens while preserving patch/previous_filename present-vs-absent
+// exactly.
 func TestCachedPullFiles_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7/files"
@@ -110,7 +112,7 @@ func TestCachedPullFiles_PullRequestEventFlushesOnePR(t *testing.T) {
 
 // TestCachedPullFiles_MixedCaseSharesRowAndFlushes: GitHub treats owner/repo
 // case-insensitively in URLs while webhook payloads carry the repo's own
-// casing, so a differently-cased read must land on the SAME stored row and a
+// casing. A differently-cased read must land on the SAME stored row. A
 // differently-cased payload must still flush it -- the keys are lowercased
 // inside ghdata, never by the callers. (The same NormalizeRepoKey pattern
 // backs the closed-pull and branches tables.)
@@ -160,7 +162,7 @@ func TestCachedPullFiles_PushEventFlushesRepoWide(t *testing.T) {
 
 // TestCachedPullFiles_ShapePassthroughs: shapes the cache does not model --
 // unknown params, out-of-range paging, and a non-numeric {number} segment
-// (GitHub's /pulls/comments/files exists) -- pass through verbatim, uncached,
+// (GitHub's /pulls/comments/files exists). Pass through verbatim, uncached,
 // every time.
 func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -187,7 +189,7 @@ func TestCachedPullFiles_ShapePassthroughs(t *testing.T) {
 	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
 }
 
-// TestCachedPullFiles_DocCapPassthrough: `patch` is unbounded, so a page
+// TestCachedPullFiles_DocCapPassthrough: `patch` is unbounded. A page
 // whose rendered document exceeds the MiB cap is passed through verbatim
 // -- a passthrough, not an error -- and nothing is stored (every read
 // fetches again).
@@ -220,8 +222,8 @@ func TestCachedPullFiles_DocCapPassthrough(t *testing.T) {
 }
 
 // TestCachedPullFiles_EmptyPageCacheable: an empty array -- a page past the
-// end of the files list -- is a valid answer for that exact page key and is
-// absorbed + served from state like any other.
+// end of the files list. It is a valid answer for that exact page key and
+// is absorbed + served from state like any other.
 func TestCachedPullFiles_EmptyPageCacheable(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.pullFiles = func(w http.ResponseWriter, r *http.Request) {

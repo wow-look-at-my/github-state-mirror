@@ -13,8 +13,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The incident, end to end. A PR's synchronize delivery failed; the PR then
-// merged and its closed delivery applied; the replayer asked GitHub to re-send
+// The incident, end to end. A PR's synchronize delivery failed. The PR then
+// merged and its closed delivery applied. The replayer asked GitHub to re-send
 // the failed, and GitHub re-sent the payload it built at the time -- a
 // pre-merge view. Applying it put a merged PR back in the cache as open.
 
@@ -54,7 +54,7 @@ func TestDispatch_ReplayedPreCloseDeliveryDoesNotReopenAMergedPR(t *testing.T) {
 
 // The closure record is NOT made redundant by the ordering gate, and this pins
 // why: the gate only sees deliveries. A PR row written by a FETCH absorb -- the
-// single-PR route, a list page, the consistency reconcile -- passes no
+// single-PR route, a list page, the consistency reconcile. It passes no
 // watermark, so the write itself has to refuse a view that cannot prove it
 // postdates a recorded close. independent guards, shared failure.
 func TestDispatch_ClosureRecordStillRefusesAPreCloseViewWithoutTheGate(t *testing.T) {

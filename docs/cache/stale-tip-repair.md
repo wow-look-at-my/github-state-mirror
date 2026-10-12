@@ -1,17 +1,12 @@
 # Keeping a branch tip right, without anyone asking
 
-`GET /repos/{owner}/{repo}/git/ref/{ref}` answers with one mutable pointer, which makes it the cached route where a lost delivery hurts most. Every other cached answer that lags is merely old. This one is the input to decisions about whether there is any work to do, so a consumer reading it wrong concludes there is nothing. This is to do and never asks again. The answer stops its own repair.
+`GET /repos/{owner}/{repo}/git/ref/{ref}` answers with one mutable pointer, which makes it the cached route where a lost delivery hurts most. Every other cached answer that lags is merely old. This one is the input to decisions about whether there is any work to do, so a consumer reading it incorrect concludes there is nothing. This is to do and never asks again. The answer stops its own repair.
 
 Correctness here is THIS SERVICE's problem. A consumer cannot notice a delivery that never arrived, and asking one to send fixup requests inverts the responsibility the mirror exists to hold.
 
 ## What happened (xml-validator#10)
 
-`wow-look-at-my/xml-validator` merged PR #11 into `master` at 15:35:26 on
-2026-08-14, moving the branch from `2fa82e7a` to `d197a949`. The stored answer
-for `heads/master` never moved: an hour later it was still serving `2fa82e7a`
-as a cache HIT, under a 24h TTL, with nothing else able to correct it — pushes
-APPLY their own tip, so a delivered push would have, and nothing else writes
-the row.
+`wow-look-at-my/xml-validator` merged PR #11 into `master` at 15:35:26 on 2026-08-14, moving the branch from `2fa82e7a` to `d197a949`. The stored answer for `heads/master` never moved: an hour later it was still serving `2fa82e7a` as a cache HIT, under a 24h TTL. That answer is with nothing else able to correct it — pushes APPLY their own tip. A delivered push will have, and nothing else writes the row.
 
 pr-minder read that tip and computed the PR's diff against it:
 
@@ -20,41 +15,47 @@ pr-minder read that tip and computed the PR's diff against it:
 | `2fa82e7a` (mirror, stale) | 4     | 0      | 10            | `has-diff`  |
 | `d197a949` (real)          | 3     | 0      | 0             | `zero-diff` |
 
-The PR was provably content-empty against its real base — its tree is byte-identical to `master`'s. However, its tree read as an ordinary PR with multiple changed files, so its zero-diff auto-merge never fired. The hourly reconcile recomputed the same wrong answer every hour.
+The PR was provably content-empty against its real base — its tree is byte-same to `master`'s. However, its tree read as an ordinary PR with multiple changed files, so its zero-diff auto-merge never fired. The hourly reconcile recomputed the same incorrect answer every hour.
 
 Note what the mirror held at that moment: `git_ref_cache["heads/master"]` said `2fa82e7a` while `pull_requests[#10].base_ref_oid` said `d197a949`. A couple of rows, same branch, same database, disagreeing — and nothing reconciled them.
 
 ## The two mechanisms
 
-**1. Every delivery that STATES the tip applies it.** A merge arrives twice — once as a `push` for the base branch, once as `pull_request` with `merged: true`. And the second one names the commit merging put on the base branch (`merge_commit_sha`). `ApplyMergedBaseTip` writes it into the cached ref rows, so both deliveries have to be lost before the tip goes wrong. Ordering is decided without a fetch. The row records when its content was established, and a merge that predates that instant says nothing the row does not already account. This is for, so only a merge that postdates it applies. An open PR's `merge_commit_sha` is the throwaway test-merge commit, which is on no branch at all, and is never read as a tip.
+**1. Every delivery that STATES the tip applies it.** A merge arrives twice — once as a `push` for the base branch, once as `pull_request` with `merged: true`. And the second one names the commit merging put on the base branch (`merge_commit_sha`). `ApplyMergedBaseTip` writes it into the cached ref rows, so both deliveries have to be lost before the tip goes incorrect. Ordering is decided without a fetch. The row records when its content was established, and a merge that predates that instant says nothing the row does not already account.
 
-**2. A row another row contradicts is not served.** `GetCachedGitRefChecked` asks, before replaying a stored tip, whether any absorbed OPEN PR based on that branch names a different `base.sha`. If one does, the mirror does not pick a side — it refetches and serves GitHub's answer. Conditions keep that from firing forever, because a PR's `base.sha` legitimately LAGS its branch (GitHub recomputes it on PR contact, not on every base push), so most disagreements are lag rather than staleness:
+This is for, so only a merge that postdates it applies. An open PR's `merge_commit_sha` is the throwaway test-merge commit, which is on no branch at all, and is never read as a tip.
 
-- the contradicting view must have been absorbed AFTER the row was fetched (`touched_at > fetched_at`). Evidence older than our own answer was already accounted for by fetching it.
+**2. A row another row contradicts is not served.** `GetCachedGitRefChecked` asks. This applies before replaying a stored tip, whether any absorbed OPEN PR based on that branch names a different `base.sha`. If one does, the mirror does not pick a side — it refetches and serves GitHub's answer. Conditions keep that from firing forever, because a PR's `base.sha` legitimately LAGS its branch (GitHub recomputes it on PR contact, not on every base push), so most disagreements are lag rather than staleness:
+
+- the contradicting view must was absorbed AFTER the row was fetched (`touched_at > fetched_at`). Evidence older than our own answer was already accounted for by fetching it.
 - the sha must not be the one a previous fetch already settled (`reconciled_against`) — re-absorbing the same lagging value is not new evidence.
 
 That bounds it to one refetch per genuinely new disagreeing sha per branch, roughly one per base-branch move. It is deliberately NOT an ancestry test: proving which sha is newer costs the same upstream call as fetching the truth.
 
 ## What was deliberately not done
 
-**A client-triggered revalidation** (`Cache-Control: no-cache` on the route, sent by a consumer that had detected the contradiction). It works. It was the first cut of this fix. It is the wrong shape: it makes the mirror's correctness depend on every consumer noticing, implementing, and being trusted to ask. The mirror holds both contradicting facts itself and can act on them without being told.
+**A client-triggered revalidation** (`Cache-Control: no-cache` on the route, sent by a consumer that had detected the contradiction). It works. It was the first cut of this fix. It is the incorrect shape: it makes the mirror's correctness depend on every consumer noticing, implementing, and being trusted to ask. The mirror holds both contradicting facts itself and can act on them without being told.
 
 **Shortening the TTL.** It hides the window instead of closing it (CLAUDE.md: "Never answer a gap with a shorter TTL"). It will spend a refetch per branch per interval on every repo to paper over a case that is rare and now detected.
 
-**Cross-checking the row against the mirror's other CACHES.** The branches listing, the compare rows and `KnownBranchTip` are all fed by the same delivery stream. As a result, the same lost delivery poisons them identically — `KnownBranchTip` reads these very rows. This is why the compare route's own staleness refusal can not catch this. It was anchored on the wrong row. The PR rows work as evidence precisely because they arrive on a DIFFERENT delivery and a different route.
+**Cross-checking the row against the mirror's other CACHES.** The branches listing, the compare rows and `KnownBranchTip` are all fed by the same delivery stream. As a result, the same lost delivery poisons them identically — `KnownBranchTip` reads these very rows. This is why the compare route's own staleness refusal can not catch this. It was anchored on the incorrect row. The PR rows work as evidence accurately because they arrive on a DIFFERENT delivery and a different route.
 
 ## The narrower, earlier mechanism: `baseBranchMoved` (`compare_cache`)
 
-`baseBranchMoved` (`internal/ghdata/respcache_compare.go`) reports whether the base branch has moved off the tip a cached comparison row was computed against. A row it can PROVE is stale, whatever happened to the flush that must have dropped it.
+`baseBranchMoved` (`internal/ghdata/respcache_compare.go`) reports whether the base branch moved off the tip a cached comparison row was computed against. A row it can PROVE is stale, whatever happened to the flush that must have dropped it.
 
-The flush is still the primary mechanism. It is not going anywhere. This is the belt for the case that actually bit. A `behind_by` answer outlives the push that changed it, and the consumer reading it (pr-minder's "does this PR need its branch updated?" gate) concludes there is nothing to do. Nothing about that failure is self-correcting. The wrong answer is what stops the work that will produce a new one -- so it sits until the 24h TTL. GitHub hands us the way out in the answer itself: `base_commit.sha` says which base tip the comparison describes. `git_ref_cache` says which tip the branch is on NOW, because a push APPLIES its own `after` there (`ApplyPushedRefTip`). Facts already held, compared on read.
+The flush is still the primary mechanism. It is not going anywhere. This is the belt for the case that actually bit. A `behind_by` answer outlives the push that changed it, and the consumer reading it (pr-minder's "does this PR need its branch updated?" gate) concludes there is nothing to do. Nothing about that failure is self-correcting. The incorrect answer is what stops the work that will produce a new one -- so it sits until the 24h TTL.
 
-Unknown beats guessing in only one direction here. A row with no stated base tip, a base side that is a sha (immutable -- nothing to move), or a branch whose tip was never observed all fall. This is through to the existing contract: flush, then TTL. Refusing to serve those will not make one of them fresher. It will turn every first comparison into a permanent miss. What this rejects is the narrow, provable case: the tip is known. It is not the one in the row.
+GitHub hands us the way out in the answer itself: `base_commit.sha` says which base tip the comparison describes. `git_ref_cache` says which tip the branch is on NOW, because a push APPLIES its own `after` there (`ApplyPushedRefTip`). Facts already held, compared on read.
 
-The HEAD side gets no equivalent check. GitHub states no head tip, and deriving one from the last element of `commits` is wrong the moment a comparison exceeds GitHub's 250-commit cap. This is a silently truncated list whose tail is not the head. The head side keeps the flush and the TTL.
+Unknown beats guessing in only one direction here. A row with no stated base tip, a base side that is a sha (immutable -- nothing to move), or a branch whose tip was never observed all fall. This is through to the existing contract: flush, then TTL. Refusing to serve those will not make one of them fresher. It will turn every first comparison into a permanent miss. What this rejects is the narrow, provable case: the tip is known.
+
+It is not the one in the row.
+
+The HEAD side gets no equivalent check. GitHub states no head tip, and deriving one from the last element of `commits` is incorrect the moment a comparison exceeds GitHub's 250-commit cap. This is a silently truncated list whose tail is not the head. The head side keeps the flush and the TTL.
 
 This mechanism is anchored on `git_ref_cache`, which is why it can not catch the incident above: that row was itself the one gone stale (see "What happened" above).
 
 ## What is still uncovered
 
-A branch with no open PR based on it, whose push delivery is lost, stays stale until the TTL — mechanism 2 has no second row. This is to check it against. The delivery replayer (docs/webhooks/delivery-gaps.md) is what bounds that today.
+A branch with no open PR based on it, whose push delivery is lost, stays stale until the TTL. A later mechanism has no second row. This is to check it against. The delivery replayer (docs/webhooks/delivery-gaps.md) is what bounds that today.

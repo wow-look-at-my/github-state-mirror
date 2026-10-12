@@ -87,8 +87,8 @@ func TestCachedWorkflowsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.workflowsHits))
 }
 
-// The listing and the read are separate grains, and a file-name spelling is
-// its own row: resolving it to the numeric id needs this answer.
+// The listing and the read are separate grains. A file-name spelling is its
+// own row: resolving it to the numeric id needs this answer.
 func TestCachedWorkflows_GrainsAndSpellingsAreDistinctRows(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 

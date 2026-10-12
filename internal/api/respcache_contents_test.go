@@ -11,15 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The contents-route tests: both Accept shapes it models, the media types it
+// The contents-route tests. Both Accept shapes it models, the media types it
 // refuses, its webhook flushes, and the reveal-layer cases that ride on the
 // same fixture. The fake GitHub and the shared assertions live in
 // respcache_fixture_test.go.
 
-// TestCachedContents_FileHitAndPushInvalidation covers the core contents flow:
-// a file is absorbed on the request (miss), the request is
-// served from state — same trimmed body, no upstream call, X-GSM-Cache: hit —
-// and a push webhook for the repo flushes it so the next request refetches.
+// TestCachedContents_FileHitAndPushInvalidation covers the core contents flow: a
+// file is absorbed on the request (miss). The request is served from state —
+// same trimmed body, no upstream call, X-GSM-Cache: hit. And a push webhook for
+// the repo flushes it so the next request refetches.
 func TestCachedContents_FileHitAndPushInvalidation(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/contents/.github/cfg.jsonc"
@@ -182,8 +182,9 @@ func TestCachedContents_GlobalTruthSharedViaReveal(t *testing.T) {
 
 // TestReveal_DenyVerdictCachedAuthoritativeOnly: a probe GitHub answers is
 // relayed as the caller's truth and remembered briefly (repeat requests are
-// answered from the deny cache without touching GitHub); a TRANSIENT probe
-// failure () is never cached — the next request probes again.
+// answered from the deny cache without touching GitHub). This also covers a
+// TRANSIENT probe failure () is never cached — the next request probes
+// again.
 func TestReveal_DenyVerdictCachedAuthoritativeOnly(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +262,7 @@ func TestCachedContents_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "expiry must force a refetch")
 }
 
-// TestRespCache_RawAcceptServedFromCache: the raw file-body representation
+// TestRespCache_RawAcceptServedFromCache. The raw file-body representation
 // (Accept: application/vnd.github.raw — what simple-llm-ui's file-read tool
 // sends) is modeled from the SAME row the default JSON representation is,
 // decoded server-side from the absorbed base64 `content`. A miss on EITHER
@@ -363,7 +364,7 @@ func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
 
 // TestRespCache_NonDefaultAcceptPassthrough: media types that change the
 // response shape in ways this package does not model at all (html/object, or
-// an ambiguous mixed Accept) are not modeled — the route must forward them
+// an ambiguous mixed Accept) are not modeled. The route must forward them
 // verbatim, uncached. Raw (application/vnd.github.raw) is NOT of these -- see
 // TestRespCache_RawAcceptServedFromCache.
 func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {

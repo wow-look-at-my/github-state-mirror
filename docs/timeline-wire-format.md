@@ -8,13 +8,7 @@ The origin is grey-clouded (Cloudflare proxying was turned off after throttling)
 
 ## What was measured
 
-A bake-off, in a throwaway module (`prototype/timelinewire/`, own `go.mod` so
-the repo build never saw its bson/protobuf deps). It generated a realistic
-window (100k events over 24 h: 18 route shapes, 12 webhook event types, 220
-repos, 34 principals, unique delivery GUIDs on webhook events, skewed
-durations), round-tripped it through every candidate codec (a lossy format is
-not a small format, it is a wrong one), and reported size + time — the tables
-below.
+A bake-off, in a throwaway module (`prototype/timelinewire/`, own `go.mod` so the repo build never saw its bson/protobuf deps). It generated a realistic window (100k events over 24 h: route shapes, webhook event types, 220 repos, principals, unique delivery GUIDs on webhook events, skewed durations), round-tripped it through every candidate codec (a lossy format is not a small format, it is a incorrect one), and reported size + time — the tables below.
 
 **That module is gone, deliberately.** It was a prototype, it answered its question, and the answer is these tables plus the format that shipped. Keeping a second Go module with protobuf and bson dependencies to re-derive a decision already made is dead weight. To re-run it, check out `4a78cb8^` — nothing since then changed the shape of the data it measured.
 
@@ -22,7 +16,7 @@ What survives in this repo is `internal/api/testdata/browsercheck.ts`, the real-
 
 The node harnesses that drove the codec (`framecheck.ts`, `shipbench.ts`) are gone with the codec itself — see the next section.
 
-Codecs: **json** (today), **bson** (`mongo-driver/v2`), **protobuf** (`timeline.proto`, hand-encoded with `protowire` — byte-identical to what protoc-gen-go emits for that schema), **row** (hand-rolled: one record per event, shared string dictionary, delta+varint ids/timestamps, presence mask), **columnar** (hand-rolled: field-major, per-column dictionary, delta+varint numeric columns, bitset for bools, empty columns omitted entirely).
+Codecs: **json** (today), **bson** (`mongo-driver/v2`), **protobuf** (`timeline.proto`, hand-encoded with `protowire` — byte-same to what protoc-gen-go emits for that schema), **row** (hand-rolled: one record per event, shared string dictionary, delta+varint ids/timestamps, presence mask), **columnar** (hand-rolled: field-major, per-column dictionary, delta+varint numeric columns, bitset for bools, empty columns omitted fully).
 
 Compressors are limited to what a browser decodes natively from `Content-Encoding`, so the client pays nothing for them: gzip, zstd, br.
 
@@ -69,7 +63,7 @@ Decompression is excluded on purpose: the browser inflates `Content-Encoding` in
 | columnar → intervals, event objects built lazily on hover | **53.8 ms** |
 | row → intervals | 117.3 ms |
 
-The bake-off's `bench.mjs` asserted all paths produced identical intervals (mismatches) — a format that decodes to different data is not a faster format.
+The bake-off's `bench.mjs` asserted all paths produced same intervals (mismatches) — a format that decodes to different data is not a faster format.
 
 ## Findings
 
@@ -77,8 +71,8 @@ The bake-off's `bench.mjs` asserted all paths produced identical intervals (mism
 2. **BSON is not a compression format.** 26.5 MB raw and *worse* than JSON under every compressor (its length-prefixed keys repeat per document, so there is nothing for the dictionary to win that gzip was not already winning). It also loses the advantage JSON has — native browser parsing. Rejected outright.
 3. **Protobuf halves the raw bytes** (14.55 MB) and encodes fastest of the schema formats. However, it is still key-tagged per field per record. After gzip it lands within 20% of JSON. In the browser it also costs a decoder library (protobufjs) or generated code. It adds a schema build step too, in a repo whose front-end deliberately has no bundler. Not worth it here.
 4. **The hand-rolled formats win by an order of magnitude raw** (1.9–2.2 MB, ~13× smaller than JSON) because they attack the actual redundancy. A lane/route/actor string appears 100,000 times and must be one dictionary entry plus a one-byte index. Ids and timestamps are monotonic and must be deltas.
-5. **Columnar beats row where it matters.** Row is marginally smaller raw (1.93 vs 2.24 MB — its presence mask skips absent fields, where columnar writes an index for every row of every used column). However, Row columnar compresses **3× faster** (9 ms vs 18 ms at gzip-1: like values sit adjacent, so the matcher works at short distances), lands the same or smaller on-wire, and decodes **2× faster in JS** (54 ms vs 117 ms) with no per-record branching. Columnar also permits the lazy-detail path: the chart needs 100k intervals now and one full event object on hover.
-6. **Compression is not optional and gzip is nearly free at this shape.** columnar+gzip-1 costs multiple ms of server CPU for the full ring. On the realistic one-hour payload it is under 1 ms.
+5. **Columnar beats row where it matters.** Row is marginally smaller raw (1.93 vs 2.24 MB — its presence mask skips absent fields, where columnar writes an index for every row of every used column). However, Row columnar compresses **3× faster** (9 ms a later vs ms at gzip-1: like values sit adjacent, so the matcher works at short distances), lands the same or smaller on-wire, and decodes **2× faster in JS** (54 ms a later vs ms) with no per-record branching. Columnar also permits the lazy-detail path: the chart needs 100k intervals now and one full event object on hover.
+6. **Compression is not optional and gzip is almost free at this shape.** columnar+gzip-1 costs multiple ms of server CPU for the full ring. On the realistic one-hour payload it is under 1 ms.
 
 ## Where the format lives
 
@@ -93,7 +87,9 @@ The wire bytes did not change when it moved: the column names were never on the 
 
 **The Go encoder is there too**, as a nested module: `github.com/wow-look-at-my/js-snippets/timelinewire`. `Decode` sits beside it. A Go producer thus reads its own payload instead of writing a second reader. One fixture, `timelinewire/testdata/golden-v1.b64`, is written by its Go test and decoded by the TypeScript one.
 
-**So is the mapping.** Every producer needs the same code here. It builds the column slices from a row type and switches from name to field. It also runs the inverse to read a payload back. Many lines of it lived here, and a second consumer of the chart will have copied them. `EncodeRows`/`DecodeRows` take a slice of structs tagged `wire:"name,kind"` and do it by reflection. `SchemaOf` derives the Schema the same way. `Wants` is the exact-media-type Accept match a producer needs to serve this alongside a readable encoding. Wire order is struct field order within each kind. As a result, the layout is a property of the declaration. Reflection costs ~1.8x the hand-written mapping on a full 100k ring (18 ms against 10, server-side, once) and no extra allocations. `BenchmarkEncodeRows` vs `BenchmarkEncodeManualMapping` keeps that comparison re-runnable.
+**So is the mapping.** Every producer needs the same code here. It builds the column slices from a row type and switches from name to field. It also runs the inverse to read a payload back. Many lines of it lived here, and a second consumer of the chart will copied them. `EncodeRows`/`DecodeRows` take a slice of structs tagged `wire:"name,kind"` and do it by reflection.
+
+`SchemaOf` derives the Schema the same way. `Wants` is the exact-media-type Accept match a producer needs to serve this alongside a readable encoding. Wire order is struct field order within each kind. As a result, the layout is a property of the declaration. Reflection costs ~1.8x the hand-written mapping on a full 100k ring (18 ms against 10, server-side, once) and no extra allocations. `BenchmarkEncodeRows` vs `BenchmarkEncodeManualMapping` keeps that comparison re-runnable.
 
 What is left in THIS repo is the vocabulary, declared on the fields it describes: the `wire:` tags on `reqtimeline.Event`. `internal/api/timelinewire.go` is the media type and the negotiation, nothing else.
 
@@ -101,9 +97,9 @@ What is left in THIS repo is the vocabulary, declared on the fields it describes
 
 `GET /api/timeline` serves the columnar payload to a caller that names its media type exactly. Everyone else gets readable JSON: curl, a browser, an operator with `jq`. The endpoint stays inspectable by hand.
 
-The first cut had the same encodings and was still wrong, because the CLIENT fell back — it decoded whatever came back. An `Accept` can drift through a header edit, a proxy rewriting it, or a `q=` mixup. It then silently took the decode costing ~10x the frames. Nothing failed and nothing was logged. **The defect was the fallback, not the JSON.** The refusal now sits in `fetchTimelineBytes`, which sends one Accept and throws on any other content type.
+The first cut had the same encodings and was still incorrect, because the CLIENT fell back — it decoded whatever came back. An `Accept` can drift through a header edit, a proxy rewriting it, or a `q=` mixup. It then silently took the decode costing ~10x the frames. Nothing failed and nothing was logged. **The defect was the fallback, not the JSON.** The refusal now sits in `fetchTimelineBytes`, which sends one Accept and throws on any other content type.
 
-Deleting the JSON was the wrong correction (briefly made, then reverted): it served a real consumer — a human debugging an admin endpoint. And dropping it made `curl` return binary for no safety gain. The right correction is one line in the client: send only the wire type, and THROW on any other content type. This surfaces as the chart's existing "feed is down" state.
+Deleting the JSON was the incorrect correction (briefly made, then reverted): it served a real consumer — a human debugging an admin endpoint. And dropping it made `curl` return binary for no safety gain. The right correction is one line in the client: send only the wire type, and THROW on any other content type. This surfaces as the chart's existing "feed is down" state.
 
 Both halves are pinned. They are meant to be read together:
 
@@ -121,39 +117,17 @@ The columnar decode was 63 ms in ONE synchronous task — a few times better tha
 
 1. **One chunk per frame, where a chunk is A FRAME'S WORTH OF WORK.** That second clause is the whole thing. `runSliced` claims a frame, then pulls generator steps — across phase boundaries — until `CHUNK_MS` (4) of real work is spent. One unit per frame means the unit's cost IS the frame's load, so a chunk under budget keeps every frame under budget.
 
-   The first cut defined a chunk as *one step of one phase* instead. Each phase steered its own step size toward a time target and yielded a frame at each step. It took **70 frames (~1.2 s) to do 8 ms of work**. Each phase paid at least one frame, and the resulting chunks averaged 0.13 ms against an 8 ms budget. The step size was not the lever (target 3 ms and ms both gave frames). Loosening the growth caps only reached 51, because the phase count was the floor. Filling the frame instead took it to **3 frames**.
+   The first cut defined a chunk as *one step of one phase* instead. Each phase steered its own step size toward a time target and yielded a frame at each step. It took **70 frames (~1.2 s) to do 8 ms of work**. Each phase paid at least one frame, and the resulting chunks averaged 0.13 ms against an 8 ms budget. The step size was not the lever (a later target ms and ms both gave frames). Loosening the growth caps only reached 51, because the phase count was the floor.
 
-   `STEP` is therefore a fixed granularity, not a size to tune: it bounds the
-   OVERSHOOT, since the clock is read between steps. 1024 rows is ~1.7 ms of
-   the dearest phase (the JSON transpose, ~1.7 us/row) and ~0.05 ms of the
-   cheapest, so `CHUNK_MS` plus a worst step stays inside 8.
-2. **A frame is a global TURN, and it is claimed BEFORE the work.** Neither
-   half is optional. A live poll and a history load are separate tasks, so each
-   taking "its own chunk per frame" put two chunks in one frame; and yielding
-   *after* working leaves seams — a task's last chunk and the next flow's first
-   one both run unwaited. Measured with chunks that actually fill a frame, that
-   was 9.4 ms of our work in one frame (slices of 3.0 + 3.5 + 2.9). Waiters now
-   queue for distinct frames, the wait confirms the frame counter moved
-   (`rAF`+`setTimeout(0)` can otherwise resume inside the frame it yielded),
-   and every unit claims its frame first.
-3. **Not holding 100k intervals.** This is the one that actually mattered.
-   With the full ring in memory the worst slice still spiked to 19 ms, and
-   `--trace-gc` named the cause: 4-7 ms scavenges, triggered by 100k live
-   interval objects, landing inside decode slices. No amount of yielding hides
-   a GC pause. So the chart now FETCHES THE HOUR IT PAINTS
-   (`?from=`/`?to=`, served by `reqtimeline.SnapshotRange`) and pulls older
-   ranges through the component's `loadRange` hook as the viewport reaches
-   them, each clamped to an hour. Dropping the per-row `{columns, row}`
-   reference — the tooltip binary-searches the id column instead — removed
-   another 100k allocations.
+   Filling the frame instead took it to **3 frames**.
 
-Measured on the real first-paint payload (4,166 events, one hour of realistic
-traffic) through the SHIPPED module: **~3 ms of work per frame on average over
-3 frames**, worst chunk ~4 ms. The JSON fallback over a full 100k-event window
-averages 4.4 ms per frame over 34-39 frames — the ~10x-more-frames downgrade
-the chart's content-type refusal exists to prevent.
+   `STEP` is therefore a fixed granularity, not a size to tune: it bounds the OVERSHOOT, since the clock is read between steps. 1024 rows is ~1.7 ms of the dearest phase (the JSON transpose, ~1.7 us/row) and ~0.05 ms of the cheapest, so `CHUNK_MS` plus a worst step stays inside 8.
+2. **A frame is a global TURN. It is claimed BEFORE the work.** Neither half is optional. A live poll and a history load are separate tasks, so each taking "its own chunk per frame" put chunks in one frame. And yielding *after* working leaves seams — a task's last chunk and the next flow's first one both run unwaited. Measured with chunks that actually fill a frame, that was 9.4 ms of our work in one frame (slices of 3.0 + 3.5 + 2.9). Waiters now queue for distinct frames, the wait confirms the frame counter moved (`rAF`+`setTimeout(0)` can otherwise resume inside the frame it yielded), and every unit claims its frame first.
+3. **Not holding 100k intervals.** This is the one that actually mattered. With the full ring in memory the worst slice still spiked to a set limit ms, and `--trace-gc` named the cause. 4-7 ms scavenges, triggered by 100k live interval objects, landing inside decode slices. No amount of yielding hides a GC pause. So the chart now FETCHES THE HOUR IT PAINTS (`?from=`/`?to=`, served by `reqtimeline.SnapshotRange`) and pulls older ranges through the component's `loadRange` hook as the viewport reaches them. Each clamped to an hour. Dropping the per-row `{columns, row}` reference — the tooltip binary-searches the id column instead — removed another 100k allocations.
 
-The node gate that measured this (`TestTimelineFrameBudget` + `framecheck.ts`) went with the bake-off. It drove a decoder that now lives in js-snippets, and its numbers were environment-dominated. The pacing contract it checked is covered where the code is — js-snippets' `runSliced` tests — and end to end by `browsercheck.ts` below.
+The measurement used the real first-paint payload: 4,166 events, one hour of realistic traffic. It ran through the SHIPPED module: **~3 ms of work per frame on average over a few frames**, worst chunk ~4 ms. Consider the JSON fallback over a full 100k-event window. That fallback averages 4.4 ms per frame over 34-39 frames — the ~10x-more-frames downgrade the chart's content-type refusal exists to prevent.
+
+The node gate that measured this (`TestTimelineFrameBudget` + `framecheck.ts`) went with the bake-off. It drove a decoder that now lives in js-snippets, and its numbers were environment-dominated. Browsercheck.ts` below covers the pacing contract it checked.
 
 ### What node could not see
 
@@ -184,46 +158,12 @@ Getting there meant fixing multiple things:
 
 Both halves of the recommendation below, minus the windowing (the operator's call: "it does not matter if you send the events in 1hr chunks or 24hr all at once"). The endpoint still answers the full cursor-selected window — it is an order of magnitude smaller and ~5x cheaper to render.
 
-- **`internal/api/timelinewire.go`** — the Snapshot→Page mapping and the
-  schema naming our 13 string columns, over js-snippets' encoder. Magic
-  `TLC1`, media type `application/vnd.gsm.timeline.v1`, selected by an EXACT
-  Accept match, so curl, the demo preview and any browser's `*/*` keep getting
-  JSON. The layout is versioned in both the magic and the media type and is
-  never evolved in place: a change is v2.
-- **`internal/api/compress.go`** — gzip at BestSpeed for the dashboard's
-  buffered admin payloads, since the grey-clouded origin has nothing in front
-  of it. Level 1 rather than 6 because on this shape it is 1006 KB in 24 ms
-  against 952 KB in 140 ms (measured in the retired bake-off module).
-  Deliberately NOT wired into the GitHub data plane: the cached routes have a
-  pinned response-header contract, the proxy relays GitHub's own encoding, and
-  the consistency check's NDJSON must keep flushing per line.
-- **`internal/api/web/src/timeline.ts`** — the browser decoder. The JSON
-  fallback decodes into the SAME column representation, so intervals, lanes
-  and tooltips have exactly one shape to handle. Intervals are built straight
-  from columns; the 19-field event object is materialized only when a tooltip
-  asks for a row (`eventAt`).
-- **`reqtimeline.SnapshotRange` + `?from=&to=`** — the windowed read behind the
-  chart's async history. `since` and `from`/`to` are mutually exclusive (they
-  answer different questions; silently ANDing them would let a history request
-  come back empty because the live cursor had moved past it), and a windowed
-  read still reports the live `max_id` — history never advances the cursor, or
-  events recorded between the last poll and the history fetch would be skipped.
-- **Browser harness.** `internal/api/testdata/browsercheck.ts` (needs
-  `npm i playwright`; run it against a dumped payload) — the only check that
-  sees the component. Deliberately NOT in CI: it needs a browser download and
-  its frame-gap numbers are environment-dominated. The CI gate is the node
-  one, which is deterministic.
-- **Tests.** `timelinewire_test.go` covers what is ours: every event field
-  reaches the page and survives a round trip, the size claim holds (so a
-  regression to per-event strings fails rather than merely disappoints), and
-  — the one agreement neither repo's tests can see — `timelineSchema` still
-  matches the chart's `SCHEMA` literal in `web/src/timeline.ts`. The library
-  never sees a column name, so a disagreement between those two would surface
-  only in the browser, as "trailing bytes" on a payload that encoded
-  perfectly. `timelineclient_test.go` drives the BUILT `assets/timeline.js`
-  under node to pin that the chart REFUSES a JSON answer. `timeline_test.go`
-  covers negotiation, the JSON default, gzip (including a `gzip;q=0` refusal)
-  and the small-payload floor. The layout itself is tested in js-snippets.
+- **`internal/api/timelinewire.go`** — the Snapshot→Page mapping and the schema naming our string columns, over js-snippets' encoder. Magic `TLC1`, media type `application/vnd.gsm.timeline.v1`, selected by an EXACT Accept match, so curl, the demo preview and any browser's `*/*` keep getting JSON. The layout is versioned in both the magic and the media type and is never evolved in place: a change is v2.
+- **`internal/api/compress.go`** — gzip at BestSpeed for the dashboard's buffered admin payloads, since the grey-clouded origin has nothing in front of it. Level 1 rather than 6 because on this shape it is 1006 KB in 24 ms against 952 KB in 140 ms (measured in the retired bake-off module). Deliberately NOT wired into the GitHub data plane: the cached routes have a pinned response-header contract. The proxy relays GitHub's own encoding, and the consistency check's NDJSON must keep flushing per line.
+- **`internal/api/web/src/timeline.ts`** — the browser decoder. The JSON fallback decodes into the SAME column representation, so intervals, lanes and tooltips have exactly one shape to handle. Intervals are built straight from columns. The 19-field event object is materialized only when a tooltip asks for a row (`eventAt`).
+- **`reqtimeline.SnapshotRange` + `?from=&to=`** — the windowed read behind the chart's async history. `since` and `from`/`to` are mutually exclusive (they answer different questions. Silently ANDing them will let a history request come back empty because the live cursor moved past it). A windowed read still reports the live `max_id` — history never advances the cursor, or events recorded between the last poll. The history fetch will be skipped.
+- **Browser harness.** `internal/api/testdata/browsercheck.ts` (needs `npm i playwright`. Run it against a dumped payload) — the only check that sees the component. Deliberately NOT in CI: it needs a browser download and its frame-gap numbers are environment-dominated. The CI gate is the node one, which is deterministic.
+- **Tests.** `timelinewire_test.go` covers what is ours. Every event field reaches the page and survives a round trip, the size claim holds (so a regression to per-event strings fails rather than merely disappoints), and — the agreement neither repo's tests can see. `timelineSchema` still matches the chart's `SCHEMA` literal in `web/src/timeline.ts`. The library never sees a column name. A disagreement between those two will surface only in the browser, as "trailing bytes" on a payload that encoded perfectly. `timelineclient_test.go` drives the BUILT `assets/timeline.js` under node to pin that the chart REFUSES a JSON answer. `timeline_test.go` covers negotiation, the JSON default, gzip (including a `gzip;q=0` refusal) and the small-payload floor. The layout itself is tested in js-snippets.
 
 ### Measured on what shipped
 
@@ -234,9 +174,9 @@ The input is a realistic full ring: 100,000 events over 24 h, 84% requests / 11%
 | JSON (before) | 27.70 MB → **2.80 MB** gzipped | 277 B | **315.1 ms** |
 | columnar (now) | 2.38 MB → **749 KB** gzipped | 23.8 B raw / 7.5 B gzipped | **63.2 ms** |
 
-**3.7× fewer bytes on the wire, 5× less main-thread time**, carrying exactly the same events (the harness asserted the wire and JSON paths produce identical intervals).
+**3.7× fewer bytes on the wire, 5× less main-thread time**, carrying exactly the same events (the harness asserted the wire and JSON paths produce same intervals).
 
-The decoder's first cut measured 85 ms. The bulk varint readers (`WireReader.uvarints`/`varintSums`/`uvarintSums`) took it to 63 by inlining the single-byte case rather than paying a call per value. Nearly every value on the wire is one byte, and there are ~1.8M of them in a full window.
+The decoder's first cut measured 85 ms. The bulk varint readers (`WireReader.uvarints`/`varintSums`/`uvarintSums`) took it to 63 by inlining the single-byte case rather than paying a call per value. Almost every value on the wire is one byte, and there are ~1.8M of them in a full window.
 
 Also measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 uniform events: JSON 495,009 B → columnar+gzip 271 B.
 
@@ -245,7 +185,7 @@ Also measured end to end in `TestTimeline_GzipWhenAccepted` on 2,000 uniform eve
 The recommendation was independent changes, in this order of value — both are now in place. As a result, this section is the record of the reasoning, not a plan:
 
 1. **Bound the uncursored response** so first paint fetches the hour it draws, and let the component's lazy-history path pull older windows on demand. 27 MB → 1.1 MB on its own. *Shipped* as `?from=`/`?to=` over `reqtimeline.SnapshotRange`, plus the `loadRange` history hook.
-2. **Compression in the app**, since the origin is grey-clouded. 1.1 MB → 129 KB. *Shipped* as `internal/api/compress.go` — gzip only, at BestSpeed, rather than the negotiated zstd→br→gzip ladder first sketched: every browser takes gzip. As a result, there is no negotiation to get wrong, and on this shape level 1 costs a sixth of level 6's CPU for 6% more bytes.
+2. **Compression in the app**, since the origin is grey-clouded. 1.1 MB → 129 KB. *Shipped* as `internal/api/compress.go` — gzip only, at BestSpeed, rather than the negotiated zstd→br→gzip ladder first sketched: every browser takes gzip. As a result, there is no negotiation to get incorrect, and on this shape one. Level costs a sixth of level 6's CPU for 6% more bytes.
 
 With both, JSON alone. The columnar format was still worth its lines of encoder and ~90 of TS decoder. **columnar + gzip** is 1.01 MB and 54 ms of main-thread work against JSON+gzip's 3.02 MB and 275 ms — 3× the bytes and 5× the CPU. It is what makes holding a wide window in view survivable at all.
 

@@ -74,7 +74,7 @@ func TestCachedCodeQualitySetup_NotConfiguredIsCacheable(t *testing.T) {
 }
 
 // A write is the ONLY change signal the mirror can see, so proxying must drop
-// the row — otherwise a caller reads its own stale config for the TTL. Every
+// the row. Otherwise a caller reads its own stale config for the TTL. Every
 // write spelling counts: a method that only proxies is a silent staleness hole.
 func TestCachedCodeQualitySetup_ProxiedWriteFlushes(t *testing.T) {
 	for _, method := range []string{"PATCH", "PUT", "DELETE"} {

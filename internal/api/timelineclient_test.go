@@ -14,12 +14,12 @@ import (
 
 // THE CLIENT MUST NOT FALL BACK.
 //
-// /api/timeline serves encodings: the columnar payload to a caller that
-// names its media type, readable JSON to everyone else. The JSON is only safe
-// because the CHART REFUSES IT — an earlier version took whatever came back, so
-// an Accept that drifted silently cost ~10x the frames with nothing logged.
+// /api/timeline serves encodings: the columnar payload to a caller that names its
+// media type, readable JSON to everyone else. The JSON is only safe because the
+// CHART REFUSES IT. An earlier version took whatever came back, so an Accept that
+// drifted silently cost ~10x the frames with nothing logged.
 //
-// The refusal is therefore what lets the JSON exist at all, so this drives the
+// The refusal is therefore what lets the JSON exist at all. This drives the
 // REAL BUILT module under node against a stubbed fetch rather than trusting a
 // comment to hold it.
 

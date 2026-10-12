@@ -15,9 +15,9 @@ import (
 //
 //	GET /repos/{owner}/{repo}/check-runs/{check_run_id}
 //
-// Distinct from commit_ci_cache's LIST route
-// (GET .../commits/{ref}/check-runs, respcache_commitci.go): this route is
-// keyed by the check run's own numeric id rather than a ref, so it is always
+// Distinct from commit_ci_cache's LIST route (GET
+// .../commits/{ref}/check-runs, respcache_commitci.go): this route is keyed
+// by the check run's own numeric id rather than a ref. It is always
 // DIRECTLY appliable from a `check_run` delivery -- the payload carries the
 // run's whole current state and IS the answer for that id (see
 // ghdata.ApplyCheckRunByID). The reveal gate reuses denyKindCheckRuns's

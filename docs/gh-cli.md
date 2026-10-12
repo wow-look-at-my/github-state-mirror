@@ -12,9 +12,9 @@ gh classifies such a host as GitHub Enterprise Server. That changes multiple thi
 
 `internal/api/ghecompat.go` answers the first points. It is a middleware mounted ahead of the router. It canonicalises `/api/v3/<path>` to `/<path>`, and `/api/graphql` to `/graphql`, before the router sees the request.
 
-The cached routes, the reveal layer, the request log and the passthrough proxy thus keep working in api.github.com paths. The proxy forwards the canonical path upstream. `/api/v3` and `/api/v3/` map to `/`, which is the root probe gh makes to check a host.
+The cached routes, the show layer, the request log and the passthrough proxy thus keep working in api.github.com paths. The proxy forwards the canonical path upstream. `/api/v3` and `/api/v3/` map to `/`, which is the root probe gh makes to check a host.
 
-The rewrite grants nothing. A prefixed request meets `requireAuth` and the reveal layer exactly as the plain spelling does.
+The rewrite grants nothing. A prefixed request meets `requireAuth` and the show layer exactly as the plain spelling does.
 
 `/api/v3` cannot collide with the dashboard's own `/api/*` routes. No dashboard route under `/api/` is named `v3` or `graphql`.
 
