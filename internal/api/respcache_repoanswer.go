@@ -20,11 +20,9 @@ type repoAnswerRoute struct {
 	resource string // the deny-cache resource key
 	// absorb decides what to store from an upstream answer. now is the instant.
 	absorb   func(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool)
-	// refusals are statuses besides a 403 that are stored per principal.
 	refusals []int
 	// fetch, when set, is the upstream request in place of the caller's.
-	fetch *http.Request
-	// noRedirect fetches without following a 302, for a route whose answer is the redirect.
+	fetch      *http.Request
 	noRedirect bool
 }
 

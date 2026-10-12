@@ -10,20 +10,16 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
 
-// The cached redirects: Actions log downloads. GitHub
-// answers each with a 302 to a location that stops working on its own clock,
-// so a stored redirect lives only until that clock says, less a margin.
+// The cached redirects: Actions log downloads.
 
 const (
 	// redirectExpiryMargin is taken off a signed location's stated expiry, so
 	// a client that follows a served redirect still has time to use it.
 	redirectExpiryMargin = 15 * time.Second
 
-
-	// logsGoneTTL bounds the 410 "logs expired" verdict. Expired logs do not
-	// come back, so this only bounds a re-run that writes new ones.
+	// Expired logs do not come back, so this only bounds a re-run that
+	// writes new ones.
 	logsGoneTTL = 24 * time.Hour
-
 )
 
 // cachedRunLogs serves GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs.
@@ -63,9 +59,7 @@ func (h *handlers) serveLogs(w http.ResponseWriter, r *http.Request, param, kind
 	})
 }
 
-// absorbLogs stores a redirect until its signed location expires, and the
-// 410 "logs expired" verdict. A redirect with no expiry it can read is
-// relayed unstored.
+// A redirect with no expiry it can read is relayed unstored.
 func absorbLogs(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool) {
 	switch resp.StatusCode {
 	case http.StatusFound:
@@ -81,7 +75,6 @@ func absorbLogs(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAns
 	return ghdata.RepoAnswer{}, false
 }
 
-// redirectAnswer stores a 302 to loc until expires.
 func redirectAnswer(loc string, expires time.Time) (ghdata.RepoAnswer, bool) {
 	if loc == "" {
 		return ghdata.RepoAnswer{}, false
