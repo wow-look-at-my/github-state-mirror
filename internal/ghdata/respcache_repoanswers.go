@@ -7,11 +7,7 @@ import (
 	"time"
 )
 
-// Storage for the repo-scoped routes that share repo_answer_cache, a table in
-// schema_plain.sql. A row is one whole rendered answer: a document, a
-// redirect, or a stored verdict. see docs/cache/rest-routes.md
-
-// The routes on this table.
+// The routes on repo_answer_cache; see docs/cache/rest-routes.md.
 const (
 	RepoAnswerKindTags = "tags"
 )

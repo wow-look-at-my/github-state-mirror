@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -105,14 +104,4 @@ func (h *handlers) writeRepoAnswer(w http.ResponseWriter, r *http.Request, a ghd
 		w.Header().Set(cacheHeader, "miss")
 	}
 	w.WriteHeader(http.StatusFound)
-}
-
-// verdictAnswer renders a stored verdict in the trimmed error shape the
-// other verdict routes serve.
-func verdictAnswer(status int, body []byte, ttl time.Duration, now time.Time) (ghdata.RepoAnswer, bool) {
-	doc, err := marshalTrimmed(notFoundJSON{Message: upstreamErrorMessage(body), Status: strconv.Itoa(status)})
-	if err != nil {
-		return ghdata.RepoAnswer{}, false
-	}
-	return ghdata.RepoAnswer{Status: status, Doc: string(doc), ExpiresAt: now.Add(ttl)}, true
 }

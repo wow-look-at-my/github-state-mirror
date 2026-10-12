@@ -44,8 +44,6 @@ func (h *handlers) cachedTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parsePagingShape reports the canonical paging of a listing whose only
-// modeled parameters are per_page (1..100) and page (1..maxPage).
 func parsePagingShape(q url.Values, defaultPerPage, maxPage int) (string, bool) {
 	perPage, page := defaultPerPage, 1
 	for key, vals := range q {
@@ -71,8 +69,8 @@ func parsePagingShape(q url.Values, defaultPerPage, maxPage int) (string, bool) 
 	return "per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page), true
 }
 
-// absorbTags renders a 200 tags page. Every entry needs a name and a full
-// hex commit sha; an empty page is a valid answer.
+// Every entry needs a name and a full hex commit sha; an empty page is a
+// valid answer.
 func absorbTags(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool) {
 	if resp.StatusCode != http.StatusOK {
 		return ghdata.RepoAnswer{}, false
