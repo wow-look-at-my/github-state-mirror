@@ -161,6 +161,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	// (onPush re-parses the payload for the apply side.
 
 	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
+	d.applyPushToCommitAnswers(ctx, scope, owner, repo, refName, before, after, isTag)
 
 	switch {
 	case refName == "":
@@ -241,6 +242,42 @@ func (d *WebhookDispatcher) applyOrFlushTags(ctx context.Context, scope, owner, 
 		}
 	}
 	flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
+}
+
+// applyPushToCommitAnswers lands a push on the single-commit and
+// branches-where-head answers.
+//
+// A single commit asked for by a ref spelling describes whatever that ref
+// points at. The payload does not carry the new commit's files or stats,
+// so those rows go. A full-sha row is immutable and stays.
+//
+// A branches-where-head answer lists the branches whose tip a sha is. The
+// branch LEFT before, so it is removed from before's answer in place. It
+// JOINED after's answer, but the entry needs the branch's protected flag,
+// which no push states, so after's answer goes.
+// see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) applyPushToCommitAnswers(ctx context.Context, scope, owner, repo, refName, before, after string, isTag bool) {
+	if refName == "" {
+		flush("commit answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindCommit))
+		flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead))
+		return
+	}
+	for _, spelling := range refSpellings(refName, isTag) {
+		flush("commit answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindCommit, spelling))
+	}
+	if isTag {
+		return
+	}
+	if !zeroSHA(before) {
+		applied, err := d.store.RemoveBranchHead(ctx, owner, repo, before, refName, time.Now())
+		flush("branches-where-head apply", scope, err)
+		if err == nil && !applied {
+			flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead, strings.ToLower(before)))
+		}
+	}
+	if !zeroSHA(after) {
+		flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead, strings.ToLower(after)))
+	}
 }
 
 // zeroSHA reports the all-zeros object id a push uses for a missing side.

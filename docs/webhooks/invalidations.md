@@ -26,6 +26,8 @@ Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers
 | `pull_files_cache`, `pull_diff406_cache` | **Justified** | a base push moves every open PR's merge-base-relative file list, and the payload carries no per-PR signal at all — not even which PRs exist. The repo-wide flush is the belt for the per-PR flush that `pull_request` deliveries do carry. |
 | `pull_commits` snapshots | **Justified** | same shape: a fork head's pushes never reach us, so this is the repo-wide belt for a missed `pull_request` delivery. |
 | tags pages (`repo_answer_cache`, kind `tags`) | **applied** | a tag push that moves an existing tag states its new commit (`after`); `ApplyPushedTagTip` rewrites the entry in every page that lists it. A tip move changes no page's membership or order. A created or deleted tag (an all-zeros `before` or `after`) changes the SET, and GitHub's page for a name is not in the payload, so the repo's tags pages flush. An unparseable push flushes them too. A branch push touches none. |
+| single commit by ref spelling (`repo_answer_cache`, kind `commit`) | **Justified** | a row keyed by a branch name or short sha describes whatever it resolves to. The push states the new tip sha, but the answer IS that commit's files, stats and patches, which no push carries. Every spelling of the pushed ref drops. Full-sha rows are immutable and untouched. |
+| branches-where-head (kind `branches_where_head`) | **applied, partly Justified** | the branch left `before`, so it is removed from `before`'s list in place. It joined `after`'s list, but the entry's `protected` flag is in no push payload, so `after`'s row drops. An unparseable push drops the repo's rows. |
 | PR `mergeable` fields | **applied-as-unresolved** | GitHub recomputes mergeability asynchronously and no webhook ever carries the recomputed value, so the stored answer is un-resolved rather than dropped, with the invalidated test-merge sha remembered so a refetch re-offering it is recognized as pre-push. |
 
 ## create / delete (`onRefLifecycle`)
@@ -39,6 +41,8 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `branches_list_cache`, matching-refs rows | **Justified** | a create and a delete both move page MEMBERSHIP. The payload carries no sha for a created branch, so no entry can be written, and the delete case is the same fallback `invalidateForPush` already takes. A tag touches neither row family and flushes neither. |
 | `contents_cache`, `commits_list_cache` | **Justified** | both are keyed by ref and both hold content. The payload carries no content, exactly as it carries none on a push. |
 | `compare_cache`, `commit_ci_cache` (branch-form rows) | **Justified** | both describe whatever the ref points at. A deleted ref points at nothing, and a created one points at a sha the payload never states. |
+| single commit by ref spelling | **Justified** | the row describes whatever the ref points at, and the payload states no sha. Every spelling drops. |
+| branches-where-head | **applied on delete, Justified on create** | a deleted branch is removed from every list in place. A created branch joins the list of a sha the payload does not state, so the repo's rows drop. |
 | tags pages (tag create/delete) | **Justified** | the tags listing is a set. A created tag needs a sha the payload does not state and a page position nothing states; a deleted tag shifts every later page. The repo's tags pages flush. |
 
 ## pull_request / pull_request_review

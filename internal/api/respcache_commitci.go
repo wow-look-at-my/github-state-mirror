@@ -80,6 +80,16 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
 		return
 	}
+	if sha, ok := strings.CutSuffix(tail, "/branches-where-head"); ok && sha != "" {
+		h.cachedBranchesWhereHead(w, r, sha)
+		return
+	}
+	// A slash-free tail is the commit read. A slashed one is ambiguous between a
+	// branch name and a deeper path such as /pulls, so it forwards.
+	if tail != "" && !strings.Contains(tail, "/") {
+		h.cachedCommit(w, r, tail)
+		return
+	}
 	h.passthrough(w, r, PassPath)
 }
 

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -37,8 +38,12 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 	}
 	// The branches listing is a SET, and this delivery changed which refs are
 	// in it. There is no tip to apply into a page, so the pages go.
+	for _, spelling := range refSpellings(ref, payload.IsTag()) {
+		flush("commit answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindCommit, spelling))
+	}
 	if !payload.IsTag() {
 		flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
+		d.settleBranchHeads(ctx, scope, owner, repo, ref, event.Type == "delete")
 	} else {
 		// The tags listing is a set too; the payload does not say which page holds the name.
 		flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
@@ -50,4 +55,19 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 		disposition: webhook.DispInvalidated,
 		detail:      event.Type + " " + payload.RefType + " " + ref + "; dropped every cached answer naming it",
 	}
+}
+
+// settleBranchHeads lands a branch create or delete on the branches-where-head
+// answers. A deleted branch leaves every answer that lists it, so it is
+// removed in place. A created branch joins the answer of a sha the payload
+// does not state, so every answer goes.
+func (d *WebhookDispatcher) settleBranchHeads(ctx context.Context, scope, owner, repo, branch string, deleted bool) {
+	if deleted {
+		applied, err := d.store.RemoveBranchHead(ctx, owner, repo, "", branch, time.Now())
+		flush("branches-where-head apply", scope, err)
+		if err == nil && applied {
+			return
+		}
+	}
+	flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead))
 }

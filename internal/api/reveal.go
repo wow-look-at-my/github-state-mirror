@@ -47,6 +47,8 @@ const (
 	denyKindTags           = "tags"          // GET /repos/{owner}/{repo}/tags
 	denyKindRunLogs        = "run_logs"      // GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs
 	denyKindJobLogs        = "job_logs"      // GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+	denyKindCommit         = "commit"        // GET /repos/{owner}/{repo}/commits/{ref}
+	denyKindBranchesWhereHead = "branches_where_head" // GET /repos/{owner}/{repo}/commits/{sha}/branches-where-head
 )
 
 // revealOutcome is the reveal decision for request.
