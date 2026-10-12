@@ -66,6 +66,10 @@ func acceptsDefaultJSON(r *http.Request) bool {
 		case "*/*", "application/*", "application/json",
 			"application/vnd.github+json", "application/vnd.github.v3+json":
 			// JSON-default representation.
+		case "application/vnd.github.merge-info-preview", "application/vnd.github.merge-info-preview+json",
+			"application/vnd.github.nebula-preview", "application/vnd.github.nebula-preview+json":
+			// The gh CLI sends both on every request. Both previews are
+			// graduated, so neither changes a REST JSON body.
 		default:
 			return false
 		}

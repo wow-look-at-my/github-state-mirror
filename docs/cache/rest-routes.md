@@ -8,6 +8,10 @@ The contract these all obey (reveal gate, absorb-and-rebuild, no URL keys, expli
 
 An endpoint is either served byte-identical to GitHub (from a verbatim cache, or a live forward) or it is not cached at all. Never a trimmed subset a consumer can read a dropped field from. `/user`, `/compare`, and `/pulls/{n}/files` were all, at different points, cached with a trim that broke or will break a consumer. Each was fixed by keeping the rule rather than relitigating it. `/compare` and `/pulls/{n}/files` are tier-2 routes whose rebuilds preserve the consumer-read fields exactly (`respcache_compare_test.go`, `respcache_pullfiles_test.go`). `/user` (and `/app`, `/user/orgs` alongside it) cache the upstream body VERBATIM, byte for byte, instead of guessing a field subset again -- see `respcache_identity_test.go`. This is for the hit/miss byte-identity proof.
 
+## The default JSON Accept
+
+`acceptsDefaultJSON` (`internal/api/respcache.go`) decides which `Accept` a cached route serves. Every listed media range must be one of `*/*`, `application/*`, `application/json`, `application/vnd.github+json` or `application/vnd.github.v3+json`. The gh CLI sends `application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview` on every request. Both previews are graduated and change no REST JSON body, so both count as the default too, with or without `+json`. Any other media type passes through as `unmodeled-accept`.
+
 ## The routes
 
 - `GET /repos/{owner}/{repo}/contents/{path...}` (incl. `?ref=`, part of the key) — absorbs 200 file (base64), 200 dir (trimmed entries), **and 404** (the "config file absent" answer is half the win). One global row per (owner, repo, path, ref). Invalidated per PUSHED REF (+ the empty-ref default-branch spelling) by `push`, repo-wide by `repository` — see the dispatcher bullet's per-ref matrix — plus a **24h TTL backstop**.
