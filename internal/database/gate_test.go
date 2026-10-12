@@ -63,9 +63,10 @@ func TestWriteGate_CancelledWaiterLeavesTheQueue(t *testing.T) {
 	g.release()
 }
 
-// The whole point of the gate's holder tracking: a request sent from inside a
-// transaction is refused and recorded, while the same request from outside
-// one, or from another goroutine during it, goes through.
+// The whole point of the gate's holder tracking. Consider a request sent from
+// inside a transaction. That sent is refused and recorded, while the same
+// request from outside one, or from another goroutine during it, goes
+// through.
 func TestNoWriteHeldTransport_RefusesARequestSentInsideATransaction(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()

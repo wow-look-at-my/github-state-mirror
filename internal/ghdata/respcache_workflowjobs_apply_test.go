@@ -62,11 +62,11 @@ func TestApplyWorkflowJob_RewritesOneEntry(t *testing.T) {
 	assert.Equal(t, "success", *page.Jobs[1].Conclusion)
 }
 
-// The clock follows what is left MOVING in the answer, and it is -way
-// because part of it no delivery can keep current: GitHub sends
-// delivery per job transition, while a RUNNING job's steps advance between
-// them unreported. A queued job has no steps yet, so a rewritten entry is
-// exactly right and earns the longer live clock; a running does not.
+// The clock follows what is left MOVING in the answer. It is -way because
+// part of it no delivery can keep current. GitHub sends delivery per job
+// transition, while a RUNNING job's steps advance between them unreported.
+// A queued job has no steps yet, so a rewritten entry is exactly right and
+// earns the longer live clock; a running does not.
 func TestApplyWorkflowJob_TTLFollowsWhatIsLeftMoving(t *testing.T) {
 	// The cases walk one page through its transitions, so each reads the row the case before it wrote.
 	t.Serial()

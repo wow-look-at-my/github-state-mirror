@@ -121,10 +121,10 @@ func compareCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 
 // TestCachedCompare_MissAbsorbHit covers the core flow: the read fetches +
 // absorbs (miss), the serves the identical trimmed body from state (hit,
-// upstream calls), the rebuild drops every URL field, the full base_commit
-// object, the user-object clutter, and the per-file patch -- and the
-// compare's commits land in the SAME global git_commits_cache rows the
-// git-commit route serves.
+// upstream calls). The rebuild drops every URL field, the full base_commit
+// object, the user-object clutter, and the per-file patch. The compare's
+// commits land in the SAME global git_commits_cache rows the git-commit
+// route serves.
 func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 	target := "/repos/org1/repo1/compare/main...dev"
@@ -174,7 +174,7 @@ func TestCachedCompare_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedCompare_ChangedFilesPreserved pins the field whose loss got the
-// /compare cache REMOVED: pr-minder reads changed_files = files.length, where
+// /compare cache REMOVED. Pr-minder reads changed_files = files.length, where
 // an EMPTY array means a -diff branch (close/skip -- the empty-PR gate) and
 // an ABSENT array means unknown (fail open, never close). Both forms must
 // survive the rebuild exactly, on the miss and on the hit.
@@ -249,7 +249,7 @@ func TestCachedCompare_ChangedFilesPreserved(t *testing.T) {
 }
 
 // TestCachedCompare_BaseheadKeying: every distinct basehead is its own row --
-// including the reversed pair -- and branch names with slashes route into the
+// including the reversed pair. Branch names with slashes route into the
 // cached route (the greedy wildcard), not past it.
 func TestCachedCompare_BaseheadKeying(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
@@ -281,10 +281,11 @@ func TestCachedCompare_BaseheadKeying(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.compareHits))
 }
 
-// TestCachedCompare_PassthroughShapes: shapes the cache does not model pass
-// through verbatim, uncached, every time -- query params, the diff/patch
-// media types, the cross-fork owner:branch form (whose fork side this repo's
-// webhooks can never invalidate), and a basehead without the -dot separator.
+// TestCachedCompare_PassthroughShapes. Shapes the cache does not model pass
+// through verbatim, uncached, every time. This is query params, the
+// diff/patch media types, the cross-fork owner:branch form (whose fork side
+// this repo's webhooks can never invalidate), and a basehead without the
+// -dot separator.
 func TestCachedCompare_PassthroughShapes(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 
@@ -389,13 +390,13 @@ func TestCachedCompare_ErrorStatusNotStored(t *testing.T) {
 	assert.Zero(t, count, "an error answer must store no compare doc")
 }
 
-// TestCachedCompare_404VerdictCached: round absorbs the unknown-ref
-// VERDICT -- the fleet's close-empty pass compares base...head for fork PRs
-// whose head ref does not exist in the base repo, re-earning the same
-// every sweep. Absorbed as a status- row ({"message":..., "status":
-// ""}, documentation_url dropped), served from state on the next read, and
-// FLUSHED when a push names the missing ref (its creation is exactly what
-// changes the answer): the per-ref compare flush matches base_ref/head_ref.
+// TestCachedCompare_404VerdictCached: round absorbs the unknown-ref VERDICT
+// -- the fleet's close-empty pass compares base...head for fork PRs whose
+// head. Ref does not exist in the base repo. That VERDICT is re-earning the
+// same every sweep. Absorbed as a status- row ({"message":..., "status": ""},
+// documentation_url dropped), served from state on the next read, and FLUSHED
+// when a push names the missing ref (its creation is exactly what changes the
+// answer). This covers the per-ref compare flush matches base_ref/head_ref.
 func TestCachedCompare_404VerdictCached(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)
 	real404 := func(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +444,7 @@ func TestCachedCompare_404VerdictCached(t *testing.T) {
 }
 
 // TestCachedCompare_RevealDenied: an unauthorized caller gets GitHub's own
-// relayed denial and never reaches the compare fetch; the repeat request is
+// relayed denial and never reaches the compare fetch. The repeat request is
 // answered from the deny cache without touching GitHub.
 func TestCachedCompare_RevealDenied(t *testing.T) {
 	router, _, _, u := compareCacheStack(t)

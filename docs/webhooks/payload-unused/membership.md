@@ -8,13 +8,13 @@ The rule is that a delivery's contents get written into the mirror's state inste
 
 A `membership` delivery names the action (`added`, `removed`), the `scope` (`team`), the `organization`, the affected account under `membership.user`, their `role`, and — for team scope. This is the `team` object.
 
-Note what it does **not** carry: the repositories that team can reach. A team's repo access is a separate relation GitHub does not put in this payload, so even a mirror that wanted to keep. Per-team access can not build it from here without additional fetches — which is the thing the apply-the-payload rule exists to avoid.
+Note what it does **not** carry: the repositories that team can reach. A team's repo access is a separate relation GitHub does not put in this payload, so even a mirror that wanted to keep. Per-team access can not build it from here without more fetches — which is the thing the apply-the-payload rule exists to avoid.
 
 ## Why it is not applied
 
 The persisted truth is `repos`, `pull_requests`, `pr_labels`, `commit_checks` and `workflow_runs`, plus response caches keyed off them. **No table represents an account, a team, or a membership.** The affected user in this payload has no row to update. The team has no row to update. The organization appears only as the `owner` half of a repo key — already kept current by `absorbRepoFromPayload`, which runs on every delivery regardless of type.
 
-What moved is freshness, not data: who can see the org's repos may have changed. As a result, a cached org-repos list-sync may no longer match what GitHub will return. The mirror has one mechanism for that. It is an invalidation.
+What moved is freshness, not data: who can see the org's repos may changed. As a result, a cached org-repos list-sync may no longer match what GitHub will return. The mirror has one mechanism for that. It is an invalidation.
 
 The team scope makes this weaker still. A team membership change may not change the person's effective repo access at all. They can reach the same repos through another team or through org-level membership. So even the staleness this triggers is a *maybe*, inferred rather than stated.
 
@@ -31,7 +31,7 @@ Same independent changes as `organization.md` spells out:
 1. Applying anything requires the mirror to start storing membership at all — a table, a consumer, a reason. Nothing reads such a thing today.
 2. Narrowing the invalidation from fleet-wide to the affected principal requires an `InvalidateActor(principal, kind, key)` on the `invalidator` interface (which today offers only `InvalidateAllActors`). This is plus the login-to-principal lookup `actor_identities` already provides.
 
-Specific to this event: a `scope: "team"` delivery can additionally be dropped entirely once the mirror can tell whether the team change altered. This is the account's effective repo access — which it cannot, from this payload, without a fetch.
+Specific to this event: a `scope: "team"` delivery can additionally be dropped fully once the mirror can tell whether the team change altered. This is the account's effective repo access — which it cannot, from this payload, without a fetch.
 
 ## How this stays honest
 

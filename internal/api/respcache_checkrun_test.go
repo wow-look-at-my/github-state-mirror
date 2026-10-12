@@ -49,9 +49,9 @@ func TestCachedCheckRun_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.checkRunHits), "a hit must not call upstream")
 }
 
-// The load-bearing property: a `check_run` delivery rewrites the row IN
+// The load-bearing property. A `check_run` delivery rewrites the row IN
 // PLACE from its own object, so a re-read after the delivery must see the
-// NEW state without any further upstream call (APPLY THE PAYLOAD).
+// NEW state. Without any further upstream call (APPLY THE PAYLOAD).
 func TestCachedCheckRun_WebhookRewritesInPlace(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 

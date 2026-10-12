@@ -10,11 +10,11 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The fork-head freeze, end to end through the dispatcher: a synchronize
+// The fork-head freeze, end to end through the dispatcher. A synchronize
 // delivery carries the NEW head sha next to RETAINED pre-move merge fields
 // (mergeable true + the test-merge sha). Fork heads emit no push webhook to
 // un-resolve the row, so without the tip-move un-resolve the upsert preserved
-// the stale resolved answer and served it frozen.
+// the stale resolved answer. Served, it frozen.
 func TestDispatch_PullRequestSynchronize_UnresolvesMergeFields(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

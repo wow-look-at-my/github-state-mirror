@@ -10,8 +10,8 @@ import (
 )
 
 // The apply half of the response-cache pass. Its sibling,
-// webhook_invalidate.go, decides WHICH rows a delivery reaches; what lives
-// here is every case where the payload states the new answer, so the row is
+// webhook_invalidate.go, decides WHICH rows a delivery reaches. What lives
+// here is every case where the payload states the new answer. The row is
 // rewritten instead of dropped (CLAUDE.md: apply the payload, invalidation is
 // the last resort). docs/webhooks/invalidations.md is the inventory, with the
 // verdict for every flush that remains.
@@ -20,9 +20,9 @@ import (
 // see docs/webhooks/invalidations.md ("The status rewrite", "The check-run rewrite")
 func (d *WebhookDispatcher) settleCommitCI(ctx context.Context, scope, owner, repo string, event webhook.Event, refs []string) {
 	if event.Type == "check_run" {
-		// A check run is UPDATED in place upstream -- the same id moves
-		// queued -> in_progress -> completed -- so the delivery states the new
-		// value of entry and the page keeps its shape.
+		// A check run is UPDATED in place upstream -- the same id moves queued
+		// -> in_progress -> completed -- so the delivery states the new value
+		// of entry. The page keeps its shape.
 		if raw, ok := webhook.CheckRunObject(event.Raw); ok {
 			if run, ok := ghdata.TrimCheckRunJSON(raw); ok {
 				// The single-check-run row (respcache_checkrun.go) is keyed by
@@ -105,8 +105,8 @@ func (d *WebhookDispatcher) settleWorkflowJobs(ctx context.Context, scope, owner
 
 // settleWorkflowRuns lands a `workflow_run` delivery on the sha's cached runs
 // pages. The delivery IS the run object those pages list, so its entry is
-// rewritten where it stands; a run the pages do not list is a new run for the
-// sha, a membership change only a fetch settles, and falls back to the flush.
+// rewritten where it stands. A run the pages do not list is a new run for the
+// sha. A membership change only a fetch settles, and falls back to the flush.
 func (d *WebhookDispatcher) settleWorkflowRuns(ctx context.Context, scope, owner, repo string, event webhook.Event, headSHA string) {
 	if raw, ok := webhook.WorkflowRunObject(event.Raw); ok {
 		if run, ok := ghdata.TrimWorkflowRunItemJSON(raw); ok {
@@ -122,10 +122,10 @@ func (d *WebhookDispatcher) settleWorkflowRuns(ctx context.Context, scope, owner
 	d.flushWorkflowRunsForSHA(ctx, scope, owner, repo, headSHA)
 }
 
-// applyOrFlushBranchesList rewrites a tip-moved branch's entry in place from the push's `after`; only a
+// applyOrFlushBranchesList rewrites a tip-moved branch's entry in place from the push's `after`. Only a
 // create/delete (page membership) or a payload naming no ref falls back to the flush.
 func (d *WebhookDispatcher) applyOrFlushBranchesList(ctx context.Context, scope, owner, repo, refName, after string, isTag bool) {
-	// A tag is not a branch: it never appears in the listing, so a tag push
+	// A tag is not a branch: it never appears in the listing. A tag push
 	// leaves the pages correct and there is nothing to do either way.
 	if isTag {
 		return

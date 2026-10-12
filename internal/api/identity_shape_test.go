@@ -81,9 +81,9 @@ func assertSameShape(t *testing.T, path string, want, got interface{}) {
 }
 
 // TestGraphQL_MatchesGitHubShape asserts the cached org-repos GraphQL response is
-// structurally identical to GitHub's response for the canonical query — same key
-// sets, nesting, and leaf types — by comparing against a recorded fixture. If the
-// assembler drops or adds a field relative to GitHub, this fails.
+// structurally identical to GitHub's response for the canonical query. This is same
+// key sets, nesting, and leaf types — by comparing against a recorded fixture. If
+// the assembler drops or adds a field relative to GitHub, this fails.
 func TestGraphQL_MatchesGitHubShape(t *testing.T) {
 	router, store := setupTestRouter(t)
 
