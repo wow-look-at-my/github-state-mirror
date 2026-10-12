@@ -2,7 +2,7 @@
 
 ## schemaTemplate (internal/api/api_test.go)
 
-schemaTemplate is a blank cache DB built ONCE per test binary and copied for every test that needs one. Creating one costs the statements of the INDEX of the CREATE of the CREATE TABLE + of schema.sql and the fsync that lands them. This package opens a fresh DB per test across several hundred of them, against go-toolchain's hard 30s per-binary timeout. A CI run has already died inside exactly that exec. Copying the finished file costs a fraction of it, and database.Open then takes its existing-file path -- same pragmas, same fingerprint check, same DB.
+schemaTemplate is a blank cache DB built ONCE per test binary and copied for every test that needs one. Creating one costs the CREATE TABLE + CREATE INDEX statements of schema.sql and the fsync that lands them. This package opens a fresh DB per test across several hundred of them, against go-toolchain's hard 30s per-binary timeout. A CI run has already died inside exactly that exec. Copying the finished file costs a fraction of it, and database.Open then takes its existing-file path -- same pragmas, same fingerprint check, same DB.
 
 ## newTestStackWithGitHub (internal/api/api_test.go)
 
@@ -22,7 +22,7 @@ The exclusions are not uncoalesced. They are UNDELAYED — an ineligible request
 
 ## TestDebounce_ThroughRouterRecordsStats
 
-The window must outlast the spread between the first and last waiter ARRIVING at the debouncer, or the batch splits. Only n-2 calls are saved. Through the real router that spread is real work, not scheduling noise: an unseen token costs requireAuth a trip of the GET /user round. The show layer a repo probe plus its grant write, and goroutines race each other for the same SQLite writer to do it. So the test warms both before firing, and keeps a window wide enough to absorb what a loaded runner still adds. This assertion failed in CI at 100ms.
+The window must outlast the spread between the first and last waiter ARRIVING at the debouncer, or the batch splits. Only n-2 calls are saved. Through the real router that spread is real work, not scheduling noise: an unseen token costs requireAuth a trip of the GET /user round. The reveal layer a repo probe plus its grant write, and goroutines race each other for the same SQLite writer to do it. So the test warms both before firing, and keeps a window wide enough to absorb what a loaded runner still adds. This assertion failed in CI at 100ms.
 
 ## workflowRunsUpstream.runs (internal/api/respcache_actionsruns_test.go)
 

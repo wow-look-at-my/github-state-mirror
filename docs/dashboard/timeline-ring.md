@@ -14,7 +14,7 @@ Each event carries its REAL measured duration — never faked to an instant, not
 
 - **Every try of the incoming webhook delivery, whatever its outcome.** Verified ones from receipt to dispatch-complete. Rejected/unverified/unparseable ones on the fixed `⇐ (unverified)` / `⇐ (unknown)` lanes — attacker-controlled headers never mint lanes, and claimed metadata rides only as clamped tooltip detail.
 - **Every inbound data-API request the mirror serves** — hits, misses, passthroughs, writes, errors — timed end-to-end via `requestLog.observe*` off the router's `stampRequestStart` receipt stamp.
-- **Every outbound request the mirror sends.** The full inventory and the mechanism behind each is in [request-visibility.md](request-visibility.md). Cached-route miss fetches (`upstream`) and show probes (`probe`) from the API layer's client transport. The passthrough proxy's mirror→GitHub leg, batched or not (`upstream`). Every ghclient call (`internal`). The sign-in handshake (`login`). The github.com login relays (`relay`). And every subscriber-notification try on the `⇒ notify` lane, with status, try number and terminal flag.
+- **Every outbound request the mirror sends.** The full inventory and the mechanism behind each is in [request-visibility.md](request-visibility.md). Cached-route miss fetches (`upstream`) and reveal probes (`probe`) from the API layer's client transport. The passthrough proxy's mirror→GitHub leg, batched or not (`upstream`). Every ghclient call (`internal`). The sign-in handshake (`login`). The github.com login relays (`relay`). And every subscriber-notification try on the `⇒ notify` lane, with status, try number and terminal flag.
 
 ## The one uncharted surface
 

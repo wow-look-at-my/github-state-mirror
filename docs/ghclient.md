@@ -4,13 +4,13 @@ Extracted verbatim from CLAUDE.md, where it grew into a manual inside one bullet
 
 ## What it holds
 
-client of the API of the GraphQL of the GitHub REST +. Includes the in-memory token→identity cache behind `ResolveTokenIdentity` and `AppAuthenticator` for / of the GitHub App JWT installation-token minting. `Installations` paginates past 100.
+GitHub REST + GraphQL API client. Includes the in-memory token→identity cache behind `ResolveTokenIdentity` and `AppAuthenticator` for GitHub App JWT / installation-token minting. `Installations` paginates past 100.
 
 ## Retries (`doJSON`)
 
 `doJSON` — the shared HTTP exchange behind the REST/GraphQL helpers (`GetOrgData`, `GetOwnerData(WithProgress)`, `OwnerRepoVisibilities`, `Installations`, `InstallationToken`, `GetRateLimit`) — **retries transient failures**: 502/503/504/429 and network errors, attempts total with a short backoff (500ms/2s. A parseable `Retry-After` raises the floor but is capped at 10s so a large value cannot wedge a deadline-bounded fetch. Bodies are buffered once so retries resend them).
 
-Deliberately NOT retried: authoritative 4xx answers (the show layer and deny-cache semantics depend on them), the caller's own context cancellation/deadline, and GraphQL-level `errors[]` bodies (HTTP 200 semantic answers, checked by the callers). The passthrough proxy does not go through `doJSON` and is untouched.
+Deliberately NOT retried: authoritative 4xx answers (the reveal layer and deny-cache semantics depend on them), the caller's own context cancellation/deadline, and GraphQL-level `errors[]` bodies (HTTP 200 semantic answers, checked by the callers). The passthrough proxy does not go through `doJSON` and is untouched.
 
 ## The two GraphQL fetch families
 

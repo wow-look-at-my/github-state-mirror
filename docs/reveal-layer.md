@@ -4,7 +4,7 @@ The load-bearing security section: storage is global, authorization is a read-ti
 
 - **One global truth, revealed by permission (replaces per-actor isolation)** — see "The global-truth model" above. This is the load-bearing security section. All of that user's tokens) resolves the principal. A token that is definitively NOT a user (non-rate-limit 403 / 404 on `/user`) falls back to the SHA-256 token fingerprint.
 
-  A transient `/user` failure with no cached verdict fails 503 (never a silent guess). The security boundary is **the show layer, not storage**: one user can never read another's private-repo data. This is because revealing `owner/repo` to a principal requires the repo to be public, a live grant (earned from GitHub answering THAT principal), or a live probe. This is with THAT principal's own token. Public repos are served to any authenticated caller.
+  A transient `/user` failure with no cached verdict fails 503 (never a silent guess). The security boundary is **the reveal layer, not storage**: one user can never read another's private-repo data. This is because revealing `owner/repo` to a principal requires the repo to be public, a live grant (earned from GitHub answering THAT principal), or a live probe. This is with THAT principal's own token. Public repos are served to any authenticated caller.
 
   Fail-closed rules that must not regress: unknown visibility = private. Deny verdicts cache only authoritative answers (a rate-limited 403 must never pin a legitimate caller out for the TTL). Grants expire (~24h) so revoked GitHub access converges. `SyncOrgTruth` REPLACE-syncs list_sync grants (a repo GitHub stopped returning loses its grant). Data endpoints reject tokenless requests with 401.
 
