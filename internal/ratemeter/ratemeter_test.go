@@ -173,7 +173,7 @@ func TestSnapshot_Sorted(t *testing.T) {
 }
 
 // TestObservationsFor_FiltersByIdentity: only the named identity's readings
-// come back, across every resource it has, sorted by resource -- the
+// come back, across every resource it has, sorted by resource. The
 // selection GET /rate_limit is answered from (respcache_ratelimit.go).
 func TestObservationsFor_FiltersByIdentity(t *testing.T) {
 	s := New()
@@ -198,10 +198,9 @@ func TestObservationsFor_FiltersByIdentity(t *testing.T) {
 	assert.Empty(t, s.ObservationsFor("user:absent"), "an identity never observed gets nothing, not an error")
 }
 
-// TestObservationsFor_PrunesDead: a dead entry (its window rolled over) never
-// comes back, exactly like Snapshot -- so a caller polling GET /rate_limit
-// long after its last real request sees an empty answer rather than an hour
-// stale.
+// TestObservationsFor_PrunesDead. A dead entry (its window rolled over) never
+// comes back, exactly like Snapshot. So a caller polling GET /rate_limit long
+// after its last real request sees an empty answer rather than an hour stale.
 func TestObservationsFor_PrunesDead(t *testing.T) {
 	s := New()
 	now := time.Unix(1_800_000_000, 0)
@@ -253,7 +252,7 @@ func TestPrune_PastResetDies(t *testing.T) {
 }
 
 // TestPrune_ZeroResetAgesOutAfterAnHour: a Reset (header absent) has no
-// window to judge by — the entry is neither immortal nor instantly dead: it
+// window to judge by — the entry is neither immortal nor instantly dead. It
 // survives while ObservedAt is within staleTTL and is pruned past it.
 func TestPrune_ZeroResetAgesOutAfterAnHour(t *testing.T) {
 	s := New()

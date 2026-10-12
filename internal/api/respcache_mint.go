@@ -117,8 +117,8 @@ func (h *handlers) serveInstallToken(w http.ResponseWriter, t ghdata.CachedInsta
 
 // absorbInstallToken parses a mint response into cacheable state. Only a
 // whose expires_at parses AND leaves usable lifetime past the safety buffer
-// is absorbed — a token about to expire is served but never stored, so a
-// cached mint always has at least mintExpiryBuffer of validity left.
+// is absorbed. A token about to expire is served but never stored. A cached
+// mint always has at least mintExpiryBuffer of validity left.
 func absorbInstallToken(installID, bodyHash string, status int, body []byte, now time.Time) (ghdata.CachedInstallToken, time.Time, bool) {
 	if status != http.StatusCreated {
 		return ghdata.CachedInstallToken{}, time.Time{}, false

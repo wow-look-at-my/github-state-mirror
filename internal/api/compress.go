@@ -15,9 +15,9 @@ const compressMinBytes = 1400
 
 // writeBody writes a fully-buffered response body, gzipped when the caller
 // accepts gzip and the payload is big enough to be worth it. Vary is always
-// set: the same URL legitimately answers with different encodings, and a
-// shared cache that misses that would serve gzip bytes to a client that never
-// asked for them.
+// set. The same URL legitimately answers with different encodings. A shared
+// cache that misses that would serve gzip bytes to a client that never asked
+// for them.
 func writeBody(w http.ResponseWriter, r *http.Request, contentType string, body []byte) {
 	h := w.Header()
 	h.Set("Content-Type", contentType)

@@ -17,10 +17,10 @@ import (
 //	GET /repos/{owner}/{repo}/readme[/{dir}][?ref=]
 //
 // GitHub answers the content object the contents route holds, so the rebuild
-// reuses contentsFileJSON. The absent-README verdict is stored too: it is an
+// reuses contentsFileJSON. The absent-README verdict is stored too. It is an
 // authoritative answer about the repo, and a fleet polling every repo's README
-// spends a large minority of those calls on repos that have none.
-// see docs/cache/rest-routes.md
+// spends a large minority of those calls on repos. That repos have none. see
+// docs/cache/rest-routes.md
 
 // cachedReadme serves a repo's README from a stored snapshot, fetching and
 // absorbing on a miss.
@@ -134,7 +134,26 @@ func absorbReadme(status int, body []byte) (ghdata.CachedReadme, bool) {
 			return ghdata.CachedReadme{}, false
 		}
 		return ghdata.CachedReadme{Status: http.StatusNotFound, Doc: string(doc)}, true
+	case http.StatusUnavailableForLegalReasons:
+		// The repo is blocked: a fact about the repo, kept until a repository event.
+		var e readmeBlockedJSON
+		if err := json.Unmarshal(body, &e); err != nil || e.Message == "" {
+			return ghdata.CachedReadme{}, false
+		}
+		doc, err := marshalTrimmed(e)
+		if err != nil {
+			return ghdata.CachedReadme{}, false
+		}
+		return ghdata.CachedReadme{Status: http.StatusUnavailableForLegalReasons, Doc: string(doc)}, true
 	default:
 		return ghdata.CachedReadme{}, false
 	}
+}
+
+type readmeBlockedJSON struct {
+	Message string `json:"message"`
+	Block   struct {
+		Reason    string `json:"reason"`
+		CreatedAt string `json:"created_at"`
+	} `json:"block"`
 }

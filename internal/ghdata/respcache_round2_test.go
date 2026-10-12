@@ -109,8 +109,9 @@ func TestWorkflowRuns_ApplyMovesOneRun(t *testing.T) {
 }
 
 // TestWorkflowRuns_OutOfOrderAndJobFloor: an older answer never rolls a run
-// backwards, and a workflow_job delivery -- which carries no run-level status
-// -- may only establish identity and RAISE the floor, never settle a run.
+// backwards, and a workflow_job delivery -- which carries no run-level
+// status. The older answer may only establish identity and RAISE the floor,
+// never settle a run.
 func TestWorkflowRuns_OutOfOrderAndJobFloor(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -150,7 +151,7 @@ func TestWorkflowRuns_OutOfOrderAndJobFloor(t *testing.T) {
 	st, _ = status(7)
 	assert.Equal(t, "completed", st, "a job delivery must never un-settle its run")
 
-	// For an UNSEEN run, a job delivery is what creates the row -- a queued
+	// For an UNSEEN run, a job delivery is what creates the row. A queued
 	// job means a queued run, which is exactly what the backlog must show.
 	require.NoError(t, s.ApplyWorkflowRunFromJob(ctx, WorkflowJob{
 		Owner: "org1", Repo: "repo1", RunID: 8, RunAttempt: 1, WorkflowName: "CI",
@@ -296,9 +297,9 @@ func TestCachedGitCommitMiss_RoundTrip(t *testing.T) {
 	assert.False(t, ok, "a repo-wide flush must drop miss markers")
 }
 
-// TestGitCommitUpsert_ClearsMissMarker locks the round- invariant: EVERY
-// path that upserts a REAL git commit funnels through ghdata.upsertGitCommit,
-// which clears the sha's miss marker -- so a sha that materializes stops
+// TestGitCommitUpsert_ClearsMissMarker locks the round- invariant. EVERY path
+// that upserts a REAL git commit funnels through ghdata.upsertGitCommit,
+// which clears the sha's miss marker. So a sha that materializes stops
 // answering immediately, no matter which absorber saw it.
 func TestGitCommitUpsert_ClearsMissMarker(t *testing.T) {
 	ctx := context.Background()
@@ -392,7 +393,7 @@ func TestCachedPullDiff406_RoundTrip(t *testing.T) {
 
 // TestInvalidateCommitCIForRef: the per-ref flush drops verbatim ref
 // spelling's snapshots across every kind and pagination shape, leaving other
-// refs' snapshots alone; the pagination shape is part of the read key.
+// refs' snapshots alone. The pagination shape is part of the read key.
 func TestInvalidateCommitCIForRef(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -428,7 +429,7 @@ func TestInvalidateCommitCIForRef(t *testing.T) {
 }
 
 // TestInvalidateCompareForRef: the per-ref flush matches the ref on EITHER
-// side of the stored basehead and leaves unrelated comparisons alone; the
+// side of the stored basehead and leaves unrelated comparisons alone. The
 // stored status round-trips through Get.
 func TestInvalidateCompareForRef(t *testing.T) {
 	s := testStore(t)

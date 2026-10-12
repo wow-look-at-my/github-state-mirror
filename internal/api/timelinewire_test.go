@@ -54,9 +54,9 @@ func sampleTimeline(t *testing.T) *reqtimeline.Recorder {
 }
 
 // The invariant that matters on this side: every field of an Event survives
-// the round trip, so the columnar payload carries exactly what the JSON
-// does. A field that loses its `wire:` tag fails here rather than going
-// quietly missing from the chart.
+// the round trip. The columnar payload carries exactly what the JSON does.
+// A field that loses its `wire:` tag fails here rather than going quietly
+// missing from the chart.
 func TestTimelineWireCarriesEveryEventField(t *testing.T) {
 	snap := sampleTimeline(t).Snapshot(0)
 	events, h := decodeTimeline(t, mustEncodeTimeline(t, snap))
@@ -93,9 +93,10 @@ func TestTimelineWireEmpty(t *testing.T) {
 }
 
 // The library never sees a column name -- producer and consumer each declare
-// their own -- so a disagreement encodes perfectly and fails in the browser as
-// "trailing bytes". Ours are the `wire:` tags on reqtimeline.Event, the
-// chart's are its SCHEMA literal, and nothing but this test compares them.
+// their own -- so a disagreement encodes perfectly. The disagreement fails in
+// the browser as "trailing bytes". Ours are the `wire:` tags on
+// reqtimeline.Event, the chart's are its SCHEMA literal, and nothing but this
+// test compares them.
 func TestTimelineSchemaMatchesChart(t *testing.T) {
 	schema, err := timelinewire.SchemaOf(reqtimeline.Event{}, timelineWireMagic)
 	require.NoError(t, err)
@@ -119,8 +120,8 @@ var (
 )
 
 // tsList reads array field out of the chart's SCHEMA literal. A regex rather
-// than a TypeScript parser: the literal is a flat list of string constants,
-// and a field this cannot find fails the test rather than passing vacuously.
+// than a TypeScript parser: the literal is a flat list of string constants.
+// A field this cannot find fails the test rather than passing vacuously.
 func tsList(t *testing.T, src []byte, field string) []string {
 	t.Helper()
 	block := regexp.MustCompile(tsCols).Find(src)

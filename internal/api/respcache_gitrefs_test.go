@@ -124,7 +124,7 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 
 // GitHub sends `delete` for a vanished ref, and a push does not always come
 // with it. On its own the delete must still stop the ref being served, or a
-// branch that no longer exists answers from cache for the rest of its TTL.
+// branch that no longer exists answers. From cache for the rest of its TTL.
 func TestCachedGitRef_DeleteEventFlushesWithoutAPush(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"

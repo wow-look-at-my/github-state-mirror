@@ -138,8 +138,8 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 // RequiredWebhookEvents is the set of GitHub App event subscriptions the
 // mirror's correctness depends on, each with what breaks without it. A
 // missing subscription degrades SILENTLY -- the affected caches re-fetch
-// forever, or serve within their TTL -- which is exactly the shape of failure
-// that never gets noticed, so the dashboard reports it instead.
+// forever, or serve within their TTL. Which is exactly the shape of failure
+// that never gets noticed. The dashboard reports it instead.
 //
 // Keep this list honest: an entry belongs here only when a handler consumes
 // the event and something is measurably worse without it.
@@ -157,6 +157,7 @@ var RequiredWebhookEvents = []struct {
 	{"workflow_job", "a running workflow's cached jobs stop being told what changed and fall back to re-fetching each minute; the workflow_jobs table stops filling and runs entering the backlog are missed"},
 	{"workflow_run", "runs with no jobs yet (startup_failure, concurrency-gated) never reach truth, so the runs listing re-fetches instead of serving from rows"},
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
+	{"repository_ruleset", "a changed ruleset leaves the cached branch rules serving the old answer until their TTL"},
 }
 
 // Subscribed status comes from the App itself, never inferred from the delivery log.

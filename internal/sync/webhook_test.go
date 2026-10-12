@@ -43,7 +43,7 @@ func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *fre
 // TestDispatch_NeverSeenRepoAppliesGlobally is the heart of the global model:
 // a stateful delivery for a repo NOBODY has ever fetched applies straight to
 // global truth (the repos row is created from the payload's own repository
-// object) -- there is no "no cached scope" skip, no on-demand pull, no app
+// object). There is no "no cached scope" skip, no on-demand pull, no app
 // needed. (Operator directive: "just because nobody has fetched something
 // doesn't mean we get to ignore updates from webhooks for it.")
 func TestDispatch_NeverSeenRepoAppliesGlobally(t *testing.T) {
@@ -136,8 +136,8 @@ func TestDispatch_UnknownEvent(t *testing.T) {
 
 // TestDispatch_PushAndRepositoryFlushCommitsListSnapshots: push and repository
 // events flush a repo's cached commits-list snapshots (a push moves every
-// ref-relative listing) while the absorbed git-commit rows -- immutable global
-// truth -- survive the flush.
+// ref-relative listing). This happens while the absorbed git-commit rows --
+// immutable global truth -- survive the flush.
 func TestDispatch_PushAndRepositoryFlushCommitsListSnapshots(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()

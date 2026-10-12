@@ -23,7 +23,6 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*htt
 	rp := &httputil.ReverseProxy{
 		Transport: httpobs.Transport(nil, observe),
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			// Deliberately skips SetXForwarded: GitHub does not need the client's address.
 			pr.SetURL(target)
 		},
 		ModifyResponse: func(resp *http.Response) error {

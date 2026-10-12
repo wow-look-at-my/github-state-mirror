@@ -12,9 +12,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// prFields is the GraphQL selection set for a pull request node, shared between
-// the org-level query and the per-repo PR pagination query so the stay in
-// sync and both unmarshal into gqlPR.
+// prFields is the GraphQL selection set. This holds for a pull request node,
+// shared between the org-level query and the per-repo PR pagination query. So
+// the stay in sync and both unmarshal into gqlPR.
 const prFields = `
   number
   title

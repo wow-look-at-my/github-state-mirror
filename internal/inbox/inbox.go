@@ -1,7 +1,7 @@
 // Package inbox is the webhook journal: every verified delivery is written
 // here, synced to disk, before GitHub is answered, and stays until applied.
 // It is its own SQLite file, outside the cache DB's rebuild-on-schema-change
-// lifecycle, so a restart never loses a delivery GitHub was told was kept.
+// lifecycle. A restart never loses a delivery GitHub was told was kept.
 package inbox
 
 import (
