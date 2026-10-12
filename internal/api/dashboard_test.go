@@ -313,10 +313,10 @@ func TestDashboard_Callback_BadState(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `href="/login"`, "failure page must link the login start")
 }
 
-// brokenAuth returns an auth.Service whose stub GitHub fails the requested leg
-// of the callback flow — the code-for-token exchange ("token") or the identity
-// read ("user") — while the other leg succeeds, so the failure lands exactly on
-// the branch under test.
+// brokenAuth returns an auth.Service whose stub GitHub fails the requested leg of
+// the callback flow. This is the code-for-token exchange ("token") or the
+// identity read ("user") — while the other leg succeeds. The failure lands
+// exactly on the branch under test.
 func brokenAuth(t *testing.T, failing string) *auth.Service {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -464,8 +464,9 @@ func TestDashboard_ServeAssets(t *testing.T) {
 }
 
 // TestDashboard_HashedAssets verifies the served index references the
-// content-addressed asset URLs (never the stable names) for every embedded
-// asset, and that those hashed URLs are served with the immutable cache header.
+// content-addressed asset URLs (never the stable names). This happens for every
+// embedded asset, and that those hashed URLs are served with the immutable
+// cache header.
 func TestDashboard_HashedAssets(t *testing.T) {
 	router, _, _ := newTestStack(t, configuredAuth(t))
 

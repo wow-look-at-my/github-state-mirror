@@ -19,7 +19,7 @@ import (
 //  H1 holes: an error in another step of the handler silently skipping the
 // invalidation, and an unparseable payload skipping it entirely. A skipped
 // invalidation leaves the single-PR route serving the pre-push mergeable /
-// test-merge sha as a hit -- and hits never reach GitHub, so nothing ever
+// test-merge sha as a hit -- and hits never reach GitHub. Nothing ever
 // triggers the recompute (the webhooks# frozen-sha incident).
 
 // seedResolvedOpenPR writes a REST-complete open PR row with a resolved
@@ -42,8 +42,8 @@ func seedResolvedOpenPR(t *testing.T, store *ghdata.Store, number int64, base, s
 }
 
 // TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide: a push whose payload
-// can't be parsed still proves something moved in the repo, so ALL open PRs'
-// merge fields are conservatively un-resolved (they re-fetch) -- the fallback
+// can't be parsed still proves something moved in the repo. ALL open PRs'
+// merge fields are conservatively un-resolved (they re-fetch). The fallback
 // only marked org syncs stale and left the frozen values serving. The moved
 // branch is unknown, so NO stale-sha marker is recorded (an unmoved PR's
 // re-offered sha is valid and must re-absorb immediately).
@@ -72,8 +72,8 @@ func TestOnPush_UnparseablePayloadNullsMergeFieldsRepoWide(t *testing.T) {
 // handler ordered SetRepoPushedAt and returned on its error, so a transient
 // DB failure skipped the invalidation entirely and the pre-push answer kept
 // serving as a hit. The repos table is broken here (renamed) so
-// SetRepoPushedAt fails exactly like a transient DB error -- pull_requests is
-// untouched and the invalidation must land regardless.
+// SetRepoPushedAt fails exactly like a transient DB error. The repos table
+// pull_requests is untouched and the invalidation must land regardless.
 func TestOnPush_MergeInvalidationSurvivesPushedAtFailure(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))

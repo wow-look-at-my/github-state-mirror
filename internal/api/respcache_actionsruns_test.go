@@ -16,7 +16,7 @@ import (
 )
 
 // upstreamWorkflowRun builds GitHub-shaped workflow_runs entry: the full
-// actor/repository/head_commit objects and every *_url the rebuild must drop
+// actor/repository/head_commit objects. Every *_url the rebuild must drop
 // around the fields the model keeps. name/conclusion/runStartedAt may be nil.
 func upstreamWorkflowRun(id int, name any, headSHA, status string, conclusion, runStartedAt any) map[string]any {
 	return map[string]any{
@@ -76,8 +76,7 @@ func newWorkflowRunsUpstream() *workflowRunsUpstream {
 			sha = shaTip
 		}
 		// GitHub applies ?status= server-side, matching a run's status OR its
-		// conclusion -- so the fake must too, or the absorbed set would not be
-		// the set the filter describes.
+		// conclusion -- so the fake must too.
 		runs := []any{
 			upstreamWorkflowRun(9001, "CI", sha, "completed", "success", "2026-07-01T10:00:30Z"),
 			upstreamWorkflowRun(9002, nil, sha, "queued", nil, nil),
@@ -144,7 +143,7 @@ func workflowRunsStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *wor
 // byte-identical stored doc (hit, upstream calls). total_count is copied
 // VERBATIM -- GitHub's total matching count, not the page length (here over
 // a -run page: pr-minder's per_page= probe reads exactly this) -- the
-// nullable name/conclusion/run_started_at keys survive as null, html_url is
+// nullable name/conclusion/run_started_at keys survive as null. Html_url is
 // the pinned consumer-read exception, and the actor/repository/head_commit
 // objects plus every other URL field are dropped.
 func TestCachedWorkflowRuns_MissAbsorbHit(t *testing.T) {
@@ -186,10 +185,10 @@ func TestCachedWorkflowRuns_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedWorkflowRuns_KeyedPerShaAndPage: the sha and the pagination shape
-// are both part of the key -- the consumers' shapes (pr-minder's
-// per_page= and required-builds' per_page=&page=N) are independent
-// snapshots of sha, another sha is another row, and a differently-CASED
-// sha spelling folds onto the same row (the key is lowercase-normalized).
+// are both part of the key. The consumers' shapes (pr-minder's per_page= and
+// required-builds' per_page=&page=N) are independent snapshots of sha.
+// Another sha is another row, and a differently-CASED sha spelling folds onto
+// the same row (the key is lowercase-normalized).
 func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 
@@ -220,9 +219,9 @@ func TestCachedWorkflowRuns_KeyedPerShaAndPage(t *testing.T) {
 }
 
 // TestCachedWorkflowRuns_ListingFromTruth: the repo-wide listing -- the GHA
-// runner coordinator's `?status=queued&per_page=` backlog poll, the
-// largest single slice of forwarded traffic there has ever been -- is served
-// from the workflow_runs TRUTH rows behind the completeness proof, NOT from a
+// runner coordinator's `?status=queued&per_page=` backlog poll, the largest
+// single slice of forwarded traffic there has ever been. It is served from
+// the workflow_runs TRUTH rows behind the completeness proof, NOT from a
 // snapshot. The short page- answer is what sets that proof.
 func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
@@ -251,8 +250,8 @@ func TestCachedWorkflowRuns_ListingFromTruth(t *testing.T) {
 
 // TestCachedWorkflowRuns_ListingTracksAppliedRunState is the whole point of
 // the redesign: after a run's state is APPLIED (as a webhook does), the
-// backlog answer changes by that run -- served from rows, with no
-// re-fetch and with every other run's answer intact.
+// backlog answer changes by that run. The backlog answer served from rows,
+// with no re-fetch and with every other run's answer intact.
 func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
 	router, store, _, u := workflowRunsStack(t)
 	target := "/repos/org1/repo1/actions/runs?status=queued&per_page=100"
@@ -279,8 +278,8 @@ func TestCachedWorkflowRuns_ListingTracksAppliedRunState(t *testing.T) {
 }
 
 // TestCachedWorkflowRuns_ListingKeyedPerFilter: the completeness proof is per
-// filter set, and its key is CANONICAL -- the same filters sent in a
-// different query-string order are the same request, not a proof.
+// filter set, and its key is CANONICAL. The same filters sent in a different
+// query-string order are the same request, not a proof.
 func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 	router, _, _, u := workflowRunsStack(t)
 
@@ -308,12 +307,12 @@ func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
 }
 
-// TestCachedWorkflowRuns_ShapePassthroughs: shapes the cache does not model
+// TestCachedWorkflowRuns_ShapePassthroughs. Shapes the cache does not model
 // pass through verbatim, uncached -- an unmodeled filter param, a status
-// value outside GitHub's documented set, a branch that would smuggle a
-// control character into a cache key, a malformed/short sha, out-of-range
-// paging, a non-default Accept, and the deeper /actions/runs/{id}/... paths
-// the exact-literal registration never sees.
+// value outside GitHub's documented set, a branch. That would smuggle a
+// control character into a cache key, a malformed/short sha, and out-of-range
+// paging. That also would smuggle a non-default Accept, and the deeper
+// /actions/runs/{id}/... paths the exact-literal registration never sees.
 func TestCachedWorkflowRuns_ShapePassthroughs(t *testing.T) {
 	router, _, db, u := workflowRunsStack(t)
 

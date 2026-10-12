@@ -158,6 +158,8 @@ func NewRouter(
 
 		// Cached workflow-runs listing, head_sha required; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
+		// Cached single run, rebuilt from workflow_runs truth; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}", h.cachedWorkflowRun)
 
 		// Cached Actions WORKFLOW definitions, listing and single; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/workflows", h.cachedWorkflowsList)
@@ -171,8 +173,17 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", h.cachedRunJobs)
 		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}", h.cachedWorkflowJob)
 
+		// Cached log redirects, each until its signed location expires; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}/logs", h.cachedRunLogs)
+		r.Get("/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", h.cachedJobLogs)
+
 		// Cached SINGLE check-run read, keyed by the run's own id; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}", h.cachedCheckRun)
+		// Cached check-run annotations, flushed by the run's own deliveries; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations", h.cachedCheckRunAnnotations)
+
+		// Cached rules in force on a branch; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/rules/branches/*", h.cachedBranchRules)
 
 		// Cached Code Quality setup; the PATCH flushes before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
@@ -188,6 +199,15 @@ func NewRouter(
 
 		// Cached bare-repo read, rebuilt from the repos truth row; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}", h.cachedRepo)
+
+		// Cached archive redirects; the ref may carry slashes. See docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/tarball", h.cachedArchive(ghdata.RepoAnswerKindTarball))
+		r.Get("/repos/{owner}/{repo}/tarball/*", h.cachedArchive(ghdata.RepoAnswerKindTarball))
+		r.Get("/repos/{owner}/{repo}/zipball", h.cachedArchive(ghdata.RepoAnswerKindZipball))
+		r.Get("/repos/{owner}/{repo}/zipball/*", h.cachedArchive(ghdata.RepoAnswerKindZipball))
+
+		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)

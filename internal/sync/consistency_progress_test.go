@@ -10,7 +10,7 @@ import (
 )
 
 // TestConsistencyChecker_ProgressEvents: the run reports its phase boundaries
-// through the callback, in order -- start (with the owner count), then an
+// through the callback, in order. Start (with the owner count), then an
 // "owner" announcement followed by fetch/visibility/diffed (or a "skip" with
 // the reason), and a final "done".
 func TestConsistencyChecker_ProgressEvents(t *testing.T) {

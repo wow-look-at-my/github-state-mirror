@@ -15,7 +15,9 @@ import (
 // Kinds stored in workflow_jobs_cache.kind.
 const (
 	WorkflowJobsKindRunJobs = "run_jobs"
-	WorkflowJobsKindJob     = "job"
+	// WorkflowJobsKindRunJobsAll is a jobs page under filter=all: every attempt's jobs.
+	WorkflowJobsKindRunJobsAll = "run_jobs_all"
+	WorkflowJobsKindJob        = "job"
 )
 
 // GetCachedWorkflowJobs returns the stored trimmed document, or ("", false)

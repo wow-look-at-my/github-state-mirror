@@ -122,6 +122,8 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onWorkflowJob(ctx, event)
 	case "workflow_run":
 		return d.onWorkflowRun(ctx, event)
+	case "repository_ruleset":
+		return d.onRuleset(ctx, event)
 	default:
 		return ignored("event type not tracked")
 	}
@@ -156,8 +158,8 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 		return d.invalidateRepoOrg(ctx, event, "unparseable push payload")
 	}
 	// A branch push makes GitHub recompute mergeability for every open PR based
-	// on (or heading from) that branch, and no webhook ever carries the
-	// recomputed value -- so un-resolve the cached mergeable (remembering the
+	// on (or heading from) that branch. No webhook ever carries the recomputed
+	// value. This is so un-resolve the cached mergeable (remembering the
 	// invalidated test-merge sha: a refetch re-offering it is presumed pre-push
 	// -- plus the push's after tip, the proof by which an answer that already
 	// reflects this push is recognized and accepted) rather than let the
@@ -181,10 +183,11 @@ func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) out
 	return applied("updated pushed_at")
 }
 
-// isDefaultBranch reports whether branch is the repo's default branch,
-// preferring the payload's own repository.default_branch (push payloads carry
-// it) and falling back to the cached repo row (absorbed moments ago, or by an
-// earlier sync). Unknown reads as false -- never null a status on a guess.
+// isDefaultBranch reports whether branch is the repo's default branch. That
+// isDefaultBranch is preferring the payload's own repository.default_branch
+// (push payloads carry it) and falling back to the cached repo row (absorbed
+// moments ago, or by an earlier sync). Unknown reads as false -- never null a
+// status on a guess.
 func (d *WebhookDispatcher) isDefaultBranch(ctx context.Context, event webhook.Event, owner, repo, branch string) bool {
 	if branch == "" {
 		return false
@@ -203,7 +206,7 @@ func (d *WebhookDispatcher) isDefaultBranch(ctx context.Context, event webhook.E
 // cache, so a subsequent GET /repos/{o}/{r}/git/commits/{sha} hits without any
 // GitHub fetch ever having happened. The push payload states each commit's id,
 // tree, message, timestamp, and author/committer -- exactly the state the
-// endpoint returns -- and parents come from the payload's linear chain
+// endpoint returns. Parents come from the payload's linear chain
 // (ChainedCommits declines forced/new-ref/possibly-truncated pushes rather
 // than derive wrong parents). Best-effort and disposition-neutral: a failure
 // is logged, never reported.
@@ -255,9 +258,9 @@ func (d *WebhookDispatcher) onStatusChange(ctx context.Context, event webhook.Ev
 	if err != nil {
 		return d.invalidateRepoOrg(ctx, event, "unparseable check payload")
 	}
-	// A non-completed check_suite records nothing: GitHub auto-creates a permanent-ghost PENDING
-	// suite for every app with checks:write, even that never runs a check on the sha.
-	// see docs/webhooks/dispatch.md
+	// A non-completed check_suite records nothing. GitHub auto-creates a permanent-ghost PENDING
+	// suite for every app with checks:write, even that never runs a check on the sha. see
+	// docs/webhooks/dispatch.md
 	if event.Type == "check_suite" && payload.State == "PENDING" {
 		return ignored(fmt.Sprintf("pending %s not recorded: an empty auto-created suite never completes, and real pending state rides check_run/status events", payload.Context))
 	}
@@ -332,15 +335,40 @@ func (d *WebhookDispatcher) onRepository(ctx context.Context, event webhook.Even
 }
 
 // onOrgChange handles organization/membership events. They change WHO can see
-// what (not what is true), so the response is to mark every principal's
-// org-repos sync marker for the org stale: each principal's next read re-syncs
-// their grant set with their own token.
+// what (not what is true). The response is to mark every principal's org-repos
+// sync marker for the org stale. This covers each principal's next read
+// re-syncs their grant set with their own token.
 func (d *WebhookDispatcher) onOrgChange(ctx context.Context, event webhook.Event) outcome {
 	if event.OrgLogin == "" {
 		return ignored("org event missing login")
 	}
 	d.invalidate(ctx, KindOrgRepos, event.OrgLogin)
 	return outcome{disposition: webhook.DispInvalidated, detail: "membership change; marked principals' org syncs stale"}
+}
+
+// onRuleset lands a ruleset change on the stored branch-rules answers. A
+// branch's answer merges every ruleset whose conditions match it. The payload
+// states one ruleset, not the merged answer for any branch, so the answers it
+// can reach go. This covers the repo's for a repository ruleset, every repo
+// of the owner for an organization one. see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) onRuleset(ctx context.Context, event webhook.Event) outcome {
+	payload, err := webhook.ParseRulesetPayload(event.Raw)
+	if err != nil {
+		slog.Warn("webhook: failed to parse repository_ruleset payload", "error", err)
+		return ignored("unparseable repository_ruleset payload")
+	}
+	if payload.Repo == "" {
+		if err := d.store.InvalidateOwnerAnswersOfKind(ctx, payload.Owner, ghdata.RepoAnswerKindBranchRules); err != nil {
+			slog.Warn("webhook: flush branch rules failed", "owner", payload.Owner, "error", err)
+			return errored("flush branch rules failed")
+		}
+		return outcome{disposition: webhook.DispInvalidated, detail: fmt.Sprintf("org ruleset %d; dropped %s's branch rules", payload.RulesetID, payload.Owner)}
+	}
+	if err := d.store.InvalidateRepoAnswersOfKind(ctx, payload.Owner, payload.Repo, ghdata.RepoAnswerKindBranchRules); err != nil {
+		slog.Warn("webhook: flush branch rules failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
+		return errored("flush branch rules failed")
+	}
+	return outcome{disposition: webhook.DispInvalidated, detail: fmt.Sprintf("ruleset %d; dropped the repo's branch rules", payload.RulesetID)}
 }
 
 func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) outcome {
@@ -380,8 +408,8 @@ func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
 	}
 }
 
-// invalidateRepoOrg is the fallback when a payload can't be applied directly:
-// mark every principal's org-repos sync for the owner stale so the next reads
+// invalidateRepoOrg is the fallback when a payload can't be applied directly.
+// Mark every principal's org-repos sync for the owner stale so the next reads
 // re-fetch (refreshing truth as a side effect). When the owner is unknown
 // there is nothing to invalidate, so the delivery is a no-op.
 func (d *WebhookDispatcher) invalidateRepoOrg(ctx context.Context, event webhook.Event, reason string) outcome {

@@ -74,7 +74,6 @@ type nonJSONSample struct {
 	At          string `json:"at"`
 }
 
-// shapeStore holds routeShapes in memory; it resets on restart, never touching the schema.
 type shapeStore struct {
 	mu     sync.Mutex
 	shapes map[string]*routeShape

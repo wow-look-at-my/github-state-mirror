@@ -28,10 +28,13 @@ func TestOpen_CreatesNewDB(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT fingerprint FROM schema_version LIMIT 1").Scan(&fingerprint))
 
 	assert.Equal(t, schemaFingerprint(schemaSQL), fingerprint)
+	assert.NotEqual(t, schemaFingerprint(sqlcSchema), fingerprint, "the plain-SQL tables must be part of the fingerprint")
 
 	// Verify tables exist by inserting into them.
 	_, err = db.Exec("INSERT INTO repos (owner, name, name_with_owner, url) VALUES ('org', 'r', 'org/r', 'http://url')")
 	require.Nil(t, err)
+	_, err = db.Exec("INSERT INTO workflow_run_details (owner, repo, run_id, updated_at, detail, detail_at) VALUES ('o', 'r', 1, '', '{}', '')")
+	require.Nil(t, err, "schema_plain.sql must be created with schema.sql")
 
 	_, err = db.Exec("INSERT INTO cache_metadata (resource_kind, resource_key, fetch_state) VALUES ('test', 'key', 'unknown')")
 	require.Nil(t, err)

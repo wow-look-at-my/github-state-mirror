@@ -18,7 +18,7 @@ import (
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves ref's tip from a stored snapshot, fetching and
-// absorbing on a miss -- or when the stored snapshot contradicts something
+// absorbing on a miss. Or when the stored snapshot contradicts something
 // else this mirror holds (see the contradiction check below).
 func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
@@ -124,11 +124,11 @@ type gitRefObjJSON struct {
 	Type string `json:"type"`
 }
 
-// absorbGitRef parses a /git/ref/{ref} into the trimmed document,
-// rendered here so hit and miss serve identical bytes. Reports false --
-// serve verbatim, store nothing -- for any other status, for the ARRAY form
-// (a partial ref, which the route guard already refuses), and for a body
-// missing the ref name or a full-hex object sha.
+// absorbGitRef parses a /git/ref/{ref} into the trimmed document, rendered
+// here so hit and miss serve identical bytes. Reports false -- serve
+// verbatim, store nothing -- for any other status. Those Reports are for
+// the ARRAY form (a partial ref, which the route guard already refuses),
+// and for a body missing the ref name or a full-hex object sha.
 func absorbGitRef(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

@@ -46,6 +46,6 @@ turning every sign-in for that app into the same error.
 
 The device flow's polling leg (grant_type "urn:ietf:params:oauth:grant-type:device_code") goes through this same endpoint unchanged — the body is opaque bytes to the relay.
 
-`oauthDeviceCode` relays a GitHub device authorization request (RFC 8628, the "start a device flow" POST that mints a user_code) to github.com and returns GitHub's response with the mirror's CORS headers.
+`oauthDeviceCode` relays a request of the GitHub device authorization (RFC 8628, the "start a device flow" POST that mints a user_code) to github.com and returns GitHub's response with the mirror's CORS headers.
 
 Same story as oauthAccessToken: github.com/login/device/code sends no CORS headers. As a result, a browser-only client can never start a device sign-in on its own. The request carries only the app's public client_id + scope (no secret, no bearer token). As a result, it too sits outside requireAuth and targets a fixed github.com URL — not the api.github.com passthrough. The subsequent polling leg reuses the access-token relay above.

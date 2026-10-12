@@ -71,10 +71,10 @@ func TestGetPullRequest(t *testing.T) {
 	assert.Equal(t, "PR 1", got.Title)
 }
 
-// TestUpsertPR_MergeableNullDoesNotClobber locks the COALESCE on mergeable: a
+// TestUpsertPR_MergeableNullDoesNotClobber locks the COALESCE on mergeable. A
 // pull_request webhook that arrives while GitHub is still computing
 // mergeability carries mergeable=null (and GitHub never re-delivers the event
-// when it resolves), so a NULL in the payload must preserve a previously-known
+// when it resolves). A NULL in the payload must preserve a previously-known
 // value — while a genuinely resolved value must still overwrite.
 func TestUpsertPR_MergeableNullDoesNotClobber(t *testing.T) {
 	s := testStore(t)
@@ -112,10 +112,10 @@ func TestUpsertPR_MergeableNullDoesNotClobber(t *testing.T) {
 }
 
 // TestUpsertPRWithChecks_DerivesStatusFromExistingChecks locks the on-upsert
-// rollup: a PR opened AFTER its head commit's CI finished (a pr-minder
-// auto-opened PR) arrives via webhook with no CI state, and no later check event
-// will re-fire for that sha — so the upsert itself must derive
-// last_commit_status from the commit checks already recorded for the head sha.
+// rollup. A PR opened AFTER its head commit's CI finished (a pr-minder
+// auto-opened PR) arrives via webhook with no CI state. No later check event
+// will re-fire for that sha. The upsert itself must derive last_commit_status
+// from the commit checks already recorded for the head sha.
 func TestUpsertPRWithChecks_DerivesStatusFromExistingChecks(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -153,7 +153,7 @@ func TestUpsertPRWithChecks_DerivesStatusFromExistingChecks(t *testing.T) {
 }
 
 // TestUpsertPRWithChecks_NoChecksLeavesStatusNull is the counterpart: with no
-// recorded checks for the head sha there is nothing to derive, and the upsert
+// recorded checks for the head sha there is nothing to derive. The upsert
 // must not stomp the (COALESCE-preserved) status with an empty rollup.
 func TestUpsertPRWithChecks_NoChecksLeavesStatusNull(t *testing.T) {
 	s := testStore(t)
@@ -211,7 +211,7 @@ func TestPRRowFresh(t *testing.T) {
 
 // Ping is what the update-liveness probe asserts beyond "the process answered
 // HTTP": a server still serving over a dead database is exactly the state a
-// post-update health gate exists to catch, and it has to fail loudly there.
+// post-update health gate exists to catch. It has to fail loudly there.
 func TestPingFailsOnAClosedDatabase(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.Open(filepath.Join(dir, "test.db"))

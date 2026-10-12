@@ -83,7 +83,7 @@ func needsClientSecret(form url.Values) bool {
 // travel upstream; CORS on the way back is corsMiddleware's alone. Each
 // upstream call is timed onto the Timeline chart (disposition "relay") under
 // the mirror's own fixed relay path as the lane — these carry no bearer
-// token, so the actor is "anonymous".
+// token. The actor is "anonymous".
 func (h *handlers) relayGitHubLogin(w http.ResponseWriter, r *http.Request, upstreamURL string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxOAuthBytes+1))
 	if err != nil {

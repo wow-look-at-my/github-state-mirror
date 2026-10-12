@@ -259,7 +259,7 @@ func parseAdmins(s string) set.Set[string] {
 }
 
 // sessionSecret returns the HMAC key for session cookies. When SESSION_SECRET is
-// set it is used verbatim; otherwise a random per-process key is generated, which
+// set it is used verbatim. Otherwise a random per-process key is generated, which
 // means existing sessions are invalidated on restart (acceptable for a cache).
 func sessionSecret(env string) []byte {
 	if env != "" {
