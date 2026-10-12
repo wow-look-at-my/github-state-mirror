@@ -89,12 +89,20 @@ func (d *WebhookDispatcher) onWorkflowRun(ctx context.Context, event webhook.Eve
 		slog.Warn("webhook: failed to parse workflow_run payload", "error", err)
 		return ignored("unparseable workflow_run payload")
 	}
+	// The delivery carries the whole run object, so it also writes the detail the single-run read is rebuilt from.
+	runDetail := ""
+	if raw, ok := webhook.WorkflowRunObject(event.Raw); ok {
+		if run, ok := ghdata.ParseWorkflowRunObject(payload.Owner, payload.Repo, raw); ok {
+			runDetail = run.Detail
+		}
+	}
 	if err := d.store.ApplyWorkflowRun(ctx, ghdata.WorkflowRun{
 		Owner: payload.Owner, Repo: payload.Repo, RunID: payload.RunID,
 		RunAttempt: payload.RunAttempt, Name: payload.Name,
 		HeadSHA: payload.HeadSHA, HeadBranch: payload.HeadBranch,
 		Status: payload.Status, Conclusion: payload.Conclusion, HTMLURL: payload.HTMLURL,
 		CreatedAt: payload.CreatedAt, UpdatedAt: payload.UpdatedAt, RunStartedAt: payload.RunStartedAt,
+		Detail: runDetail,
 	}, time.Now()); err != nil {
 		slog.Warn("webhook: record workflow run failed", "repo", payload.Owner+"/"+payload.Repo, "run", payload.RunID, "error", err)
 		return errored("record workflow run failed")

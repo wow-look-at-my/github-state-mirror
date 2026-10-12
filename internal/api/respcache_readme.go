@@ -134,7 +134,26 @@ func absorbReadme(status int, body []byte) (ghdata.CachedReadme, bool) {
 			return ghdata.CachedReadme{}, false
 		}
 		return ghdata.CachedReadme{Status: http.StatusNotFound, Doc: string(doc)}, true
+	case http.StatusUnavailableForLegalReasons:
+		// The repo is blocked: a fact about the repo, kept until a repository event.
+		var e readmeBlockedJSON
+		if err := json.Unmarshal(body, &e); err != nil || e.Message == "" {
+			return ghdata.CachedReadme{}, false
+		}
+		doc, err := marshalTrimmed(e)
+		if err != nil {
+			return ghdata.CachedReadme{}, false
+		}
+		return ghdata.CachedReadme{Status: http.StatusUnavailableForLegalReasons, Doc: string(doc)}, true
 	default:
 		return ghdata.CachedReadme{}, false
 	}
+}
+
+type readmeBlockedJSON struct {
+	Message string `json:"message"`
+	Block   struct {
+		Reason    string `json:"reason"`
+		CreatedAt string `json:"created_at"`
+	} `json:"block"`
 }

@@ -15,7 +15,9 @@ import (
 )
 
 // Bare-repo route tests (GET /repos/{owner}/{repo}). This route has no
-// snapshot table. It rebuilds from the repos TRUTH row.
+// snapshot table. It rebuilds from the repos TRUTH row, so the fake
+// upstream's bare-repo endpoint (u.probe) answers BOTH the reveal probe and
+// this route's miss fetches. probeHits counts them together.
 
 // TestCachedRepo_SeededPublicRowHit: a complete public truth row (e.g.
 // webhook-maintained) serves the trimmed rebuild with upstream calls --

@@ -42,9 +42,10 @@ func NormalizeRepoKey(s string) string { return strings.ToLower(s) }
 
 // Contents cache row kinds.
 const (
-	ContentsKindFile    = "file"
-	ContentsKindDir     = "dir"
-	ContentsKindMissing = "missing" // a cached
+	ContentsKindFile      = "file"
+	ContentsKindDir       = "dir"
+	ContentsKindMissing   = "missing"   // a cached
+	ContentsKindSubmodule = "submodule" // Entries holds the rendered submodule object
 )
 
 // CachedContents is the absorbed state of contents response.

@@ -114,6 +114,8 @@ type respCacheUpstream struct {
 	ownerRepos func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	probe func(w http.ResponseWriter, r *http.Request)
+	// extra answers ahead of every route above when it reports true; a test sets it for a route the switch does not name.
+	extra func(w http.ResponseWriter, r *http.Request) bool
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
 }
@@ -188,6 +190,9 @@ var ownerReposPath = regexp.MustCompile(`^/(orgs|users)/[^/]+/repos$`)
 
 func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u.extra != nil && u.extra(w, r) {
+			return
+		}
 		switch {
 		case r.URL.Path == "/user":
 			atomic.AddInt32(&u.userHits, 1)

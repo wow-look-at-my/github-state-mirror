@@ -208,7 +208,7 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 
 	for i, target := range []string{
-		"/repos/org1/repo1/commits?path=src",                   // unmodeled filter
+		"/repos/org1/repo1/commits?committer=alice",            // unmodeled filter
 		"/repos/org1/repo1/commits?since=2026-01-01T00:00:00Z", // unmodeled filter
 		"/repos/org1/repo1/commits?author=alice",               // unmodeled filter
 		"/repos/org1/repo1/commits?sha=",                       // empty ref value
@@ -229,10 +229,9 @@ func TestCachedCommitsList_QueryShapeGuards(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader), "non-default Accept must pass through")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits))
 
-	// /commits/{sha} is a different path and passes through; this fake 404s it.
+	// /commits/{sha} is the commit route, not this; this fake 404s it.
 	wc := do(t, router, authedReq("GET", "/repos/org1/repo1/commits/"+shaCommit, nil))
 	assert.Equal(t, http.StatusNotFound, wc.Code)
-	assert.Empty(t, wc.Header().Get(cacheHeader), "/commits/{sha} must not hit the cached list route")
 	assert.Equal(t, int32(8), atomic.LoadInt32(&u.listHits), "/commits/{sha} must not count as a list fetch")
 
 	// Passthroughs stored nothing: a cacheable shape still misses.
@@ -383,7 +382,7 @@ func TestParseCommitsListShape_Defaults(t *testing.T) {
 
 	for _, bad := range []string{
 		"sha=", "per_page=0", "per_page=101", "page=0", "page=11",
-		"path=src", "since=2026-01-01T00:00:00Z", "until=2026-01-02T00:00:00Z",
+		"path=", "since=2026-01-01T00:00:00Z", "until=2026-01-02T00:00:00Z",
 		"author=alice", "committer=bob", "first_parent=true", "sha=main&sha=dev",
 	} {
 		q, _ := url.ParseQuery(bad)

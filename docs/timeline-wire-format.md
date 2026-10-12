@@ -81,7 +81,7 @@ The bake-off's `bench.mjs` asserted all paths produced same intervals (mismatche
 The split is LAYOUT vs VOCABULARY:
 
 - **js-snippets owns the layout** — magic, varints, dictionaries, bitsets, columns — plus the one-chunk-per-frame driver. It takes the column names as a schema parameter. As a result, it carries none of this mirror's words.
-- **The mirror owns the vocabulary and the meaning** — the column names it sends (13 string columns plus id/start/dur/status/attempt/final. Declared in Go as `timelineSchema` and in the chart as `SCHEMA`), and `intervalsGen`/`eventAt`, which turn columns into intervals with labels, states and lanes. None of that is wire format. All of it is what a github-mirror event *is*.
+- **The mirror owns the vocabulary and the meaning** — the column names it sends (13 string columns plus id/start/dur/status/try/last. Declared in Go as `timelineSchema` and in the chart as `SCHEMA`), and `intervalsGen`/`eventAt`, which turn columns into intervals with labels, states and lanes. None of that is wire format. All of it is what a github-mirror event *is*.
 
 The wire bytes did not change when it moved: the column names were never on the wire.
 

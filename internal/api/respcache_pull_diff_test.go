@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,19 +29,35 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 		servePRJSON(w, upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
 	}
 
-	for i := 1; i <= 2; i++ {
+	read := func(accept string) *httptest.ResponseRecorder {
 		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
-		req.Header.Set("Accept", "application/vnd.github.diff")
-		w := do(t, router, req)
-		require.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, rawDiff, w.Body.String(), "the diff representation must pass through untouched")
-		assert.Empty(t, w.Header().Get(cacheHeader))
-		assert.Equal(t, int32(i), atomic.LoadInt32(&u.singleHits))
+		req.Header.Set("Accept", accept)
+		return do(t, router, req)
 	}
+	// The diff is stored verbatim; both diff spellings share the row.
+	for i, tc := range []struct{ accept, want string }{
+		{"application/vnd.github.diff", "miss"},
+		{"application/vnd.github.v3.diff", "hit"},
+	} {
+		w := read(tc.accept)
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, rawDiff, w.Body.String(), "the diff must be byte-identical, request %d", i)
+		assert.Equal(t, "application/vnd.github.diff; charset=utf-8", w.Header().Get("Content-Type"))
+		assert.Equal(t, tc.want, w.Header().Get(cacheHeader), "request %d", i)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pull_diff406_cache`).Scan(&count))
-	assert.Zero(t, count, "a 200 diff must store nothing")
+	assert.Zero(t, count, "a 200 diff is not a 406 verdict")
+
+	// The PR's own delivery drops the diff: a head push changes it.
+	postWebhookJSON(t, router, "pull_request", map[string]any{
+		"action": "synchronize", "number": 7, "repository": fixtureRepo(),
+		"pull_request": upstreamSinglePR(7, "open", "First PR", "feature", shaTip, "2026-07-01T10:05:00Z"),
+	})
+	assert.Equal(t, "miss", read("application/vnd.github.diff").Header().Get(cacheHeader))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
 // TestCachedPullDiff_406VerdictCached.

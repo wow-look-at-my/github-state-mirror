@@ -30,7 +30,7 @@ gh pr list -R OWNER/REPO
 
 Pass `-R OWNER/REPO`. gh resolves a bare command's repository from the git remote, and a github.com remote does not belong to the host you selected.
 
-The `gh` shim in `claude-code-web-config` does the awkward parts inside a Claude Code web session. It accepts `GH_HOST=https://github-state-mirror.pazer.io`, and it copies the session's PAT into `GH_ENTERPRISE_TOKEN`.
+The `gh` shim in `claude-code-web-config` does the awkward parts inside a session of the Claude Code web. It accepts `GH_HOST=https://github-state-mirror.pazer.io`, and it copies the session's PAT into `GH_ENTERPRISE_TOKEN`.
 
 ## Verified
 

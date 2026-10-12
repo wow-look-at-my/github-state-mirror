@@ -26,7 +26,7 @@ Returns recent GitHub Actions jobs recorded from `workflow_job` webhooks: runnin
 
 ### Storage (`internal/ghdata/workflow_jobs.go`)
 
-GitHub Actions job state fed by `workflow_job` webhooks. Like the webhook delivery log, this data is GLOBAL (not actor-scoped): it is webhook-fed operational telemetry with no per-credential fetch path. A job's state only ever arrives via the HMAC-verified delivery, not through a caller's token, so there is no credential to partition by.
+state of the GitHub Actions job fed by `workflow_job` webhooks. Like the webhook delivery log, this data is GLOBAL (not actor-scoped): it is webhook-fed operational telemetry with no per-credential fetch path. A job's state only ever arrives via the HMAC-verified delivery, not through a caller's token, so there is no credential to partition by.
 
 `workflowJobRetention` bounds the table's growth. Completed jobs older than this on BOTH clocks -- the job's own `completed_at` AND the row's `updated_at` (when the last webhook was applied) -- are pruned after each upsert (one cheap indexed DELETE). The `updated_at` key is what keeps the upsert's out-of-order guard sound: the row is the guard's only memory. As a result, it must survive a full retention window after the last delivery touched it, not merely after the event's own timestamp (a replayed old completed event will otherwise be recorded and pruned by the same call, and a late `in_progress` will then resurrect the job as a phantom running row). Jobs still in progress are never pruned. A couple of weeks keeps enough history to be useful while a CI-heavy org's job volume stays bounded.
 

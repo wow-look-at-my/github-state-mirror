@@ -70,10 +70,10 @@ test('a container from the image serves its own routes', { timeout: 180_000 }, a
   assert.equal(running, 'true', 'the container stopped after answering — it is not stable');
 });
 
-// The. Without it the checks above pass for an image that merely happens to
-// work. Nothing states WHY the entrypoint is written the way it is. An APE
-// is not an ELF, so the exec form's execve() cannot start it. No amount of
-// shell present in the image changes that.
+// The negative control. Without it the checks above pass for an image that
+// merely happens to work. Nothing states WHY the entrypoint is written the way
+// it is. An APE is not an ELF, so the exec form's execve() cannot start it. No
+// amount of shell present in the image changes that.
 test('an exec-form entrypoint cannot start this image', { timeout: 180_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'gsm-execform-'));
   const name = `${PROBE}-execform`;

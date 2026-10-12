@@ -16,7 +16,7 @@ Un-resolved alongside `mergeable` wherever a tip moves, plus on CI events, which
 
 **22: `workflow_runs`** (global truth for Actions RUN state, maintained per run by `workflow_run`/`workflow_job` deliveries) + `workflow_runs_list_cache` (the completeness proof that lets the repo-wide runs LISTING be rebuilt from those rows). The listing is NOT a snapshot: clearing one on every job delivery will be invalidate-and-refetch.
 
-**21: `code_quality_setup_cache`** — the cached Code Quality enablement read. Config with no webhook: flushed by a PATCH the mirror proxies and by `repository` events, otherwise bounded by a short TTL.
+**21: `code_quality_setup_cache`** — the cached read of the Code Quality enablement. Config with no webhook: flushed by a PATCH the mirror proxies and by `repository` events, otherwise bounded by a short TTL.
 
 **20: `workflow_jobs_cache`** — the cached Actions job reads (a run's jobs page and a single job). Only TERMINAL answers are stored. A re-run replaces a run's jobs under the same run id, so both kinds carry `run_id`. One flush covers everything the re-run invalidates.
 
@@ -32,7 +32,7 @@ Diff bodies are never stored).
 
 **15:** added `pull_files_cache`, `closed_pull_cache`, and `branches_list_cache`.
 
-**14: a no-schema-change nuke** of truth rows poisoned by the collaborator-repo bleed -- repos a User login merely collaborates on, absorbed keyed. This is by the WRONG owner. The fixed fetch (`ownerAffiliations: OWNER` + the `dropForeignRepoNode` guard in ghclient) keeps them out afterwards. This is the entry the fingerprint can not express, and deliberately so: poisoned rows are a data problem. The fix for one is to correct or re-fetch the rows, not to hand every deploy a lever that empties the cache.
+**14: a no-schema-change nuke** of truth rows poisoned by the collaborator-repo bleed -- repos a User login merely collaborates on, absorbed keyed. This is by the Incorrect owner. The fixed fetch (`ownerAffiliations: OWNER` + the `dropForeignRepoNode` guard in ghclient) keeps them out afterwards. This is the entry the fingerprint can not express, and deliberately so: poisoned rows are a data problem. The fix for one is to correct or re-fetch the rows, not to hand every deploy a lever that empties the cache.
 
 **13: `commit_ci_cache`** — trimmed combined-commit-status and check-runs snapshots backing the cached `GET /repos/{owner}/{repo}/commits/{ref}/status` and `.../commits/{ref}/check-runs` routes.
 

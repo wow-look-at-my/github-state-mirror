@@ -4,7 +4,7 @@ Extracted verbatim from CLAUDE.md, where it grew into a manual inside one bullet
 
 ## What it holds
 
-GitHub REST + GraphQL API client. Includes the in-memory token→identity cache behind `ResolveTokenIdentity` and `AppAuthenticator` for GitHub App JWT / installation-token minting. `Installations` paginates past 100.
+client of the API of the GraphQL of the GitHub REST +. Includes the in-memory token→identity cache behind `ResolveTokenIdentity` and `AppAuthenticator` for / of the GitHub App JWT installation-token minting. `Installations` paginates past 100.
 
 ## Retries (`doJSON`)
 

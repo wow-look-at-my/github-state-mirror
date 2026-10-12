@@ -28,7 +28,7 @@ A **GitHub App backend** whose installation tokens rotate hourly will earn grant
 
 ## REST (cached routes — state-absorbed, rebuilt trimmed)
 
-Fifteen REST route families are served from cache (repo-scoped ones behind the show layer above). They do **not** replay GitHub's bytes: the mirror **absorbs the state** contained in the response into structured tables. The mirror **rebuilds a trimmed response** from that state, with **every URL field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`, `download_url`, `documentation_url`, ...), and `_links`. A small per-route **pinned allowlist** of consumer-read link fields is the exception. It holds the statuses `target_url`, the check-run `details_url`/`html_url`, and the workflow-run `html_url`. The required-builds hook renders all of them.
+Fifteen REST route families are served from cache (repo-scoped ones behind the show layer above). They do **not** replay GitHub's bytes: the mirror **absorbs the state** contained in the response into structured tables. The mirror **rebuilds a trimmed response** from that state, with **every URL field dropped** — `url`, anything matching `*_url` (`html_url`, `git_url`, `download_url`, `documentation_url`, ...), and `_links`. A small per-route **pinned allowlist** of consumer-read link fields is the exception. It holds the statuses `target_url`, the check-run `details_url`/`html_url`, the workflow-run `html_url`, and the single-run `jobs_url` (which the gh CLI follows to list a run's jobs). The required-builds hook renders all of them.
 
 (Consumer survey 2026-07-11. Adding one requires a fresh survey.) Consumers are first-party tooling (pr-minder etc.) that read state fields only. Hits and misses both serve the rebuilt shape, marked with an `X-GSM-Cache: hit|miss` header. Requests the route cannot model (a non-default `Accept` such as `application/vnd.github.raw`, unknown query params, an unexpected body shape) pass through verbatim, uncached.
 
@@ -94,7 +94,7 @@ GitHub's login endpoints live on `github.com` — not `api.github.com` — and s
 
   The disposition is returned in the JSON body and an `X-GSM-Disposition` header. What the apply did is recorded in the dashboard's webhook log (see below).
 
-  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`), recording GitHub Actions job state as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one inbox row and one short transaction.
+  Besides the PR/check/push/label/repository events that feed global truth, the mirror also tracks **`workflow_job`** deliveries (`in_progress` and `completed`. `queued`/`waiting` are dropped as `ignored`). Recording state of the GitHub Actions job as it happens in a **global** table read via the admin-only `GET /api/jobs`. The GitHub App must be **subscribed to the `workflow_job` event** in its settings to receive these. Expect high volume in a CI-heavy org — each delivery costs one inbox row and one short transaction.
 
 ## Subscriber notifications (`/_mirror/subscriptions`)
 

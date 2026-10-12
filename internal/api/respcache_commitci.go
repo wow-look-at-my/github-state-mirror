@@ -23,7 +23,7 @@ const (
 	commitCIDefaultPerPage = 30
 
 	// commitCIMaxCachedPage caps modeled pages; deeper pagination (pathological in practice) passes through.
-	commitCIMaxCachedPage = 10
+	commitCIMaxCachedPage = 40
 )
 
 // parseCommitCIShape reports the paging shape of a commit-CI query and
@@ -80,6 +80,16 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
 		return
 	}
+	if sha, ok := strings.CutSuffix(tail, "/branches-where-head"); ok && sha != "" {
+		h.cachedBranchesWhereHead(w, r, sha)
+		return
+	}
+	// A slash-free tail is the commit read. A slashed one is ambiguous between a
+	// branch name and a deeper path such as /pulls, so it forwards.
+	if tail != "" && !strings.Contains(tail, "/") {
+		h.cachedCommit(w, r, tail)
+		return
+	}
 	h.passthrough(w, r, PassPath)
 }
 
@@ -121,6 +131,11 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 		h.revealFailed(w, r)
 		return
 	}
+	resource := owner + "/" + repo + "/commits/" + ref
+	if v, ok := h.subresourceVerdict(r, denyKind, resource); ok {
+		h.serveDenyVerdict(w, r, v, true)
+		return
+	}
 
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
@@ -139,6 +154,10 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	defer resp.Body.Close()
 
+	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKind, resource, resp, body); ok {
+		h.serveDenyVerdict(w, r, v, false)
+		return
+	}
 	status := http.StatusOK
 	doc, absorbed := absorbCommitCI(kind, resp.StatusCode, body)
 	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {

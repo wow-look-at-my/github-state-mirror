@@ -73,7 +73,7 @@ func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, Jobs
 		}
 		return string(rendered), LivenessOf(job), true
 
-	case WorkflowJobsKindRunJobs:
+	case WorkflowJobsKindRunJobs, WorkflowJobsKindRunJobsAll:
 		var page StoredRunJobsPage
 		if err := json.Unmarshal([]byte(doc), &page); err != nil {
 			return "", JobsSettled, false

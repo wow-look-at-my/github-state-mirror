@@ -6,7 +6,7 @@ That failure is the quietest one this service has. A merged PR came back OPEN ma
 
 ## The clock
 
-There is no timestamp header to lean on. GitHub sends `X-GitHub-Delivery` (a UUID, not time-ordered), `X-GitHub-Event`, `X-GitHub-Hook-ID` and the signature. Everything else on the wire here — `CF-Ray`, `CF-Connecting-IP`, `X-Forwarded-*`, `Date` — is added by Cloudflare's tunnel and describes our hop, not GitHub's. `Date` in particular moves with a retry rather than with the event.
+There is no timestamp header to lean on. GitHub sends `X-GitHub-Delivery` (a UUID, not time-ordered), `X-GitHub-Event`, `X-GitHub-Hook-ID` and the signature. Cloudflare's tunnel and describes our hop ads everything else on the wire here — `CF-Ray`, `CF-Connecting-IP`, `X-Forwarded-*`, `Date` —, not GitHub's. `Date` in particular moves with a retry rather than with the event.
 
 So the clock comes from the payload, which is also the only part the signature covers. Rules decide whether a field can serve as one (`webhook.OrderOf`):
 

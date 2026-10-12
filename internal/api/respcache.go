@@ -66,6 +66,10 @@ func acceptsDefaultJSON(r *http.Request) bool {
 		case "*/*", "application/*", "application/json",
 			"application/vnd.github+json", "application/vnd.github.v3+json":
 			// JSON-default representation.
+		case "application/vnd.github.merge-info-preview", "application/vnd.github.merge-info-preview+json",
+			"application/vnd.github.nebula-preview", "application/vnd.github.nebula-preview+json":
+			// The gh CLI sends both on every request. Both previews are
+			// graduated, so neither changes a REST JSON body.
 		default:
 			return false
 		}
@@ -75,11 +79,17 @@ func acceptsDefaultJSON(r *http.Request) bool {
 
 // fetchUpstream forwards the (buffered-body) request to GitHub with the
 // caller's own headers and returns the response plus its buffered body.
-// overflow reports that the body exceeded maxAbsorbBodyBytes — the remainder
-// is still readable from resp.Body, and such a response must be replayed, not
-// absorbed. The URL is rebuilt from the request's escaped path + raw query so
-// encoding reaches GitHub exactly as the caller sent it.
 func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, []byte, bool, error) {
+	return h.fetchUpstreamWith(h.upstream, r, body)
+}
+
+func (h *handlers) fetchUpstreamNoRedirect(r *http.Request) (*http.Response, []byte, bool, error) {
+	client := *h.upstream
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return h.fetchUpstreamWith(&client, r, nil)
+}
+
+func (h *handlers) fetchUpstreamWith(client *http.Client, r *http.Request, body []byte) (*http.Response, []byte, bool, error) {
 	target := h.gh.BaseURL() + r.URL.EscapedPath()
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
@@ -97,7 +107,7 @@ func (h *handlers) fetchUpstream(r *http.Request, body []byte) (*http.Response, 
 	copyForwardHeaders(req.Header, r.Header)
 
 	who := callerLabel(r)
-	resp, err := h.upstream.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, false, err
 	}

@@ -38,6 +38,14 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	}
 
 	now := time.Now()
+	diffKey := ghdata.RepoAnswerKey{Owner: owner, Repo: repo, Kind: ghdata.RepoAnswerKindPullDiff, RefID: numStr}
+	if a, ok, err := h.store.GetRepoAnswer(r.Context(), diffKey, now); err != nil {
+		slog.Warn("pull diff cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
+	} else if ok {
+		h.reqlog.observe(r, DispHit)
+		writePullDiff(w, a.Doc, true)
+		return
+	}
 	if doc, ok, err := h.store.GetCachedPullDiff406(r.Context(), owner, repo, number, now); err != nil {
 		slog.Warn("pull diff 406 cache read failed", "owner", owner, "repo", repo, "number", number, "error", err)
 	} else if ok {
@@ -54,8 +62,19 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 	}
 	defer resp.Body.Close()
 
+	if !overflow && resp.StatusCode == http.StatusOK && len(body) <= pullDiffMaxBytes {
+		// The diff is opaque text, stored VERBATIM under the identical-or-passthrough rule.
+		a := ghdata.RepoAnswer{Status: http.StatusOK, Doc: string(body), Subject: numStr, ExpiresAt: now.Add(pullDiff406TTL)}
+		if err := h.store.PutRepoAnswer(r.Context(), diffKey, a, now); err != nil {
+			slog.Warn("pull diff cache write failed", "owner", owner, "repo", repo, "number", number, "error", err)
+		}
+		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+		h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
+		writePullDiff(w, a.Doc, false)
+		return
+	}
 	if overflow || resp.StatusCode != http.StatusNotAcceptable {
-		// A diff, or any other status, is deliberately never stored; a 2xx is still fresh proof of access.
+		// Any other status is never stored; a 2xx is still fresh proof of access.
 		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
 		h.replayUnstored(w, r, resp, body)
 		return
@@ -87,4 +106,20 @@ func upstream406Message(body []byte) string {
 		return "Not Acceptable"
 	}
 	return msg.Message
+}
+
+// pullDiffMaxBytes caps a stored diff; a larger one relays unstored.
+const pullDiffMaxBytes = 1 << 20
+
+// writePullDiff serves a stored diff byte for byte, under the media type
+// GitHub answers it with.
+func writePullDiff(w http.ResponseWriter, diff string, hit bool) {
+	w.Header().Set("Content-Type", "application/vnd.github.diff; charset=utf-8")
+	if hit {
+		w.Header().Set(cacheHeader, "hit")
+	} else {
+		w.Header().Set(cacheHeader, "miss")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(diff))
 }
