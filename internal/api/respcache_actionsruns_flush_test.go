@@ -134,6 +134,49 @@ func TestCachedWorkflowRuns_UnlistedRunStillFlushes(t *testing.T) {
 		"a run the page never listed changes the set, which only a fetch settles")
 }
 
+// GitHub's listing trails its own workflow_run.requested delivery. An answer
+// fetched after the delivery that omits the delivered run is behind truth: it
+// is served, but stored neither as the sha's page nor as truth's correction,
+// so the next read fetches again instead of serving "no run" until the run's
+// next delivery.
+func TestCachedWorkflowRuns_AnswerBehindDeliveryNotStored(t *testing.T) {
+	router, _, db, u := workflowRunsStack(t)
+	target := "/repos/org1/repo1/actions/runs?head_sha=" + shaTip
+
+	postWebhookJSON(t, router, "workflow_run", map[string]any{
+		"action":       "requested",
+		"workflow_run": upstreamWorkflowRun(97531, "New", shaTip, "queued", nil, nil),
+		"repository":   fixtureRepo(),
+	})
+
+	for i := int32(1); i <= 2; i++ {
+		w := do(t, router, authedReq("GET", target, nil))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "miss", w.Header().Get(cacheHeader), "an answer behind a delivery must not be served from cache")
+		assert.NotContains(t, w.Body.String(), "97531", "the lagging upstream answer is relayed as GitHub gave it")
+		assert.Equal(t, i, atomic.LoadInt32(&u.runsHits))
+	}
+	var snapshots, delivered int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs_cache`).Scan(&snapshots))
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM workflow_runs WHERE run_id = 97531`).Scan(&delivered))
+	assert.Zero(t, snapshots, "the lagging answer must not be stored")
+	assert.Equal(t, 1, delivered, "the lagging answer must not erase the delivered run from truth")
+
+	u.runs = func(w http.ResponseWriter, _ *http.Request) {
+		servePRJSON(w, map[string]any{"total_count": 3, "workflow_runs": []any{
+			upstreamWorkflowRun(97531, "New", shaTip, "queued", nil, nil),
+			upstreamWorkflowRun(9001, "CI", shaTip, "completed", "success", "2026-07-01T10:00:30Z"),
+			upstreamWorkflowRun(9002, nil, shaTip, "queued", nil, nil),
+		}})
+	}
+	w := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
+	assert.Contains(t, w.Body.String(), "97531")
+	w = do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "an answer that has caught up is stored")
+	assert.Equal(t, int32(3), atomic.LoadInt32(&u.runsHits))
+}
+
 // TestCachedWorkflowRuns_TTLBackstopExpiry: even with webhooks silent, a runs
 // page expires after its TTL -- the backstop for run DELETION, which emits no
 // webhook at all.
