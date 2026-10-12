@@ -76,9 +76,9 @@ const WIRE_TYPE = "application/vnd.gsm.timeline.v1";
 const WIRE_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js";
 
 // THIS MIRROR'S COLUMNS. The names are ours, not the library's — it decodes a
-// layout and takes the vocabulary as a parameter, which is what lets one
-// format serve more than one producer. Order is the wire order and must match
-// the Go encoder exactly; the golden fixture is what proves it does.
+// layout and takes the vocabulary as a parameter. This is what lets one format
+// serve more than one producer. Order is the wire order and must match the Go
+// encoder exactly; the golden fixture is what proves it does.
 const SCHEMA: WireSchema = {
     magic: "TLC1",
     deltaU: ["id"],
@@ -127,7 +127,7 @@ const MAX_FEED_INTERVALS = 512;
 const START_FEED_INTERVALS = 128;
 
 // Steer the feed size toward TARGET_FEED_MS from what the last call cost,
-// capped per step so one cheap call cannot license a huge one.
+// capped per step. Do this so one cheap call cannot license a huge one.
 function nextFeedSize(size: number, ms: number): number {
     const ceiling = Math.min(size * 4, MAX_FEED_INTERVALS);
     if (ms <= 0) return ceiling;
@@ -145,13 +145,13 @@ function* chunked(n: number, work: (from: number, to: number) => void): Task<voi
 }
 
 // The DEMO PREVIEW's decoder — not a wire fallback. /api/timeline speaks only
-// the columnar format; this exists because the backend-free styling preview
+// the columnar format. This exists because the backend-free styling preview
 // replaces the element's fetcher with one that hands over a canned
 // TimelineResponse literal from assets/demo-data.js (a hand-maintained JS
 // file, which binary cannot be). It lands in the SAME column representation,
 // so everything downstream — intervals, lanes, tooltips — has one shape to
-// handle, and it is sliced too: JSON.parse is one unbreakable native call, but
-// the transpose after it is ours. shipbench.mjs also drives it, to keep the
+// handle. It is sliced too: JSON.parse is one unbreakable native call, but the
+// transpose after it is ours. shipbench.mjs also drives it, to keep the
 // measurement that chose columnar reproducible.
 export function* pageFromJSONGen(resp: TimelineResponse): Task<DecodedPage> {
     const events = resp.events ?? [];
@@ -238,10 +238,10 @@ const str = (col: StringColumn, i: number): string => (col.idx === null ? "" : c
 // ---- columns → component translation ----
 
 // Per-row label and state are pure functions of a few dictionary INDICES and
-// the status, so they are resolved once per dictionary ENTRY (a handful) and
-// then read per row (100k). This is what keeps the hot loop below to typed-
-// array reads plus array indexing — no string comparisons, no per-row branch
-// on kind.
+// the status. They are resolved once per dictionary ENTRY (a handful) and then
+// read per row (100k). This is what keeps the hot loop below to typed- array
+// reads plus array indexing — no string comparisons, no per-row branch on
+// kind.
 
 // stateFor one (kind, disposition) pair — the chart's failed/dim marking.
 function stateForPair(kind: string, disp: string): string {
@@ -259,11 +259,11 @@ function stateForPair(kind: string, disp: string): string {
 }
 
 // intervalsGen builds intervals in BATCHES, handing each to emit as soon as it
-// is ready — and NOTHING else per row. The 19-field event object a tooltip
-// needs is built on hover (eventAt), which is most of why this outruns the
-// JSON path it replaced: 100k intervals now, one event object when someone
-// points at one. Batching is what lets the element show the newest slice of
-// the chart while the rest is still decoding.
+// is ready — and NOTHING else per row. Consider the 19-field event object a
+// tooltip. That event needs is built on hover (eventAt), which is most of why
+// this outruns the JSON path it replaced. This is 100k intervals now, one
+// event object when someone points at one. Batching is what lets the element
+// show the newest slice of the chart while the rest is still decoding.
 export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void): Task<void> {
     const kindC = c.s.kind, laneC = c.s.lane, dispC = c.s.disposition,
         repoC = c.s.repo, actionC = c.s.action;
@@ -325,13 +325,13 @@ export function* intervalsGen(c: Columns, emit: (batch: IntervalBatch) => void):
 }
 
 // laneKindsOf reads the page's COMPLETE lane set straight off the columns —
-// every lane is a dictionary entry, and one row per lane gives its kind — so
+// every lane is a dictionary entry, and one row per lane gives its kind. So
 // the chart can be told about all of them on the first feed.
 //
 // That matters for smoothness, not tidiness: a lane arriving mid-stream is a
-// STRUCTURAL change to the component, which forces it to re-cluster and
+// STRUCTURAL change to the component. This forces it to re-cluster and
 // re-assign every lane it holds. Discovering lanes batch by batch therefore
-// turned each batch into whole-chart work; declaring them up front leaves the
+// turned each batch into whole-chart work. Declaring them up front leaves the
 // component free to do only what changed.
 export function laneKindsOf(c: Columns): Array<{ lane: string; kind: string }> {
     const laneCol = c.s.lane, kindCol = c.s.kind;
@@ -556,12 +556,13 @@ class GsmTimeline extends HTMLElement {
     };
 
     // Feeds the chart in BATCHES, yielding between them: the first batch
-    // paints (and sets the viewport) while the rest is still being built, and
-    // no single setData/mergeData call ever sees 100k intervals — the
+    // paints (and sets the viewport) while the rest is still being built. No
+    // single setData/mergeData call ever sees 100k intervals — the
     // component's own ingestion is main-thread work too. merge feeds one
     // decoded page into the chart. Used by BOTH paths — the live poll and
-    // the history loader — which differ only in what they cover and whether
-    // they advance the live cursor (the caller decides; see loadRange).
+    // the history loader. This is which differ only in what they cover and
+    // whether they advance the live cursor (the caller decides. See
+    // loadRange).
     private async merge(tl: TimelineViewElement, page: DecodedPage,
                         coverage: { start: number; end: number }): Promise<void> {
 
@@ -602,8 +603,8 @@ class GsmTimeline extends HTMLElement {
             }
         }
 
-        // An empty poll is still proof the feed is alive — and the first
-        // one still has to seed the chart, or an idle mirror renders nothing.
+        // An empty poll is still proof the feed is alive. The first one still
+        // has to seed the chart, or an idle mirror renders nothing.
         if (empty && !this.seeded) {
             this.seeded = true;
             const lanes = this.computeLanes();
@@ -617,7 +618,7 @@ class GsmTimeline extends HTMLElement {
     }
 
     // loadRange answers the component's history requests. It is clamped to
-    // HISTORY_SPAN_MS per call and merged in the same sliced batches as a
+    // HISTORY_SPAN_MS per call. It merged in the same sliced batches as a
     // live poll, so panning into the past can never cost a frame either.
     private readonly loadRange: LoadRangeFn = async (start, end) => {
         const tl = this.view;
@@ -636,7 +637,7 @@ class GsmTimeline extends HTMLElement {
     };
 
     // feed hands ONE bounded batch to the component: the first call seeds the
-    // chart (and the viewport), every later one merges — never setData, which
+    // chart (and the viewport), every later one merges — never setData. This
     // would wipe held data and reset sub-track packing mid-view.
     private feed(tl: TimelineViewElement, intervals: TimelineInterval[],
                  coverage: { start: number; end: number }): void {

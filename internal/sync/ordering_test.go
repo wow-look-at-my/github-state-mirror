@@ -16,10 +16,10 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// The out-of-order gate. GitHub orders nothing; these pin that a view older
-// than already applied never writes, that the grain is fine enough for
-// "older" to mean "superseded", and that what a refused delivery still carries
-// -- facts that cannot be stale -- is kept.
+// The out-of-order gate. GitHub orders nothing. These pin that a view older
+// than already applied never writes, that the grain is fine enough for "older"
+// to mean "superseded". These also pin that what a refused delivery still
+// carries -- facts that cannot be stale -- is kept.
 
 func statusPayload(t *testing.T, repo, sha, context, state, updatedAt string) json.RawMessage {
 	t.Helper()
@@ -133,7 +133,7 @@ func TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther(t *testing.T) {
 }
 
 // A CI result's newer view arriving FIRST, then its older one, ends on the newer
-// view: deliveries apply on arrival and the watermark refuses the older snapshot.
+// view. Deliveries apply on arrival and the watermark refuses the older snapshot.
 func TestOrdering_OutOfOrderSnapshotsEndOnTheNewestView(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -185,7 +185,7 @@ func TestOrdering_SupersededPushStillAbsorbsItsCommits(t *testing.T) {
 	assert.Equal(t, "repository.pushed_at", sample[0].ClockField)
 }
 
-// A payload with no clock this service can use applies as it always did, and
+// A payload with no clock this service can use applies as it always did. It
 // is counted as unorderable rather than silently treated as in-order.
 func TestOrdering_UnorderablePayloadStillApplies(t *testing.T) {
 	dispatcher, _, _, _ := setupDispatcher(t)

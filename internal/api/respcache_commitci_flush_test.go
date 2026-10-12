@@ -11,7 +11,7 @@ import (
 )
 
 // Commit-CI route tests for the raw statuses LIST (both path spellings) and
-// for everything that makes a stored answer stop being served: webhook
+// for everything that makes a stored answer stop being served. Webhook
 // flushes, the TTL backstop, non-200s, and a reveal denial.
 
 func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
@@ -72,10 +72,10 @@ func TestCachedStatusesList_MissAbsorbHit(t *testing.T) {
 }
 
 // TestStatusPublishPassthrough is the HIGHEST-BLAST-RADIUS regression guard
-// for the statuses-list registration: POST /repos/{o}/{r}/statuses/{sha} is
-// required-builds' status PUBLISH -- the org-wide all-builds gate rides on it
-// -- and it must reach the upstream proxy untouched (the GET-only route falls
-// to chi's MethodNotAllowed -> the passthrough proxy) and be recorded as a
+// for the statuses-list registration. POST /repos/{o}/{r}/statuses/{sha} is
+// required-builds' status PUBLISH -- the org-wide all-builds gate rides on
+// it. It must reach the upstream proxy untouched (the GET-only route falls to
+// chi's MethodNotAllowed -> the passthrough proxy) and be recorded as a
 // write, never swallowed by the cache.
 func TestStatusPublishPassthrough(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
@@ -105,7 +105,7 @@ func TestStatusPublishPassthrough(t *testing.T) {
 //
 // have changed. - A `status` delivery CARRIES the status, so the documents it
 // can identify are rewritten and keep serving. The combined status names the
-// sha it resolved to, which is what makes a branch-form row usable; the raw
+// sha it resolved to, which is what makes a branch-form row usable. The raw
 // list is a bare array with no sha in it, so only the sha-form row is
 // provably about.
 func TestCachedCommitCI_WebhookFlush(t *testing.T) {
@@ -182,9 +182,9 @@ func TestCachedCommitCI_WebhookFlush(t *testing.T) {
 }
 
 // A check run is UPDATED IN PLACE upstream -- the same id moves queued ->
-// in_progress -> completed -- so a delivery states the new value of entry
-// and the stored page keeps its shape. The pin is the same as the status:
-// the rewritten page must be what a fetch would now return, byte for byte.
+// in_progress -> completed -- so a delivery states the new value of entry.
+// The stored page keeps its shape. The pin is the same as the status: the
+// rewritten page must be what a fetch would now return, byte for byte.
 func TestCachedCommitCI_CheckRunEventRewritesThePage(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/" + shaTip + "/check-runs"
@@ -223,10 +223,11 @@ func TestCachedCommitCI_CheckRunEventRewritesThePage(t *testing.T) {
 
 // TestCachedCommitCI_StatusEventRewritesTheCombinedDoc is the identity pin for
 // the rewrite: a status delivery's effect on a stored document must be
-// indistinguishable from the fetch it saved. The stored answer after the
-// delivery is byte-compared against what the same route returns upstream
-// reports the new status -- so a drifted field order, a wrong rollup, or an
-// entry in the wrong position fails here rather than in a consumer.
+// indistinguishable from the fetch it saved. Consider the stored answer after
+// the delivery. That answer is byte-compared against what the same route
+// returns upstream reports the new status. A drifted field order, a wrong
+// rollup, or an entry in the wrong position fails here rather than in a
+// consumer.
 func TestCachedCommitCI_StatusEventRewritesTheCombinedDoc(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/" + shaTip + "/status"
@@ -294,10 +295,10 @@ func TestCachedCommitCI_TTLBackstopExpiry(t *testing.T) {
 
 // TestCachedCommitCI_ForbiddenAndErrorNotStored: a -- the caller's OWN
 // credential lacking Checks API scope entirely, a fact about the CALLER, not
-// the ref -- and a 5xx are relayed verbatim and store nothing, on both
-// routes. Unlike a (see TestCachedCommitCI_404VerdictCached below), a
-// here must never mint a row: this table has no actor column, so a cached
-// denial would wrongly answer a differently-scoped caller too.
+// the ref -- and a 5xx are relayed. Verbatim and store nothing, on both
+// routes. Unlike a (see TestCachedCommitCI_404VerdictCached below), a here
+// must never mint a row: this table has no actor column. A cached denial
+// would wrongly answer a differently-scoped caller too.
 func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	router, _, db, u := commitCIStack(t)
 	forbidden := func(w http.ResponseWriter, r *http.Request) {
@@ -331,13 +332,13 @@ func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	assert.Zero(t, count, "a 403/5xx answer must store no snapshot")
 }
 
-// TestCachedCommitCI_404VerdictCached: the unknown-ref verdict IS
-// absorbed (the compare_cache precedent) -- a fine-grained-PAT CI watcher
-// re-polls a sha that never resolves, re-earning the same on every
-// sweep, and this is where % of the mirror's uncached traffic came from
-// before this existed. Absorbed as a status- row ({"message":...,
-// "status": ""}, documentation_url dropped), served from state on the
-// next read (upstream calls), and flushed by a push naming the ref.
+// TestCachedCommitCI_404VerdictCached: the unknown-ref verdict IS absorbed
+// (the compare_cache precedent). A fine-grained-PAT CI watcher re-polls a sha
+// that never resolves. That watcher is re-earning the same on every sweep,
+// and this is where % of the mirror's uncached traffic came from before this
+// existed. Absorbed as a status- row ({"message":..., "status": ""},
+// documentation_url dropped), served from state on the next read (upstream
+// calls), and flushed by a push naming the ref.
 func TestCachedCommitCI_404VerdictCached(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	real404 := func(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +376,7 @@ func TestCachedCommitCI_404VerdictCached(t *testing.T) {
 }
 
 // TestCachedCommitCI_RevealDenied: an unauthorized caller gets GitHub's own
-// relayed denial and never reaches the CI fetch; the repeat request is
+// relayed denial and never reaches the CI fetch. The repeat request is
 // answered from the deny cache without touching GitHub.
 func TestCachedCommitCI_RevealDenied(t *testing.T) {
 	router, _, _, u := commitCIStack(t)

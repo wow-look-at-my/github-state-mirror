@@ -14,9 +14,9 @@ import (
 )
 
 // The reveal layer: WHO may read a piece of global truth. GitHub is the
-// permission oracle -- public repo, a live grant, a cached deny verdict, or a
-// live probe with the caller's own token decide it, in that order.
-// see docs/reveal-layer.md
+// permission oracle -- public repo, a live grant. A cached deny verdict, or a
+// live probe with the caller's own token decide it, in that order. see
+// docs/reveal-layer.md
 
 // Deny-verdict resource kinds (deny_cache.resource_kind).
 const (
@@ -175,7 +175,7 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 }
 
 // serveDenyVerdict writes a deny verdict as a trimmed GitHub-style error body
-// and records the request: a cached verdict is a hit (answered from state), a
+// and records the request. A cached verdict is a hit (answered from state), a
 // fresh probe answer is a miss (asked GitHub, absorbed the verdict).
 func (h *handlers) serveDenyVerdict(w http.ResponseWriter, r *http.Request, v ghdata.DenyVerdict, cached bool) {
 	body, err := marshalTrimmed(notFoundJSON{Message: v.Message, Status: strconv.Itoa(v.Status)})

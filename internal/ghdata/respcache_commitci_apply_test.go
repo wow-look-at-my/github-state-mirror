@@ -38,9 +38,9 @@ func update(context, state, created string) CommitStatusUpdate {
 	}
 }
 
-// A re-posted context is a NEW status upstream, and the combined status holds
-// the latest per context oldest- -- so the entry LEAVES its old
-// position and lands at the end, with the rollup recomputed.
+// A re-posted context is a NEW status upstream. The combined status holds the
+// latest per context oldest- -- so the entry LEAVES its old position and
+// lands at the end, with the rollup recomputed.
 func TestPatchCombinedStatus_ReplacedContextMovesToTheEnd(t *testing.T) {
 	doc := combinedDoc(t, "pending",
 		statusItem("ci/build", "success", "2026-07-01T10:00:00Z"),
@@ -69,7 +69,7 @@ func TestPatchCombinedStatus_NewContextAppends(t *testing.T) {
 	assert.Equal(t, "failure", d.State, "one failing context fails the rollup")
 }
 
-// An `error` state rolls up as failure, and failure outranks a pending
+// An `error` state rolls up as failure. Failure outranks a pending
 // context -- GitHub's documented combined state, which the rewrite has to
 // reproduce exactly or a hit and a miss disagree.
 func TestPatchCombinedStatus_Rollup(t *testing.T) {
@@ -95,7 +95,7 @@ func TestPatchCombinedStatus_Rollup(t *testing.T) {
 	}
 }
 
-// Everything the rewrite cannot PROVE it would get right refuses, and the
+// Everything the rewrite cannot PROVE it would get right refuses. The
 // caller drops the row instead -- which is what happened to every of these
 // before the rewrite existed, so refusing costs nothing.
 func TestPatchCombinedStatus_RefusesWhatItCannotProve(t *testing.T) {
@@ -224,7 +224,7 @@ func checkRunsDoc(t *testing.T, runs ...StoredCheckRun) string {
 	return string(b)
 }
 
-// A check run keeps its id across the whole lifecycle, and the listing is
+// A check run keeps its id across the whole lifecycle. The listing is
 // ordered by id, so a rewrite replaces the entry where it stands and every
 // other run is untouched.
 func TestPatchCheckRunsPage_ReplacesInPlace(t *testing.T) {
@@ -245,7 +245,7 @@ func TestPatchCheckRunsPage_ReplacesInPlace(t *testing.T) {
 	assert.Equal(t, "failure", *page.CheckRuns[1].Conclusion)
 }
 
-// A run the page does not list yet is a member the delivery NAMES, so it is
+// A run the page does not list yet is a member the delivery NAMES. It is
 // added at its place in the id-descending order rather than costing the row.
 func TestPatchCheckRunsPage_InsertsANewRunInIDOrder(t *testing.T) {
 	started := "2026-07-01T10:00:00Z"
@@ -332,13 +332,13 @@ func TestPatchCheckRunsPage_RefusesWhatItCannotProve(t *testing.T) {
 }
 
 // The end of a CI run must leave the page STANDING. This is the shape that
-// wedged an `all-builds` gate for a day: a page of finished jobs, the last of
+// wedged an `all-builds` gate for a day. A page of finished jobs, the last of
 // them completing, and then another job created moments later. Dropping the row
-// on that creation sends the next reader to GitHub inside the window where
-// GitHub's own listing still reports the finished job as in_progress and does
-// not report the new job at all -- so the refetch stores a view older than the
-// deliveries already in hand, and a finished CI sends nothing further to
-// correct it.
+// on that creation sends the next reader to GitHub inside the window. This
+// happens where GitHub's own listing still reports the finished job as
+// in_progress. It does not report the new job at all -- so the refetch stores a
+// view older than the deliveries already in hand. A finished CI sends nothing
+// further to correct it.
 func TestApplyCheckRunToCommitCI_SurvivesTheEndOfACIRun(t *testing.T) {
 	s := testStore(t)
 	ctx, now := context.Background(), time.Now()
@@ -468,9 +468,9 @@ func TestApplyCheckRunToCommitCI_LeavesOtherCommitsAlone(t *testing.T) {
 }
 
 // SettleCommitCIFromStatus decides which ROWS it may touch from what the
-// payload can identify, not from the spellings the caller names: a combined
+// payload can identify, not from the spellings the caller names. A combined
 // status states the sha it resolved to, so a branch-form row pointing at
-// another commit was not moved by this status and must keep serving.
+// another commit was not moved by this status. It must keep serving.
 func TestSettleCommitCIFromStatus_LeavesRowsAboutOtherCommits(t *testing.T) {
 	s := testStore(t)
 	ctx, now := context.Background(), time.Now()

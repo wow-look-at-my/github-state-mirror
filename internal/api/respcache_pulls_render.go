@@ -11,7 +11,7 @@ import (
 
 // ---- absorbing REST PR bodies ----
 
-// restPRJSON is the upstream shape both PR routes parse: the "simple PR" of a
+// restPRJSON is the upstream shape both PR routes parse. The "simple PR" of a
 // list item, plus the merge-status fields only the single-PR response carries.
 type restPRJSON struct {
 	Number         int64   `json:"number"`

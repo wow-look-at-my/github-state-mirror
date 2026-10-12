@@ -73,8 +73,9 @@ func (g *writeGate) acquire(ctx context.Context) error {
 	}
 }
 
-// abandon leaves the queue. A turn handed over while the waiter was giving up
-// is passed on to the next writer, so the gate is never left held by nobody.
+// abandon leaves the queue. Consider a turn handed over while the waiter.
+// That turn was giving up is passed on to the next writer, so the gate is
+// never left held by nobody.
 func (g *writeGate) abandon(turn chan struct{}, err error) error {
 	g.mu.Lock()
 	for i, ch := range g.queue {
@@ -290,9 +291,10 @@ func WriteHeldRequests() []string {
 }
 
 // RunWithTxGuard runs a test binary with http.DefaultTransport wrapped in
-// NoWriteHeldTransport, and fails it if any test sent a request while holding
-// a database write lock. Every outbound client here bottoms out in
-// http.DefaultTransport. Call it from TestMain before anything builds a client.
+// NoWriteHeldTransport. RunWithTxGuard fails it if any test sent a request
+// while holding a database write lock. Every outbound client here bottoms out
+// in http.DefaultTransport. Call it from TestMain before anything builds a
+// client.
 func RunWithTxGuard(m interface{ Run() int }) int {
 	http.DefaultTransport = NoWriteHeldTransport(http.DefaultTransport)
 	code := m.Run()

@@ -15,9 +15,7 @@ import (
 )
 
 // Bare-repo route tests (GET /repos/{owner}/{repo}). This route has no
-// snapshot table: it rebuilds from the repos TRUTH row, so the fake
-// upstream's bare-repo endpoint (u.probe) answers BOTH the reveal probe and
-// this route's miss fetches -- probeHits counts them together.
+// snapshot table. It rebuilds from the repos TRUTH row.
 
 // TestCachedRepo_SeededPublicRowHit: a complete public truth row (e.g.
 // webhook-maintained) serves the trimmed rebuild with upstream calls --
@@ -48,9 +46,9 @@ func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 	assert.Len(t, body, 8, "the rebuild emits exactly the eight modeled keys (no url, no pushed_at, no fork/id)")
 }
 
-// TestCachedRepo_PrivateProbeAbsorbsThenHit: a private repo's touch
-// pays exactly upstream call -- the reveal probe, whose body absorbs
-// the repository object into truth -- and the handler then serves from that
+// TestCachedRepo_PrivateProbeAbsorbsThenHit: a private repo's touch pays
+// exactly upstream call -- the reveal probe, whose body absorbs the
+// repository object into truth. The handler then serves from that
 // just-absorbed row as a HIT. The grant is remembered, so later reads stay
 // probe-free.
 func TestCachedRepo_PrivateProbeAbsorbsThenHit(t *testing.T) {
@@ -77,8 +75,8 @@ func TestCachedRepo_PrivateProbeAbsorbsThenHit(t *testing.T) {
 
 // TestCachedRepo_IncompleteRowFetchesAndHeals: a row that cannot answer the
 // rebuild (here: public but no known default branch, the GraphQL-seeded
-// shape) falls to the fetch path, whose absorbed heals the row -- the
-// next read hits with no further upstream calls.
+// shape) falls to the fetch path, whose absorbed heals the row. The next
+// read hits with no further upstream calls.
 func TestCachedRepo_IncompleteRowFetchesAndHeals(t *testing.T) {
 	router, store, _, u := respCacheStack(t)
 

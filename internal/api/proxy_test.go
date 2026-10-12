@@ -18,7 +18,7 @@ func testAuth() *auth.Service {
 
 // TestProxy_ForwardsUnknownRESTPath verifies that a path the mirror does not
 // cache is transparently forwarded to GitHub: method, path, query, token, and
-// body are passed through, and the upstream status/body/headers come back. CORS
+// body are passed through. The upstream status/body/headers come back. CORS
 // headers are applied because chi runs Use middleware around the NotFound route.
 func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 	var gotMethod, gotPath, gotQuery, gotAuth string
@@ -53,7 +53,7 @@ func TestProxy_ForwardsUnknownRESTPath(t *testing.T) {
 }
 
 // TestProxy_DeduplicatesCORS verifies that when GitHub returns its own CORS
-// headers (it does — Access-Control-Allow-Origin: *), the forwarded response
+// headers (it does — Access-Control-Allow-Origin: *). The forwarded response
 // carries exactly Access-Control-Allow-Origin (the mirror's) so browsers do
 // not reject it for having multiple values, while Expose-Headers is preserved.
 func TestProxy_DeduplicatesCORS(t *testing.T) {
@@ -119,7 +119,7 @@ func TestProxy_Uncached(t *testing.T) {
 
 // TestProxy_MethodNotAllowedForwarded verifies that a known path hit with an
 // unregistered method (e.g. POST /user, which only exists as GET) is forwarded
-// rather than 'd, so the mirror is a complete GitHub surface.
+// rather than 'd. The mirror is a complete GitHub surface.
 func TestProxy_MethodNotAllowedForwarded(t *testing.T) {
 	var gotMethod, gotPath string
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

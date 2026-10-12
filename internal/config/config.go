@@ -86,16 +86,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		WebhookRelayURLs:     relayURLs,
-		ListenAddr:           envOr("LISTEN_ADDR", ":8080"),
-		DBPath:               envOr("DB_PATH", "github-mirror.db"),
-		WebhookSecret:        os.Getenv("WEBHOOK_SECRET"),
-		SubscriptionsDBPath:  os.Getenv("SUBSCRIPTIONS_DB_PATH"),
-		AllowedOrigins:       parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RefreshInterval:      refreshInterval,
-		ReplayInterval:       replayInterval,
-		PassthroughDebounce:  debounce,
-		CacheMaxRows:         cacheMaxRows,
+		WebhookRelayURLs:    relayURLs,
+		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
+		DBPath:              envOr("DB_PATH", "github-mirror.db"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		SubscriptionsDBPath: os.Getenv("SUBSCRIPTIONS_DB_PATH"),
+		AllowedOrigins:      parseOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RefreshInterval:     refreshInterval,
+		ReplayInterval:      replayInterval,
+		PassthroughDebounce: debounce,
+		CacheMaxRows:        cacheMaxRows,
 
 		GitHubAppID:             os.Getenv("GITHUB_APP_ID"),
 		GitHubAppPrivateKey:     os.Getenv("GITHUB_APP_PRIVATE_KEY"),
@@ -267,7 +267,7 @@ func parseAdmins(s string) set.Set[string] {
 }
 
 // sessionSecret returns the HMAC key for session cookies. When SESSION_SECRET is
-// set it is used verbatim; otherwise a random per-process key is generated, which
+// set it is used verbatim. Otherwise a random per-process key is generated, which
 // means existing sessions are invalidated on restart (acceptable for a cache).
 func sessionSecret(env string) []byte {
 	if env != "" {

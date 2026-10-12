@@ -18,14 +18,14 @@ import (
 // This file is the data API's front door: who is asking. router.go is the
 // route table that mounts it.
 
-// requireAuth enforces that every data request carries a usable GitHub token. It resolves the token's identity against GitHub, rejects an absent, malformed or revoked credential, injects the token into the request context, and records the caller's PRINCIPAL.
+// requireAuth enforces that every data request carries a usable GitHub token. It resolves the token's identity against GitHub, rejects an absent, malformed or revoked credential, injects the token into the request context. It records the caller's PRINCIPAL.
 //
 // The principal is "user:<numeric GitHub user id>". It says who is asking, so
 // it gates what reveal.go REVEALS; it never partitions what the cache STORES.
-// The numeric id keys it because an id survives a login rename and is never
-// recycled, so a user keeps the grants they earned across rotating tokens.
-// A request must never fall through to the service's own App credential, which
-// can read far more than the caller.
+// The numeric id keys it. This is because an id survives a login rename and is
+// never recycled, so a user keeps the grants they earned across rotating
+// tokens. A request must never fall through to the service's own App
+// credential, which can read far more than the caller.
 func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,14 +36,8 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			}
 			ctx := ghclient.WithToken(r.Context(), token)
 
-			// Trusted-app mode: a caller may assert a stable identity with a
-			// GitHub App JWT in X-Mirror-Identity. We verify it against GitHub
-			// (GET /app — unforgeable, since only the app's private key produces
-			// a JWT GitHub accepts) and partition that caller by the app, NOT by
-			// the token fingerprint. This lets a -party app whose
-			// installation tokens rotate hourly share warm cache bucket,
-			// while the Authorization token is still used for upstream fetches so
-			// per-repo authorization is preserved. Callers without this header
+			// Trusted-app mode: a caller may assert a stable identity with a GitHub App JWT in X-Mirror-Identity. We verify it against GitHub (GET /app — unforgeable, since only the app's private key produces a JWT GitHub accepts) and partition that caller by the app, NOT by the token fingerprint. This lets a -party app whose installation tokens rotate hourly share warm cache bucket. This happens while the Authorization token is still used for
+			// upstream fetches so per-repo authorization is preserved. Callers without this header
 			if idJWT := r.Header.Get("X-Mirror-Identity"); idJWT != "" {
 				ident, err := gh.VerifyAppIdentity(ctx, idJWT)
 				if err != nil {
@@ -93,8 +87,8 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 type identityRecorder func(ctx context.Context, actorFP, login string)
 
 // newIdentityRecorder returns a recorder that upserts the actor->login mapping,
-// debounced to at most per minute per actor so the hot request path does
-// not write on every call.
+// debounced to at most per minute per actor. So the hot request path does not
+// write on every call.
 func newIdentityRecorder(store *ghdata.Store) identityRecorder {
 	var lastWrite sync.Map // actorFP -> time.Time
 	return func(ctx context.Context, actorFP, login string) {

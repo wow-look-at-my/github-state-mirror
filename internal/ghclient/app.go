@@ -125,9 +125,9 @@ func (a *AppAuthenticator) FailedHookDeliveries(ctx context.Context) ([]HookDeli
 	return out, nil
 }
 
-// RedeliverHook asks GitHub to resend delivery, which arrives as an
-// ordinary delivery carrying its ORIGINAL payload -- the write paths refusing
-// a stale view, not idempotence, are what makes replaying it safe.
+// RedeliverHook asks GitHub to resend delivery, which arrives as an ordinary
+// delivery carrying its ORIGINAL payload. RedeliverHook the write paths
+// refusing a stale view, not idempotence, are what makes replaying it safe.
 // see docs/webhooks/delivery-gaps.md
 func (a *AppAuthenticator) RedeliverHook(ctx context.Context, deliveryID int64) error {
 	jwt, err := a.mintJWT(time.Now())

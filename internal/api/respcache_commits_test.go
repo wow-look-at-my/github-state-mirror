@@ -115,8 +115,8 @@ func commitsCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *com
 
 // TestCachedCommitsList_MissAbsorbHit covers the core flow: the read fetches
 // + absorbs (miss), the serves the identical trimmed body from state (hit,
-// upstream calls), the rebuild drops every URL field and the user-object
-// clutter -- and the absorbed commits land in the SAME global
+// upstream calls). The rebuild drops every URL field and the user-object
+// clutter. And the absorbed commits land in the SAME global
 // git_commits_cache rows the git-commit route serves.
 func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
@@ -163,10 +163,10 @@ func TestCachedCommitsList_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedCommitsList_PageAndRefKeying: every modeled query dimension is its
-// own snapshot -- page= vs page=, ref vs another vs the bare default --
-// and, unlike the pulls list, a page as long as per_page is still served from
-// state (the snapshot IS that exact page's answer; the next page has its own
-// key, so there is nothing to truncate).
+// own snapshot -- page= vs page=, ref vs another vs the bare default. And,
+// unlike the pulls list, a page as long as per_page is still served from state
+// (the snapshot IS that exact page's answer. The next page has its own key, so
+// there is nothing to truncate).
 func TestCachedCommitsList_PageAndRefKeying(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
 
@@ -340,7 +340,7 @@ func TestCachedCommitsList_Non200NotStored(t *testing.T) {
 }
 
 // TestCachedCommitsList_RevealDenied: an unauthorized caller gets GitHub's own
-// relayed denial and never reaches the commits fetch; the repeat request is
+// relayed denial and never reaches the commits fetch. The repeat request is
 // answered from the deny cache without touching GitHub.
 func TestCachedCommitsList_RevealDenied(t *testing.T) {
 	router, _, _, u := commitsCacheStack(t)
@@ -364,7 +364,7 @@ func TestCachedCommitsList_RevealDenied(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.listHits))
 }
 
-// TestParseCommitsListShape_Defaults pins the shape parser: the bare query is
+// TestParseCommitsListShape_Defaults pins the shape parser. The bare query is
 // cacheable at GitHub's defaults, the pr-minder fork-point shape parses, and
 // everything unmodeled is refused.
 func TestParseCommitsListShape_Defaults(t *testing.T) {

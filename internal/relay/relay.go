@@ -1,7 +1,7 @@
 // Package relay forwards each verified webhook delivery to extra targets. The
 // GitHub App has one webhook URL, so a second consumer of the same deliveries
 // gets them only from here. GitHub never retries a delivery and its failure
-// log records the mirror's answer, not the relay's, so a relay failure is
+// log records the mirror's answer, not the relay's. A relay failure is
 // invisible unless this package reports it. See docs/webhooks/relay.md.
 package relay
 

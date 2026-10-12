@@ -71,13 +71,13 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 
 ## repository
 
-Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows WRONG rather than stale. They are keyed by a name that no longer means what it did. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
+Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows Incorrect rather than stale. A name that no longer means what it did keys they. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
 
 ## installation / installation_repositories
 
-`install_token_cache` and `repo_installation_cache` by id, plus a sweep of every absent-installation verdict and the whole `installation_repos_cache`. **Justified**: the delivery is precisely the news that an installation's coverage changed. Neither the verdicts nor the listings carry an id to match on. A suspended installation must stop serving minted tokens immediately. Applying anything here means inventing the new coverage.
+`install_token_cache` and `repo_installation_cache` by id, plus a sweep of every absent-installation verdict and the whole `installation_repos_cache`. **Justified**: the delivery is accurately the news that an installation's coverage changed. Neither the verdicts nor the listings carry an id to match on. A suspended installation must stop serving minted tokens immediately. Applying anything here means inventing the new coverage.
 
 ## label
 
@@ -90,7 +90,7 @@ Rewriting a stored document from a payload is only correct if the result matches
 - Statuses are **append-only**. Re-posting a context creates a new status object with a new id and a new `created_at`. Nothing is mutated in place. That is why the raw list keeps every one of them. The combined status keeps one per context.
 - `/statuses` is **newest-first**. A new status is PREPENDED, and the context's older entries stay.
 - `/status` holds the **latest per context, oldest-first**, which is exactly the raw list's per-context latest, reversed. A new status therefore leaves its context's old position and lands at the END.
-- Its `state` is the documented rollup. It is failure if any context is error or failure. It is pending if there are no contexts, or any context is pending. Otherwise it is success. `total_count` is the array's own length.
+- Its `state` is the documented rollup. It is failure if any context is error or failure. It pends if there are no contexts, or any context is pending. Otherwise it is success. `total_count` is the array's own length.
 
 Every rewrite refuses unless the stored page PROVES it can hold the result. It must be page 1, with the whole set present, with room for a new entry. The status must also be the newest on the commit, because an older one's position is unknown. A refusal drops the row, which is what happened to every one of these before the rewrite existed.
 
@@ -102,9 +102,11 @@ What the payload can IDENTIFY decides which rows are reached. The ref spellings 
 
 A check run is not a status. A status is APPEND-ONLY, because re-posting a context mints a new object. A check run is UPDATED IN PLACE, because one id carries the run from queued through completed. The rewrite therefore never has to decide where an entry goes. It only has to know that the entry does not MOVE when it changes.
 
-That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one. This rules out completion ordering. The order was byte-identical across both samples while one run moved from in_progress to completed.
+That was measured, not assumed, on this repo's own head commit, sampled twice across a status transition. The listing is **id-descending**. The sample that discriminates is a run with a LOWER id and a LATER `completed_at` sorting AFTER a higher-id one. This rules out completion ordering. The order was byte-same across both samples while one run moved from in_progress to completed.
 
-Id ordering also fixes where a run the page does not list yet BELONGS. A creation is therefore an insert rather than a flush. This is the case that mattered. The last deliveries of a CI run are a new job's creation and a queued job's start. They land in the seconds where GitHub's own listing is furthest behind them. Flushing there sent the next reader upstream at exactly that moment. The answer it absorbed was OLDER than the payloads already in hand. A finished run then sends nothing more, so the stale page stood for its whole TTL. One measured instance held an `all-builds` gate pending for a day with every job green. The cached page still reported a job that had finished as `in_progress`, and omitted a job created a second later.
+Id ordering also fixes where a run the page does not list yet BELONGS. A creation is therefore an insert rather than a flush. This is the case that mattered. The last deliveries of a CI run are a new job's creation and a queued job's start. They land in the seconds where GitHub's own listing is furthest behind them. Flushing there sent the next reader upstream at exactly that moment.
+
+The answer it absorbed was OLDER than the payloads already in hand. A finished run then sends nothing more, so the stale page stood for its whole TTL. One measured instance held an `all-builds` gate pending for a day with every job green. The cached page still reported a job that finished as `in_progress`, and omitted a job created a second later.
 
 Membership can therefore GROW from a payload, because a creation names the commit its run belongs to. What no delivery ever states is that a run went AWAY. That is what the TTL still bounds. The `workflow_jobs_cache` split has a fetch prove membership and deliveries maintain entries, with the asymmetry that a creation is itself a membership statement.
 
@@ -119,9 +121,11 @@ A page carries no sha of its own. Every ENTRY does. That is what makes a page ab
 
 ## Live job state
 
-The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job had finished was stored, because a queued or running job is a live value. The GHA runner coordinator provisions against. No TTL short enough to be safe there is long enough to be worth having.
+The Actions job reads were the largest passthrough in the mirror by a wide margin. `runs/{id}/jobs` alone was 67.5% of it. They were never a missing cache route. They were modeled and declined on purpose. Only a page whose every job finished was stored, because a queued or running job is a live value. The GHA runner coordinator provisions against.
 
-That reasoning is right about a TTL and wrong about the only instrument available. A `workflow_job` delivery carries the whole job object. A stored answer therefore does not have to age toward the truth. It can be told. The split:
+No TTL short enough to be safe there is long enough to be worth having.
+
+That reasoning is right about a TTL and incorrect about the only instrument available. A `workflow_job` delivery carries the whole job object. A stored answer therefore does not have to age toward the truth. It can be told. The split:
 
 - A **fetch** proves the page's MEMBERSHIP, meaning which jobs belong to the run and in what order. Webhooks cannot establish that. Nothing in a delivery says "and that is all of them".
 - The **deliveries** keep each entry's contents current, rewritten in place as the job moves.
@@ -163,4 +167,4 @@ Already done:
 - A sha's runs pages on a `workflow_run` delivery.
 - The cross-kind flushing that had every CI delivery dropping every commit-CI kind.
 
-Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-identical to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove. The entry does not move.
+Each rewrite rests on a measurement of the listing's ORDER, because a rewritten document has to be byte-same to the fetch it saved. Those measurements are recorded above rather than assumed. The pattern they share is worth naming. Where an entry is APPEND-ONLY upstream, as a commit status is, the rewrite has to place it. Where an entry is UPDATED IN PLACE, as a check run, a workflow run and a job are, it only has to prove. The entry does not move.

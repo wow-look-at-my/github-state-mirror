@@ -410,7 +410,7 @@ export interface ConsistencyReport {
     notes?: string[];
 }
 
-// One NDJSON line from the streaming consistency check / reconcile (GET/POST /api/cache/check?stream=1): checker progress events while the run works, then exactly one terminal line — phase "report" carrying the full ConsistencyReport, or phase
+// One NDJSON line from the streaming consistency check / reconcile (GET/POST /api/cache/check?stream=1): checker progress events while the run works, then exactly one terminal line. Phase "report" carrying the full ConsistencyReport, or phase
 // "error" when the run failed mid-stream.
 export interface CheckProgressEvent {
     phase: string;
