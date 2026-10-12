@@ -179,8 +179,8 @@ func (h *handlers) cachedWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Every listed run enters truth regardless of shape, keeping listing rows warm for free.
-	h.absorbWorkflowRunsIntoTruth(r, owner, repo, shape, parsed, now)
-	if !shape.listing() {
+	behind := h.absorbWorkflowRunsIntoTruth(r, owner, repo, shape, parsed, now)
+	if !shape.listing() && !behind {
 		if err := h.store.PutCachedWorkflowRuns(r.Context(), owner, repo, shape.HeadSHA, shape.PerPage, shape.Page, string(doc), now, workflowRunsCacheTTL); err != nil {
 			slog.Warn("workflow runs cache write failed", "owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "error", err)
 		}
@@ -223,28 +223,38 @@ func (h *handlers) workflowRunsFromTruth(r *http.Request, owner, repo string, sh
 }
 
 // absorbWorkflowRunsIntoTruth records every listed run, and on a short page- answer marks the set complete -- see docs/cache/rest-routes.md.
-func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) {
+// It reports true when truth holds a recently delivered run the answer omits:
+// the answer is behind truth, so neither its snapshot nor its completeness is recorded.
+// now is the instant before the fetch began.
+func (h *handlers) absorbWorkflowRunsIntoTruth(r *http.Request, owner, repo string, shape workflowRunsShape, parsed parsedWorkflowRuns, now time.Time) bool {
 	ctx := r.Context()
 	for _, run := range parsed.Runs {
 		if err := h.store.ApplyWorkflowRun(ctx, run.truth(owner, repo), now); err != nil {
 			slog.Warn("workflow run absorb failed", "owner", owner, "repo", repo, "run", run.ID, "error", err)
-			return
+			return false
 		}
 	}
 	if shape.Page != 1 || len(parsed.Runs) >= shape.PerPage {
-		return
+		return false
 	}
 	kept := make([]int64, 0, len(parsed.Runs))
 	for _, run := range parsed.Runs {
 		kept = append(kept, run.ID)
 	}
-	if err := h.store.ReconcileWorkflowRuns(ctx, owner, repo, shape.filter(), kept); err != nil {
+	ahead, err := h.store.ReconcileWorkflowRuns(ctx, owner, repo, shape.filter(), kept, now)
+	if err != nil {
 		slog.Warn("workflow runs reconcile failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
-		return
+		return false
+	}
+	if len(ahead) > 0 {
+		slog.Info("workflow runs answer omits delivered runs; serving it unstored",
+			"owner", owner, "repo", repo, "head_sha", shape.HeadSHA, "filters", shape.Filters, "runs", ahead)
+		return true
 	}
 	if err := h.store.MarkWorkflowRunsListComplete(ctx, owner, repo, shape.Filters, now, ghdata.WorkflowRunsListTTL); err != nil {
 		slog.Warn("workflow runs completeness write failed", "owner", owner, "repo", repo, "filters", shape.Filters, "error", err)
 	}
+	return false
 }
 
 // nullIfEmpty renders "not reported" as upstream's JSON null, not a fabricated empty string.

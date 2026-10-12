@@ -208,13 +208,18 @@ func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
 			CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:00:00Z",
 		}, now))
 	}
-	require.NoError(t, s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, []int64{1, 3}))
+	fetchedLater := now.Add(2 * WorkflowRunListingLag)
+	ahead, err := s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, []int64{1, 3}, fetchedLater)
+	require.NoError(t, err)
+	assert.Empty(t, ahead, "rows older than the listing lag are not ahead of the answer")
 	_, total, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, total, "the omitted run is gone; the listed ones stay")
 
 	// An empty complete answer means nothing matches (NOT IN () is a SQLite syntax error).
-	require.NoError(t, s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, nil))
+	ahead, err = s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, nil, fetchedLater)
+	require.NoError(t, err)
+	assert.Empty(t, ahead)
 	_, total, err = s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{Status: "queued"}, 100, 1)
 	require.NoError(t, err)
 	assert.Zero(t, total, "an empty complete answer empties the filter's set")
@@ -223,6 +228,42 @@ func TestWorkflowRuns_CompletenessMarkerAndReconcile(t *testing.T) {
 	require.NoError(t, s.MarkWorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", now, time.Minute))
 	require.NoError(t, s.InvalidateWorkflowRunsTruth(ctx, "org1", "repo1"))
 	assert.False(t, complete(now), "a repository event clears the completeness proof")
+}
+
+// TestReconcileWorkflowRuns_SparesDeliveredRunsTheAnswerPredates: GitHub's
+// listing trails workflow_run.requested, so an answer fetched right after the
+// delivery omits the run. The row stays and is reported; an older omitted row goes.
+func TestReconcileWorkflowRuns_SparesDeliveredRunsTheAnswerPredates(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Now()
+
+	apply := func(id int64, touched time.Time) {
+		require.NoError(t, s.ApplyWorkflowRun(ctx, WorkflowRun{
+			Owner: "org1", Repo: "repo1", RunID: id, HeadSHA: testSHA, Status: "queued",
+			CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-01T10:00:00Z",
+		}, touched))
+	}
+	apply(1, fetchedAt.Add(-3*WorkflowRunListingLag))
+	apply(2, fetchedAt.Add(-time.Second))
+	apply(3, fetchedAt.Add(time.Second))
+
+	ahead, err := s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{HeadSHA: testSHA}, nil, fetchedAt)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []int64{2, 3}, ahead, "runs delivered within the listing lag are ahead of the answer")
+
+	rows, total, err := s.ListWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{HeadSHA: testSHA}, 100, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, total, "only the run older than the listing lag is dropped")
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.RunID)
+	}
+	assert.ElementsMatch(t, []int64{2, 3}, ids)
+
+	ahead, err = s.ReconcileWorkflowRuns(ctx, "org1", "repo1", WorkflowRunFilter{HeadSHA: testSHA}, []int64{2, 3}, fetchedAt)
+	require.NoError(t, err)
+	assert.Empty(t, ahead, "runs the answer lists are never ahead of it")
 }
 
 // TestCachedGitCommitMiss_RoundTrip: put/get verdict, expiry as a
