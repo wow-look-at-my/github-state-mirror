@@ -873,12 +873,6 @@ CREATE INDEX idx_workflow_jobs_completed_at
 -- Empty string means "not reported" (the workflow_jobs convention) and is
 -- rendered as JSON null: name, conclusion (until completed), and
 -- run_started_at (until it starts) are exactly that case.
---
--- detail holds the rest of the single-run read (GET .../actions/runs/{id}),
--- written only by a source that carries the whole run object: a workflow_run
--- delivery or that read's own fetch. A job delivery or a listing absorb
--- never blanks it. detail_at is when it last landed, which bounds how long
--- the read serves the row without a fresh whole object.
 CREATE TABLE workflow_runs (
     owner          TEXT NOT NULL,              -- lowercased
     repo           TEXT NOT NULL,              -- lowercased
@@ -893,8 +887,6 @@ CREATE TABLE workflow_runs (
     created_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
     updated_at     TEXT NOT NULL DEFAULT '',   -- RFC3339, GitHub's own
     run_started_at TEXT NOT NULL DEFAULT '',   -- RFC3339, null while queued
-    detail         TEXT NOT NULL DEFAULT '',   -- JSON: the run fields the columns lack; '' = no whole object seen
-    detail_at      TEXT NOT NULL DEFAULT '',   -- RFC3339: when a whole run object last landed
     touched_at     TEXT NOT NULL,              -- RFC3339: when the mirror last applied anything
     PRIMARY KEY (owner, repo, run_id)
 );

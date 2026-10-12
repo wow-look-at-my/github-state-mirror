@@ -43,6 +43,7 @@ const (
 	denyKindMatchingRefs   = "matching_refs" // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
 	denyKindReadme         = "readme"        // GET /repos/{owner}/{repo}/readme[/{dir}]
 	denyKindWorkflows      = "workflows"     // GET /repos/{owner}/{repo}/actions/workflows[/{id}]
+	denyKindWorkflowRun    = "workflow_run"  // GET /repos/{owner}/{repo}/actions/runs/{run_id}
 )
 
 // revealOutcome is the reveal decision for request.

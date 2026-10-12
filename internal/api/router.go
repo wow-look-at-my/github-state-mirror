@@ -157,6 +157,8 @@ func NewRouter(
 
 		// Cached workflow-runs listing, head_sha required; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/runs", h.cachedWorkflowRuns)
+		// Cached single run, rebuilt from workflow_runs truth; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/actions/runs/{run_id}", h.cachedWorkflowRun)
 
 		// Cached Actions WORKFLOW definitions, listing and single; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/actions/workflows", h.cachedWorkflowsList)

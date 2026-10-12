@@ -37,6 +37,9 @@ type WorkflowRun struct {
 	CreatedAt    string
 	UpdatedAt    string
 	RunStartedAt string
+	// Detail is the single-run read's JSON beyond the columns; "" from a source that does not carry the whole object.
+	Detail   string
+	DetailAt string // read side only: when Detail last landed
 }
 
 // WorkflowRunFilter: an empty field means no filter; the value is unfiltered.
@@ -60,6 +63,9 @@ func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Ti
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, RunStartedAt: r.RunStartedAt,
 		TouchedAt: rfc3339(now),
 	}); err != nil {
+		return err
+	}
+	if err := s.applyWorkflowRunDetail(ctx, r, now); err != nil {
 		return err
 	}
 	return s.qx(ctx).PruneSettledWorkflowRuns(ctx, rfc3339(now.Add(-workflowRunRetention)))
@@ -231,6 +237,10 @@ func (s *Store) InvalidateWorkflowRunsTruth(ctx context.Context, owner, repo str
 	if err := s.qx(ctx).DeleteWorkflowRunsByRepo(ctx, dbgen.DeleteWorkflowRunsByRepoParams{
 		Owner: ownerKey, Repo: repoKey,
 	}); err != nil {
+		return err
+	}
+	if _, err := s.dbx(ctx).ExecContext(ctx,
+		`DELETE FROM workflow_run_details WHERE owner = ? AND repo = ?`, ownerKey, repoKey); err != nil {
 		return err
 	}
 	return s.qx(ctx).DeleteWorkflowRunsListMarkers(ctx, dbgen.DeleteWorkflowRunsListMarkersParams{
