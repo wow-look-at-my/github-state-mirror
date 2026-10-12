@@ -45,6 +45,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("workflow runs cache", scope, d.store.InvalidateWorkflowRunsCache(ctx, owner, repo))
 		flush("workflow runs truth", scope, d.store.InvalidateWorkflowRunsTruth(ctx, owner, repo))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
+		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff))
 		flush("git commit miss cache", scope, d.store.InvalidateGitCommitMissCache(ctx, owner, repo))
 		flush("git ref cache", scope, d.store.InvalidateGitRefCache(ctx, owner, repo))
 		flush("workflow jobs cache", scope, d.store.InvalidateWorkflowJobsCache(ctx, owner, repo))
@@ -71,6 +72,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull files cache", scope, d.store.InvalidatePullFilesForPR(ctx, owner, repo, event.PRNumber))
 		flush("closed pull cache", scope, d.store.InvalidateClosedPullForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
+		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff, strconv.FormatInt(event.PRNumber, 10)))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
 		if event.Type == "pull_request" {
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
@@ -230,6 +232,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	// No per-ref grain for the rest, parseable or not: PR-files pages and pull-diff- verdicts both stay repo-wide.
 	flush("pull files cache", scope, d.store.InvalidatePullFilesCache(ctx, owner, repo))
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
+	flush("pull diff cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff))
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
 }
 
