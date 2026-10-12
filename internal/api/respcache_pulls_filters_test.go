@@ -45,7 +45,7 @@ func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 }
 
 // TestCachedPullsList_HeadFilter: the head=owner:branch shape is served from
-// the marker-backed complete set -- a no-match answer is a cached empty array
+// the marker-backed complete set. A no-match answer is a cached empty array
 // (the common case in pr-minder's branch sweeps), while a match as long as
 // per_page falls to the pagination guard and misses.
 func TestCachedPullsList_HeadFilter(t *testing.T) {
@@ -77,7 +77,7 @@ func TestCachedPullsList_HeadFilter(t *testing.T) {
 }
 
 // TestCachedPullsList_BaseFilter: `base` is a pure filter over the open set
-// the completeness marker already vouches for, so it is answered from state
+// the completeness marker already vouches for. It is answered from state
 // exactly like `head` -- and, like any filtered response, a fetched never
 // SETS the marker.
 func TestCachedPullsList_BaseFilter(t *testing.T) {
@@ -155,7 +155,7 @@ func TestCachedPullsList_MarkerTTLBackstop(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.listHits))
 }
 
-// TestParsePullsListShape_Defaults pins the shape parser's defaults: the bare
+// TestParsePullsListShape_Defaults pins the shape parser's defaults. The bare
 // query is cacheable at GitHub's default page size, explicit pr-minder shapes
 // parse, and per_page bounds hold.
 func TestParsePullsListShape_Defaults(t *testing.T) {

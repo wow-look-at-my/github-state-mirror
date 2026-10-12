@@ -176,7 +176,7 @@ func renderCommitListItem(c ghdata.CachedGitCommit) commitListItemJSON {
 
 // upstreamCommitItem is the GitHub-shaped commit item as it appears in the
 // commits LIST -- and, identically shaped, in a compare response's `commits`
-// array (respcache_compare.go) -- with only the fields the model holds.
+// array (respcache_compare.go). With only the fields the model holds.
 type upstreamCommitItem struct {
 	SHA    string `json:"sha"`
 	Commit struct {

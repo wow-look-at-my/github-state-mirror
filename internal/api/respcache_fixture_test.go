@@ -19,10 +19,10 @@ import (
 )
 
 // Shared fixtures for the cached-route tests: the fake GitHub every route
-// test drives, the router stack over it, and the assertions the tier-
-// contract is checked with. The route tests themselves live file per
-// route (respcache_labels_test.go, respcache_branches_test.go,...); this
-// file holds only what more than of them needs.
+// test drives, the router stack over it. This is and the assertions the
+// tier- contract is checked with. The route tests themselves live file
+// per route (respcache_labels_test.go, respcache_branches_test.go,...);
+// this file holds only what more than of them needs.
 
 // Test object ids (full -hex, as GitHub uses).
 const (
@@ -37,10 +37,10 @@ const (
 // goodAppJWT is the bearer the fake GitHub verifies as app id; any other
 const goodAppJWT = "good-app-jwt"
 
-// respCacheUpstream is a fake GitHub for the cached-route tests: it stubs
+// respCacheUpstream is a fake GitHub for the cached-route tests. It stubs
 // /user (requireAuth) and /app (App JWT verification) and counts + serves the
-// cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
-// tests can prove the rebuilds drop them.
+// cacheable endpoints. That /user is with GitHub-shaped bodies full of URL
+// fields so the tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
 	contentsHits     int32
 	commitHits       int32

@@ -256,7 +256,7 @@ func TestNotifierPushPayloadIdentifiers(t *testing.T) {
 
 // TestNotifierWorkflowRunPayloadIdentifiers: a workflow_run notification
 // carries the run's head sha (via webhook.ParseWorkflowRunHeadSHA), the same
-// correlation field a status/check_run notification carries — a required-
+// correlation field a status/check_run notification carries. A required-
 // builds-manager-style consumer keys off owner/repo/sha regardless of which
 // of the build listing types the event is.
 func TestNotifierWorkflowRunPayloadIdentifiers(t *testing.T) {

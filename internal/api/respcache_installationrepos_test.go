@@ -73,8 +73,8 @@ func TestCachedInstallationRepos_MissAbsorbHit(t *testing.T) {
 }
 
 // The load-bearing property: rows key the CREDENTIAL. bearers must never
-// read each other's listing, even though the answers differ only by token --
-// this is what makes a route with no reveal gate safe.
+// read each other's listing, even though the answers differ only by token.
+// This is what makes a route with no reveal gate safe.
 func TestCachedInstallationRepos_KeyedByCredential(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.installRepos = func(w http.ResponseWriter, r *http.Request) {

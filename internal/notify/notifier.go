@@ -278,7 +278,7 @@ func (n *Notifier) fanOut(event webhook.Event, disposition string, ingestedAt ti
 // revealAllowed applies the reveal layer's non-probing fast paths: the repo
 // is public in global truth, or the principal holds a live grant. Unknown or
 // absent visibility reads as private (grant required), and a store error
-// gates the notification — a private repo's activity must never reach an
+// gates the notification. A private repo's activity must never reach an
 // unauthorized principal, so every failure mode fails closed.
 func (n *Notifier) revealAllowed(ctx context.Context, principal, owner, repo string) bool {
 	if n.access == nil {

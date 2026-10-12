@@ -17,10 +17,10 @@ import (
 //	GET /repos/{owner}/{repo}/readme[/{dir}][?ref=]
 //
 // GitHub answers the content object the contents route holds, so the rebuild
-// reuses contentsFileJSON. The absent-README verdict is stored too: it is an
+// reuses contentsFileJSON. The absent-README verdict is stored too. It is an
 // authoritative answer about the repo, and a fleet polling every repo's README
-// spends a large minority of those calls on repos that have none.
-// see docs/cache/rest-routes.md
+// spends a large minority of those calls on repos. That repos have none. see
+// docs/cache/rest-routes.md
 
 // cachedReadme serves a repo's README from a stored snapshot, fetching and
 // absorbing on a miss.

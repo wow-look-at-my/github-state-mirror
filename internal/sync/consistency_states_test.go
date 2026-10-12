@@ -19,7 +19,7 @@ import (
 )
 
 // Consistency-checker tests for the states a check can report other than
-// drift: never-synced, transient-retry, served-now, filtering, rate limits,
+// drift. Never-synced, transient-retry, served-now, filtering, rate limits,
 // and the unavailable paths.
 
 func TestConsistencyChecker_NeverSyncedFreshness(t *testing.T) {

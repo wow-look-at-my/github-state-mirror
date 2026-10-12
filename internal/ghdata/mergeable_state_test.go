@@ -23,8 +23,8 @@ func restPRState(number int64, mergeable, state, sha string) dbgen.PullRequest {
 }
 
 // TestUpsertKeepsMergeAndStateTogether pins the duplicated stale-guard
-// predicate in UpsertPullRequest: a SET clause reads the PRE-update row, so
-// mergeable_state cannot be derived from what mergeable became and each facet
+// predicate in UpsertPullRequest. A SET clause reads the PRE-update row, so
+// mergeable_state cannot be derived from what mergeable became. Each facet
 // carries its own copy of the condition. Edit both branches or neither --
 // this test is what catches editing.
 func TestUpsertKeepsMergeAndStateTogether(t *testing.T) {
@@ -99,7 +99,7 @@ func TestAbsorbSinglePullKeepsMergeAndStateTogether(t *testing.T) {
 //	merge facet with no other invalidator. It must null exactly that facet:
 //
 // nulling mergeable or the test-merge sha would make every check event
-// re-fetch every PR on the sha for an answer that did not move.
+// re-fetch every PR on the sha for an answer. That did not move.
 func TestNullPRMergeableStateByHeadSHA(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -130,7 +130,7 @@ func TestNullPRMergeableStateByHeadSHA(t *testing.T) {
 
 // TestNullPRMergeableStateByHeadSHA_EmptySha: a delivery that named no sha
 // must not become a repo-wide wildcard. The caller has already flushed what it
-// could identify; blanking every open PR's state on top of that would cost a
+// could identify. Blanking every open PR's state on top of that would cost a
 // single-PR fetch per PR for an answer nothing said had changed.
 func TestNullPRMergeableStateByHeadSHA_EmptySha(t *testing.T) {
 	s := testStore(t)
@@ -143,8 +143,8 @@ func TestNullPRMergeableStateByHeadSHA_EmptySha(t *testing.T) {
 }
 
 // TestNullPRMergeableByRepo_NullsState: the unparseable-push fallback covers
-// every open PR, and must take the state with it for the same reason the
-// per-branch null does.
+// every open PR. The unparseable-push fallback must take the state with it
+// for the same reason the per-branch null does.
 func TestNullPRMergeableByRepo_NullsState(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
