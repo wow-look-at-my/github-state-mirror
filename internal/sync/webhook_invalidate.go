@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -79,6 +80,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		scope := owner + "/" + repo
+		if event.Type == "check_run" {
+			d.flushCheckRunAnnotations(ctx, scope, owner, repo, event)
+		}
 		var refs []string
 		sha := ""
 		if payload, err := webhook.ParseCheckPayload(event.Type, event.Raw); err == nil {
@@ -278,6 +282,22 @@ func (d *WebhookDispatcher) applyPushToCommitAnswers(ctx context.Context, scope,
 	if !zeroSHA(after) {
 		flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead, strings.ToLower(after)))
 	}
+}
+
+// flushCheckRunAnnotations drops the stored annotations of the check run a
+// delivery names. The payload carries annotations_count and never the
+// annotations, so nothing can be written. A payload naming no run drops the
+// repo's annotations. see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) flushCheckRunAnnotations(ctx context.Context, scope, owner, repo string, event webhook.Event) {
+	var run struct {
+		ID int64 `json:"id"`
+	}
+	if raw, ok := webhook.CheckRunObject(event.Raw); ok && json.Unmarshal(raw, &run) == nil && run.ID > 0 {
+		flush("annotations", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo,
+			ghdata.RepoAnswerKindAnnotations, strconv.FormatInt(run.ID, 10)))
+		return
+	}
+	flush("annotations", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindAnnotations))
 }
 
 // zeroSHA reports the all-zeros object id a push uses for a missing side.

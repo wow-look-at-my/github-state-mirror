@@ -27,6 +27,7 @@ A cached route added without walking those steps is unfinished. That is the same
 | `label` | the label's new name and color (an `edited` carries both names) | — |
 | `repository` | visibility, name, default branch, archived/disabled | the new name's full row on a rename |
 | `workflow_run` / `workflow_job` | the run/job's whole state and `head_sha` | run-level status on a job payload |
+| `repository_ruleset` | the changed ruleset, and its repository or organization | the merged rules any branch now answers with |
 
 ### The worked example: `git_ref_cache`
 

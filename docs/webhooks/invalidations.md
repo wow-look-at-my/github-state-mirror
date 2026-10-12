@@ -60,6 +60,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 
 | row family | verdict | why |
 | --- | --- | --- |
+| check-run annotations (`repo_answer_cache`, kind `annotations`) on a `check_run` event | **Justified** | the payload carries `output.annotations_count` and never the annotations. The rows of the run the delivery names drop; a payload naming no run drops the repo's. Once the run is completed the next fetch is stored for a day, because the set no longer changes. |
 | `commit_checks` truth | **applied** | the payload's state is written directly. |
 | PR `mergeable_state` | **applied-as-unresolved** | a CI result is the only thing that moves unstable/blocked ↔ clean, and no payload carries the recomputed value. `mergeable_state` is stored beside `mergeable`, and the two must resolve and un-resolve as ONE fact — a row holding a resolved `mergeable_state` next to a nulled `mergeable` serves the pre-push answer under the other field's name, the same staleness the `merge_stale_sha` guard exists to refuse, wearing a different column (`internal/ghdata/mergeable_state_test.go`). |
 | `commit_ci_cache`, the `/status` and `/statuses` docs, on a `status` event | **applied** | the payload IS the status, whole. `SettleCommitCIFromStatus` rewrites both documents from it — see "The status rewrite" below for the ordering rules that make the result exact rather than plausible — and drops only what a stored page cannot provably hold. |
@@ -80,6 +81,10 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows Incorrect rather than stale. A name that no longer means what it did keys they. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
+
+## repository_ruleset
+
+Branch rules (`repo_answer_cache`, kind `branch_rules`). **Justified**: a branch's answer merges every ruleset whose ref conditions match it, from the repo and from its organization. The payload states one ruleset and never the merged answer for any branch. A repository ruleset drops the repo's rows. An organization ruleset names no repository and drops every row of the owner.
 
 ## installation / installation_repositories
 
