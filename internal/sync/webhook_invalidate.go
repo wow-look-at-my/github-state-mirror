@@ -165,9 +165,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 		refName, defaultBranch, before, after = payload.RefName, payload.DefaultBranch, payload.Before, payload.After
 		isTag = strings.HasPrefix(payload.Ref, "refs/tags/")
 	}
-	// (onPush re-parses the payload for the apply side. The parse is a few
-	// microseconds of JSON and keeping this function self-contained beats
-	// threading a parsed payload through handle().)
+	// (onPush re-parses the payload for the apply side.
 
 	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
 	d.applyPushToCommitAnswers(ctx, scope, owner, repo, refName, before, after, isTag)

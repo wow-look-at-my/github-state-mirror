@@ -42,6 +42,7 @@ An applied answer is byte-same to a fetched one, pinned by `TestCachedGitRef_Pus
 ### The second one: `branches_list_cache`
 
 A branches page lists one entry per branch, and a tip-move changes exactly that entry's sha. It changes neither the page's membership nor its ordering, because GitHub sorts by name. The push states the sha, so `ghdata.ApplyPushedBranchTip` rewrites every cached page that already lists the branch, and the pages keep serving. Only what a page cannot be edited into falls back to the repo-wide flush. That covers a create, because no page lists the branch yet, and a delete, whose `after` is all zeros. Both of those move membership.
+
 A **tag** push touches neither, because a tag is not in the listing. As a result, it now does nothing here instead of flushing the repo's pages.
 
 This one is worth more than the ref route it copies. pr-minder's fork-point detection lists every branch of a repo. The old flush therefore re-listed the whole repo after every push to it. `TestCachedBranchesList_PushAppliesTip` pins the applied page as byte-same to the fetched one. That is why `marshalTrimmed` delegates to `ghdata.MarshalCacheDoc`. A doc rewritten in the storage layer and a doc rendered in the API layer must be the same bytes. One renderer is the only way to guarantee that.
