@@ -29,8 +29,8 @@ const APE_MAGIC = 'MZqFpD';
 
 // kernelExecsAPEs asks execve itself, in a container from the image. A
 // binfmt_misc listing is no answer: a runner without binfmt_misc mounted lists
-// nothing, and the kernel still applies the host's entries to its containers.
-// The probe is no host process, because glibc's execvp runs a file it gets
+// nothing. The kernel still applies the host's entries to its containers. The
+// probe is no host process, because glibc's execvp runs a file it gets
 // ENOEXEC for under /bin/sh. busybox env in the image has no such fallback.
 function kernelExecsAPEs(): boolean {
   const r = docker(
@@ -118,8 +118,7 @@ test('an exec-form entrypoint cannot start this image', { timeout: 180_000 }, as
       `re-derive why /bin/sh is named:\n${bare.stderr}`,
   );
 
-  // The literal exec-form ENTRYPOINT. Where this kernel has an APE entry the
-  // kernel starts it, and only the namespace above can show the refusal.
+  // The literal exec-form ENTRYPOINT.
   if (hostHandler) return;
   const dir = mkdtempSync(join(tmpdir(), 'gsm-execform-'));
   const name = `${PROBE}-execform`;
