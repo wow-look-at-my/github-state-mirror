@@ -294,11 +294,7 @@ func TestCachedCommitCI_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.statusHits))
 }
 
-// TestCachedCommitCI_ForbiddenAndErrorNotStored: a 403 -- the caller's OWN
-// credential lacking Checks API scope entirely, a fact about the CALLER, not
-// the ref -- lands in the caller's own deny cache, so the repeat read is
-// answered without touching GitHub. A 5xx stores nothing anywhere, on both
-// routes.
+// A 5xx stores nothing anywhere, on both routes.
 func TestCachedCommitCI_ForbiddenAndErrorNotStored(t *testing.T) {
 	router, _, db, u := commitCIStack(t)
 	forbidden := func(w http.ResponseWriter, r *http.Request) {
