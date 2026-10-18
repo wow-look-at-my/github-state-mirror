@@ -91,7 +91,7 @@ jobs:
   # See docs/ci.md: this job starts the image and requires it to serve.
   image-smoke:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -114,7 +114,7 @@ jobs:
   # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
     needs: web-check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
