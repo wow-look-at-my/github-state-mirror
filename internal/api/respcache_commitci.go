@@ -18,6 +18,9 @@ import (
 
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
+// combinedStatusUnknownRef is GitHub's message for a combined-status read of a ref that does not exist.
+const combinedStatusUnknownRef = "Ref not found"
+
 const (
 	// commitCIDefaultPerPage is GitHub's default page size across all listing forms.
 	commitCIDefaultPerPage = 30
@@ -154,7 +157,13 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	defer resp.Body.Close()
 
-	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKind, resource, resp, body); ok {
+	var perPrincipal []int
+	if kind == ghdata.CommitCIKindStatus && resp.StatusCode == http.StatusNotFound &&
+		upstreamErrorMessage(body) != combinedStatusUnknownRef {
+		// Only "Ref not found" is a fact about the ref.
+		perPrincipal = append(perPrincipal, http.StatusNotFound)
+	}
+	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKind, resource, resp, body, perPrincipal...); ok {
 		h.serveDenyVerdict(w, r, v, false)
 		return
 	}
