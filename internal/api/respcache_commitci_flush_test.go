@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -417,4 +418,73 @@ func statusDelivery(sha string) map[string]any {
 		"branches":   []any{map[string]any{"name": "main"}},
 		"repository": map[string]any{"name": "repo1", "owner": map[string]any{"login": "org1"}},
 	}
+}
+
+// Stored globally, one credential that cannot read statuses hid a commit's
+// real status from every other caller for a day.
+func TestCachedCommitStatus_CredentialNotFoundStaysWithThatPrincipal(t *testing.T) {
+	u := newCommitCIUpstream()
+	inner := u.handler()
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		blind := r.Header.Get("Authorization") == "Bearer blind-token"
+		switch {
+		case r.URL.Path == "/user" && blind:
+			servePRJSON(w, map[string]any{"login": "blinduser", "id": 8003})
+		case strings.HasSuffix(r.URL.Path, "/status") && blind:
+			atomic.AddInt32(&u.statusHits, 1)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"https://docs.github.com","status":"404"}`))
+		default:
+			inner.ServeHTTP(w, r)
+		}
+	})
+	router, _, db, _ := newTestStackWithGitHub(t, testAuth(), gh)
+	target := "/repos/org1/repo1/commits/" + shaTip + "/status"
+	blindReq := func() *http.Request {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("Authorization", "Bearer blind-token")
+		return req
+	}
+
+	w1 := do(t, router, blindReq())
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	w2 := do(t, router, blindReq())
+	require.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "the blind credential's 404 replays to that credential")
+
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM commit_ci_cache`).Scan(&count))
+	assert.Zero(t, count, "a credential's 404 must not become a global verdict")
+
+	hits := atomic.LoadInt32(&u.statusHits)
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w3.Code, "another caller still gets the real status")
+	assert.Equal(t, hits+1, atomic.LoadInt32(&u.statusHits), "and GitHub is asked for it")
+}
+
+// The delivery proves the sha has statuses.
+func TestCachedCommitStatus_StatusEventClearsAVerdictForItsSHA(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	target := "/repos/org1/repo1/commits/" + shaTip + "/status"
+	u.status = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Ref not found","documentation_url":"https://docs.github.com","status":"404"}`))
+	}
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusNotFound, w1.Code)
+	w2 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, "hit", w2.Header().Get(cacheHeader), "the unknown-ref verdict is stored")
+
+	postWebhookJSON(t, router, "status", statusDelivery(shaTip))
+
+	u.status = func(w http.ResponseWriter, r *http.Request) {
+		servePRJSON(w, upstreamCombinedStatus(shaTip, "success", []any{
+			upstreamStatusItem("ci/build", "success", "2/2 builds passed", rbmTargetURL(shaTip)),
+		}))
+	}
+	w3 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w3.Code, "the delivery dropped the verdict")
+	assert.Equal(t, "miss", w3.Header().Get(cacheHeader))
 }

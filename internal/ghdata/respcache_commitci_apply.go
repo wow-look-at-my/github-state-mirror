@@ -79,6 +79,11 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 	}
 	for _, row := range combined {
 		if !combinedStatusDescribes(row.Doc, up.SHA) {
+			if row.Ref == up.SHA {
+				if derr := s.deleteCommitCIRow(ctx, ownerKey, repoKey, row); derr != nil {
+					return derr
+				}
+			}
 			continue // a different commit: this status did not move it
 		}
 		patched, ok := patchCombinedStatus(row.Doc, row.PerPage, row.Page, up)
