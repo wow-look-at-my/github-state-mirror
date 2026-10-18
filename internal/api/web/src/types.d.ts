@@ -166,7 +166,6 @@ export interface RequestsResponse {
     db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
 }
 
-// ---- traffic timeline (every exchange the mirror participates in) ----
 // One timed event on the Timeline chart. Kind-specific fields are omitted for
 // the other kinds; dur_ms is the REAL measured duration (never fabricated).
 export interface TimelineEvent {
