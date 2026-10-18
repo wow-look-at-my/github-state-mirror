@@ -417,10 +417,8 @@ func statusDelivery(sha string) map[string]any {
 	}
 }
 
-// A combined-status 404 with GitHub's plain "Not Found" is one credential's
-// view. GitHub answers an unknown sha with 200, and an unknown ref with "Ref
-// not found". Stored globally, one credential that cannot read statuses hid a
-// commit's real status from every other caller for a day.
+// Stored globally, one credential that cannot read statuses hid a commit's
+// real status from every other caller for a day.
 func TestCachedCommitStatus_CredentialNotFoundStaysWithThatPrincipal(t *testing.T) {
 	u := newCommitCIUpstream()
 	inner := u.handler()
@@ -462,7 +460,7 @@ func TestCachedCommitStatus_CredentialNotFoundStaysWithThatPrincipal(t *testing.
 	assert.Equal(t, hits+1, atomic.LoadInt32(&u.statusHits), "and GitHub is asked for it")
 }
 
-// A status delivery for a sha clears a 404 verdict stored under that sha. The delivery proves the sha has statuses.
+// The delivery proves the sha has statuses.
 func TestCachedCommitStatus_StatusEventClearsAVerdictForItsSHA(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/" + shaTip + "/status"
