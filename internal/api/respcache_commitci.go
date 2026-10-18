@@ -18,8 +18,7 @@ import (
 
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
-// combinedStatusUnknownRef is GitHub's message for a combined-status read of a
-// ref that does not exist.
+// combinedStatusUnknownRef is GitHub's message for a combined-status read of a ref that does not exist.
 const combinedStatusUnknownRef = "Ref not found"
 
 const (
