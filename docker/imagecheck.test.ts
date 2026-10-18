@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,29 @@ function docker(args: string[], allowFail = false): { status: number; stdout: st
     throw new Error(`docker ${args.join(' ')} exited ${r.status}\n${r.stderr}`);
   }
   return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
+}
+
+// APE_MAGIC opens every APE. A kernel that has no handler for it refuses the file.
+const APE_MAGIC = 'MZqFpD';
+const BINFMT_DIR = '/proc/sys/fs/binfmt_misc';
+
+// apeBinfmtHandler names an enabled binfmt_misc entry whose magic is APE_MAGIC, or returns '' when there is none.
+function apeBinfmtHandler(): string {
+  if (!existsSync(BINFMT_DIR)) return '';
+  const magicHex = Buffer.from(APE_MAGIC, 'latin1').toString('hex');
+  for (const entry of readdirSync(BINFMT_DIR)) {
+    if (entry === 'register' || entry === 'status') continue;
+    let text: string;
+    try {
+      text = readFileSync(join(BINFMT_DIR, entry), 'utf8');
+    } catch {
+      continue;
+    }
+    const lines = text.split('\n');
+    const magic = lines.find((line) => line.startsWith('magic '))?.slice('magic '.length) ?? '';
+    if (lines[0] === 'enabled' && magic.startsWith(magicHex)) return `${BINFMT_DIR}/${entry}`;
+  }
+  return '';
 }
 
 function removeContainer(name: string): void {
@@ -80,6 +103,19 @@ test('an exec-form entrypoint cannot start this image', { timeout: 180_000 }, as
   writeFileSync(join(dir, 'Dockerfile'), `FROM ${IMAGE}\nENTRYPOINT ["/usr/local/bin/github-state-mirror"]\n`);
   removeContainer(name);
   t.after(() => removeContainer(name));
+
+  // The image's binary must be an APE, not an ELF: that is the whole reason execve() refuses it.
+  const head = readFileSync(join(REPO_ROOT, 'build/server')).subarray(0, 8).toString('latin1');
+  assert.ok(head.startsWith(APE_MAGIC), `build/server starts ${JSON.stringify(head)}, not the APE header ${APE_MAGIC}`);
+
+  // A kernel with an APE binfmt handler runs an APE by execve(), so on that kernel the run below proves nothing.
+  const handler = apeBinfmtHandler();
+  if (handler) {
+    assert.fail(
+      `this kernel has the APE binfmt handler ${handler} registered, so an exec-form entrypoint starts any APE. ` +
+        'Run this suite on a host without that handler.',
+    );
+  }
 
   docker(['build', '-t', `${IMAGE}-execform`, dir]);
   docker(['run', '-d', '--name', name, '-p', `${PORT + 1}:8080`, `${IMAGE}-execform`], true);
