@@ -27,7 +27,7 @@ import (
 )
 
 // checkerFakeGitHub serves the consistency checker's whole fetch surface for a
-// single owner with a live repo: App installations, token mints, and /graphql
+// single owner with a live repo. App installations, token mints, and /graphql
 // answering both owner-agnostic queries (data and visibility twins).
 func checkerFakeGitHub(t *testing.T) http.Handler {
 	t.Helper()

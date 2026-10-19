@@ -1,9 +1,4 @@
-// Shared DTO types for the dashboard front-end: the shapes returned by the
-// /api/me, /api/cache, /api/webhooks, /api/cache/data and /api/cache/check
-// endpoints, plus the demo-preview config. Single source of truth — both app.ts
-// (the renderer) and demo-data.ts (the preview fixtures) import these, so the
-// renderer and its fixtures can never drift. Imported with `import type`, so nothing here emits into the
-// runtime bundles (this is a declaration file: tsc produces no .js for it).
+// Shared DTO types for the dashboard front-end.
 
 export interface Me {
     authenticated: boolean;
@@ -127,8 +122,7 @@ export interface RequestEvent {
     path: string;
     disposition: string;
     status?: number; // upstream HTTP status for a passthrough or write; absent otherwise
-    // Why this read was forwarded uncached; passthroughs only, absent
-    // otherwise. Same closed vocabulary as RequestGroup.by_reason's keys.
+    // Why this read was forwarded uncached; passthroughs only, absent otherwise.
     reason?: string;
     at: string;
 }

@@ -2,9 +2,8 @@
 // (tsc) to ../assets/app.js, which is committed (a generated artifact) and
 // embedded into the Go binary. Edit this .ts file, never the .js.
 //
-// Talks to these endpoints, among others:
-//	GET /api/me                   -> Me
-//	GET /api/cache?scope=mine|all -> CacheResponse
+// Talks to these endpoints, among others: GET /api/me -> Me GET
+// /api/cache?scope=mine|all -> CacheResponse
 //
 // When window.__GSM_DEMO__ is defined (only the standalone styling preview
 // ships a demo-data.js that sets it), the same rendering runs against canned
@@ -906,16 +905,13 @@ function groupRouteCell(g: RequestGroup): HTMLElement {
 }
 
 // wideWrap puts a flat table in a block that may bleed into the page margins
-// (see .table-wide). It has to be a wrapping DIV rather than the class on the
-// table itself: a table at full width resolves that percentage against its
-// containing block, so negative margins only SHIFT it off-centre instead of
-// widening it. A plain block has auto width and grows into both margins.
+// (see .table-wide).
 function wideWrap(table: HTMLElement): HTMLElement {
     return el("div", { class: "table-wide" }, table);
 }
 
 // groupSection wraps a grouped table. `wide` opts into the page-margin bleed
-// (see .table-wide) and is deliberately NOT the default: stretching a narrow
+// (see .table-wide). It is deliberately NOT the default: stretching a narrow
 // table to the width of a wide one spreads its content across empty space.
 // Only a table that runs out of room asks for it.
 function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {

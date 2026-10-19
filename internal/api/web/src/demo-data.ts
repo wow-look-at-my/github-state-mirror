@@ -132,13 +132,13 @@ const demoWebhooks: WebhooksResponse = {
     },
 };
 
-// --- request activity log (admin "Requests" tab) ---
-// The route-shape groups sum exactly to by_disposition, sorted by total like
-// the backend, so the preview's share percentages are coherent.
+// request activity log (admin "Requests" tab) The route-shape groups sum
+// exactly to by_disposition, sorted by total like the backend. The
+// preview's share percentages are coherent.
 //
 // Keep every route and every pass_query shape REAL — a shape some consumer
-// actually sends. Invented ones read as genuine caching gaps to anyone
-// looking at the preview: a fabricated `/commits?author,since` here already
+// sends. Invented ones read as genuine caching gaps to anyone looking at the
+// preview. This covers a fabricated `/commits?author,since` here already
 // cost a real investigation into a filter no caller has ever sent.
 const demoRequests: RequestsResponse = {
     total: 1842,
