@@ -63,6 +63,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
+		// A rename or recolor changes list entries, and the payload does not say which pages hold the label.
+		flush("pulls snapshots", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullsSnapshot))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -74,6 +76,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff, strconv.FormatInt(event.PRNumber, 10)))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
+		flush("pull verdict", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullVerdict, strconv.FormatInt(event.PRNumber, 10)))
+		// One PR's payload does not state the membership or order of a closed or all page.
+		flush("pulls snapshots", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullsSnapshot))
 		if event.Type == "pull_request" {
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
 		}
