@@ -51,7 +51,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("repo truth read failed", "owner", owner, "repo", repo, "error", err)
 	}
-	if err == nil && repoRowComplete(row) {
+	if err == nil && repoRowCompleteWithParent(row) {
 		h.serveRepoMeta(w, r, row, true)
 		return
 	}
@@ -80,7 +80,7 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("repo truth absorb failed", "owner", owner, "repo", repo, "error", err)
 	}
 	// A partial answer passes through verbatim rather than rendering a hole.
-	if !repoRowComplete(repoRow) {
+	if !repoRowCompleteWithParent(repoRow) {
 		h.replayUnstored(w, r, resp, body)
 		return
 	}
@@ -89,18 +89,30 @@ func (h *handlers) cachedRepo(w http.ResponseWriter, r *http.Request) {
 	h.serveRepoMeta(w, r, repoRow, false)
 }
 
-// repoRowComplete reports whether the row has every field the trimmed rebuild emits.
+// repoRowComplete reports whether the row has every field a listing item emits.
 func repoRowComplete(row dbgen.Repo) bool {
 	return row.Visibility != "" &&
 		row.DefaultBranch.Valid && row.DefaultBranch.String != "" &&
-		row.NameWithOwner != ""
+		row.NameWithOwner != "" &&
+		row.IsFork.Valid
+}
+
+// repoRowCompleteWithParent reports whether the row has every field the bare
+// read emits, a fork's parent among them.
+func repoRowCompleteWithParent(row dbgen.Repo) bool {
+	return repoRowComplete(row) &&
+		(row.IsFork.Int64 == 0 || (row.ParentFullName.String != "" && row.ParentDefaultBranch.String != ""))
 }
 
 // serveRepoMeta rebuilds and writes the trimmed repository body. Hit (truth
 // row) and miss (just-parsed response row) both go through here, so the
 // served shape is identical regardless of cache state.
 func (h *handlers) serveRepoMeta(w http.ResponseWriter, r *http.Request, row dbgen.Repo, hit bool) {
-	body, err := marshalTrimmed(renderRepoMeta(row))
+	meta := renderRepoMeta(row)
+	if meta.Fork {
+		meta.Parent = &repoMetaParentJSON{FullName: row.ParentFullName.String, DefaultBranch: row.ParentDefaultBranch.String}
+	}
+	body, err := marshalTrimmed(meta)
 	if err != nil {
 		slog.Warn("repo meta render failed", "path", r.URL.Path, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -117,19 +129,28 @@ type repoMetaOwnerJSON struct {
 	Login string `json:"login"`
 }
 
+// repoMetaParentJSON is a fork's trimmed parent: the repository and the branch
+// a fork is measured against.
+type repoMetaParentJSON struct {
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
+}
+
 // repoMetaJSON is the trimmed rebuild of a bare repository read: exactly the
 // state fields truth holds and consumers read. private is derived (GitHub
-// REST reports private=true for internal repos too); url/pushed_at/fork/id
-// and every *_url field stay dropped.
+// REST reports private=true for internal repos too); url/pushed_at/id and
+// every *_url field stay dropped, the parent's clone_url included.
 type repoMetaJSON struct {
-	Name          string            `json:"name"`
-	FullName      string            `json:"full_name"`
-	Owner         repoMetaOwnerJSON `json:"owner"`
-	Private       bool              `json:"private"`
-	Visibility    string            `json:"visibility"`
-	DefaultBranch string            `json:"default_branch"`
-	Archived      bool              `json:"archived"`
-	Disabled      bool              `json:"disabled"`
+	Name          string              `json:"name"`
+	FullName      string              `json:"full_name"`
+	Owner         repoMetaOwnerJSON   `json:"owner"`
+	Private       bool                `json:"private"`
+	Visibility    string              `json:"visibility"`
+	DefaultBranch string              `json:"default_branch"`
+	Archived      bool                `json:"archived"`
+	Disabled      bool                `json:"disabled"`
+	Fork          bool                `json:"fork"`
+	Parent        *repoMetaParentJSON `json:"parent,omitempty"`
 }
 
 // renderRepoMeta rebuilds the trimmed body from a (complete) repos row.
@@ -138,7 +159,7 @@ func renderRepoMeta(row dbgen.Repo) repoMetaJSON {
 	if row.OwnerLogin.Valid && row.OwnerLogin.String != "" {
 		login = row.OwnerLogin.String
 	}
-	return repoMetaJSON{
+	out := repoMetaJSON{
 		Name:          row.Name,
 		FullName:      row.NameWithOwner,
 		Owner:         repoMetaOwnerJSON{Login: login},
@@ -147,5 +168,7 @@ func renderRepoMeta(row dbgen.Repo) repoMetaJSON {
 		DefaultBranch: row.DefaultBranch.String,
 		Archived:      row.IsArchived != 0,
 		Disabled:      row.IsDisabled != 0,
+		Fork:          row.IsFork.Int64 != 0,
 	}
+	return out
 }
