@@ -113,9 +113,14 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if owner == "" || repo == "" {
 			return
 		}
-		headSHA, runID := "", int64(0)
+		headSHA, runID, runnerID := "", int64(0), int64(0)
 		if payload, err := webhook.ParseWorkflowJobPayload(event.Raw); err == nil {
-			headSHA, runID = payload.HeadSHA, payload.RunID
+			headSHA, runID, runnerID = payload.HeadSHA, payload.RunID, payload.RunnerID
+		}
+		// A job start or end moves the runner's busy flag. The payload does not
+		// state the rest of the runner object, so its answers drop.
+		if runnerID > 0 {
+			flush("runner cache", owner+"/"+repo, d.store.InvalidateRunner(ctx, owner, repo, runnerID))
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
 		// A job's state moved, and the delivery STATES it: the run's cached job answers are rewritten, flushed only where they cannot be.

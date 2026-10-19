@@ -47,3 +47,26 @@ CREATE TABLE repo_answer_cache (
 CREATE UNIQUE INDEX idx_repo_answer_cache_key ON repo_answer_cache (owner, repo, kind, ref_id, shape);
 CREATE INDEX idx_repo_answer_cache_subject ON repo_answer_cache (owner, repo, kind, subject);
 CREATE INDEX idx_repo_answer_cache_lru ON repo_answer_cache (last_used_at);
+
+-- Self-hosted runner answers: a repo's runner listing, and one org or repo
+-- runner. These are admin-scoped, so a row keys the bearer's fingerprint and
+-- is only replayed to the credential GitHub answered. scope is
+-- 'org:<org>' or 'repo:<owner>/<repo>'. runner_id is 0 for a listing page.
+-- status is 200 for a document, or 404 for a stored absent-runner verdict.
+CREATE TABLE runner_answer_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_fp     TEXT NOT NULL,              -- SHA-256 of the bearer, never the bearer
+    scope        TEXT NOT NULL,              -- lowercased org:<org> or repo:<owner>/<repo>
+    runner_id    INTEGER NOT NULL,           -- 0 for a listing page
+    per_page     INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    status       INTEGER NOT NULL,
+    doc          TEXT NOT NULL,              -- verbatim runner JSON, or a trimmed verdict
+    fetched_at   TEXT NOT NULL,              -- RFC3339
+    expires_at   TEXT NOT NULL,              -- RFC3339
+    last_used_at TEXT NOT NULL               -- RFC3339, for LRU pruning
+);
+
+CREATE UNIQUE INDEX idx_runner_answer_cache_key ON runner_answer_cache (token_fp, scope, runner_id, per_page, page);
+CREATE INDEX idx_runner_answer_cache_runner ON runner_answer_cache (scope, runner_id);
+CREATE INDEX idx_runner_answer_cache_lru ON runner_answer_cache (last_used_at);

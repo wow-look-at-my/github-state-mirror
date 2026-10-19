@@ -120,6 +120,10 @@ func NewRouter(
 
 		// Cached org self-hosted-runners listing, admin-scoped; see docs/cache/rest-routes.md.
 		r.Get("/orgs/{org}/actions/runners", h.cachedOrgRunners)
+		// Cached single runners and the repo listing, per credential; see docs/cache/rest-routes.md.
+		r.Get("/orgs/{org}/actions/runners/{runner_id}", h.cachedOrgRunner)
+		r.Get("/repos/{owner}/{repo}/actions/runners", h.cachedRepoRunners)
+		r.Get("/repos/{owner}/{repo}/actions/runners/{runner_id}", h.cachedRepoRunner)
 
 		// Cached personalized repo listing; see docs/cache/rest-routes.md.
 		r.Get("/user/repos", h.cachedUserRepos)
