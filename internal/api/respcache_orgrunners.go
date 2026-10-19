@@ -63,6 +63,9 @@ func (h *handlers) cachedOrgRunners(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.PutCachedOrgRunners(r.Context(), fp, org, perPage, page, string(body), now, ghdata.OrgRunnersCacheTTL); err != nil {
 		slog.Warn("org runners cache write failed", "org", org, "error", err)
 	}
+	if runners, ok := runnersOfListing(body); ok {
+		h.absorbListedRunners(r, fp, ghdata.OrgRunnerScope(org), runners, now)
+	}
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, body, false)
 }

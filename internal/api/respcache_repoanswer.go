@@ -24,6 +24,20 @@ type repoAnswerRoute struct {
 	// fetch, when set, is the upstream request in place of the caller's.
 	fetch      *http.Request
 	noRedirect bool
+	writeOK    func(w http.ResponseWriter, doc string, hit bool)
+}
+
+func (h *handlers) writeRouteAnswer(w http.ResponseWriter, r *http.Request, route repoAnswerRoute, a ghdata.RepoAnswer, hit bool) {
+	if route.writeOK == nil || a.Status != http.StatusOK {
+		h.writeRepoAnswer(w, r, a, hit)
+		return
+	}
+	if hit {
+		h.reqlog.observeStatus(r, DispHit, a.Status)
+	} else {
+		h.reqlog.observeStatus(r, DispMiss, a.Status)
+	}
+	route.writeOK(w, a.Doc, hit)
 }
 
 func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route repoAnswerRoute) {
@@ -45,7 +59,7 @@ func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route
 	if a, ok, err := h.store.GetRepoAnswer(r.Context(), key, now); err != nil {
 		slog.Warn("repo answer cache read failed", "owner", key.Owner, "repo", key.Repo, "kind", key.Kind, "ref", key.RefID, "error", err)
 	} else if ok {
-		h.writeRepoAnswer(w, r, a, true)
+		h.writeRouteAnswer(w, r, route, a, true)
 		return
 	}
 
@@ -85,7 +99,7 @@ func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route
 		slog.Warn("repo answer cache write failed", "owner", key.Owner, "repo", key.Repo, "kind", key.Kind, "ref", key.RefID, "error", err)
 	}
 	h.refreshGrantOn2xx(r, key.Owner, key.Repo, resp.StatusCode)
-	h.writeRepoAnswer(w, r, a, false)
+	h.writeRouteAnswer(w, r, route, a, false)
 }
 
 // redirectJSON is how a stored redirect holds its Location.

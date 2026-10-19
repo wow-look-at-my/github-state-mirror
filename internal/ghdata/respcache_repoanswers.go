@@ -21,7 +21,14 @@ const (
 	RepoAnswerKindPullDiff          = "pull_diff"
 	RepoAnswerKindTarball           = "tarball"
 	RepoAnswerKindZipball           = "zipball"
+	RepoAnswerKindBranch            = "branch"
+	RepoAnswerKindPullsSnapshot     = "pulls_snapshot"
+	RepoAnswerKindPullVerdict       = "pull_verdict"
+	RepoAnswerKindGraphQLPulls      = "graphql_pulls"
 )
+
+// RepoAnswerShapeDiff is the shape of a commit row that holds the unified diff.
+const RepoAnswerShapeDiff = "diff"
 
 // RepoAnswerKey addresses one stored answer.
 type RepoAnswerKey struct {

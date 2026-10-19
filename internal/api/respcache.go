@@ -5,9 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 )
@@ -75,6 +77,13 @@ func acceptsDefaultJSON(r *http.Request) bool {
 		}
 	}
 	return true
+}
+
+// wildcardParam is the route's trailing wildcard, unescaped. chi routes on
+// RawPath when a client escapes a slash (Octokit sends "heads%2Fmain").
+func wildcardParam(r *http.Request) (string, bool) {
+	v, err := url.PathUnescape(chi.URLParam(r, "*"))
+	return v, err == nil
 }
 
 // fetchUpstream forwards the (buffered-body) request to GitHub with the
