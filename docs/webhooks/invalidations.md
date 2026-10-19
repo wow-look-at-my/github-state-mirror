@@ -56,6 +56,8 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `pull_files_cache` (this PR) | **Justified** | the payload states the head moved; it does not state the resulting file list. |
 | `closed_pull_cache` (this PR) | **Justified** | the cached doc is a rendered whole-PR snapshot for a CLOSED PR; a reopen/edit/relabel changes fields the doc holds, and the payload does carry them — but the doc is only ever written for a PR the truth table no longer retains, so patching it would mean maintaining a second PR renderer against a row that does not exist. Dropping it costs one fetch on a rarely-read path. |
 | `pull_diff406_cache` and stored diffs (kind `pull_diff`) | **Justified** | the verdict and the diff are both content the payload does not carry. |
+| absent-PR verdict (kind `pull_verdict`, this PR) | **Justified** | the delivery proves the number now names a PR, so the 404 is false. The answer is the PR itself, which the single read serves from the PR row. Nothing is left to write into the verdict. |
+| closed/all list pages (kind `pulls_snapshot`, repo-wide) | **Owed** | the payload carries this PR in full, and an entry could be rewritten in place. A page's MEMBERSHIP and ORDER under its `state`, `sort` and filters are not stated: a close moves the PR into every closed page at a place that depends on the other entries. Conversion needs the pages rebuilt from stored entries, which needs closed PRs kept as rows. |
 | `pull_commits` (this PR) | **Owed** | a `synchronize` states the new head sha, and the cached answer is the PR's commit list. It cannot be rebuilt from the payload (the payload carries no commit objects for a PR event), so this one is only convertible together with the compare rework below. |
 
 ## status / check_run / check_suite
@@ -101,6 +103,8 @@ Branch rules (`repo_answer_cache`, kind `branch_rules`). **Justified**: a branch
 ## label
 
 Repo-wide on every action. **Justified**: an `edited` action can RENAME a label, which puts names in one delivery. One label also answers under every spelling a caller can request. Matching the payload's name therefore misses rows. The grain is the repo because the key space is unbounded, not because the payload is thin.
+
+The closed/all PR list pages (kind `pulls_snapshot`) drop repo-wide on every action too. **Justified**: an entry carries its labels by name and color. The payload does not say which stored pages list a PR with that label.
 
 ## The status rewrite
 
