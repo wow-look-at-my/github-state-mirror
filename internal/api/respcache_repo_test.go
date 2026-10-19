@@ -30,6 +30,7 @@ func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 		Url: "https://github.com/org1/pub", Visibility: ghdata.VisibilityPublic,
 		DefaultBranch: sql.NullString{String: "main", Valid: true},
 		OwnerLogin:    sql.NullString{String: "org1", Valid: true},
+		IsFork:        sql.NullInt64{Int64: 0, Valid: true},
 	}))
 
 	w := do(t, router, authedReq("GET", "/repos/org1/pub", nil))
@@ -40,12 +41,83 @@ func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 	assert.JSONEq(t, `{
 		"name": "pub", "full_name": "org1/pub", "owner": {"login": "org1"},
 		"private": false, "visibility": "public", "default_branch": "main",
-		"archived": false, "disabled": false
+		"archived": false, "disabled": false, "fork": false
 	}`, w.Body.String())
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Len(t, body, 8, "the rebuild emits exactly the eight modeled keys (no url, no pushed_at, no fork/id)")
+	assert.Len(t, body, 9, "the rebuild emits exactly the nine modeled keys (no url, no pushed_at, no id)")
+}
+
+// A fork's read names its parent by full_name and default branch; the
+// parent's clone_url stays dropped with every other URL field.
+func TestCachedRepo_ForkNamesItsParent(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		writeGitHubJSON(w, map[string]any{
+			"name": "fork1", "full_name": "org1/fork1", "private": true, "visibility": "private",
+			"default_branch": "dev", "fork": true, "owner": map[string]any{"login": "org1"},
+			"parent": map[string]any{
+				"full_name": "up/stream", "default_branch": "main",
+				"clone_url": "https://github.com/up/stream.git",
+			},
+		})
+	}
+
+	w := do(t, router, authedReq("GET", "/repos/org1/fork1", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the probe's object carries the parent, so the row answers")
+	assertNoURLKeys(t, w.Body.Bytes())
+	assert.JSONEq(t, `{
+		"name": "fork1", "full_name": "org1/fork1", "owner": {"login": "org1"},
+		"private": true, "visibility": "private", "default_branch": "dev",
+		"archived": false, "disabled": false, "fork": true,
+		"parent": {"full_name": "up/stream", "default_branch": "main"}
+	}`, w.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits))
+}
+
+// A webhook states fork but never parent: the fork row it wrote fetches, and
+// the fetched object heals it.
+func TestCachedRepo_ForkWithNoParentFetches(t *testing.T) {
+	router, store, _, u := respCacheStack(t)
+	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{
+		Owner: "org1", Name: "fork1", NameWithOwner: "org1/fork1", Url: "u",
+		Visibility:    ghdata.VisibilityPublic,
+		DefaultBranch: sql.NullString{String: "dev", Valid: true},
+		IsFork:        sql.NullInt64{Int64: 1, Valid: true},
+	}))
+	u.probe = func(w http.ResponseWriter, r *http.Request) {
+		writeGitHubJSON(w, map[string]any{
+			"name": "fork1", "full_name": "org1/fork1", "private": false, "visibility": "public",
+			"default_branch": "dev", "fork": true, "owner": map[string]any{"login": "org1"},
+			"parent": map[string]any{"full_name": "up/stream", "default_branch": "main"},
+		})
+	}
+
+	w := do(t, router, authedReq("GET", "/repos/org1/fork1", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
+	w2 := do(t, router, authedReq("GET", "/repos/org1/fork1", nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Contains(t, w2.Body.String(), `"parent":{"full_name":"up/stream","default_branch":"main"}`)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits))
+}
+
+// A row with no fork flag (the GraphQL org fetch's shape) cannot say whether
+// the repository is a fork, so it fetches.
+func TestCachedRepo_UnknownForkFetches(t *testing.T) {
+	router, store, _, u := respCacheStack(t)
+	require.NoError(t, store.UpsertRepo(context.Background(), dbgen.Repo{
+		Owner: "org1", Name: "pub", NameWithOwner: "org1/pub", Url: "u",
+		Visibility:    ghdata.VisibilityPublic,
+		DefaultBranch: sql.NullString{String: "main", Valid: true},
+	}))
+
+	w := do(t, router, authedReq("GET", "/repos/org1/pub", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits))
 }
 
 // TestCachedRepo_PrivateProbeAbsorbsThenHit: a private repo's touch pays
