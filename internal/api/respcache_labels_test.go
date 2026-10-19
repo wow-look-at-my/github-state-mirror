@@ -71,9 +71,9 @@ func TestCachedLabel_NullDescriptionKeepsItsKey(t *testing.T) {
 }
 
 // Every `label` delivery flushes the repo's labels, whatever the action: an
-// edit can RENAME (names in delivery) and each requested spelling of
-// a name is its own row, so the flush is unconditional and repo-wide rather
-// than trying to match the name the payload happens to carry.
+// edit can RENAME (names in delivery). Each requested spelling of a name is
+// its own row. The flush is unconditional and repo-wide rather than trying
+// to match the name the payload happens to carry.
 func TestCachedLabel_EveryLabelEventFlushes(t *testing.T) {
 	for _, action := range []string{"created", "edited", "deleted"} {
 		t.Run(action, func(t *testing.T) {
@@ -104,7 +104,7 @@ func TestCachedLabel_RepositoryEventFlushes(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.labelHits))
 }
 
-// A write through the mirror flushes BEFORE forwarding, so a caller can never
+// A write through the mirror flushes BEFORE forwarding. A caller can never
 // read back its own stale label in the seconds before the delivery lands.
 func TestCachedLabel_WriteFlushesBeforeForwarding(t *testing.T) {
 	for _, method := range []string{"PATCH", "DELETE"} {

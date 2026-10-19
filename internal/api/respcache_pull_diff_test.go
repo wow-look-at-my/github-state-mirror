@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Single-PR route tests for the non-JSON reads and the closed-PR doc: the
+// Single-PR route tests for the non-JSON reads and the closed-PR doc. The
 // diff Accept and its cached verdict, the shape guards, and the
 // closed-then-reopened lifecycle.
 
@@ -28,19 +29,35 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 		servePRJSON(w, upstreamSinglePR(7, "open", "First PR", "feature", shaCommit, "2026-07-01T10:00:00Z"))
 	}
 
-	for i := 1; i <= 2; i++ {
+	read := func(accept string) *httptest.ResponseRecorder {
 		req := authedReq("GET", "/repos/org1/repo1/pulls/7", nil)
-		req.Header.Set("Accept", "application/vnd.github.diff")
-		w := do(t, router, req)
-		require.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, rawDiff, w.Body.String(), "the diff representation must pass through untouched")
-		assert.Empty(t, w.Header().Get(cacheHeader))
-		assert.Equal(t, int32(i), atomic.LoadInt32(&u.singleHits))
+		req.Header.Set("Accept", accept)
+		return do(t, router, req)
 	}
+	// The diff is stored verbatim; both diff spellings share the row.
+	for i, tc := range []struct{ accept, want string }{
+		{"application/vnd.github.diff", "miss"},
+		{"application/vnd.github.v3.diff", "hit"},
+	} {
+		w := read(tc.accept)
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, rawDiff, w.Body.String(), "the diff must be byte-identical, request %d", i)
+		assert.Equal(t, "application/vnd.github.diff; charset=utf-8", w.Header().Get("Content-Type"))
+		assert.Equal(t, tc.want, w.Header().Get(cacheHeader), "request %d", i)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.singleHits))
 
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pull_diff406_cache`).Scan(&count))
-	assert.Zero(t, count, "a 200 diff must store nothing")
+	assert.Zero(t, count, "a 200 diff is not a 406 verdict")
+
+	// The PR's own delivery drops the diff: a head push changes it.
+	postWebhookJSON(t, router, "pull_request", map[string]any{
+		"action": "synchronize", "number": 7, "repository": fixtureRepo(),
+		"pull_request": upstreamSinglePR(7, "open", "First PR", "feature", shaTip, "2026-07-01T10:05:00Z"),
+	})
+	assert.Equal(t, "miss", read("application/vnd.github.diff").Header().Get(cacheHeader))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
 // TestCachedPullDiff_406VerdictCached.
@@ -48,10 +65,10 @@ func TestCachedPull_DiffAcceptPassthrough(t *testing.T) {
 //	"diff too large" from GitHub, and pr-minder re-earns it around every
 //
 // describe hand-off before falling back to the files API -- so the VERDICT is
-// cached per PR: absorbed on the read (rebuilt {"message":...},,
-// X-GSM-Cache: miss), served from state on the (upstream calls),
-// flushed by the PR's own pull_request event (a head push can shrink the diff
-// back under the boundary).
+// cached per PR. Absorbed on the read (rebuilt {"message":...},, X-GSM-Cache:
+// miss), served from state on the (upstream calls), flushed by the PR's own
+// pull_request event (a head push can shrink the diff back under the
+// boundary).
 func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	u.single = func(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +131,7 @@ func TestCachedPullDiff_406VerdictCached(t *testing.T) {
 }
 
 // TestCachedPullDiff_PushFlushesRepoWide: a push flushes every PR's
-// verdict for the repo -- a BASE push can move any PR's -dot diff across
+// verdict for the repo. A BASE push can move any PR's -dot diff across
 // the size boundary in either direction, with no per-PR signal.
 func TestCachedPullDiff_PushFlushesRepoWide(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
@@ -158,11 +175,12 @@ func TestCachedPull_NonNumericAndQueryPassthrough(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.singleHits))
 }
 
-// TestCachedPull_ClosedAbsorbedAsDoc: a fetched closed PR evicts any stale
-// open row (the truth table retains open PRs only) and is absorbed as a
-// rendered whole-doc snapshot -- served trimmed on the miss, then replayed
-// byte-identically from closed_pull_cache with upstream calls (every
-// drain re-reads settled PRs; each read used to be a fresh passthrough).
+// TestCachedPull_ClosedAbsorbedAsDoc. A fetched closed PR evicts any stale
+// open row (the truth table retains open PRs only). The fetched closed PR
+// is absorbed as a rendered whole-doc snapshot. It served trimmed on the
+// miss, then replayed byte-identically from closed_pull_cache with
+// upstream calls (every drain re-reads settled PRs. This also covers each
+// read used to be a fresh passthrough).
 func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -211,10 +229,10 @@ func TestCachedPull_ClosedAbsorbedAsDoc(t *testing.T) {
 
 // TestCachedPull_ClosedDocReopenFlush: the closed-PR doc's lifecycle around a
 // reopen. The cached doc carries GitHub's own merged answer and an EXPLICIT
-// null mergeable (the key must exist); a `reopened` pull_request event
+// null mergeable (the key must exist). A `reopened` pull_request event
 // flushes it, so the next read fetches GitHub's fresh OPEN answer instead of
-// serving the stale closed snapshot -- and the open absorb keeps the doc and
-// the open row mutually exclusive.
+// serving the stale closed snapshot. The open absorb keeps the doc and the
+// open row mutually exclusive.
 func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"
@@ -275,10 +293,10 @@ func TestCachedPull_ClosedDocReopenFlush(t *testing.T) {
 
 // TestCachedPull_DiffStats: the single-PR rebuild serves the additions and
 // deletions the absorb has always stored (repo-nightmare renders them as each
-// PR's diff size, and read them as `undefined` while the rebuild dropped
-// them), and a row that has NEVER seen a single-PR answer -- absorbed from
-// the LIST, which carries no stats, with mergeable resolved independently by
-// a webhook -- misses rather than serving `"additions": null` forever.
+// PR's diff size. Read them as `undefined`. Do this while the rebuild dropped
+// them). A row that has NEVER seen a single-PR answer -- absorbed from the
+// LIST, which carries no stats, with mergeable resolved independently by a
+// webhook. It misses rather than serving `"additions": null` forever.
 func TestCachedPull_DiffStats(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls/7"

@@ -7,7 +7,7 @@ For EVERY event type the dispatcher handles, exactly one of:
 - the handler provably reads the delivery body, or
 - `docs/webhooks/payload-unused/<event>.md` explains, in detail, why not.
 
-Checked BOTH ways. An event whose handler DOES read its payload may not also carry an exception doc, so an excuse cannot outlive its reason. The day someone teaches a handler to use its delivery, this test fails until the document is deleted in that same change.
+Checked BOTH ways. An event whose handler DOES read its payload may not also carry an exception doc. An excuse cannot outlive its reason. The day someone teaches a handler to use its delivery, this test fails until the document is deleted in that same change.
 
 This is an AST walk over this package, not a grep. The handlers delegate -- `onPullRequestReview` is a one-line call to `applyPRPayload` -- so anything shallower reports false violations, and a guard that cries. Wolf is worse than no guard.
 

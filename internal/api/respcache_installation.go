@@ -137,7 +137,7 @@ func (h *handlers) serveRepoInstallation(w http.ResponseWriter, c ghdata.CachedR
 // a well-formed or the authoritative VERDICT ("not installed here"). Anything
 // else -- a the JWT earned, a 5xx -- reports false and is replayed unstored.
 //
-// The verdict is cacheable on the contents/compare/git-ref precedent: it is
+// The verdict is cacheable on the contents/compare/git-ref precedent. It is
 // GitHub's own authoritative answer, and a fleet sweep re-asks it per account
 // forever (forwards in process, every a). What keeps it honest is its short
 // TTL, NOT a webhook -- see installationAbsentTTL.

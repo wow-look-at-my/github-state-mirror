@@ -15,10 +15,10 @@ import (
 
 // ---- Commit checks ----
 
-// ApplyCommitStatus records a single check/status state for a commit and
-// recomputes the rollup, writing it onto any PR whose head is that commit and,
-// when onDefaultBranch is set, onto the repo's default_branch_status. Returns
-// the resulting rollup state.
+// ApplyCommitStatus records a single check/status state for a commit.
+// ApplyCommitStatus recomputes the rollup, writing it onto any PR whose head
+// is that commit and, when onDefaultBranch is set, onto the repo's
+// default_branch_status. Returns the resulting rollup state.
 func (s *Store) ApplyCommitStatus(ctx context.Context, owner, repo, sha, checkContext, state string, onDefaultBranch bool) (string, error) {
 	tx, err := database.Begin(ctx, s.db)
 	if err != nil {

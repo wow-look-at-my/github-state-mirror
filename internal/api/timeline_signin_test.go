@@ -56,7 +56,8 @@ func TestTimeline_SignInCallsRecorded(t *testing.T) {
 }
 
 // A transport failure on the sign-in path is charted as a failure rather than
-// vanishing -- the case where the operator most needs to see the attempt.
+// vanishing -- the case. This happens where the operator most needs to see
+// the attempt.
 func TestTimeline_SignInFailureRecorded(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	deadURL := dead.URL

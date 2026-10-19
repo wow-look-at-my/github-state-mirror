@@ -40,10 +40,10 @@ func postOrgRepos(router http.Handler, token string) *httptest.ResponseRecorder 
 }
 
 // TestUserPartition_SameUserTokensShareScope verifies the operator-decided
-// keying: DIFFERENT tokens resolving to the SAME GitHub user id share
+// keying. DIFFERENT tokens resolving to the SAME GitHub user id share
 // "user:<id>" principal — grants earned under it reveal truth through either
-// token — while a user's token has no grant and sees nothing. It also
-// verifies /user is asked per unique token (the identity is cached).
+// token. This happens while a user's token has no grant and sees nothing. It
+// also verifies /user is asked per unique token (the identity is cached).
 func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 	var userCalls atomic.Int64
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 
 // TestMachineToken_FingerprintIsolation verifies that a token GitHub
 // definitively says is not a user (on /user without rate-limit headers —
-// e.g. an installation token) keeps a per-token fingerprint principal, that
+// e.g. an installation token) keeps a per-token fingerprint principal. That
 // the verdict is cached, and that no identity row is written (there is no
 // login to attribute).
 func TestMachineToken_FingerprintIsolation(t *testing.T) {
@@ -126,11 +126,12 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	assert.Empty(t, ids, "a non-user token has no login; no identity row must be written")
 }
 
-// TestTransientUserFailure_503AndNoPartition verifies the fail-closed rule:
-// when GET /user fails transiently (5xx here) and no verdict is cached, the
-// request fails with — it is never silently served from a guessed
-// (fingerprint) partition — and nothing is recorded. GitHub recovers, the
-// same token works without a restart (no negative verdict was cached).
+// TestTransientUserFailure_503AndNoPartition verifies the fail-closed rule.
+// The request fails with — it is never silently served from a guessed
+// (fingerprint) partition — and nothing is recorded. This happens when
+// GET /user fails transiently (5xx here) and no verdict is cached. GitHub
+// recovers, the same token works without a restart (no negative verdict was
+// cached).
 func TestTransientUserFailure_503AndNoPartition(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
@@ -160,10 +161,10 @@ func TestTransientUserFailure_503AndNoPartition(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "recovery must not require a restart")
 }
 
-// TestRateLimited403_IsTransientNotMachineVerdict verifies a rate-limited
-// on /user (X-RateLimit-Remaining:) is treated as transient (), NOT as a
-// definitive "not a user" verdict — otherwise a rate-limited USER token would
-// be permanently mis-partitioned onto its fingerprint.
+// TestRateLimited403_IsTransientNotMachineVerdict verifies a rate-limited on
+// /user (X-RateLimit-Remaining:) is treated as transient (), NOT as a
+// definitive "not a user" verdict. Otherwise a rate-limited USER token would be
+// permanently mis-partitioned onto its fingerprint.
 func TestRateLimited403_IsTransientNotMachineVerdict(t *testing.T) {
 	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
@@ -177,7 +178,7 @@ func TestRateLimited403_IsTransientNotMachineVerdict(t *testing.T) {
 }
 
 // TestIdentityRecordedWithUserActor verifies the dashboard-facing identity row
-// is written under the new "user:<id>" actor with the resolved login, so scope
+// is written under the new "user:<id>" actor with the resolved login. Scope
 // grouping and is_self labeling keep working.
 func TestIdentityRecordedWithUserActor(t *testing.T) {
 	router, store := setupTestRouter(t) // default fake: testUserID/testUserLogin

@@ -37,6 +37,9 @@ type WorkflowRun struct {
 	CreatedAt    string
 	UpdatedAt    string
 	RunStartedAt string
+	// Detail is the single-run read's JSON beyond the columns; "" from a source that does not carry the whole object.
+	Detail   string
+	DetailAt string // read side only: when Detail last landed
 }
 
 // WorkflowRunFilter: an empty field means no filter; the value is unfiltered.
@@ -48,8 +51,8 @@ type WorkflowRunFilter struct {
 
 // ApplyWorkflowRun records a run from an authoritative source -- a
 // workflow_run delivery or a REST absorb. Out-of-order tolerant on the run's
-// own updated_at, so a replayed delivery or a listing absorbed while a
-// fresher delivery was in flight cannot roll the run's state backwards.
+// own updated_at. This is so a replayed delivery or a listing absorbed while
+// a fresher delivery was in flight cannot roll the run's state backwards.
 func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Time) error {
 	if err := s.qx(ctx).UpsertWorkflowRunFull(ctx, dbgen.UpsertWorkflowRunFullParams{
 		Owner: NormalizeRepoKey(r.Owner), Repo: NormalizeRepoKey(r.Repo),
@@ -60,6 +63,9 @@ func (s *Store) ApplyWorkflowRun(ctx context.Context, r WorkflowRun, now time.Ti
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, RunStartedAt: r.RunStartedAt,
 		TouchedAt: rfc3339(now),
 	}); err != nil {
+		return err
+	}
+	if err := s.applyWorkflowRunDetail(ctx, r, now); err != nil {
 		return err
 	}
 	return s.qx(ctx).PruneSettledWorkflowRuns(ctx, rfc3339(now.Add(-workflowRunRetention)))
@@ -126,11 +132,11 @@ const WorkflowRunListingLag = time.Minute
 // workflowRunsScanPage is the page size ReconcileWorkflowRuns reads truth in.
 const workflowRunsScanPage = 500
 
-// ReconcileWorkflowRuns drops rows a complete response contradicts: a run
-// that still MATCHES the filter in truth but was absent from a short page-
-// answer for that same filter has provably moved, and the answer did not say
-// where to. Deleting it is the honest correction -- the next read re-absorbs
-// the run under whatever state it now has.
+// ReconcileWorkflowRuns drops rows a complete response contradicts. This is
+// a run that still MATCHES. The filter in truth but was absent from a short
+// page- answer for that same filter has provably moved. The answer did not
+// say where to. Deleting it is the honest correction -- the next read
+// re-absorbs the run under whatever state it now has.
 //
 // A row touched within WorkflowRunListingLag of fetchedAt (the instant the
 // fetch began) is newer than the answer can be trusted to reflect, so it is
@@ -144,7 +150,7 @@ func (s *Store) ReconcileWorkflowRuns(ctx context.Context, owner, repo string, f
 	spared := make([]int64, 0, len(kept)+len(ahead)+1)
 	spared = append(spared, kept...)
 	spared = append(spared, ahead...)
-	// NOT IN () is a syntax error in SQLite and an empty response means every
+	// NOT IN () is a syntax error in SQLite. An empty response means every
 	// matching row is stale, so pass a sentinel that can never be a run id.
 	if len(spared) == 0 {
 		spared = append(spared, -1)
@@ -195,7 +201,7 @@ func (s *Store) workflowRunsTouchedSince(ctx context.Context, owner, repo string
 
 // WorkflowRunsListComplete reports whether truth provably holds every run
 // matching this filter -- i.e. a short page- answer for exactly this filter
-// was absorbed recently enough that the marker has not expired.
+// was absorbed recently enough. The marker has not expired.
 func (s *Store) WorkflowRunsListComplete(ctx context.Context, owner, repo, filters string, now time.Time) (bool, error) {
 	row, err := s.qx(ctx).GetWorkflowRunsListMarker(ctx, dbgen.GetWorkflowRunsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Filters: filters,
@@ -231,6 +237,10 @@ func (s *Store) InvalidateWorkflowRunsTruth(ctx context.Context, owner, repo str
 	if err := s.qx(ctx).DeleteWorkflowRunsByRepo(ctx, dbgen.DeleteWorkflowRunsByRepoParams{
 		Owner: ownerKey, Repo: repoKey,
 	}); err != nil {
+		return err
+	}
+	if _, err := s.dbx(ctx).ExecContext(ctx,
+		`DELETE FROM workflow_run_details WHERE owner = ? AND repo = ?`, ownerKey, repoKey); err != nil {
 		return err
 	}
 	return s.qx(ctx).DeleteWorkflowRunsListMarkers(ctx, dbgen.DeleteWorkflowRunsListMarkersParams{

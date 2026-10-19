@@ -24,9 +24,9 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-// Notifier tests for the DELIVERY machinery rather than the payload: the
-// non-blocking contract, retries and auto-disable, drain, nil safety, and
-// the timeline records each attempt leaves.
+// Notifier tests for the DELIVERY machinery rather than the payload. This
+// covers the non-blocking contract, retries and auto-disable, drain, nil
+// safety, and the timeline records each attempt leaves.
 
 func TestNotifierNonBlocking(t *testing.T) {
 	access := newFakeAccess()
@@ -245,10 +245,10 @@ func TestNotifierNilSafe(t *testing.T) {
 	assert.Nil(t, subs)
 }
 
-// TestNotifierRecordsTimelineAttempts: every outbound delivery attempt lands
+// TestNotifierRecordsTimelineAttempts. Every outbound delivery. Attempt lands
 // on the timeline ring with its real duration — a failed non-final attempt, a
-// failed FINAL attempt, and a delivered — target host only (never the
-// full URL).
+// failed FINAL attempt, and a delivered — target. Host only (never the full
+// URL).
 func TestNotifierRecordsTimelineAttempts(t *testing.T) {
 	access := newFakeAccess()
 	access.setVisibility("my-org", "repo1", ghdata.VisibilityPublic)

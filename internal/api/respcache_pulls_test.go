@@ -19,8 +19,8 @@ import (
 )
 
 // upstreamPR builds a GitHub-shaped PR object (URL clutter and all) usable
-// both as a fake /pulls list item / single-PR response and as a webhook
-// payload's pull_request. Tests mutate the map before marshaling.
+// both as a fake /pulls list item / single-PR response and as a webhook.
+// Payload's pull_request. Tests mutate the map before marshaling.
 func upstreamPR(num int64, state, title, headRef, headSHA, createdAt string) map[string]any {
 	api := fmt.Sprintf("https://api.github.com/repos/org1/repo1/pulls/%d", num)
 	return map[string]any{
@@ -219,7 +219,7 @@ func pullsCacheStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *pulls
 	return router, store, db, u
 }
 
-// TestCachedPullsList_MissAbsorbHit covers the core list flow: the read
+// TestCachedPullsList_MissAbsorbHit covers the core list flow. The read
 // fetches + absorbs (miss), the serves the identical trimmed body from
 // state (hit, upstream calls), and the rebuild drops every URL field.
 func TestCachedPullsList_MissAbsorbHit(t *testing.T) {
@@ -271,9 +271,9 @@ func TestCachedPullsList_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.listHits))
 }
 
-// TestCachedPullsList_WebhookMaintenance is the load-bearing maintenance test:
-// the repo is never org-fetched -- global truth is seeded by the list absorb
-// (plus the reveal probe's repository object) and maintained ENTIRELY by
+// TestCachedPullsList_WebhookMaintenance is the load-bearing maintenance test.
+// The repo is never org-fetched -- global truth is seeded by the list absorb
+// (plus the reveal probe's repository object). It maintained ENTIRELY by
 // webhooks, which apply unconditionally under the global model. Open/close/
 // label/synchronize events must all be reflected in subsequent list rebuilds
 // with further upstream fetches.
@@ -333,9 +333,9 @@ func TestCachedPullsList_WebhookMaintenance(t *testing.T) {
 
 // TestCachedPullsList_GraphQLSyncInteraction: the GraphQL org sync merges into
 // the same global rows. Its COALESCE upsert PRESERVES the REST-only columns on
-// PRs it re-writes (the list stays a hit) -- but a PR the sync introduces that
+// PRs it re-writes (the list stays a hit). But a PR the sync introduces that
 // no REST source has seen yet is rest-incomplete, and the list must miss
-// rather than rebuild a partial entry.
+// rather than rebuild. A partial entry.
 func TestCachedPullsList_GraphQLSyncInteraction(t *testing.T) {
 	router, store, _, u := pullsCacheStack(t)
 	target := "/repos/org1/repo1/pulls?state=open&per_page=100"
@@ -381,8 +381,9 @@ func TestCachedPullsList_GraphQLSyncInteraction(t *testing.T) {
 }
 
 // TestCachedPullsList_PaginationFullGuard: a response as long as per_page may
-// continue upstream, so it never sets the completeness marker; and a rebuilt
-// set as long as the request's per_page is never served from state.
+// continue upstream, so it never sets the completeness marker. This also
+// covers a rebuilt set as long as the request's per_page is never served from
+// state.
 func TestCachedPullsList_PaginationFullGuard(t *testing.T) {
 	router, _, _, u := pullsCacheStack(t)
 

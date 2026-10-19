@@ -4,13 +4,13 @@ Extracted verbatim from the package doc comment and per-field/per-function comme
 
 ## What it is
 
-GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the reveal probe, and ghclient's own calls) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
+GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the show probe, and ghclient's own calls) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
 
-The store is deliberately in-memory — the same live-view-not-audit-log stance as the api package's request log. Rate-limit windows reset within the hour. As a result, the data is sub-hour-ephemeral, and persisting it will add a schema.sql table, whose every edit nukes the whole cache. It resets on restart.
+The store is deliberately in-memory — the same live-view-not-audit-log stance as the api package's request log. Rate-limit windows reset within the hour. As a result, the data is sub-hour-ephemeral, and persisting it will add a schema.sql table, whose every edit nukes the whole cache. It resets on start.
 
 ## Dead observations age out
 
-An actively observed identity is re-observed with a fresh future reset on every request, so an entry whose reset moment has passed belongs. This is to an identity that stopped calling. It is pruned. An entry with no usable reset (a zero Reset) has no window to judge by and is instead pruned once its ObservedAt is older than staleTTL. Pruning is lazy — swept on Observe (write) and Snapshot (read), the kv package's lazy-expiry stance — with no background goroutine or timer. The maxEntries cap stays as the size backstop.
+An actively observed identity is re-observed with a fresh future reset on every request, so an entry whose reset moment passed belongs. This is to an identity that stopped calling. It is pruned. An entry with no usable reset (a zero Reset) has no window to judge by and is instead pruned once its ObservedAt is older than staleTTL. Pruning is lazy — swept on Observe (write) and Snapshot (read), the kv package's lazy-expiry stance — with no background goroutine or timer. The maxEntries cap stays as the size backstop.
 
 `dead(o, now)`: an actively observed identity is re-observed with a fresh future reset on every request. Only an identity unseen since its window rolled over keeps a past reset — so a reset strictly in the past marks the entry dead. A zero (or negative — garbage) Reset has no window to judge by and instead dies once ObservedAt is more than staleTTL old. A zero reset must neither mean immortal nor mean instant death.
 
@@ -22,7 +22,7 @@ An actively observed identity is re-observed with a fresh future reset on every 
 
 ## Observation fields
 
-`Identity` labels WHO was consuming the limit: the request's principal (`user:<id>`, `app:<id>`, `app-installation:<id>`, a token fingerprint) or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
+`Identity` labels WHO consums the limit: the request's principal (`user:<id>`, `app:<id>`, `app-installation:<id>`, a token fingerprint) or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
 
 `Name` is the identity's verified display name (a user login, an app slug, an installation's account login) when the caller supplied one. Display-only. Never part of the (identity, resource) key. A later observation without a name keeps the last known one — the identity is the same principal either way. In `Observe`: the (identity, resource) key already pins the principal. As a result, a nameless reading is the same actor seen through a path that did not carry the name.
 
@@ -40,6 +40,6 @@ Holds the latest observation per (identity, resource). All methods are safe for 
 
 ## ObservationsFor
 
-Returns the live observations for one identity, across every resource GitHub reports for it (core, search, graphql, ...), sorted by resource. Dead entries are pruned first, exactly as Snapshot does. Empty when the identity has made no request the meter has observed yet, or its last reading's window has. This is since rolled over — never a stale answer, since `dead()` is the same window-aware rule Snapshot relies. This is on rather than a flat serve TTL (a flat TTL will blank out a caller's perfectly-valid standing just because they happened not to poll again within it).
+Returns the live observations for one identity, across every resource GitHub reports for it (core, search, graphql, ...), sorted by resource. Dead entries are pruned first, exactly as Snapshot does. Empty when the identity made no request the meter observed yet, or its last reading's window has. This is since rolled over — never a stale answer, since `dead()` is the same window-aware rule Snapshot relies. This is on rather than a flat serve TTL (a flat TTL will blank out a caller's perfectly-valid standing just because they happened not to poll again within it).
 
 This is what `GET /rate_limit` is answered from (`respcache_ratelimit.go`). The mirror already learns a credential's standing for free off every response it makes on that credential's behalf, so a caller asking. This is for it needs no upstream call of its own. See docs/cache/uncacheable-routes.md for why this is a served route rather than a traditional tier-2 cache row.

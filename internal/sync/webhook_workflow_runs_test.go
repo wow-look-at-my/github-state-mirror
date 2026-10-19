@@ -12,12 +12,12 @@ import (
 )
 
 // GitHub Actions deliveries through the dispatcher. The per-COMMIT runs
-// snapshot is flushed by head_sha like any other ref-keyed cache; the
+// snapshot is flushed by head_sha like any other ref-keyed cache. The
 // repo-wide runs LISTING is not flushed at all, because its rows are
 // MAINTAINED per run -- that distinction is what these tests pin.
 
 // TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA: a workflow_run delivery
-// flushes its head_sha's cached workflow-runs pages -- the ONLY invalidation
+// flushes its head_sha's cached workflow-runs pages. The ONLY invalidation
 // signal for a startup_failure run, which creates no jobs, check runs, or
 // statuses. The delivery ALSO applies the run to truth (that is what the
 // repo-wide listing reads), so it records as applied.
@@ -42,11 +42,11 @@ func TestDispatch_WorkflowRun_FlushesWorkflowRunsForSHA(t *testing.T) {
 	assert.True(t, s.workflowRunsServe(r2OtherSHA), "another sha's workflow-runs pages must survive")
 }
 
-// TestDispatch_WorkflowRun_AppliesRunState is the property the repo-wide runs
-// listing depends on: a workflow_run delivery UPDATES THE RUN it names
+// TestDispatch_WorkflowRun_AppliesRunState is the property. The repo-wide
+// runs listing depends on: a workflow_run delivery UPDATES THE RUN it names
 // and leaves every other run answerable. Nothing is cleared, so the backlog
-// view changes by exactly row -- the difference between maintaining a
-// cache and invalidating.
+// view changes by exactly row -- the difference between maintaining a cache
+// and invalidating.
 func TestDispatch_WorkflowRun_AppliesRunState(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	s := r2Seeder{t: t, store: store, now: time.Now()}
@@ -92,10 +92,10 @@ func TestDispatch_WorkflowRunRequested_EntersTheBacklog(t *testing.T) {
 	assert.Equal(t, map[int64]string{5: "queued"}, s.runStatuses())
 }
 
-// TestDispatch_WorkflowJob_MaintainsItsRun: a job delivery names its RUN, so
-// it maintains that run's row -- for EVERY action, including the queued
-// the job table drops as ignored (a queued job is a run entering the
-// backlog). It carries no run-level status, so it may only raise the floor.
+// TestDispatch_WorkflowJob_MaintainsItsRun: a job delivery names its RUN. It
+// maintains that run's row -- for EVERY action, including the queued the job
+// table drops as ignored (a queued job is a run entering the backlog). It
+// carries no run-level status, so it may only raise the floor.
 func TestDispatch_WorkflowJob_MaintainsItsRun(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	s := r2Seeder{t: t, store: store, now: time.Now()}
@@ -202,9 +202,9 @@ func TestDispatch_RunStateEvents_NeverClearTheListing(t *testing.T) {
 	})
 }
 
-// TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide: the shared
-// workflow-runs flush widens to the whole repo when the caller has no sha --
-// an empty sha would exact-match nothing, silently flushing NOTHING while the
+// TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide. The shared
+// workflow-runs flush widens to the whole repo when the caller has no sha. An
+// empty sha would exact-match nothing, silently flushing NOTHING while the
 // triggering payload still said some run changed. (ParseCheckPayload requires
 // a sha today, so the CI-event path cannot reach this; the fallback is what
 // keeps a future parser relaxation from turning that flush into a no-op.)

@@ -19,10 +19,10 @@ import (
 // dashboard's Timeline.
 //
 // The count is part of the declaration on purpose. Keying by file alone would
-// let a client appear in an already-listed file and inherit a sentence
-// written about a different -- which is how "it's covered" stops being
-// true without anybody noticing. A mismatch here is not a nuisance to bump:
-// it is the guard asking where the new shows up.
+// let a client appear in an already-listed file. It inherit a sentence
+// written about a different -- which is how "it's covered" stops being true
+// without anybody noticing. A mismatch here is not a nuisance to bump: it is
+// the guard asking where the new shows up.
 var observedClients = map[string]struct {
 	count int
 	why   string

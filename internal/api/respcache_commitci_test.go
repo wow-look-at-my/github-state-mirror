@@ -53,10 +53,11 @@ func upstreamStatusItem(context, state string, description any, targetURL string
 	}
 }
 
-// upstreamCheckRun builds GitHub-shaped check_runs entry, including the
-// url/html_url/details_url, the output object (with annotations_url), the
-// check_suite, and the full app object the rebuild trims to {id}. conclusion,
-// startedAt, and completedAt may be nil (a queued/in-progress run).
+// upstreamCheckRun builds GitHub-shaped check_runs entry. That
+// upstreamCheckRun is including the url/html_url/details_url, the output
+// object (with annotations_url). The check_suite, and the full app object the
+// rebuild trims to {id}. conclusion, startedAt, and completedAt may be nil (a
+// queued/in-progress run).
 func upstreamCheckRun(id int, name, status string, conclusion, startedAt, completedAt any) map[string]any {
 	return map[string]any{
 		"id":           id,
@@ -229,12 +230,12 @@ func commitCIStack(t *testing.T) (http.Handler, *ghdata.Store, *sql.DB, *commitC
 	return router, store, db, u
 }
 
-// TestCachedCommitStatus_MissAbsorbHit covers the combined-status core flow:
-// the read fetches + absorbs (miss), the serves the identical
-// trimmed body from state (hit, upstream calls), and the rebuild drops
-// every URL field (per-status target_url/avatar_url/url included), the full
-// repository object, and the per-status ids -- while a null description
-// survives as null.
+// TestCachedCommitStatus_MissAbsorbHit covers the combined-status core flow.
+// The read fetches + absorbs (miss). The serves the identical trimmed body
+// from state (hit, upstream calls), and the rebuild drops every URL field
+// (per-status target_url/avatar_url/url included). The full repository
+// object, and the per-status ids -- while a null description survives as
+// null.
 func TestCachedCommitStatus_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/main/status"
@@ -271,11 +272,11 @@ func TestCachedCommitStatus_MissAbsorbHit(t *testing.T) {
 
 // TestCachedCheckRuns_MissAbsorbHit covers the check-runs core flow: miss
 // then identical hit. The rebuild drops url, node_id/external_id,
-// check_suite, pull_requests, and output's unbounded summary/text -- while
-// keeping the consumer-read fields the -- survey re-added
-// (output trimmed to {title}, details_url, html_url -- the required-builds
-// hook renders all), the nullable conclusion/completed_at of an
-// in-progress run as null, and the app object trimmed to {id}.
+// check_suite, pull_requests. Output's unbounded summary/text -- while
+// keeping the consumer-read fields the -- survey re-added (output trimmed
+// to {title}, details_url, html_url -- the required-builds hook renders
+// all), the nullable conclusion/completed_at of an in-progress run. As
+// null, and the app object trimmed to {id}.
 func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 	target := "/repos/org1/repo1/commits/main/check-runs"
@@ -319,9 +320,10 @@ func TestCachedCheckRuns_MissAbsorbHit(t *testing.T) {
 }
 
 // TestCachedCommitCI_RefKeying: every verbatim ref spelling -- a branch, a
-// sha, a slashed branch -- is its own row, slashed refs route into the cached
-// routes (the suffix-anchored subtree dispatch), and the status and
-// check-runs snapshots for ref are independent rows.
+// sha, a slashed branch -- is its own row. That TestCachedCommitCI_RefKeying
+// is slashed refs route into the cached routes (the suffix-anchored subtree
+// dispatch), and the status and check-runs snapshots for ref are independent
+// rows.
 func TestCachedCommitCI_RefKeying(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 
@@ -359,19 +361,19 @@ func TestCachedCommitCI_RefKeying(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&u.statusHits), "hits must not call upstream")
 }
 
-// TestCachedCommitCI_PassthroughShapes: shapes the cache does not model pass
-// through verbatim, uncached, every time -- unknown/out-of-range/repeated
-// query params, a non-default Accept, and every OTHER /commits/* subtree tail
-// (the single-commit read, /check-suites, a branch literally named "status"
-// read as a single commit). (?per_page/?page themselves became modeled in
-// round -- see TestCachedCommitCI_PaginationKeying.)
+// TestCachedCommitCI_PassthroughShapes. Shapes the cache does not model pass
+// through verbatim, uncached, every time. Unknown/out-of-range/repeated query
+// params, a non-default Accept, and every OTHER /commits/* subtree tail (the
+// single-commit read, /check-suites, a branch literally named "status" read
+// as a single commit). (?per_page/?page themselves became modeled in round --
+// see TestCachedCommitCI_PaginationKeying.)
 func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 	router, _, _, u := commitCIStack(t)
 
 	// Unknown, out-of-range, and repeated params are not modeled.
 	for _, target := range []string{
 		"/repos/org1/repo1/commits/main/status?per_page=101",
-		"/repos/org1/repo1/commits/main/status?page=11",
+		"/repos/org1/repo1/commits/main/status?page=41",
 		"/repos/org1/repo1/commits/main/status?per_page=50&per_page=50",
 		"/repos/org1/repo1/commits/main/check-runs?check_name=build",
 		"/repos/org1/repo1/commits/main/check-runs?filter=latest",
@@ -419,9 +421,9 @@ func TestCachedCommitCI_PassthroughShapes(t *testing.T) {
 }
 
 // TestCachedCommitCI_PaginationKeying: round made ?per_page/?page part of
-// the cache key on every commit-CI form -- each paginated shape is its own
+// the cache key on every commit-CI form. Each paginated shape is its own
 // self-contained snapshot (the required-builds hook paginates check-runs and
-// statuses at per_page=&page=N until a short page), the bare shape stores
+// statuses at per_page=&page=N until a short page). The bare shape stores
 // under GitHub's defaults as its own key, and the combined /status route
 // inherits the same parse.
 func TestCachedCommitCI_PaginationKeying(t *testing.T) {
