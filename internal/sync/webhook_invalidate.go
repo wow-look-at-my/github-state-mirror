@@ -63,6 +63,9 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
+		// Issue documents embed whole label objects; the payload names one label, not the issues that carry it.
+		flush("issue answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssue))
+		flush("issues list", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssuesList))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -75,6 +78,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff, strconv.FormatInt(event.PRNumber, 10)))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
 		if event.Type == "pull_request" {
+			// A PR is also an issue. The PR object is not the issue object, so it cannot rewrite one.
+			flush("issue answers", scope, d.store.InvalidateIssueAnswers(ctx, owner, repo, event.PRNumber))
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
 		}
 	case "status", "check_run", "check_suite":

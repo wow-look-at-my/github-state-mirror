@@ -233,6 +233,10 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
 
+		// Cached issue reads, single and listing; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/issues", h.cachedIssuesList)
+		r.Get("/repos/{owner}/{repo}/issues/{number}", h.cachedIssue)
+
 		// A PR's commits, reusing the repository commits list's storage; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/commits", h.cachedPullCommits)
 	})

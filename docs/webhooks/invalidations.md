@@ -90,7 +90,18 @@ Branch rules (`repo_answer_cache`, kind `branch_rules`). **Justified**: a branch
 
 `install_token_cache` and `repo_installation_cache` by id, plus a sweep of every absent-installation verdict and the whole `installation_repos_cache`. **Justified**: the delivery is accurately the news that an installation's coverage changed. Neither the verdicts nor the listings carry an id to match on. A suspended installation must stop serving minted tokens immediately. Applying anything here means inventing the new coverage.
 
+## issues / issue_comment
+
+| row family | verdict | why |
+| --- | --- | --- |
+| single issue (`repo_answer_cache`, kind `issue`) | **applied** | the payload is the whole issue object, and `ApplyIssuePayload` rewrites the row in place. A close without `closed_by`, a stored verdict, and a deleted or transferred issue drop the row, because the payload does not state that answer. |
+| issue listings (kind `issues_list`) | **Justified** | a delivery moves page membership and order: a state change, a new issue, a comment that bumps `updated_at`. The payload states one issue, never a page. The repo's listing rows flush. |
+
+A `pull_request` delivery also flushes the single issue of that number and the repo's listings. **Justified**: a PR is an issue too. The PR object is not the issue object.
+
 ## label
+
+Issue rows (kinds `issue` and `issues_list`) flush repo-wide on every action too. **Justified**: they embed whole label objects. The payload names a label, not the issues that carry it.
 
 Repo-wide on every action. **Justified**: an `edited` action can RENAME a label, which puts names in one delivery. One label also answers under every spelling a caller can request. Matching the payload's name therefore misses rows. The grain is the repo because the key space is unbounded, not because the payload is thin.
 
