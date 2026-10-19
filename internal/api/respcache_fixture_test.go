@@ -128,7 +128,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 			"name": parts[1], "full_name": parts[0] + "/" + parts[1],
 			"private": true, "visibility": "private",
 			"html_url":       "https://github.com/" + parts[0] + "/" + parts[1],
-			"default_branch": "main",
+			"default_branch": "main", "fork": false,
 			"owner": map[string]any{
 				"login": parts[0], "avatar_url": "https://a",
 				"html_url": "https://github.com/" + parts[0],

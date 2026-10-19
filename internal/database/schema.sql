@@ -88,6 +88,9 @@ CREATE TABLE repos (
     owner_login           TEXT,
     owner_avatar          TEXT,
     owner_url             TEXT,
+    is_fork               INTEGER,  -- NULL unknown | 0 | 1; the GraphQL org fetch does not carry it
+    parent_full_name      TEXT,     -- a fork's parent, learned only from a REST repo object
+    parent_default_branch TEXT,
     PRIMARY KEY (owner, name)
 );
 
