@@ -422,6 +422,9 @@ func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {
 		OwnerLogin:          r.OwnerLogin,
 		OwnerAvatar:         r.OwnerAvatar,
 		OwnerUrl:            r.OwnerUrl,
+		IsFork:              r.IsFork,
+		ParentFullName:      r.ParentFullName,
+		ParentDefaultBranch: r.ParentDefaultBranch,
 	}
 }
 
