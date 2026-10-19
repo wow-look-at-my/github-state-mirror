@@ -36,12 +36,12 @@ func (h *handlers) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
 
 // addClientSecret puts the configured client secret into a form-encoded login
 // body. A browser-only app cannot carry a secret -- whatever it ships, every
-// visitor has -- and GitHub Apps support no PKCE, so this relay is the only
+// visitor has -- and GitHub Apps support no PKCE. This relay is the only
 // server in that exchange and the secret belongs here.
 //
 // The body is returned unchanged for anything that is not a form, for a client
-// id nothing is configured for, and for the device flow, which authenticates
-// on the public client id alone.
+// id nothing is configured for, and for the device flow. This authenticates on
+// the public client id alone.
 func (h *handlers) addClientSecret(body []byte, contentType string) []byte {
 	if len(h.oauthRelaySecrets) == 0 {
 		return body
@@ -68,7 +68,6 @@ func (h *handlers) addClientSecret(body []byte, contentType string) []byte {
 }
 
 // needsClientSecret reports whether an exchange authenticates the app itself.
-// The authorization-code exchange does; the device flow does not.
 func needsClientSecret(form url.Values) bool {
 	if form.Get("device_code") != "" {
 		return false
@@ -76,14 +75,13 @@ func needsClientSecret(form url.Values) bool {
 	return form.Get("code") != ""
 }
 
-// relayGitHubLogin forwards a login POST body to the given github.com endpoint
-// and passes the response back untouched — the shared core of the
-// token-exchange and device-code relays. The body travels as it arrived except
-// for the client secret addClientSecret adds. Only the content-negotiation headers
-// travel upstream; CORS on the way back is corsMiddleware's alone. Each
-// upstream call is timed onto the Timeline chart (disposition "relay") under
-// the mirror's own fixed relay path as the lane — these carry no bearer
-// token. The actor is "anonymous".
+// relayGitHubLogin forwards a login POST body to the given github.com endpoint. It
+// passes the response back untouched — the shared core of the token-exchange and
+// device-code relays. The body travels as it arrived except for the client secret
+// addClientSecret adds. Only the content-negotiation headers travel upstream; CORS
+// on the way back is corsMiddleware's alone. Each upstream call is timed onto the
+// Timeline chart (disposition "relay") under the mirror's own fixed relay path as
+// the lane — these carry no bearer token. The actor is "anonymous".
 func (h *handlers) relayGitHubLogin(w http.ResponseWriter, r *http.Request, upstreamURL string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxOAuthBytes+1))
 	if err != nil {

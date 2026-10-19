@@ -223,7 +223,7 @@ func parseOrigins(s string) []string {
 
 // parseRelaySecrets parses OAUTH_RELAY_SECRETS, a comma-separated list of
 // "<client_id>=<client_secret>" pairs. A malformed entry fails startup: a
-// dropped pair is a sign-in that fails for every visitor of that app, and the
+// dropped pair is a sign-in that fails for every visitor of that app. The
 // failure would otherwise land on GitHub as incorrect_client_credentials with
 // nothing here to name it.
 func parseRelaySecrets(s string) (map[string]string, error) {
