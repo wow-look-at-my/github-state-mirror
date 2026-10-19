@@ -307,6 +307,27 @@ func TestCachedWorkflowRuns_ListingKeyedPerFilter(t *testing.T) {
 	assert.Equal(t, int32(len(targets)), atomic.LoadInt32(&u.runsHits), "hits must not call upstream")
 }
 
+// exclude_pull_requests does not change the rebuilt listing, so it shares the
+// filter's proof. This is the gh CLI's branch shape.
+func TestCachedWorkflowRuns_ExcludePullRequestsSharesTheProof(t *testing.T) {
+	router, _, _, u := workflowRunsStack(t)
+
+	w := do(t, router, authedReq("GET", "/repos/org1/repo1/actions/runs?branch=main&exclude_pull_requests=true&per_page=20", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader))
+	for _, target := range []string{
+		"/repos/org1/repo1/actions/runs?branch=main&exclude_pull_requests=true&per_page=20",
+		"/repos/org1/repo1/actions/runs?branch=main&exclude_pull_requests=false&per_page=20",
+	} {
+		w := do(t, router, authedReq("GET", target, nil))
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.runsHits))
+
+	w = do(t, router, authedReq("GET", "/repos/org1/repo1/actions/runs?branch=main&exclude_pull_requests=yes", nil))
+	assert.Empty(t, w.Header().Get(cacheHeader), "an undocumented value must pass through")
+}
+
 // TestCachedWorkflowRuns_ShapePassthroughs. Shapes the cache does not model
 // pass through verbatim, uncached -- an unmodeled filter param, a status
 // value outside GitHub's documented set, a branch. That would smuggle a

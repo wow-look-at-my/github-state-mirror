@@ -22,8 +22,8 @@ const (
 func (h *handlers) cachedBranchRules(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	branch := chi.URLParam(r, "*")
-	if branch == "" || len(branch) > branchRulesMaxBranchLen || strings.ContainsFunc(branch, isControlRune) {
+	branch, ok := wildcardParam(r)
+	if !ok || branch == "" || len(branch) > branchRulesMaxBranchLen || strings.ContainsFunc(branch, isControlRune) {
 		h.passthrough(w, r, PassPath)
 		return
 	}

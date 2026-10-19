@@ -31,6 +31,7 @@ Ordering is per RESOURCE, at the grain where "older" means "superseded":
 | workflow_run | `workflow_run:owner/repo:<id>` | `workflow_run.updated_at` |
 | workflow_job | `workflow_job:owner/repo:<id>` | `completed_at` ?? `started_at` |
 | repository | `repo:owner/repo` | `repository.updated_at` |
+| issues | `issue:owner/repo#7` | `issue.updated_at` |
 | installation | `installation:<id>` | `installation.updated_at` |
 
 The status row is the one that matters most and is easiest to get incorrect. One commit carries many contexts, and they supersede only themselves. Keyed on the sha alone, an `all-builds` result landing first will discard a `ci` result posted a second earlier. Silently losing a check this mirror is the source of truth for. `TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther` pins it.

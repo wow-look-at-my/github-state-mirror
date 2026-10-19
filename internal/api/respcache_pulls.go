@@ -178,6 +178,10 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
+	if pullsSnapshotState(r.URL.Query()) {
+		h.cachedPullsSnapshot(w, r, owner, repo)
+		return
+	}
 	shape, ok := parsePullsListShape(r.URL.Query())
 	if !ok {
 		h.passthrough(w, r, PassQuery)
@@ -334,6 +338,9 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
+	if h.servePullVerdict(w, r, owner, repo, numStr) {
+		return
+	}
 
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
 	if err != nil {
@@ -342,6 +349,9 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if h.storePullVerdict(w, r, owner, repo, numStr, resp, body, overflow) {
+		return
+	}
 	if overflow || resp.StatusCode != http.StatusOK {
 		h.replayUnstored(w, r, resp, body)
 		return
