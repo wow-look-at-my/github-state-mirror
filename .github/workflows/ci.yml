@@ -83,7 +83,7 @@ jobs:
       - run: npm ci
       - run: just build
       # See docs/ci.md: do not add an explicit cache-upload step here.
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
         with:
           # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
           cosmo-platforms: linux/amd64,windows/amd64
@@ -110,7 +110,7 @@ jobs:
   # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
   publish-ghcr:
     needs: [build, image-smoke]
-    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@lkgb
 
   # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
@@ -150,7 +150,7 @@ jobs:
             core.setOutput("branch", branch);
             core.info(`Prepared dist/ for branch '${branch}'.`);
       - name: Publish preview to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: github-state-mirror
