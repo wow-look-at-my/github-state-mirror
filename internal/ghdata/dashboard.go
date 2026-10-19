@@ -158,6 +158,7 @@ var RequiredWebhookEvents = []struct {
 	{"workflow_run", "runs with no jobs yet (startup_failure, concurrency-gated) never reach truth, so the runs listing re-fetches instead of serving from rows"},
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
 	{"repository_ruleset", "a changed ruleset leaves the cached branch rules serving the old answer until their TTL"},
+	{"custom_property_values", "a changed repo property leaves the cached org property values serving the old answer until their TTL"},
 }
 
 // Subscribed status comes from the App itself, never inferred from the delivery log.

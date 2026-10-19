@@ -124,6 +124,10 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onWorkflowRun(ctx, event)
 	case "repository_ruleset":
 		return d.onRuleset(ctx, event)
+	case "custom_property_values":
+		return d.onCustomPropertyValues(ctx, event)
+	case "custom_property":
+		return d.onCustomProperty(ctx, event)
 	default:
 		return ignored("event type not tracked")
 	}

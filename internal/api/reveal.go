@@ -52,6 +52,7 @@ const (
 	denyKindAnnotations       = "annotations"         // GET /repos/{owner}/{repo}/check-runs/{id}/annotations
 	denyKindBranchRules       = "branch_rules"        // GET /repos/{owner}/{repo}/rules/branches/{branch}
 	denyKindArchive           = "archive"             // GET /repos/{owner}/{repo}/{tarball,zipball}/{ref}
+	denyKindBranch            = "branch"              // GET /repos/{owner}/{repo}/branches/{branch}
 )
 
 // revealOutcome is the reveal decision for request.
