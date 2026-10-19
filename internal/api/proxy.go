@@ -47,11 +47,8 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*htt
 		token := bearerToken(r)
 		if token == "" {
 			// Anonymous passthrough: allow tokenless requests ONLY onto GitHub's
-			// public surface, and only if this request is not clearly targeting
-			// private/privileged data (see anonymousPublicOnly). GitHub itself is
-			// the authority on public-vs-private; we just refuse the obviously
-			// private endpoints up front so an anonymous client cannot even
-			// attempt them, and never send a service credential in their place.
+			// public surface, and only if this request is not targeting
+			// private/privileged data (see anonymousPublicOnly).
 			if !anonymousPublicOnly(r) {
 				http.Error(w, "unauthorized: missing Authorization header", http.StatusUnauthorized)
 				return
@@ -60,26 +57,16 @@ func newGitHubProxy(baseURL string, meter *ratemeter.Store, onResponse func(*htt
 			rp.ServeHTTP(w, r)
 			return
 		}
-		// Authenticated: forward the caller's credential unchanged. The mirror
-		// never substitutes its own token.
+		// Authenticated: forward the caller's credential unchanged. The mirror never substitutes its own token.
 		rp.ServeHTTP(w, r)
 	})
 }
 
 // anonymousPublicOnly reports whether a tokenless request may be forwarded to
-// GitHub. It is a defense-in-depth guard on top of GitHub's own authorization:
-// an anonymous request can legitimately read only public data, so anything that
-// is unmistakably privileged/private — user/org-scoped resources, notifications,
-// anything that would require a token to even mean anything — is rejected before
-// it leaves the mirror. GitHub still enforces the real boundary for every other
-// path (an anonymous read of a private repo is 404/403 upstream); this exists to
-// keep tokenless traffic off those paths entirely, and to keep the mirror from
-// looking like an open relay for credential-bearing endpoints.
+// GitHub.
 func anonymousPublicOnly(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		// Public writes do not exist on GitHub: only authenticated users can
-		// create/update anything (even on public repos), so no anonymous
-		// non-GET/HEAD request is ever legitimate.
+		// Public writes do not exist on GitHub: only authenticated users can create/update anything (even on public repos).
 		return false
 	}
 	p := r.URL.Path
@@ -87,8 +74,7 @@ func anonymousPublicOnly(r *http.Request) bool {
 	case strings.HasPrefix(p, "/user"), strings.HasPrefix(p, "/users/"), strings.HasPrefix(p, "/orgs/"), strings.HasPrefix(p, "/notifications"):
 		return false
 	case strings.HasPrefix(p, "/repos/"):
-		// /repos/{owner}/{repo}/... is public only if the repo is public; GitHub
-		// decides. No additional restriction here.
+		// /repos/{owner}/{repo}/... is public only if the repo is public; GitHub decides. No additional restriction here.
 		return true
 	default:
 		return true
