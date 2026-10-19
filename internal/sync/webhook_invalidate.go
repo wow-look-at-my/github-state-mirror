@@ -34,6 +34,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 		flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
 		flush("owner repos cache", scope, d.store.InvalidateOwnerReposCache(ctx, owner))
+		flush("org property values cache", scope, d.store.InvalidateOrgPropertyValues(ctx, owner))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		d.flushCommitsAnswers(ctx, scope, owner, repo, nil)
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
@@ -169,6 +170,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 
 	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
 	d.applyPushToCommitAnswers(ctx, scope, owner, repo, refName, before, after, isTag)
+	d.flushBranchAnswer(ctx, scope, owner, repo, refName, isTag)
 
 	switch {
 	case refName == "":
@@ -289,6 +291,22 @@ func (d *WebhookDispatcher) applyPushToCommitAnswers(ctx context.Context, scope,
 	if !zeroSHA(after) {
 		flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead, strings.ToLower(after)))
 	}
+}
+
+// flushBranchAnswer drops the single-branch answer of a pushed branch. The
+// push states the new tip sha, but the answer also holds the tip's parents
+// and committer date, which the payload does not carry. A push that names no
+// ref drops every branch answer of the repo.
+// see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) flushBranchAnswer(ctx context.Context, scope, owner, repo, refName string, isTag bool) {
+	if refName == "" {
+		flush("branch answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindBranch))
+		return
+	}
+	if isTag {
+		return
+	}
+	flush("branch answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranch, refName))
 }
 
 // flushCheckRunAnnotations drops the stored annotations of the check run a

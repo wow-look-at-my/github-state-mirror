@@ -217,6 +217,11 @@ func NewRouter(
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+		// Cached single branch; the name may carry slashes. See docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/branches/*", h.cachedBranch)
+
+		// Cached org custom property values, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
+		r.Get("/orgs/{org}/properties/values", h.cachedOrgPropertyValues)
 
 		// Cached installation-repositories listing, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
 		r.Get("/installation/repositories", h.cachedInstallationRepos)

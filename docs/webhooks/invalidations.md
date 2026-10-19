@@ -28,6 +28,7 @@ Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers
 | tags pages (`repo_answer_cache`, kind `tags`) | **applied** | a tag push that moves an existing tag states its new commit (`after`); `ApplyPushedTagTip` rewrites the entry in every page that lists it. A tip move changes no page's membership or order. A created or deleted tag (an all-zeros `before` or `after`) changes the SET, and GitHub's page for a name is not in the payload, so the repo's tags pages flush. An unparseable push flushes them too. A branch push touches none. |
 | single commit by ref spelling (`repo_answer_cache`, kind `commit`) | **Justified** | a row keyed by a branch name or short sha describes whatever it resolves to. The push states the new tip sha, but the answer IS that commit's files, stats and patches, which no push carries. Every spelling of the pushed ref drops. Full-sha rows are immutable and untouched. |
 | branches-where-head (kind `branches_where_head`) | **applied, partly Justified** | the branch left `before`, so it is removed from `before`'s list in place. It joined `after`'s list, but the entry's `protected` flag is in no push payload, so `after`'s row drops. An unparseable push drops the repo's rows. |
+| single branch (`repo_answer_cache`, kind `branch`) | **Justified** | the push states the new tip sha, but the answer also holds the tip commit's parents and committer date, which no push carries. The pushed branch's row drops. An unparseable push drops the repo's rows. A tag push touches none. |
 | PR `mergeable` fields | **applied-as-unresolved** | GitHub recomputes mergeability asynchronously and no webhook ever carries the recomputed value, so the stored answer is un-resolved rather than dropped, with the invalidated test-merge sha remembered so a refetch re-offering it is recognized as pre-push. |
 
 ## create / delete (`onRefLifecycle`)
@@ -42,6 +43,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `contents_cache`, `commits_list_cache` | **Justified** | both are keyed by ref and both hold content. The payload carries no content, exactly as it carries none on a push. |
 | `compare_cache`, `commit_ci_cache` (branch-form rows) | **Justified** | both describe whatever the ref points at. A deleted ref points at nothing, and a created one points at a sha the payload never states. |
 | single commit by ref spelling | **Justified** | the row describes whatever the ref points at, and the payload states no sha. Every spelling drops. |
+| single branch (kind `branch`) | **Justified** | a create clears a stored absent-branch verdict and states no tip. A delete makes a stored branch answer wrong. The branch's row drops. |
 | branches-where-head | **applied on delete, Justified on create** | a deleted branch is removed from every list in place. A created branch joins the list of a sha the payload does not state, so the repo's rows drop. |
 | tags pages (tag create/delete) | **Justified** | the tags listing is a set. A created tag needs a sha the payload does not state and a page position nothing states; a deleted tag shifts every later page. The repo's tags pages flush. |
 
@@ -81,6 +83,12 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows Incorrect rather than stale. A name that no longer means what it did keys they. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
+
+`org_property_values_cache` rides the same delivery at the owner grain, across every credential. **Justified**: a created, deleted, renamed or transferred repo moves page membership, and each row keys a bearer fingerprint the delivery does not name.
+
+## custom_property_values / custom_property
+
+Pages of the Org property values (`org_property_values_cache`). A `custom_property_values` delivery is **applied**: each new value of a property the stored entry already lists is written into every page that lists the repo. The fallback flush of the org's pages is **Justified** for a value that became null and for a property the entry does not list. GitHub's page shape for an unset property is not stated by the payload. A `custom_property` delivery drops the org's pages. **Justified**: a created or deleted definition adds or removes a property on every repo, and the payload states only the definition.
 
 ## repository_ruleset
 

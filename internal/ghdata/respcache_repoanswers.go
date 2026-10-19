@@ -21,6 +21,7 @@ const (
 	RepoAnswerKindPullDiff          = "pull_diff"
 	RepoAnswerKindTarball           = "tarball"
 	RepoAnswerKindZipball           = "zipball"
+	RepoAnswerKindBranch            = "branch"
 )
 
 // RepoAnswerKey addresses one stored answer.
