@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The cached GraphQL PR-list read: repository(owner, name) { pullRequests(...) }. The shape is what `gh pr list` sends.
@@ -19,22 +20,16 @@ const graphqlPullsTTL = 10 * time.Minute
 
 // graphqlPullsArgs are the pullRequests arguments the key models. A
 // pull_request delivery moves the answer for each of them.
-var graphqlPullsArgs = map[string]bool{
-	"states": true, "baseRefName": true, "headRefName": true,
-	"first": true, "last": true, "after": true, "before": true, "orderBy": true,
-}
+var graphqlPullsArgs = set.Of[string]("states", "baseRefName", "headRefName",
+	"first", "last", "after", "before", "orderBy")
 
 // graphqlPullFields are the PR fields only a pull_request delivery changes.
-var graphqlPullFields = map[string]bool{
-	"id": true, "number": true, "title": true, "state": true, "isDraft": true,
-	"headRefName": true, "baseRefName": true, "headRefOid": true,
-	"createdAt": true, "updatedAt": true, "closedAt": true, "mergedAt": true,
-	"isCrossRepository": true, "__typename": true,
-}
+var graphqlPullFields = set.Of("id", "number", "title", "state", "isDraft",
+	"headRefName", "baseRefName", "headRefOid",
+	"createdAt", "updatedAt", "closedAt", "mergedAt",
+	"isCrossRepository", "__typename")
 
-var graphqlPageInfoFields = map[string]bool{
-	"hasNextPage": true, "hasPreviousPage": true, "endCursor": true, "startCursor": true, "__typename": true,
-}
+var graphqlPageInfoFields = set.Of("hasNextPage", "hasPreviousPage", "endCursor", "startCursor", "__typename")
 
 // graphqlPullsQuery is a matched request.
 type graphqlPullsQuery struct {
@@ -107,7 +102,7 @@ func graphqlPullsConnection(sel gqlSelection, doc gqlDocument) bool {
 		return false
 	}
 	for arg := range sel.Args {
-		if !graphqlPullsArgs[arg] {
+		if !graphqlPullsArgs.Contains(arg) {
 			return false
 		}
 	}
@@ -137,7 +132,7 @@ func graphqlPullsConnection(sel gqlSelection, doc gqlDocument) bool {
 
 // graphqlScalars reports that every selection is an allowed scalar field.
 // With doc set, a spread of a PullRequest fragment of allowed scalars counts.
-func graphqlScalars(sels []gqlSelection, allowed map[string]bool, doc *gqlDocument) bool {
+func graphqlScalars(sels []gqlSelection, allowed set.Set[string], doc *gqlDocument) bool {
 	if len(sels) == 0 {
 		return false
 	}
@@ -152,7 +147,7 @@ func graphqlScalars(sels []gqlSelection, allowed map[string]bool, doc *gqlDocume
 			}
 			continue
 		}
-		if s.Alias != "" || len(s.Args) > 0 || s.Selection != nil || !allowed[s.Field] {
+		if s.Alias != "" || len(s.Args) > 0 || s.Selection != nil || !allowed.Contains(s.Field) {
 			return false
 		}
 	}
