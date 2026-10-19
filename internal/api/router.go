@@ -86,6 +86,11 @@ func NewRouter(
 	// Update-liveness probes, outside requireAuth; see CLAUDE.md's "Update-check endpoints".
 	registerUpdateChecks(r, store, mgr)
 
+	// Scanner probes for paths GitHub does not have, answered with its a later own; see notgithub.go.
+	for _, p := range notGitHubPaths {
+		r.Get(p, h.notGitHub)
+	}
+
 	// GitHub OAuth relays for browser clients, outside requireAuth; see docs/oauth-relay.md.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
 	r.Post("/login/device/code", h.oauthDeviceCode)

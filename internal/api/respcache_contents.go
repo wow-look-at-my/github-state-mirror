@@ -26,7 +26,11 @@ import (
 func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	path := chi.URLParam(r, "*")
+	path, ok := wildcardParam(r)
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	// Only the default JSON and raw file-body representations are absorbed; any other Accept (html/object, or a mix) passes through.
 	rawAccept := acceptsRawContents(r)
@@ -53,6 +57,13 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token that can read the repo can still lack the contents permission.
+	resourceKey := contentsResourceKey(owner, repo, path, ref)
+	if v, ok := h.subresourceVerdict(r, denyKindContents, resourceKey); ok {
+		h.serveDenyVerdict(w, r, v, true)
+		return
+	}
+
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedContents(r.Context(), owner, repo, path, ref, now); err == nil && ok {
 		h.serveContentsHit(w, r, c, rawAccept)
@@ -75,6 +86,10 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKindContents, resourceKey, resp, body); ok {
+		h.serveDenyVerdict(w, r, v, false)
+		return
+	}
 	c, absorbed := absorbContents(owner, repo, path, ref, resp.StatusCode, body)
 	if overflow || !absorbed {
 		if rawAccept {
