@@ -42,12 +42,8 @@ The `pull_request_review` row keys on the REVIEW, not the PR: two reviews on one
 ## The watermark
 
 Every delivery is applied the moment it arrives. Nothing is held. Ordering is the watermark's job (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone. The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
-<<<<<<< HEAD
-Refusing is not a lesser outcome for a snapshot. GitHub payloads are full views, not deltas, so applying only the newest lands on the same final state ordering them will have.
-=======
 
 Refusing is not a lesser outcome for a snapshot. GitHub payloads are full views, not deltas, so applying only the newest lands on the same last state ordering them will have.
->>>>>>> origin/master
 
 ### The exception: facts the newer view never restates
 
@@ -55,12 +51,8 @@ A push carries up to 2,048 commit objects, and a later push to the same branch d
 
 ## What is reported
 
-<<<<<<< HEAD
-The Webhooks tab carries a Delivery ordering panel: the in-order count and the refusals. Refusals split into within-grace (≤10s, ordinary delivery jitter) and beyond-grace (something held the delivery — a redelivery, a restart drain), mean and worst lateness, a per-event breakdown, and the last refusals in full. Both clocks, both delivery ids, which payload field the clock came from, and whether immutable facts were still taken.
-=======
 The Webhooks tab carries a Delivery ordering panel: the in-order count and the refusals. Refusals split into within-grace (≤10s, ordinary delivery jitter) and beyond-grace (something held the delivery — a redelivery, a start drain), mean and worst lateness, a per-event breakdown, and the last refusals in full. Both clocks, both delivery ids, which payload field the clock came from, and whether immutable facts were still taken.
 
->>>>>>> origin/master
 ## What this does not cover
 
 The gate only sees DELIVERIES. A row written by a fetch absorb — the single-PR route, a list page, the consistency reconcile — passes no watermark. As a result, write-side guards remain load-bearing and independent: `pr_closures` refuses an open-PR view that cannot prove it postdates a recorded close. `NullPRMergeableOnTipMove` refuses retained pre-move merge fields. Guards, one shared failure. `TestDispatch_ClosureRecordStillRefusesAPreCloseViewWithoutTheGate` pins that the second one is not made redundant by the first.

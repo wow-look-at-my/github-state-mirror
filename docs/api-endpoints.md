@@ -98,12 +98,8 @@ GitHub's login endpoints live on `github.com` — not `api.github.com` — and s
 
 ## Subscriber notifications (`/_mirror/subscriptions`)
 
-<<<<<<< HEAD
-Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**. Their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its worker has applied the delivery. This is to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
-=======
 Consumers that receive their own GitHub webhooks and immediately query the mirror **race its ingestion**. Their delivery can arrive before the mirror's, and the read returns pre-event state. Subscriber notifications remove the race — the mirror POSTs a compact, HMAC-signed JSON notification to your endpoint **after** its worker applied the delivery. This is to global truth, so keying your reads off the mirror's notification always reads post-ingest state.
 
->>>>>>> origin/master
 The top-level **`/_mirror/*` prefix is the reserved mirror-native namespace**: GitHub's API has no underscore-prefixed top-level paths. GitHub's API registered routes always win over the passthrough proxy. As a result, nothing under `/_mirror/*` can ever collide with proxied GitHub traffic.
 
 **Registering** (same bearer-token auth as every data route. The principal your token resolves to owns subscriptions, so an app using `X-Mirror-Identity` keeps its subscriptions across token rotations):
