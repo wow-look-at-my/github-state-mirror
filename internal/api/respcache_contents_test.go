@@ -406,3 +406,35 @@ func TestRespCache_RepositoryEventFlushesContents(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "repository event must flush contents state")
 }
+
+// That refusal is kept for the caller's own principal and is never served to
+// another credential.
+func TestCachedContents_ForbiddenIsPerCredential(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.contents = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+testToken {
+			writeGitHubJSON(w, map[string]any{"type": "file", "encoding": "base64", "size": 2, "name": "cfg.jsonc",
+				"path": ".github/cfg.jsonc", "content": "e30=", "sha": shaTip})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(mustJSONString(map[string]any{"message": "Resource not accessible by integration", "status": "403"})))
+	}
+	target := "/repos/org1/repo1/contents/.github/cfg.jsonc?ref=main"
+
+	for i, want := range []string{"miss", "hit"} {
+		req := authedReq("GET", target, nil)
+		req.Header.Set("Accept", "application/vnd.github.raw")
+		w := do(t, router, req)
+		require.Equal(t, http.StatusForbidden, w.Code, "request %d", i)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "request %d", i)
+		assert.Contains(t, w.Body.String(), "Resource not accessible by integration")
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the stored refusal must answer the repeat")
+
+	other := httptest.NewRequest("GET", target, nil)
+	other.Header.Set("Authorization", "Bearer other-token")
+	w := do(t, router, other)
+	assert.Equal(t, http.StatusOK, w.Code, "another credential must not get the refusal")
+}

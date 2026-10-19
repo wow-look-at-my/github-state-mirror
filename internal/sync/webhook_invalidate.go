@@ -34,6 +34,7 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("readme cache", scope, d.store.InvalidateReadmeCache(ctx, owner, repo))
 		flush("workflows cache", scope, d.store.InvalidateWorkflowsCache(ctx, owner, repo))
 		flush("owner repos cache", scope, d.store.InvalidateOwnerReposCache(ctx, owner))
+		flush("org property values cache", scope, d.store.InvalidateOrgPropertyValues(ctx, owner))
 		flush("commits list cache", scope, d.store.InvalidateCommitsListCache(ctx, owner, repo))
 		d.flushCommitsAnswers(ctx, scope, owner, repo, nil)
 		flush("compare cache", scope, d.store.InvalidateCompareCache(ctx, owner, repo))
@@ -63,6 +64,11 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
+		// A rename or recolor changes list entries, and the payload does not say which pages hold the label.
+		flush("pulls snapshots", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullsSnapshot))
+		// Issue documents embed whole label objects; the payload names one label, not the issues that carry it.
+		flush("issue answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssue))
+		flush("issues list", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssuesList))
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
@@ -74,7 +80,14 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406ForPR(ctx, owner, repo, event.PRNumber))
 		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff, strconv.FormatInt(event.PRNumber, 10)))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
+		flush("pull verdict", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullVerdict, strconv.FormatInt(event.PRNumber, 10)))
+		// One PR's payload does not state the membership or order of a closed or all page.
+		flush("pulls snapshots", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullsSnapshot))
 		if event.Type == "pull_request" {
+			// A PR is also an issue. The PR object is not the issue object, so it cannot rewrite one.
+			flush("issue answers", scope, d.store.InvalidateIssueAnswers(ctx, owner, repo, event.PRNumber))
+			// The payload cannot restate a filtered, paged connection.
+			flush("graphql pulls answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindGraphQLPulls))
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
 		}
 	case "status", "check_run", "check_suite":
@@ -113,9 +126,14 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if owner == "" || repo == "" {
 			return
 		}
-		headSHA, runID := "", int64(0)
+		headSHA, runID, runnerID := "", int64(0), int64(0)
 		if payload, err := webhook.ParseWorkflowJobPayload(event.Raw); err == nil {
-			headSHA, runID = payload.HeadSHA, payload.RunID
+			headSHA, runID, runnerID = payload.HeadSHA, payload.RunID, payload.RunnerID
+		}
+		// A job start or end moves the runner's busy flag. The payload does not
+		// state the rest of the runner object, so its answers drop.
+		if runnerID > 0 {
+			flush("runner cache", owner+"/"+repo, d.store.InvalidateRunner(ctx, owner, repo, runnerID))
 		}
 		d.flushWorkflowRunsForSHA(ctx, owner+"/"+repo, owner, repo, headSHA)
 		// A job's state moved, and the delivery STATES it: the run's cached job answers are rewritten, flushed only where they cannot be.
@@ -169,6 +187,7 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 
 	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
 	d.applyPushToCommitAnswers(ctx, scope, owner, repo, refName, before, after, isTag)
+	d.flushBranchAnswer(ctx, scope, owner, repo, refName, isTag)
 
 	switch {
 	case refName == "":
@@ -289,6 +308,22 @@ func (d *WebhookDispatcher) applyPushToCommitAnswers(ctx context.Context, scope,
 	if !zeroSHA(after) {
 		flush("branches-where-head answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranchesWhereHead, strings.ToLower(after)))
 	}
+}
+
+// flushBranchAnswer drops the single-branch answer of a pushed branch. The
+// push states the new tip sha, but the answer also holds the tip's parents
+// and committer date, which the payload does not carry. A push that names no
+// ref drops every branch answer of the repo.
+// see docs/webhooks/invalidations.md
+func (d *WebhookDispatcher) flushBranchAnswer(ctx context.Context, scope, owner, repo, refName string, isTag bool) {
+	if refName == "" {
+		flush("branch answers", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindBranch))
+		return
+	}
+	if isTag {
+		return
+	}
+	flush("branch answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranch, refName))
 }
 
 // flushCheckRunAnnotations drops the stored annotations of the check run a

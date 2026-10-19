@@ -28,6 +28,7 @@ A cached route added without walking those steps is unfinished. That is the same
 | `repository` | visibility, name, default branch, archived/disabled | the new name's full row on a rename |
 | `workflow_run` / `workflow_job` | the run/job's whole state and `head_sha` | run-level status on a job payload |
 | `repository_ruleset` | the changed ruleset, and its repository or organization | the merged rules any branch now answers with |
+| `issues` / `issue_comment` | the whole issue object, with its labels, state and comment count | `closed_by`, and the page of any listing |
 
 ### The worked example: `git_ref_cache`
 
@@ -73,6 +74,7 @@ The dispatcher is `internal/sync/webhook.go`. It applies payloads **directly** t
 - `workflow_run` applies the run's whole state to the `workflow_runs` truth table. The repo-wide runs listing is a filtered VIEW over those rows. One delivery therefore moves one run and leaves every other run served. It is never a listing flush. The delivery also writes the run's `workflow_run_details` row, the rest of the run object that the single-run read (`GET .../actions/runs/{id}`) is rebuilt from. A delivery older than the stored row writes neither.
 - `workflow_job` maintains its run's identity and status FLOOR there, for every action including `queued`, because a queued job IS a run entering the backlog. That runs before the job table's own queued and waiting filter. A job payload carries no run-level status, so it may never settle a run.
 - `label` recolors and removes labels.
+- `issues` and `issue_comment` rewrite the stored single-issue answer from the delivery's issue object (`ApplyIssuePayload`). The fields the payload omits stay as stored. `updated_at` refuses an older view. A close without `closed_by`, a stored verdict, and a `deleted` or `transferred` issue drop the row. Neither event writes a row that does not exist, because the payload is not the whole REST answer.
 - `repository` handles lifecycle. A delete calls `DeleteRepoCascade`. A rename deletes the old name and absorbs the new one. A privatize or publicize calls `SetRepoVisibility`. Any other action absorbs or invalidates.
 
 Invalidation through `MarkStaleByKindKey` is only a **fallback**, for a structural event with an unparseable payload. Do NOT regress this into invalidate-and-refetch, and do NOT add a "who has this cached?" gate. Truth is maintained unconditionally.

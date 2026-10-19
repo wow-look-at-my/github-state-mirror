@@ -46,6 +46,8 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 	// gh calls a non-github.com host with Enterprise paths; see ghecompat.go.
 	r.Use(gheCompat)
+	// No caller may cancel an Actions run through the mirror; see runcancel.go.
+	r.Use(refuseRunCancel)
 
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
@@ -84,6 +86,11 @@ func NewRouter(
 	// Update-liveness probes, outside requireAuth; see CLAUDE.md's "Update-check endpoints".
 	registerUpdateChecks(r, store, mgr)
 
+	// Scanner probes for paths GitHub does not have, answered with its a later own; see notgithub.go.
+	for _, p := range notGitHubPaths {
+		r.Get(p, h.notGitHub)
+	}
+
 	// GitHub OAuth relays for browser clients, outside requireAuth; see docs/oauth-relay.md.
 	r.Post("/login/oauth/access_token", h.oauthAccessToken)
 	r.Post("/login/device/code", h.oauthDeviceCode)
@@ -118,6 +125,10 @@ func NewRouter(
 
 		// Cached org self-hosted-runners listing, admin-scoped; see docs/cache/rest-routes.md.
 		r.Get("/orgs/{org}/actions/runners", h.cachedOrgRunners)
+		// Cached single runners and the repo listing, per credential; see docs/cache/rest-routes.md.
+		r.Get("/orgs/{org}/actions/runners/{runner_id}", h.cachedOrgRunner)
+		r.Get("/repos/{owner}/{repo}/actions/runners", h.cachedRepoRunners)
+		r.Get("/repos/{owner}/{repo}/actions/runners/{runner_id}", h.cachedRepoRunner)
 
 		// Cached personalized repo listing; see docs/cache/rest-routes.md.
 		r.Get("/user/repos", h.cachedUserRepos)
@@ -210,6 +221,11 @@ func NewRouter(
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
+		// Cached single branch; the name may carry slashes. See docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/branches/*", h.cachedBranch)
+
+		// Cached org custom property values, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
+		r.Get("/orgs/{org}/properties/values", h.cachedOrgPropertyValues)
 
 		// Cached installation-repositories listing, keyed by the bearer's fingerprint; see docs/cache/rest-routes.md.
 		r.Get("/installation/repositories", h.cachedInstallationRepos)
@@ -230,6 +246,10 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/pulls", h.cachedPullsList)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}", h.cachedPull)
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/files", h.cachedPullFiles)
+
+		// Cached issue reads, single and listing; see docs/cache/rest-routes.md.
+		r.Get("/repos/{owner}/{repo}/issues", h.cachedIssuesList)
+		r.Get("/repos/{owner}/{repo}/issues/{number}", h.cachedIssue)
 
 		// A PR's commits, reusing the repository commits list's storage; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/pulls/{number}/commits", h.cachedPullCommits)

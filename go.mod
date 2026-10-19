@@ -1,4 +1,4 @@
-module github.com/wow-look-at-my/github-state-mirror
+module github.com/wow-look-at-my/github-state-mirror // go-toolchain:generate=e7dd48d747f6
 
 go 1.26
 

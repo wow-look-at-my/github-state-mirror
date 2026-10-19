@@ -7,8 +7,8 @@
 -- and clobbering a webhook-learned value with '' would silently close the
 -- public fast path (or worse, reopen it later from a stale write).
 -- name: UpsertRepo :exec
-INSERT INTO repos (owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO repos (owner, name, name_with_owner, url, is_disabled, is_archived, visibility, pushed_at, default_branch, default_branch_status, owner_login, owner_avatar, owner_url, is_fork, parent_full_name, parent_default_branch)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (owner, name) DO UPDATE SET
     name_with_owner = excluded.name_with_owner,
     url = excluded.url,
@@ -20,7 +20,10 @@ ON CONFLICT (owner, name) DO UPDATE SET
     default_branch_status = COALESCE(excluded.default_branch_status, repos.default_branch_status),
     owner_login = COALESCE(excluded.owner_login, repos.owner_login),
     owner_avatar = COALESCE(excluded.owner_avatar, repos.owner_avatar),
-    owner_url = COALESCE(excluded.owner_url, repos.owner_url);
+    owner_url = COALESCE(excluded.owner_url, repos.owner_url),
+    is_fork = COALESCE(excluded.is_fork, repos.is_fork),
+    parent_full_name = COALESCE(excluded.parent_full_name, repos.parent_full_name),
+    parent_default_branch = COALESCE(excluded.parent_default_branch, repos.parent_default_branch);
 
 -- name: GetRepo :one
 SELECT * FROM repos WHERE owner = ? AND name = ?;

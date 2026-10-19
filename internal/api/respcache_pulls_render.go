@@ -23,6 +23,8 @@ type restPRJSON struct {
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 	MergeCommitSHA *string `json:"merge_commit_sha"`
+	ClosedAt       *string `json:"closed_at"`
+	MergedAt       *string `json:"merged_at"`
 	Merged         *bool   `json:"merged"`    // single-PR responses only
 	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
 	// MergeableState is single-PR only as well, and it is the field that says

@@ -16,6 +16,11 @@ const (
 	// archiveUnsignedTTL bounds a location with no credential and no expiry.
 	archiveUnsignedTTL = 5 * time.Minute
 
+	// archiveTokenLife is the documented life of a codeload token link.
+	archiveTokenLife = 5 * time.Minute
+	// archiveTokenMargin keeps a served link usable for the client's follow.
+	archiveTokenMargin = time.Minute
+
 	// archiveMaxRefLen bounds the ref key component.
 	archiveMaxRefLen = 255
 )
@@ -26,8 +31,8 @@ func (h *handlers) cachedArchive(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 		repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-		ref := chi.URLParam(r, "*")
-		if len(ref) > archiveMaxRefLen || strings.ContainsFunc(ref, isControlRune) {
+		ref, ok := wildcardParam(r)
+		if !ok || len(ref) > archiveMaxRefLen || strings.ContainsFunc(ref, isControlRune) {
 			h.passthrough(w, r, PassPath)
 			return
 		}
@@ -62,8 +67,15 @@ func absorbArchive(resp *http.Response, _ []byte, now time.Time) (ghdata.RepoAns
 		return redirectAnswer(loc, exp.Add(-redirectExpiryMargin))
 	}
 	u, err := url.Parse(loc)
-	if err != nil || !u.IsAbs() || u.RawQuery != "" {
+	if err != nil || !u.IsAbs() {
 		return ghdata.RepoAnswer{}, false
 	}
-	return redirectAnswer(loc, now.Add(archiveUnsignedTTL))
+	if u.RawQuery == "" {
+		return redirectAnswer(loc, now.Add(archiveUnsignedTTL))
+	}
+	// GitHub documents that a private repo's archive link expires after a few minutes.
+	if strings.EqualFold(u.Host, "codeload.github.com") && u.Query().Get("token") != "" {
+		return redirectAnswer(loc, now.Add(archiveTokenLife-archiveTokenMargin))
+	}
+	return ghdata.RepoAnswer{}, false
 }
