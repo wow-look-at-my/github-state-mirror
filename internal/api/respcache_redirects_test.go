@@ -124,6 +124,8 @@ func TestSignedURLExpiry(t *testing.T) {
 		sasLocation(at): at,
 		"https://s3.example.com/x?X-Amz-Date=20261012T050000Z&X-Amz-Expires=300": at.Add(5 * time.Minute),
 		"https://cdn.example.com/x?Expires=1791781200":                           time.Unix(1791781200, 0),
+		// The documented Actions log location, with fraction digits.
+		"https://pipelines.actions.githubusercontent.com/x/_apis/pipelines/1/runs/19/signedlogcontent?urlExpires=2026-10-12T05%3A00%3A00.0000000Z&urlSigningMethod=HMACV1&urlSignature=abc": at,
 	} {
 		got, ok := signedURLExpiry(loc)
 		require.True(t, ok, loc)

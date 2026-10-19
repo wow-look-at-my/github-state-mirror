@@ -23,7 +23,12 @@ const gitRefCacheTTL = ghdata.GitRefCacheTTL
 func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
-	ref := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	ref, ok := wildcardParam(r)
+	ref = strings.TrimPrefix(ref, "/")
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	if !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, PassAccept)
@@ -98,7 +103,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 
 // gitRefCacheable requires a fully-qualified -part ref; a bare ref answers an ARRAY, a shape this route does not hold.
 func gitRefCacheable(ref string) bool {
-	if ref == "" || strings.ContainsAny(ref, "?#") {
+	if ref == "" || strings.ContainsFunc(ref, isControlRune) {
 		return false
 	}
 	rest, ok := strings.CutPrefix(ref, "refs/")

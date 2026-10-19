@@ -25,7 +25,12 @@ const (
 func (h *handlers) cachedMatchingRefs(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	prefix := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	prefix, ok := wildcardParam(r)
+	prefix = strings.TrimPrefix(prefix, "/")
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	if prefix == "" || !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, shapeReason(r, prefix != ""))

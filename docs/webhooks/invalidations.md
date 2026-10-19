@@ -28,6 +28,7 @@ Things are deliberately NOT in this file. `docs/webhooks/payload-unused/` covers
 | tags pages (`repo_answer_cache`, kind `tags`) | **applied** | a tag push that moves an existing tag states its new commit (`after`); `ApplyPushedTagTip` rewrites the entry in every page that lists it. A tip move changes no page's membership or order. A created or deleted tag (an all-zeros `before` or `after`) changes the SET, and GitHub's page for a name is not in the payload, so the repo's tags pages flush. An unparseable push flushes them too. A branch push touches none. |
 | single commit by ref spelling (`repo_answer_cache`, kind `commit`) | **Justified** | a row keyed by a branch name or short sha describes whatever it resolves to. The push states the new tip sha, but the answer IS that commit's files, stats and patches, which no push carries. Every spelling of the pushed ref drops. Full-sha rows are immutable and untouched. |
 | branches-where-head (kind `branches_where_head`) | **applied, partly Justified** | the branch left `before`, so it is removed from `before`'s list in place. It joined `after`'s list, but the entry's `protected` flag is in no push payload, so `after`'s row drops. An unparseable push drops the repo's rows. |
+| single branch (`repo_answer_cache`, kind `branch`) | **Justified** | the push states the new tip sha, but the answer also holds the tip commit's parents and committer date, which no push carries. The pushed branch's row drops. An unparseable push drops the repo's rows. A tag push touches none. |
 | PR `mergeable` fields | **applied-as-unresolved** | GitHub recomputes mergeability asynchronously and no webhook ever carries the recomputed value, so the stored answer is un-resolved rather than dropped, with the invalidated test-merge sha remembered so a refetch re-offering it is recognized as pre-push. |
 
 ## create / delete (`onRefLifecycle`)
@@ -42,6 +43,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `contents_cache`, `commits_list_cache` | **Justified** | both are keyed by ref and both hold content. The payload carries no content, exactly as it carries none on a push. |
 | `compare_cache`, `commit_ci_cache` (branch-form rows) | **Justified** | both describe whatever the ref points at. A deleted ref points at nothing, and a created one points at a sha the payload never states. |
 | single commit by ref spelling | **Justified** | the row describes whatever the ref points at, and the payload states no sha. Every spelling drops. |
+| single branch (kind `branch`) | **Justified** | a create clears a stored absent-branch verdict and states no tip. A delete makes a stored branch answer wrong. The branch's row drops. |
 | branches-where-head | **applied on delete, Justified on create** | a deleted branch is removed from every list in place. A created branch joins the list of a sha the payload does not state, so the repo's rows drop. |
 | tags pages (tag create/delete) | **Justified** | the tags listing is a set. A created tag needs a sha the payload does not state and a page position nothing states; a deleted tag shifts every later page. The repo's tags pages flush. |
 
@@ -54,6 +56,9 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `pull_files_cache` (this PR) | **Justified** | the payload states the head moved; it does not state the resulting file list. |
 | `closed_pull_cache` (this PR) | **Justified** | the cached doc is a rendered whole-PR snapshot for a CLOSED PR; a reopen/edit/relabel changes fields the doc holds, and the payload does carry them — but the doc is only ever written for a PR the truth table no longer retains, so patching it would mean maintaining a second PR renderer against a row that does not exist. Dropping it costs one fetch on a rarely-read path. |
 | `pull_diff406_cache` and stored diffs (kind `pull_diff`) | **Justified** | the verdict and the diff are both content the payload does not carry. |
+| absent-PR verdict (kind `pull_verdict`, this PR) | **Justified** | the delivery proves the number now names a PR, so the 404 is false. The answer is the PR itself, which the single read serves from the PR row. Nothing is left to write into the verdict. |
+| closed/all list pages (kind `pulls_snapshot`, repo-wide) | **Owed** | the payload carries this PR in full, and an entry could be rewritten in place. A page's MEMBERSHIP and ORDER under its `state`, `sort` and filters are not stated: a close moves the PR into every closed page at a place that depends on the other entries. Conversion needs the pages rebuilt from stored entries, which needs closed PRs kept as rows. |
+| GraphQL PR-list answers (kind `graphql_pulls`, repo-wide, `pull_request` only) | **Justified** | the row is a verbatim, filtered, paged connection with GitHub's cursors. The payload states one PR. It does not state that PR's place in each filtered page, the new `totalCount` of each filter, or the cursors. |
 | `pull_commits` (this PR) | **Owed** | a `synchronize` states the new head sha, and the cached answer is the PR's commit list. It cannot be rebuilt from the payload (the payload carries no commit objects for a PR event), so this one is only convertible together with the compare rework below. |
 
 ## status / check_run / check_suite
@@ -75,12 +80,19 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `workflow_jobs` truth | **applied** | job state is written from the payload. |
 | `commit_ci_cache`, the `/check-runs` docs, on a COMPLETED `workflow_run` | **Justified** | this flush repairs a lost `check_run` delivery. A completed run has no unfinished job. A page of the run's head sha that still lists one of its jobs as queued or in progress therefore missed that job's deliveries. Measured on `wow-look-at-my/grok-build@28b3054`: two jobs stayed `queued` in the `per_page=100` page after GitHub completed them, which held `all-builds` pending. The single-run rows had no entry for either job, so no delivery for them had landed. The run payload states the run's conclusion, not each job's, so the page cannot be patched. `DropCheckRunPagesContradictedByRun` deletes only such pages. A job belongs to the run when its `details_url` or `html_url` names `/actions/runs/<run id>/job/`. |
 | `workflow_jobs_cache` (run/job pages) | **applied** | the delivery carries the whole job object — labels, runner, every step — which is exactly one entry of these answers, so `ApplyWorkflowJob` rewrites it in place. See "Live job state" below: this is also what made a RUNNING run cacheable, which was three quarters of the mirror's passthrough volume. The flush stays for what a delivery cannot answer: a job the page does not list (the run's membership moved) and a different `run_attempt` (a re-run is a different set of jobs). |
+| `runner_answer_cache` and `org_runners_cache`, on a `workflow_job` that names a `runner_id` | **Justified** | the job start or end moves that runner's `busy` flag. The payload states the runner's id and name, not its `status`, `os`, `labels` or `busy`. A written `busy` would be a guess: a runner can take its next job before the delivery of the last job's end arrives. The rows are per credential and the delivery names no credential, so the runner's rows drop for every credential, with the repo listing and the owner's org listing that list it. |
 
 ## repository
 
 Everything repo-wide. **Justified**: a rename, delete or visibility change makes the rows Incorrect rather than stale. A name that no longer means what it did keys they. They also hold data a now-private repo must not serve. The payload states the repo's new identity, not the new content of every answer keyed by the one.
 
 `owner_repos_cache` rides the same delivery, at the OWNER grain rather than the repo grain. A created, deleted or renamed repo moves the owner's listing. **Justified**: the delivery names the repo and never the credential, and each row keys a bearer fingerprint. There is no per-token signal to patch with, so the flush spans every credential holding a listing for that owner.
+
+`org_property_values_cache` rides the same delivery at the owner grain, across every credential. **Justified**: a created, deleted, renamed or transferred repo moves page membership, and each row keys a bearer fingerprint the delivery does not name.
+
+## custom_property_values / custom_property
+
+Pages of the Org property values (`org_property_values_cache`). A `custom_property_values` delivery is **applied**: each new value of a property the stored entry already lists is written into every page that lists the repo. The fallback flush of the org's pages is **Justified** for a value that became null and for a property the entry does not list. GitHub's page shape for an unset property is not stated by the payload. A `custom_property` delivery drops the org's pages. **Justified**: a created or deleted definition adds or removes a property on every repo, and the payload states only the definition.
 
 ## repository_ruleset
 
@@ -90,9 +102,22 @@ Branch rules (`repo_answer_cache`, kind `branch_rules`). **Justified**: a branch
 
 `install_token_cache` and `repo_installation_cache` by id, plus a sweep of every absent-installation verdict and the whole `installation_repos_cache`. **Justified**: the delivery is accurately the news that an installation's coverage changed. Neither the verdicts nor the listings carry an id to match on. A suspended installation must stop serving minted tokens immediately. Applying anything here means inventing the new coverage.
 
+## issues / issue_comment
+
+| row family | verdict | why |
+| --- | --- | --- |
+| single issue (`repo_answer_cache`, kind `issue`) | **applied** | the payload is the whole issue object, and `ApplyIssuePayload` rewrites the row in place. A close without `closed_by`, a stored verdict, and a deleted or transferred issue drop the row, because the payload does not state that answer. |
+| issue listings (kind `issues_list`) | **Justified** | a delivery moves page membership and order: a state change, a new issue, a comment that bumps `updated_at`. The payload states one issue, never a page. The repo's listing rows flush. |
+
+A `pull_request` delivery also flushes the single issue of that number and the repo's listings. **Justified**: a PR is an issue too. The PR object is not the issue object.
+
 ## label
 
+Issue rows (kinds `issue` and `issues_list`) flush repo-wide on every action too. **Justified**: they embed whole label objects. The payload names a label, not the issues that carry it.
+
 Repo-wide on every action. **Justified**: an `edited` action can RENAME a label, which puts names in one delivery. One label also answers under every spelling a caller can request. Matching the payload's name therefore misses rows. The grain is the repo because the key space is unbounded, not because the payload is thin.
+
+The closed/all PR list pages (kind `pulls_snapshot`) drop repo-wide on every action too. **Justified**: an entry carries its labels by name and color. The payload does not say which stored pages list a PR with that label.
 
 ## The status rewrite
 

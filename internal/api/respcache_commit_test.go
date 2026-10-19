@@ -80,6 +80,11 @@ func commitStack(t *testing.T) (http.Handler, *int32, *int32, *int) {
 			return true
 		}
 		atomic.AddInt32(&commitCalls, 1)
+		if status == http.StatusOK && r.Header.Get("Accept") == "application/vnd.github.diff" {
+			w.Header().Set("Content-Type", "application/vnd.github.diff; charset=utf-8")
+			_, _ = w.Write([]byte(commitDiffBody))
+			return true
+		}
 		if status != http.StatusOK {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(status)
@@ -137,7 +142,7 @@ func TestCachedCommit_UnknownRefVerdict(t *testing.T) {
 func TestCachedCommit_ShapeGuardsPassThrough(t *testing.T) {
 	router, calls, _, _ := commitStack(t)
 	req := authedReq("GET", commitByShaTarget, nil)
-	req.Header.Set("Accept", "application/vnd.github.diff")
+	req.Header.Set("Accept", "application/vnd.github.patch")
 	assert.Empty(t, do(t, router, req).Header().Get(cacheHeader))
 	assert.Empty(t, do(t, router, authedReq("GET", commitByShaTarget+"?page=2", nil)).Header().Get(cacheHeader))
 	assert.Empty(t, do(t, router, authedReq("GET", "/repos/org1/repo1/commits/feature/x", nil)).Header().Get(cacheHeader))

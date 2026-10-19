@@ -28,6 +28,10 @@ Consider the exact shape of self-reference `internal/sync/replay.go`'s own deliv
 
 The mirror already has an internal, unrelated consumer of this endpoint. The delivery-gap replayer (`internal/ghclient/app.go`'s `ListFailedDeliveries`, driven by `internal/sync/replay.go` on `WEBHOOK_REPLAY_INTERVAL`) polls it directly via `ghclient`, not through this HTTP route, specifically. This is because it needs the live answer to find deliveries that never reached the mirror. A cached copy of this route will not serve that consumer even if one existed. An external caller hitting this route directly is, like the replayer, asking because they want to know right now — the same reasoning as `/rate_limit`.
 
+## `GET /wp-json/*`
+
+Web scanners probe WordPress paths, and GitHub's API has none. The mirror answers them with GitHub's own Not Found document (`internal/api/notgithub.go`) and spends no upstream call. They are not a cache row, because no state exists to cache.
+
 ## `GET /robots.txt`
 
 Not a GitHub REST resource in the sense every other route in this catalogue is — no owner, no repo, no credential dimension. This is and the same static answer for every caller including an unauthenticated one. It carries no webhook signal (GitHub does not announce a `robots.txt` change) and no per-caller authorization question for the show layer to answer. A cache table, key scheme. Invalidation story built for this will be pure ceremony over a resource that sits outside the GitHub domain model this cache exists to mirror. Closer to a static asset than to anything else in this catalogue.

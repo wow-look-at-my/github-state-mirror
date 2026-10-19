@@ -84,14 +84,19 @@ func redirectAnswer(loc string, expires time.Time) (ghdata.RepoAnswer, bool) {
 	return ghdata.RepoAnswer{Status: http.StatusFound, Doc: string(doc), ExpiresAt: expires}, true
 }
 
-// signedURLExpiry reads the expiry a signed location states: an Azure SAS
-// "se", an S3 "X-Amz-Date" plus "X-Amz-Expires", or a unix "Expires".
+// signedURLExpiry reads the expiry a signed location states. It reads an
+// "se". This also covers an S3 "X-Amz-Date" plus "X-Amz-Expires", a unix
+// "Expires", or the Actions log service's "urlExpires".
 func signedURLExpiry(loc string) (time.Time, bool) {
 	u, err := url.Parse(loc)
 	if err != nil || !u.IsAbs() {
 		return time.Time{}, false
 	}
 	q := u.Query()
+	if ue := q.Get("urlExpires"); ue != "" {
+		t, err := time.Parse(time.RFC3339Nano, ue)
+		return t, err == nil
+	}
 	if se := q.Get("se"); se != "" {
 		t, err := time.Parse(time.RFC3339, se)
 		return t, err == nil
