@@ -98,6 +98,30 @@ func TestProxy_RequiresToken(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&upstreamHits), "must not forward a tokenless request")
 }
 
+// TestProxy_AnonymousPassthroughCoversThePublicSurfaceOnly: a tokenless read on
+// an unrouted path is forwarded, and GitHub sees no credential of the mirror's.
+// A tokenless write is refused and never forwarded; see anonymousPublicOnly.
+func TestProxy_AnonymousPassthroughCoversThePublicSurfaceOnly(t *testing.T) {
+	var upstreamHits int32
+	var gotAuth string
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
+
+	read := httptest.NewRecorder()
+	router.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/gists", nil))
+	require.Equal(t, http.StatusOK, read.Code, "a public read is forwarded anonymously")
+	assert.Empty(t, gotAuth, "an anonymous forward carries no credential")
+
+	write := httptest.NewRecorder()
+	router.ServeHTTP(write, httptest.NewRequest(http.MethodPost, "/gists", nil))
+	assert.Equal(t, http.StatusUnauthorized, write.Code, "a tokenless write is refused")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&upstreamHits), "a refused write must not reach GitHub")
+}
+
 // TestProxy_Uncached verifies the passthrough does not cache: repeated requests
 // each reach GitHub.
 func TestProxy_Uncached(t *testing.T) {

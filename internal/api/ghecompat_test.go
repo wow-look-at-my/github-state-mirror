@@ -104,12 +104,24 @@ func TestGHECompat_PassthroughDropsThePrefix(t *testing.T) {
 }
 
 // TestGHECompat_StillNeedsAToken: the rewrite grants nothing. The prefixed
-// spelling meets the same auth gate as the plain spelling.
+// spelling meets the same gate as the plain spelling, including the anonymous
+// passthrough gate the proxy applies below.
 func TestGHECompat_StillNeedsAToken(t *testing.T) {
 	router, _ := setupTestRouter(t)
-	for _, target := range []string{"/api/v3/user", "/api/v3/repos/o/r/pulls", "/api/v3/gists"} {
+
+	// A cached route sits behind requireAuth, so a tokenless request is refused
+	// in either spelling.
+	for _, target := range []string{"/user", "/api/v3/user", "/repos/o/r/pulls", "/api/v3/repos/o/r/pulls"} {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
 		assert.Equal(t, http.StatusUnauthorized, w.Code, "GET %s without a token", target)
+	}
+
+	// An unrouted path reaches the anonymous passthrough in either spelling; see
+	// anonymousPublicOnly in proxy.go.
+	for _, target := range []string{"/gists", "/api/v3/gists"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		assert.Equal(t, http.StatusOK, w.Code, "GET %s without a token", target)
 	}
 }

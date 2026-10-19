@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,14 +27,27 @@ func TestUpdateCheckEndpointsAnswerWithoutAToken(t *testing.T) {
 	}
 }
 
-// The distinction the test above rests on: an unregistered path does answer
-// here rather than, so "it would have 'd anyway" is not a reason to skip
-// registering them.
+// The distinction the test above rests on: the mirror itself answers nothing
+// for an unregistered path. A tokenless probe is forwarded to GitHub carrying no
+// credential, so the prober reads GitHub's own answer. GitHub serves nothing
+// under /.well-known/, so an unregistered probe still reads as unconfigured.
 func TestUnregisteredPathAnswers401NotFound(t *testing.T) {
-	router, _ := setupTestRouter(t)
+	var mu sync.Mutex
+	forwarded := map[string]string{}
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		forwarded[r.URL.Path] = r.Header.Get("Authorization")
+		mu.Unlock()
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	router, _, _, _ := newTestStackWithGitHub(t, testAuth(), gh)
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/not-registered", nil))
-	require.Equal(t, http.StatusUnauthorized, rec.Code,
-		"an unrouted path falls through to the passthrough proxy, which rejects a tokenless request")
+	require.Equal(t, http.StatusNotFound, rec.Code, "an unrouted probe reads the upstream answer")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, forwarded, "/.well-known/not-registered", "the unregistered path is forwarded, not answered here")
+	assert.Empty(t, forwarded["/.well-known/not-registered"], "an anonymous forward carries no credential")
 }
