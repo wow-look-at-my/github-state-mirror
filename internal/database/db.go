@@ -39,6 +39,7 @@ func DurableDSN(path string) string {
 func JournalDSN(path string) string {
 	return path + "?" + sharedPragmas + "&_pragma=synchronous(FULL)"
 }
+
 // Open opens (or creates) the SQLite database at path.
 func Open(path string) (*sql.DB, error) { return OpenObserved(path, nil) }
 
