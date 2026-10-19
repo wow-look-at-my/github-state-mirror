@@ -75,6 +75,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		flush("pull diff cache", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff, strconv.FormatInt(event.PRNumber, 10)))
 		flush("pull commits cache", scope, d.store.InvalidateCommitsListForRef(ctx, owner, repo, pullCommitsRefKey(event.PRNumber)))
 		if event.Type == "pull_request" {
+			// The payload cannot restate a filtered, paged connection.
+			flush("graphql pulls answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindGraphQLPulls))
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
 		}
 	case "status", "check_run", "check_suite":

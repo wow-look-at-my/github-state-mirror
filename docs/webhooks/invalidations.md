@@ -54,6 +54,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `pull_files_cache` (this PR) | **Justified** | the payload states the head moved; it does not state the resulting file list. |
 | `closed_pull_cache` (this PR) | **Justified** | the cached doc is a rendered whole-PR snapshot for a CLOSED PR; a reopen/edit/relabel changes fields the doc holds, and the payload does carry them — but the doc is only ever written for a PR the truth table no longer retains, so patching it would mean maintaining a second PR renderer against a row that does not exist. Dropping it costs one fetch on a rarely-read path. |
 | `pull_diff406_cache` and stored diffs (kind `pull_diff`) | **Justified** | the verdict and the diff are both content the payload does not carry. |
+| GraphQL PR-list answers (kind `graphql_pulls`, repo-wide, `pull_request` only) | **Justified** | the row is a verbatim, filtered, paged connection with GitHub's cursors. The payload states one PR. It does not state that PR's place in each filtered page, the new `totalCount` of each filter, or the cursors. |
 | `pull_commits` (this PR) | **Owed** | a `synchronize` states the new head sha, and the cached answer is the PR's commit list. It cannot be rebuilt from the payload (the payload carries no commit objects for a PR event), so this one is only convertible together with the compare rework below. |
 
 ## status / check_run / check_suite
