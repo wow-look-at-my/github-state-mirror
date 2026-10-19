@@ -124,10 +124,15 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onWorkflowRun(ctx, event)
 	case "repository_ruleset":
 		return d.onRuleset(ctx, event)
+<<<<<<< HEAD
 	case "custom_property_values":
 		return d.onCustomPropertyValues(ctx, event)
 	case "custom_property":
 		return d.onCustomProperty(ctx, event)
+=======
+	case "issues", "issue_comment":
+		return d.onIssue(ctx, event)
+>>>>>>> worktree-agent-aa6214b90cf8e0eaf
 	default:
 		return ignored("event type not tracked")
 	}
@@ -404,6 +409,44 @@ func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) ou
 	default:
 		return ignored("label action " + payload.Action + " not tracked")
 	}
+}
+
+// onIssue applies the issue object an issues or issue_comment delivery
+// carries to the stored single-issue row. The listings are flushed: a
+// delivery changes membership and order, and the payload does not restate
+// a page.
+func (d *WebhookDispatcher) onIssue(ctx context.Context, event webhook.Event) outcome {
+	payload, err := webhook.ParseIssuePayload(event.Raw)
+	if err != nil {
+		owner, repo := event.RepoOwner(), event.RepoName()
+		if owner == "" || repo == "" {
+			return ignored("unparseable issue payload; no repo")
+		}
+		flush("issue answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssue))
+		flush("issues list", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssuesList))
+		return outcome{disposition: webhook.DispInvalidated, detail: "unparseable issue payload; dropped the repo's issue answers"}
+	}
+	scope := fmt.Sprintf("%s/%s#%d", payload.Owner, payload.Repo, payload.Number)
+	flush("issues list", scope, d.store.InvalidateRepoAnswersOfKind(ctx, payload.Owner, payload.Repo, ghdata.RepoAnswerKindIssuesList))
+	if event.Type == "issues" && (payload.Action == "deleted" || payload.Action == "transferred") {
+		if err := d.store.InvalidateIssueAnswers(ctx, payload.Owner, payload.Repo, payload.Number); err != nil {
+			slog.Warn("webhook: drop issue failed", "issue", scope, "error", err)
+			return errored("drop issue failed")
+		}
+		return outcome{disposition: webhook.DispInvalidated, detail: "issue " + payload.Action + "; dropped the stored issue"}
+	}
+	detail, err := d.store.ApplyIssuePayload(ctx, payload.Owner, payload.Repo, payload.Issue, time.Now())
+	if err != nil {
+		slog.Warn("webhook: apply issue failed", "issue", scope, "error", err)
+		return errored("apply issue failed")
+	}
+	switch {
+	case strings.HasPrefix(detail, "rewrote"):
+		return applied(detail)
+	case strings.Contains(detail, "dropped"):
+		return outcome{disposition: webhook.DispInvalidated, detail: detail}
+	}
+	return ignored(detail)
 }
 
 func (d *WebhookDispatcher) invalidate(ctx context.Context, kind, key string) {
