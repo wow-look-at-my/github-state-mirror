@@ -58,6 +58,7 @@ A ref lifecycle delivery carries `ref` and `ref_type`, and nothing else about th
 | `pull_diff406_cache` and stored diffs (kind `pull_diff`) | **Justified** | the verdict and the diff are both content the payload does not carry. |
 | absent-PR verdict (kind `pull_verdict`, this PR) | **Justified** | the delivery proves the number now names a PR, so the 404 is false. The answer is the PR itself, which the single read serves from the PR row. Nothing is left to write into the verdict. |
 | closed/all list pages (kind `pulls_snapshot`, repo-wide) | **Owed** | the payload carries this PR in full, and an entry could be rewritten in place. A page's MEMBERSHIP and ORDER under its `state`, `sort` and filters are not stated: a close moves the PR into every closed page at a place that depends on the other entries. Conversion needs the pages rebuilt from stored entries, which needs closed PRs kept as rows. |
+| GraphQL PR-list answers (kind `graphql_pulls`, repo-wide, `pull_request` only) | **Justified** | the row is a verbatim, filtered, paged connection with GitHub's cursors. The payload states one PR. It does not state that PR's place in each filtered page, the new `totalCount` of each filter, or the cursors. |
 | `pull_commits` (this PR) | **Owed** | a `synchronize` states the new head sha, and the cached answer is the PR's commit list. It cannot be rebuilt from the payload (the payload carries no commit objects for a PR event), so this one is only convertible together with the compare rework below. |
 
 ## status / check_run / check_suite

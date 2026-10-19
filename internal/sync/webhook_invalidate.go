@@ -86,6 +86,8 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 		if event.Type == "pull_request" {
 			// A PR is also an issue. The PR object is not the issue object, so it cannot rewrite one.
 			flush("issue answers", scope, d.store.InvalidateIssueAnswers(ctx, owner, repo, event.PRNumber))
+			// The payload cannot restate a filtered, paged connection.
+			flush("graphql pulls answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindGraphQLPulls))
 			d.applyMergedPRBaseTip(ctx, scope, owner, repo, event)
 		}
 	case "status", "check_run", "check_suite":
