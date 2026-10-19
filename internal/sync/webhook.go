@@ -124,15 +124,12 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onWorkflowRun(ctx, event)
 	case "repository_ruleset":
 		return d.onRuleset(ctx, event)
-<<<<<<< HEAD
 	case "custom_property_values":
 		return d.onCustomPropertyValues(ctx, event)
 	case "custom_property":
 		return d.onCustomProperty(ctx, event)
-=======
 	case "issues", "issue_comment":
 		return d.onIssue(ctx, event)
->>>>>>> worktree-agent-aa6214b90cf8e0eaf
 	default:
 		return ignored("event type not tracked")
 	}

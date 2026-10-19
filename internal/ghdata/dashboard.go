@@ -158,12 +158,9 @@ var RequiredWebhookEvents = []struct {
 	{"workflow_run", "runs with no jobs yet (startup_failure, concurrency-gated) never reach truth, so the runs listing re-fetches instead of serving from rows"},
 	{"installation", "suspended or re-scoped installations keep serving cached tokens"},
 	{"repository_ruleset", "a changed ruleset leaves the cached branch rules serving the old answer until their TTL"},
-<<<<<<< HEAD
 	{"custom_property_values", "a changed repo property leaves the cached org property values serving the old answer until their TTL"},
-=======
 	{"issues", "cached issues and issue listings serve the old answer until their TTL"},
 	{"issue_comment", "cached issues keep a stale comment count and updated_at until their TTL"},
->>>>>>> worktree-agent-aa6214b90cf8e0eaf
 }
 
 // Subscribed status comes from the App itself, never inferred from the delivery log.

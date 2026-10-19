@@ -52,12 +52,9 @@ const (
 	denyKindAnnotations       = "annotations"         // GET /repos/{owner}/{repo}/check-runs/{id}/annotations
 	denyKindBranchRules       = "branch_rules"        // GET /repos/{owner}/{repo}/rules/branches/{branch}
 	denyKindArchive           = "archive"             // GET /repos/{owner}/{repo}/{tarball,zipball}/{ref}
-<<<<<<< HEAD
 	denyKindBranch            = "branch"              // GET /repos/{owner}/{repo}/branches/{branch}
-=======
 	denyKindIssue             = "issue"               // GET /repos/{owner}/{repo}/issues/{number}
 	denyKindIssuesList        = "issues_list"         // GET /repos/{owner}/{repo}/issues
->>>>>>> worktree-agent-aa6214b90cf8e0eaf
 )
 
 // revealOutcome is the reveal decision for request.

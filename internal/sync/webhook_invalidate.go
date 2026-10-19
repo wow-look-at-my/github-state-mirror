@@ -64,14 +64,11 @@ func (d *WebhookDispatcher) invalidateResponseCaches(ctx context.Context, event 
 			return
 		}
 		flush("label cache", owner+"/"+repo, d.store.InvalidateLabelCache(ctx, owner, repo))
-<<<<<<< HEAD
 		// A rename or recolor changes list entries, and the payload does not say which pages hold the label.
 		flush("pulls snapshots", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullsSnapshot))
-=======
 		// Issue documents embed whole label objects; the payload names one label, not the issues that carry it.
 		flush("issue answers", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssue))
 		flush("issues list", owner+"/"+repo, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindIssuesList))
->>>>>>> worktree-agent-aa6214b90cf8e0eaf
 	case "pull_request", "pull_request_review":
 		owner, repo := event.RepoOwner(), event.RepoName()
 		if owner == "" || repo == "" || event.PRNumber <= 0 {
