@@ -26,6 +26,7 @@ type WorkflowJobPayload struct {
 	StartedAt    string // RFC3339
 	CompletedAt  string // RFC3339
 	RunnerName   string
+	RunnerID     int64
 }
 
 // ParseWorkflowJobPayload extracts a job's state from a workflow_job webhook.
@@ -45,6 +46,7 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 			StartedAt    *string `json:"started_at"`
 			CompletedAt  *string `json:"completed_at"`
 			RunnerName   *string `json:"runner_name"`
+			RunnerID     *int64  `json:"runner_id"`
 		} `json:"workflow_job"`
 		Repository *struct {
 			Name  string `json:"name"`
@@ -74,6 +76,9 @@ func ParseWorkflowJobPayload(raw json.RawMessage) (WorkflowJobPayload, error) {
 		HeadBranch:   strOrEmpty(j.HeadBranch),
 		HTMLURL:      j.HTMLURL,
 		RunnerName:   strOrEmpty(j.RunnerName),
+	}
+	if j.RunnerID != nil {
+		p.RunnerID = *j.RunnerID
 	}
 	if ts := strOrEmpty(j.StartedAt); ts != "" {
 		p.StartedAt = normaliseTime(ts)

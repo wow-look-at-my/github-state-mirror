@@ -27,7 +27,12 @@ import (
 func (h *handlers) cachedReadme(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	dir := strings.Trim(chi.URLParam(r, "*"), "/")
+	dir, ok := wildcardParam(r)
+	dir = strings.Trim(dir, "/")
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	if !acceptsDefaultJSON(r) {
 		// The raw and html representations are a different document; they stay unmodeled and forward.

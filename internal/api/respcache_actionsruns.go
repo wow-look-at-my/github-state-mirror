@@ -101,6 +101,11 @@ func parseWorkflowRunsShape(q url.Values) (workflowRunsShape, bool) {
 				return workflowRunsShape{}, false
 			}
 			shape.Page = n
+		case "exclude_pull_requests":
+			// The rebuilt item has no pull_requests field, so both values answer the same document.
+			if v != "true" && v != "false" {
+				return workflowRunsShape{}, false
+			}
 		default:
 			return workflowRunsShape{}, false
 		}
