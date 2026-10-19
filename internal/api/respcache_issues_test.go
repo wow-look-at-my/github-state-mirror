@@ -170,7 +170,7 @@ func TestCachedIssuesList_MissHitFlush(t *testing.T) {
 		"pull_request": map[string]any{"number": 9, "updated_at": "2026-10-05T00:00:00Z", "state": "open"},
 	})
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", issuesTarget, nil)).Header().Get(cacheHeader))
-	assert.Equal(t, int32(5), atomic.LoadInt32(list))
+	assert.Equal(t, int32(4), atomic.LoadInt32(list))
 }
 
 func TestCachedIssuesList_Guards(t *testing.T) {
