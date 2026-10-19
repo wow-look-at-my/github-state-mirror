@@ -47,6 +47,8 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 	// gh calls a non-github.com host with Enterprise paths; see ghecompat.go.
 	r.Use(gheCompat)
+	// No caller may cancel an Actions run through the mirror; see runcancel.go.
+	r.Use(refuseRunCancel)
 
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
