@@ -37,9 +37,13 @@ func (h *handlers) cachedCommit(w http.ResponseWriter, r *http.Request, ref stri
 		h.passthrough(w, r, PassPath)
 		return
 	}
+	diff := false
 	if !acceptsDefaultJSON(r) {
-		h.passthrough(w, r, PassAccept)
-		return
+		if !acceptsPullDiff(r) {
+			h.passthrough(w, r, PassAccept)
+			return
+		}
+		diff = true
 	}
 	if len(r.URL.Query()) > 0 {
 		// The files listing paginates; no page shape is modeled.
@@ -50,7 +54,7 @@ func (h *handlers) cachedCommit(w http.ResponseWriter, r *http.Request, ref stri
 	if isFullHexSHA(strings.ToLower(ref)) {
 		ttl, subject = commitImmutableTTL, ""
 	}
-	h.serveRepoAnswer(w, r, repoAnswerRoute{
+	route := repoAnswerRoute{
 		key:      ghdata.RepoAnswerKey{Owner: owner, Repo: repo, Kind: ghdata.RepoAnswerKindCommit, RefID: ref},
 		denyKind: denyKindCommit,
 		resource: owner + "/" + repo + "/commits/" + ref,
@@ -60,7 +64,28 @@ func (h *handlers) cachedCommit(w http.ResponseWriter, r *http.Request, ref stri
 			return a, ok
 		},
 		refusals: []int{http.StatusNotFound},
-	})
+	}
+	if diff {
+		// The diff row shares the commit kind and subject, so every commit flush drops it too.
+		route.key.Shape = ghdata.RepoAnswerShapeDiff
+		route.absorb = func(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool) {
+			a, ok := absorbCommitDiff(resp, body, now, ttl)
+			a.Subject = subject
+			return a, ok
+		}
+		route.writeOK = writePullDiff
+	}
+	h.serveRepoAnswer(w, r, route)
+}
+
+func absorbCommitDiff(resp *http.Response, body []byte, now time.Time, ttl time.Duration) (ghdata.RepoAnswer, bool) {
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		return verdictAnswer(resp.StatusCode, body, now.Add(commitVerdictTTL))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ghdata.RepoAnswer{}, false
+	}
+	return ghdata.RepoAnswer{Status: http.StatusOK, Doc: string(body), ExpiresAt: now.Add(ttl)}, true
 }
 
 func (h *handlers) cachedBranchesWhereHead(w http.ResponseWriter, r *http.Request, sha string) {

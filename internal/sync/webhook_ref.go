@@ -44,6 +44,7 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 	}
 	if !payload.IsTag() {
 		flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
+		flush("branch answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranch, ref))
 		d.settleBranchHeads(ctx, scope, owner, repo, ref, event.Type == "delete")
 	} else {
 		// The tags listing is a set too; the payload does not say which page holds the name.

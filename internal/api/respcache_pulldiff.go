@@ -53,6 +53,9 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 		writeRebuilt(w, http.StatusNotAcceptable, []byte(doc), true)
 		return
 	}
+	if h.servePullVerdict(w, r, owner, repo, numStr) {
+		return
+	}
 
 	// fetchUpstream forwards the inbound headers, so the diff Accept reaches GitHub.
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
@@ -61,6 +64,10 @@ func (h *handlers) cachedPullDiff(w http.ResponseWriter, r *http.Request, owner,
 		return
 	}
 	defer resp.Body.Close()
+
+	if h.storePullVerdict(w, r, owner, repo, numStr, resp, body, overflow) {
+		return
+	}
 
 	if !overflow && resp.StatusCode == http.StatusOK && len(body) <= pullDiffMaxBytes {
 		// The diff is opaque text, stored VERBATIM under the identical-or-passthrough rule.
@@ -108,8 +115,8 @@ func upstream406Message(body []byte) string {
 	return msg.Message
 }
 
-// pullDiffMaxBytes caps a stored diff; a larger one relays unstored.
-const pullDiffMaxBytes = 1 << 20
+// pullDiffMaxBytes caps a stored diff at the absorb read limit; a larger one overflows and relays unstored.
+const pullDiffMaxBytes = maxAbsorbBodyBytes
 
 // writePullDiff serves a stored diff byte for byte, under the media type
 // GitHub answers it with.

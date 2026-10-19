@@ -70,6 +70,34 @@ func TestCachedGitRef_SlashedBranchName(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 }
 
+// Octokit escapes the ref parameter, so the slash arrives as %2F. chi routes
+// on RawPath, so the wildcard holds the escaped form.
+func TestCachedGitRef_EscapedSlash(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/ref/heads%2Fmain", nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+
+	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/ref/heads/main", nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "both spellings name the same ref")
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
+}
+
+// A ref name the caller escaped, such as "v1#latest", is a real name to look up.
+func TestCachedGitRef_EscapedHash(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/tags%2Fv1%23latest"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
+}
+
 // A push APPLIES its own tip to every spelling of the ref, at upstream cost.
 func TestCachedGitRef_PushAppliesTipToEverySpelling(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
