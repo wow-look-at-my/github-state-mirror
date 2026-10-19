@@ -59,6 +59,10 @@ func (h *handlers) graphql(w http.ResponseWriter, r *http.Request) {
 	// a write (it was proxied because it mutates, not because caching failed);
 	// a forwarded query keeps the passthrough label.
 	if orgLogin == "" || !strings.Contains(req.Query, "repositories") {
+		if q, ok := matchGraphQLPulls(bodyBytes); ok {
+			h.serveGraphQLPulls(w, r, bodyBytes, q)
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 		if strings.HasPrefix(strings.TrimSpace(req.Query), "mutation") {

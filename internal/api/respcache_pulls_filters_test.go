@@ -23,8 +23,8 @@ func TestCachedPullsList_QueryShapeGuards(t *testing.T) {
 	// value the row does not carry, so they stand for an unmodeled order here.
 	for i, target := range []string{
 		"/repos/org1/repo1/pulls?sort=popularity",       // unmodeled ordering
-		"/repos/org1/repo1/pulls?state=closed",          // non-open state
-		"/repos/org1/repo1/pulls?state=all",             // non-open state
+		"/repos/org1/repo1/pulls?state=merged",          // unknown state
+		"/repos/org1/repo1/pulls?state=closed&page=11",  // beyond the snapshot pages
 		"/repos/org1/repo1/pulls?page=2",                // beyond page
 		"/repos/org1/repo1/pulls?per_page=200",          // out of range
 		"/repos/org1/repo1/pulls?head=justabranch",      // head without owner:
