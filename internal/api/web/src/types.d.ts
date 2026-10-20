@@ -137,7 +137,7 @@ export interface RequestEvent {
     method: string;
     path: string;
     disposition: string;
-    status?: number;
+    status?: number; // upstream HTTP status for a passthrough or write; absent otherwise
     // Why this read was forwarded uncached; passthroughs only, absent otherwise.
     reason?: string;
     at: string;
@@ -412,6 +412,7 @@ export interface ConsistencyReport {
 // One NDJSON line from the streaming consistency check / reconcile (GET/POST /api/cache/check?stream=1): checker progress events while the run works, then exactly one terminal line. Phase "report" carrying the full ConsistencyReport, or phase
 // "error" when the run failed mid-stream.
 export interface CheckProgressEvent {
+    // start, owner, fetch, visibility, diffed, applied, skip, done, report or error.
     phase: string;
     owner?: string;
     index?: number; // this owner's 1-based position (phase=owner)
