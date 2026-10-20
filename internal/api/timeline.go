@@ -176,18 +176,6 @@ type timelineResponse struct {
 	Now            string `json:"now"`
 }
 
-<<<<<<< HEAD
-// handleTimeline returns the timed traffic events for the dashboard's
-// Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. read shapes, all answering the same payload. (no params) the
-// whole retained window ?since=<id> only events newer than that cursor. The
-// 5s live poll ?from=&to=<unix ms> the events overlapping a time window —
-// the chart's async history loader. paint from having to decode 24h of
-// traffic to draw hour of it since and from/to are mutually exclusive. They
-// answer different questions (what is NEW vs what was HAPPENING), and
-// silently ANDing them would let a history request come back empty because
-// the live cursor had moved past it.
-=======
 // handleTimeline returns the timed traffic events for the dashboard's Timeline chart. Admin-only, like /api/requests — it spans every actor/tenant. It reads these query shapes, all answering the same payload:
 //
 //	(no params)          the whole retained window
@@ -197,7 +185,6 @@ type timelineResponse struct {
 // The history loader keeps a paint from decoding the whole 24h ring to draw the hour on screen.
 //
 // since and from/to are mutually exclusive: they answer different questions (what is NEW vs what was HAPPENING), and silently ANDing them would let a history request come back empty. This is because the live cursor had moved past it.
->>>>>>> origin/master
 func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
