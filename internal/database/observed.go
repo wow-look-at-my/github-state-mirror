@@ -1,3 +1,5 @@
+// Kinds the observed driver reports.
+
 package database
 
 import (

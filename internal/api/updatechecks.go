@@ -1,3 +1,5 @@
+// docker-updater discovers these by RFC convention, with no label needed.
+
 package api
 
 import (

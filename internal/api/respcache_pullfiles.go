@@ -1,3 +1,5 @@
+// Implements the cached PR-files route (tier of the cache contract).
+
 package api
 
 import (

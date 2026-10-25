@@ -1,3 +1,5 @@
+// Storage for the identity/self routes (GET /app, /user, /user/orgs).
+
 package ghdata
 
 import (

@@ -1,0 +1,5 @@
+{
+		"ref": "refs/tags/v1.2.3",
+		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
+			"owner": {"login": "org1"}}
+	}

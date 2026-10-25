@@ -1,3 +1,5 @@
+// Implements GET /repos/{owner}/{repo}/git/commits/{sha} (tier).
+
 package api
 
 import (

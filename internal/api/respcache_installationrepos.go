@@ -1,3 +1,5 @@
+// Cached installation-repositories listing (tier of the cache contract).
+
 package api
 
 import (

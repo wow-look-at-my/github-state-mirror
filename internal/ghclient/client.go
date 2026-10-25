@@ -1,3 +1,5 @@
+// contextKey is an unexported type for context keys in this package.
+
 package ghclient
 
 import (

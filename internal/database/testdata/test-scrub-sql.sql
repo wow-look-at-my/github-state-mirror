@@ -1,0 +1,4 @@
+CREATE TABLE t(
+	a TEXT ,
+	b TEXT
+) ;

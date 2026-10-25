@@ -1,3 +1,5 @@
+// Kinds stored in workflow_jobs_cache.kind.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// CREDENTIAL because the answer is installation token's own view -- see the schema comment for why the reveal-layer principal is the wrong key here.
+
 package ghdata
 
 import (

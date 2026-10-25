@@ -1,3 +1,5 @@
+// WebhookReplayRequested reports whether a replay has already been requested for this delivery id.
+
 package ghdata
 
 import (

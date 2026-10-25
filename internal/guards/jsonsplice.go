@@ -1,3 +1,5 @@
+// JSON TEXT IS PRODUCED BY MARSHALLING.
+
 package guards
 
 import (

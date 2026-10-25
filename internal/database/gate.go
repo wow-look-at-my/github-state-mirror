@@ -1,3 +1,5 @@
+// writeGate admits one of this process's writers to a database file at a time, in arrival order.
+
 package database
 
 import (

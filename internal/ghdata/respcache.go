@@ -1,3 +1,5 @@
+// Storage layer for the cached REST routes.
+
 package ghdata
 
 import (

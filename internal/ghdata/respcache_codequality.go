@@ -1,3 +1,5 @@
+// the whole key.
+
 package ghdata
 
 import (

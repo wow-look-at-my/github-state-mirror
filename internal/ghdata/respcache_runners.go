@@ -1,4 +1,8 @@
+// State for the self-hosted runner reads other than the org listing; see docs/cache/rest-routes.md.
+
 package ghdata
+
+import _ "embed"
 
 import (
 	"context"
@@ -62,15 +66,7 @@ func (s *Store) GetRunnerAnswer(ctx context.Context, k RunnerAnswerKey, now time
 // tail beyond the cap.
 func (s *Store) PutRunnerAnswer(ctx context.Context, k RunnerAnswerKey, status int, doc string, now time.Time, ttl time.Duration) error {
 	db := s.dbx(ctx)
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO runner_answer_cache (token_fp, scope, runner_id, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (token_fp, scope, runner_id, per_page, page) DO UPDATE SET
-    status = excluded.status,
-    doc = excluded.doc,
-    fetched_at = excluded.fetched_at,
-    expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at`,
+	if _, err := db.ExecContext(ctx, putRunnerAnswerSql,
 		append(k.args(), status, doc, rfc3339(now), rfc3339(now.Add(ttl)), rfc3339(now))...,
 	); err != nil {
 		return err
@@ -78,10 +74,7 @@ ON CONFLICT (token_fp, scope, runner_id, per_page, page) DO UPDATE SET
 	if _, err := db.ExecContext(ctx, `DELETE FROM runner_answer_cache WHERE expires_at <= ?`, rfc3339(now)); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, `
-DELETE FROM runner_answer_cache WHERE id IN (
-    SELECT id FROM runner_answer_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
-)`, CacheMaxRows)
+	_, err := db.ExecContext(ctx, putRunnerAnswerSql2, CacheMaxRows)
 	return err
 }
 
@@ -98,3 +91,9 @@ func (s *Store) InvalidateRunner(ctx context.Context, owner, repo string, runner
 	_, err := db.ExecContext(ctx, `DELETE FROM org_runners_cache WHERE org = ?`, NormalizeRepoKey(owner))
 	return err
 }
+
+//go:embed put-runner-answer.sql
+var putRunnerAnswerSql string
+
+//go:embed put-runner-answer-2.sql
+var putRunnerAnswerSql2 string

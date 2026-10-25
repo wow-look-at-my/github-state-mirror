@@ -1,3 +1,5 @@
+// GitHub Actions run state: global truth, maintained by webhooks.
+
 package ghdata
 
 import (

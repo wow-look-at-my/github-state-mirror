@@ -1,3 +1,5 @@
+// This file is the whole GET /repos/{owner}/{repo}/contents/{path...} route family: the absorb/render machinery and BOTH Accept shapes the route models.
+
 package api
 
 import (

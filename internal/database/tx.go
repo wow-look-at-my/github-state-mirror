@@ -1,3 +1,5 @@
+// gates maps each *sql.DB from OpenDSN to its write gate.
+
 package database
 
 import (

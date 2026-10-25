@@ -1,0 +1,8 @@
+[
+			{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1",
+			 "url":"https://api.github.com/a","html_url":"https://github.com/a","git_url":"https://g","download_url":"https://d",
+			 "_links":{"self":"https://api.github.com/a"}},
+			{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2",
+			 "url":"https://api.github.com/b","html_url":"https://github.com/b","git_url":"https://g2","download_url":null,
+			 "_links":{"self":"https://api.github.com/b"}}
+		]

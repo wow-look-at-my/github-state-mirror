@@ -1,3 +1,5 @@
+// The rules that apply to a branch, GET /repos/{owner}/{repo}/rules/branches/{branch}.
+
 package api
 
 import (

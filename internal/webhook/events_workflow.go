@@ -1,3 +1,5 @@
+// GitHub Actions payload parsing: workflow_job (per-JOB state) and workflow_run (per-RUN state).
+
 package webhook
 
 import (

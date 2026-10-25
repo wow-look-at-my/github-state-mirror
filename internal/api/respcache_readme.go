@@ -1,3 +1,5 @@
+// GitHub answers the content object the contents route holds, so the rebuild reuses contentsFileJSON.
+
 package api
 
 import (

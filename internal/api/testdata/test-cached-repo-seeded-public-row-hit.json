@@ -1,0 +1,5 @@
+{
+		"name": "pub", "full_name": "org1/pub", "owner": {"login": "org1"},
+		"private": false, "visibility": "public", "default_branch": "main",
+		"archived": false, "disabled": false, "fork": false
+	}

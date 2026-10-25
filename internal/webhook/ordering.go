@@ -1,3 +1,5 @@
+// EventOrder is delivery's position: the subject, the moment, and which payload field it came from.
+
 package webhook
 
 import (

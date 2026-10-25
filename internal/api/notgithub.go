@@ -1,3 +1,5 @@
+// notGitHubPaths are route patterns that GitHub's API does not have.
+
 package api
 
 import "net/http"

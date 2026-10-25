@@ -1,3 +1,5 @@
+// Custom property deliveries, applied to the stored answers of GET /orgs/{org}/properties/values.
+
 package sync
 
 import (
