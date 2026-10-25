@@ -52,7 +52,7 @@ func (h *handlers) cachedInstallationToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
-	ctx := actor.WithActor(r.Context(), actorKey)
+	ctx := withPrincipal(r.Context(), actorKey)
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}

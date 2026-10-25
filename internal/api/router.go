@@ -46,6 +46,8 @@ func NewRouter(
 	r.Use(corsMiddleware(allowedOrigins))
 	// gh calls a non-github.com host with Enterprise paths; see ghecompat.go.
 	r.Use(gheCompat)
+	// Every answer carries the caller's X-RateLimit-* headers; see ratelimit_headers.go.
+	r.Use(rateLimitHeaders(meter))
 
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
