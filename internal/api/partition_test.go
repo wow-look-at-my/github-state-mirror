@@ -93,7 +93,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 
 // TestMachineToken_FingerprintIsolation verifies that a token GitHub
 // definitively says is not a user (on /user without rate-limit headers —
-// e.g. an installation token) keeps a per-token fingerprint principal. That
+// a token with no user behind it) keeps a per-token fingerprint principal. That
 // the verdict is cached, and that no identity row is written (there is no
 // login to attribute).
 func TestMachineToken_FingerprintIsolation(t *testing.T) {
@@ -107,7 +107,7 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	})
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
-	const machineToken = "ghs_machine-token"
+	const machineToken = "machine-token"
 	seedOrgTruth(t, store, ghclient.Fingerprint(machineToken), "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "bot-repo", NameWithOwner: "my-org/bot-repo", Url: "u"},
 	}, nil)
