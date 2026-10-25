@@ -145,6 +145,9 @@ func (c *Client) BaseURL() string {
 // ErrBadCredential marks a on GET /user, distinct from a transient resolution failure.
 var ErrBadCredential = errors.New("github rejected the credential")
 
+// InstallationTokenPrefix starts every GitHub App installation token.
+const InstallationTokenPrefix = "ghs_"
+
 // TokenIdentity is the resolved identity of a bearer token, learned from
 // GET /user with that token.
 type TokenIdentity struct {
@@ -166,6 +169,12 @@ func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error
 	}
 	if v, ok := c.identityCache.Load(token); ok {
 		return v.(TokenIdentity), nil
+	}
+	// An installation token, such as an Actions GITHUB_TOKEN, has no user behind it.
+	if strings.HasPrefix(token, InstallationTokenPrefix) {
+		ident := TokenIdentity{IsUser: false}
+		c.identityCache.Store(token, ident)
+		return ident, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/user", nil)
