@@ -1,3 +1,5 @@
+// Cached GET /app/installations, JWT-verified, keyed by app id.
+
 package api
 
 import (

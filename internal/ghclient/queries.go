@@ -1,3 +1,5 @@
+// prFields is the GraphQL selection set.
+
 package ghclient
 
 import (

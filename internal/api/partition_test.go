@@ -93,7 +93,7 @@ func TestUserPartition_SameUserTokensShareScope(t *testing.T) {
 
 // TestMachineToken_FingerprintIsolation verifies that a token GitHub
 // definitively says is not a user (on /user without rate-limit headers —
-// e.g. an installation token) keeps a per-token fingerprint principal. That
+// a token with no user behind it) keeps a per-token fingerprint principal. That
 // the verdict is cached, and that no identity row is written (there is no
 // login to attribute).
 func TestMachineToken_FingerprintIsolation(t *testing.T) {
@@ -107,7 +107,7 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	})
 	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
 
-	const machineToken = "ghs_machine-token"
+	const machineToken = "machine-token"
 	seedOrgTruth(t, store, ghclient.Fingerprint(machineToken), "my-org", []dbgen.Repo{
 		{Owner: "my-org", Name: "bot-repo", NameWithOwner: "my-org/bot-repo", Url: "u"},
 	}, nil)
@@ -124,6 +124,27 @@ func TestMachineToken_FingerprintIsolation(t *testing.T) {
 	ids, err := store.ListActorIdentities(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, ids, "a non-user token has no login; no identity row must be written")
+}
+
+func TestInstallationToken_NeverAsksUser(t *testing.T) {
+	var userCalls atomic.Int64
+	gh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userCalls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	})
+	router, store, _, _ := newTestStackWithGitHub(t, partitionAuthSvc(), gh)
+
+	const actionsToken = "ghs_actions-job-token"
+	seedOrgTruth(t, store, ghclient.Fingerprint(actionsToken), "my-org", []dbgen.Repo{
+		{Owner: "my-org", Name: "ci-repo", NameWithOwner: "my-org/ci-repo", Url: "u"},
+	}, nil)
+
+	w := postOrgRepos(router, actionsToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	nodes := orgRepoNodes(t, w.Body.Bytes())
+	require.Len(t, nodes, 1, "the installation token is served from its fingerprint partition")
+	assert.Equal(t, int64(0), userCalls.Load(), "an installation token never asks GET /user")
 }
 
 // TestTransientUserFailure_503AndNoPartition verifies the fail-closed rule.

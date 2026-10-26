@@ -1,3 +1,5 @@
+// Request dispositions recorded for the dashboard's "Requests" view.
+
 package api
 
 import (

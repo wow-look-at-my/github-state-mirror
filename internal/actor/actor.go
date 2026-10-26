@@ -1,3 +1,5 @@
+// WithActor stores the actor's cache partition key.
+
 package actor
 
 import "context"

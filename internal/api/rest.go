@@ -1,3 +1,5 @@
+// ghProxy is the passthrough fallback for anything not served from cache.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// UpsertPR merges source's view of a PR into truth, stamping touched_at; a view that cannot prove it postdates a recorded close is refused.
+
 package ghdata
 
 import (

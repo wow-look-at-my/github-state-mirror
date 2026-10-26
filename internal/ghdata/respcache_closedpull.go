@@ -1,3 +1,5 @@
+// GetCachedClosedPull returns the cached trimmed closed-PR document, or ("", false) on a miss (no row, or an expired).
+
 package ghdata
 
 import (

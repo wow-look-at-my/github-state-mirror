@@ -1,0 +1,6 @@
+{
+		"name": "fork1", "full_name": "org1/fork1", "owner": {"login": "org1"},
+		"private": true, "visibility": "private", "default_branch": "dev",
+		"archived": false, "disabled": false, "fork": true,
+		"parent": {"full_name": "up/stream", "default_branch": "main"}
+	}

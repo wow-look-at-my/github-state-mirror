@@ -1,3 +1,5 @@
+// Caps buffered GraphQL body size.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// The single-branch read, GET /repos/{owner}/{repo}/branches/{branch}.
+
 package api
 
 import (

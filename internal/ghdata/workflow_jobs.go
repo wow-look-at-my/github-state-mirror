@@ -1,3 +1,5 @@
+// Workflow jobs: GLOBAL, webhook-fed state; see docs/dashboard/dashboard.md.
+
 package ghdata
 
 import (

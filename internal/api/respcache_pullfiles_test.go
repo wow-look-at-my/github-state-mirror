@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"encoding/json"
 	"net/http"
@@ -11,35 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// PR-files route tests (GET /repos/{owner}/{repo}/pulls/{number}/files). The
-// shared fake upstream (respCacheUpstream) lives in respcache_test.go, and
-// the PR webhook fixtures (upstreamPR, prEvent) in respcache_pulls_test.go.
+// PR-files route tests (GET /repos/{owner}/{repo}/pulls/{number}/files).
 
 // defaultPullFilesUpstream is respCacheUpstream's default /pulls/{n}/files
-// answer. Files -- modified with a patch, renamed WITHOUT a patch (the
-// binary/oversized case) but with previous_filename -- so the rebuild must
-// preserve exactly that presence split. This happens while dropping sha and
-// every URL.
+// answer.
 func defaultPullFilesUpstream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write([]byte(`[
-		{"sha": "bbcd538c8e72b8c175046e27cc8f907076331401",
-		 "filename": "internal/api/router.go", "status": "modified",
-		 "additions": 25, "deletions": 3, "changes": 28,
-		 "blob_url": "https://github.com/org1/repo1/blob/x/internal/api/router.go",
-		 "raw_url": "https://github.com/org1/repo1/raw/x/internal/api/router.go",
-		 "contents_url": "https://api.github.com/repos/org1/repo1/contents/internal/api/router.go?ref=x",
-		 "_links": {"self": "https://api.github.com/repos/org1/repo1/pulls/7/files"},
-		 "patch": "@@ -1,3 +1,25 @@ package api"},
-		{"sha": "cafe538c8e72b8c175046e27cc8f907076331402",
-		 "filename": "docs/new-name.md", "status": "renamed",
-		 "additions": 0, "deletions": 0, "changes": 0,
-		 "previous_filename": "docs/old-name.md",
-		 "blob_url": "https://github.com/org1/repo1/blob/x/docs/new-name.md",
-		 "raw_url": "https://github.com/org1/repo1/raw/x/docs/new-name.md",
-		 "contents_url": "https://api.github.com/repos/org1/repo1/contents/docs/new-name.md?ref=x",
-		 "_links": {"self": "https://api.github.com/repos/org1/repo1/pulls/7/files"}}
-	]`))
+	_, _ = w.Write([]byte(defaultPullFilesUpstreamJson))
 }
 
 // TestCachedPullFiles_MissAbsorbHit covers the core flow. The read fetches +
@@ -243,3 +223,6 @@ func TestCachedPullFiles_EmptyPageCacheable(t *testing.T) {
 	assert.Equal(t, w1.Body.String(), w2.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.pullFilesHits))
 }
+
+//go:embed testdata/default-pull-files-upstream.json
+var defaultPullFilesUpstreamJson string

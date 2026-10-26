@@ -1,3 +1,5 @@
+// The consistency check's DIFF half: pure comparisons of cached truth against the freshly fetched owner snapshot.
+
 package sync
 
 import (

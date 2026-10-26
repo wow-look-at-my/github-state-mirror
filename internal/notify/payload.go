@@ -1,3 +1,5 @@
+// Notification is the compact JSON body POSTed to a subscriber after the mirror ingested a GitHub delivery.
+
 package notify
 
 import (

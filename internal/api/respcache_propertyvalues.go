@@ -1,3 +1,5 @@
+// Cached org custom property values: GET /orgs/{org}/properties/values.
+
 package api
 
 import (

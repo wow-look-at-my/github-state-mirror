@@ -1,3 +1,5 @@
+// stampRequestStart is the router middleware: it stamps the receipt time into the request context.
+
 package api
 
 import (

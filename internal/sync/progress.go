@@ -1,3 +1,5 @@
+// Live progress for the consistency check / reconcile.
+
 package sync
 
 import "context"

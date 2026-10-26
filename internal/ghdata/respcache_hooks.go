@@ -1,3 +1,5 @@
+// Hook listing scopes.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// cachedInstallationToken caches installation-token mints.
+
 package api
 
 import (

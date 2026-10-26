@@ -1,3 +1,5 @@
+// The reveal layer: WHO may read a piece of global truth.
+
 package api
 
 import (

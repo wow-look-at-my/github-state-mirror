@@ -1,3 +1,5 @@
+// absorbed tree, already rendered as trimmed JSON.
+
 package ghdata
 
 import (

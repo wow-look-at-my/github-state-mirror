@@ -1,3 +1,5 @@
+// The repository archive redirects, .../tarball/{ref} and .../zipball/{ref}.
+
 package api
 
 import (

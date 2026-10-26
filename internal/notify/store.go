@@ -1,4 +1,8 @@
+// Sentinel errors the API layer maps onto HTTP statuses.
+
 package notify
+
+import _ "embed"
 
 import (
 	"context"
@@ -13,27 +17,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 )
 
-// A separate, never-nuked SQLite file; schema evolves additively only.
-// see docs/notifications.md
-const schemaSQL = `
-CREATE TABLE IF NOT EXISTS subscriptions (
-	id TEXT PRIMARY KEY,
-	principal TEXT NOT NULL,
-	url TEXT NOT NULL,
-	secret TEXT NOT NULL,
-	repo_filters TEXT NOT NULL DEFAULT '[]',
-	event_filters TEXT NOT NULL DEFAULT '[]',
-	active INTEGER NOT NULL DEFAULT 1,
-	consecutive_failures INTEGER NOT NULL DEFAULT 0,
-	disabled_reason TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	last_success_at TEXT NOT NULL DEFAULT '',
-	last_failure_at TEXT NOT NULL DEFAULT '',
-	last_error TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_principal ON subscriptions(principal);
-`
+//go:embed schema-sql.sql
+var schemaSQL string
 
 // Sentinel errors the API layer maps onto HTTP statuses.
 var (
@@ -122,12 +107,7 @@ func (s *Store) Create(ctx context.Context, principal string, in NewSubscription
 		return Subscription{}, ErrLimitExceeded
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO subscriptions (
-			id, principal, url, secret, repo_filters, event_filters, active,
-			consecutive_failures, disabled_reason, created_at, updated_at,
-			last_success_at, last_failure_at, last_error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, '', '', '')`,
+	if _, err := tx.ExecContext(ctx, createSql,
 		sub.ID, sub.Principal, sub.URL, sub.Secret,
 		marshalFilters(sub.RepoFilters), marshalFilters(sub.EventFilters),
 		boolToInt(sub.Active), sub.CreatedAt, sub.UpdatedAt,
@@ -216,11 +196,7 @@ func (s *Store) Update(ctx context.Context, principal, id string, p Patch, now t
 	}
 	sub.UpdatedAt = rfc3339(now)
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE subscriptions SET
-			url = ?, secret = ?, repo_filters = ?, event_filters = ?, active = ?,
-			consecutive_failures = ?, disabled_reason = ?, updated_at = ?
-		WHERE id = ? AND principal = ?`,
+	if _, err := tx.ExecContext(ctx, updateSql,
 		sub.URL, sub.Secret, marshalFilters(sub.RepoFilters), marshalFilters(sub.EventFilters),
 		boolToInt(sub.Active), sub.ConsecutiveFailures, sub.DisabledReason, sub.UpdatedAt,
 		id, principal,
@@ -289,12 +265,7 @@ func (s *Store) RecordFailure(ctx context.Context, id, errMsg string, disableAft
 		disabled = true
 		reason = fmt.Sprintf("auto-disabled after %d consecutive delivery failures", failures)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE subscriptions SET
-			consecutive_failures = ?, last_failure_at = ?, last_error = ?, updated_at = ?,
-			active = ?,
-			disabled_reason = CASE WHEN ? != '' THEN ? ELSE disabled_reason END
-		WHERE id = ?`,
+	if _, err := tx.ExecContext(ctx, recordFailureSql,
 		failures, rfc3339(now), errMsg, rfc3339(now), newActive, reason, reason, id,
 	); err != nil {
 		return 0, false, err
@@ -373,3 +344,12 @@ func boolToInt(b bool) int64 {
 	}
 	return 0
 }
+
+//go:embed create.sql
+var createSql string
+
+//go:embed update.sql
+var updateSql string
+
+//go:embed record-failure.sql
+var recordFailureSql string

@@ -1,3 +1,5 @@
+// Storage layer for the git-commit miss markers (git_commit_miss_cache).
+
 package ghdata
 
 import (

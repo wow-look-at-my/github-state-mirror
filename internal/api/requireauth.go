@@ -1,3 +1,5 @@
+// This file is the data API's front door: who is asking.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// The closed and all PR listings, and the absent-PR verdict.
+
 package api
 
 import (

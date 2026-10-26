@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"context"
 	"net/http"
@@ -141,9 +143,7 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 	before := atomic.LoadInt32(&u.gitRefHits)
 
-	postWebhook(t, router, "push", `{"ref":"refs/heads/main","deleted":true,
-		"after":"0000000000000000000000000000000000000000",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhook(t, router, "push", testCachedGitRef_PushDeletionFlushesJson)
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
 		"a deletion carries no tip to apply, so the row must be dropped")
@@ -453,3 +453,6 @@ func TestCachedGitRef_UnmergedAndLatePullRequestsLeaveTheTip(t *testing.T) {
 		})
 	}
 }
+
+//go:embed testdata/test-cached-git-ref-push-deletion-flushes.json
+var testCachedGitRef_PushDeletionFlushesJson string

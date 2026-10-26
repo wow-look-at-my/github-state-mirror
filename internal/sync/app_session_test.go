@@ -36,7 +36,7 @@ func TestAppSessions(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/app/installations/123/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_inst123"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "inst123-token"})
 	})
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		userAuth = r.Header.Get("Authorization")
@@ -76,7 +76,7 @@ func TestAppSessions(t *testing.T) {
 	ident, err := gh.ResolveTokenIdentity(sessions[0].Ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", ident.Login)
-	assert.Equal(t, "Bearer ghs_inst123", userAuth)
+	assert.Equal(t, "Bearer inst123-token", userAuth)
 }
 
 func TestAppSessions_InstallationsError(t *testing.T) {

@@ -1,3 +1,5 @@
+// subscriptionJSON is the API view of a subscription.
+
 package api
 
 import (

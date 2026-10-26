@@ -1,3 +1,5 @@
+// State for GET /repos/{owner}/{repo}/git/matching-refs/heads/{prefix}.
+
 package ghdata
 
 import (

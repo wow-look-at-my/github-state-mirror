@@ -1,3 +1,5 @@
+// The cached webhook CONFIGURATION listings (tier of the cache contract).
+
 package api
 
 import (

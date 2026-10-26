@@ -1,3 +1,5 @@
+// Event is a parsed webhook event with enough info for dispatch.
+
 package webhook
 
 import (

@@ -1,3 +1,5 @@
+// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier).
+
 package api
 
 import (
