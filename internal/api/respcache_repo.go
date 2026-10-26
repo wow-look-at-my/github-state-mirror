@@ -1,3 +1,5 @@
+// Unlike every other cached route there is NO snapshot table.
+
 package api
 
 import (

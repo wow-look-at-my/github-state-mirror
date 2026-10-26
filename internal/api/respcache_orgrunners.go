@@ -1,3 +1,5 @@
+// parseOrgRunnersShape reports the paging shape, the hooks-route pattern.
+
 package api
 
 import (

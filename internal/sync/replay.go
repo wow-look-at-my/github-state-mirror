@@ -1,3 +1,5 @@
+// A delivery this mirror never received is the quietest failure it has: the mirror keeps serving what it last absorbed.
+
 package sync
 
 import (

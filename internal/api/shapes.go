@@ -1,3 +1,5 @@
+// Passthrough SHAPE capture: what the request-group counters (requestgroups.go) deliberately do not hold.
+
 package api
 
 import (

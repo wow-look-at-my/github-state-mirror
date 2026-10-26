@@ -1,3 +1,5 @@
+// A create or delete delivery says a ref started or stopped existing.
+
 package sync
 
 import (

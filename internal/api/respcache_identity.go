@@ -1,3 +1,5 @@
+// Implements the identity/self routes on "identical-or-passthrough": the upstream body is cached VERBATIM, never trimmed.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// currentFingerprint is schemaFingerprint(schemaSQL), computed.
+
 package database
 
 import (

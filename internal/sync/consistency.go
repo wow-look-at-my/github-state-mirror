@@ -1,3 +1,5 @@
+// ConsistencyChecker compares the GLOBAL truth store against GitHub's live state and reports the drift -- comparison for the cache.
+
 package sync
 
 import (

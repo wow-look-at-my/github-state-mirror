@@ -1,3 +1,5 @@
+// EVERY REQUEST THIS SERVICE SENDS IS ON THE DASHBOARD.
+
 package guards
 
 import (

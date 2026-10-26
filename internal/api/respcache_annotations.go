@@ -1,3 +1,5 @@
+// The check-run annotations listing, GET .../check-runs/{id}/annotations.
+
 package api
 
 import (

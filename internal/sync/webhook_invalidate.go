@@ -1,3 +1,5 @@
+// invalidateResponseCaches drops trimmed-response-cache rows a webhook makes stale, at the finest per-ref/per-kind grain the payload supports.
+
 package sync
 
 import (

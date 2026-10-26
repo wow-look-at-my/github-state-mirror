@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"testing"
@@ -154,11 +156,7 @@ func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 	s.seedCompare("feat...other", "feat", "other")
 	s.seedCompare("main...other", "main", "other")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/feat",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_PushToBranch_FlushesOnlyThatRefJson)))
 
 	assert.False(t, s.contentsServe("feat"), "the pushed branch's contents rows must flush")
 	assert.False(t, s.commitsListServe("feat"), "the pushed branch's commits-list snapshots must flush")
@@ -188,11 +186,7 @@ func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
 		s.seedCommitsList(ref)
 	}
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/main",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_PushToDefaultBranch_FlushesEmptyRefRowsJson)))
 
 	assert.False(t, s.contentsServe("main"), "the default branch's named contents rows must flush")
 	assert.False(t, s.contentsServe(""), "the default branch's empty-ref contents rows must flush too")
@@ -221,11 +215,7 @@ func TestDispatch_TagPush_FlushesOnlyThatRef(t *testing.T) {
 	s.seedCompare("main...v1.2.3", "main", "v1.2.3")
 	s.seedCompare("main...other", "main", "other")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/tags/v1.2.3",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_TagPush_FlushesOnlyThatRefJson)))
 
 	assert.False(t, s.contentsServe("v1.2.3"), "the pushed tag's contents rows must flush")
 	assert.False(t, s.commitsListServe("v1.2.3"), "the pushed tag's listing must flush")
@@ -375,11 +365,7 @@ func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	s.seedCommitsList("refs/heads/main")
 	s.seedCompare("refs/heads/main...feat", "refs/heads/main", "feat")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/main",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_Push_FlushesAlternateRefSpellingsJson)))
 
 	assert.False(t, s.commitCIServe("heads/main"), "the heads/<name> commit-CI spelling must flush")
 	assert.False(t, s.commitCIServe("refs/heads/main"), "the refs/heads/<name> commit-CI spelling must flush")
@@ -390,3 +376,15 @@ func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	assert.False(t, s.commitsListServe("refs/heads/main"), "the refs/heads/<name> commits-list spelling must flush")
 	assert.False(t, s.compareServe("refs/heads/main...feat"), "a comparison naming a qualified spelling must flush")
 }
+
+//go:embed testdata/test-dispatch-push-to-branch-flushes-only-that-ref.json
+var testDispatch_PushToBranch_FlushesOnlyThatRefJson string
+
+//go:embed testdata/test-dispatch-push-to-default-branch-flushes-empty-ref-rows.json
+var testDispatch_PushToDefaultBranch_FlushesEmptyRefRowsJson string
+
+//go:embed testdata/test-dispatch-tag-push-flushes-only-that-ref.json
+var testDispatch_TagPush_FlushesOnlyThatRefJson string
+
+//go:embed testdata/test-dispatch-push-flushes-alternate-ref-spellings.json
+var testDispatch_Push_FlushesAlternateRefSpellingsJson string

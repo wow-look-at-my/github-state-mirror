@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"bytes"
 	"compress/gzip"
@@ -14,13 +16,7 @@ import (
 // The property the whole capture rests on: a sampled response body is
 // reduced to keys and TYPES, and no value survives into anything retained.
 func TestJSONSkeletonKeepsNoValues(t *testing.T) {
-	body := []byte(`{
-		"total_count": 2,
-		"secret_token": "ghs_SUPERSECRETVALUE",
-		"login": "octocat",
-		"nested": {"url": "https://api.github.com/x", "flag": true, "missing": null},
-		"items": [{"id": 7, "name": "one"}, {"id": 8, "name": "two"}]
-	}`)
+	body := []byte(testJSONSkeletonKeepsNoValuesJson)
 	sk := jsonSkeleton(body)
 
 	for _, leak := range []string{"ghs_SUPERSECRETVALUE", "octocat", "api.github.com", "true", "7", "one"} {
@@ -321,12 +317,7 @@ func TestBrief_CapturesUnroutedRouteAndItsResponseShape(t *testing.T) {
 		}
 		// GitHub's milestone object, URL fields and all.
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{
-			"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
-			"url": "https://api.github.com/repos/o/r/milestones/3",
-			"name": "bug", "color": "f29513", "default": true,
-			"description": "Something isn't working"
-		}`))
+		_, _ = w.Write([]byte(testBrief_CapturesUnroutedRouteAndItsResponseShapeJson))
 	})
 	svc := configuredAuth(t)
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
@@ -353,3 +344,9 @@ func TestBrief_CapturesUnroutedRouteAndItsResponseShape(t *testing.T) {
 		require.NotContains(t, md, leak, "a captured value must never reach the brief")
 	}
 }
+
+//go:embed testdata/test-json-skeleton-keeps-no-values.json
+var testJSONSkeletonKeepsNoValuesJson string
+
+//go:embed testdata/test-brief-captures-unrouted-route-and-its-response-shape.json
+var testBrief_CapturesUnroutedRouteAndItsResponseShapeJson string

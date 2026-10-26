@@ -1,3 +1,5 @@
+// Single-PR staleness backstop; a stale row misses rather than serves stale.
+
 package ghdata
 
 import (

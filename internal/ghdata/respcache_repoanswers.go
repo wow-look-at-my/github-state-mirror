@@ -1,4 +1,8 @@
+// The routes on repo_answer_cache; see docs/cache/rest-routes.md.
+
 package ghdata
+
+import _ "embed"
 
 import (
 	"context"
@@ -83,16 +87,7 @@ func (s *Store) GetRepoAnswer(ctx context.Context, k RepoAnswerKey, now time.Tim
 // beyond the cap.
 func (s *Store) PutRepoAnswer(ctx context.Context, k RepoAnswerKey, a RepoAnswer, now time.Time) error {
 	db := s.dbx(ctx)
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO repo_answer_cache (owner, repo, kind, ref_id, shape, subject, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, kind, ref_id, shape) DO UPDATE SET
-    subject = excluded.subject,
-    status = excluded.status,
-    doc = excluded.doc,
-    fetched_at = excluded.fetched_at,
-    expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at`,
+	if _, err := db.ExecContext(ctx, putRepoAnswerSql,
 		append(k.args(), a.Subject, a.Status, a.Doc, rfc3339(now), rfc3339(a.ExpiresAt), rfc3339(now))...,
 	); err != nil {
 		return err
@@ -100,10 +95,7 @@ ON CONFLICT (owner, repo, kind, ref_id, shape) DO UPDATE SET
 	if _, err := db.ExecContext(ctx, `DELETE FROM repo_answer_cache WHERE expires_at <= ?`, rfc3339(now)); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, `
-DELETE FROM repo_answer_cache WHERE id IN (
-    SELECT id FROM repo_answer_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
-)`, CacheMaxRows)
+	_, err := db.ExecContext(ctx, putRepoAnswerSql2, CacheMaxRows)
 	return err
 }
 
@@ -171,3 +163,9 @@ func (s *Store) InvalidateRepoAnswersForSubject(ctx context.Context, owner, repo
 		NormalizeRepoKey(owner), NormalizeRepoKey(repo), kind, subject)
 	return err
 }
+
+//go:embed put-repo-answer.sql
+var putRepoAnswerSql string
+
+//go:embed put-repo-answer-2.sql
+var putRepoAnswerSql2 string

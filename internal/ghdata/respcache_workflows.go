@@ -1,3 +1,5 @@
+// Storage for the Actions WORKFLOW definitions.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// StoredCheckRunApp is a check run's producing app.
+
 package ghdata
 
 import (

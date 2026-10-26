@@ -1,3 +1,5 @@
+// PushPayload is the minimal info applied directly from a push webhook.
+
 package webhook
 
 import (

@@ -1,3 +1,5 @@
+// OutOfOrderSampleLimit bounds the retained recent-sample ring; only the recent samples matter to an operator.
+
 package sync
 
 import (

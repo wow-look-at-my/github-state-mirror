@@ -1,3 +1,5 @@
+// Store wraps sqlc-generated queries plus transaction logic for the global truth store.
+
 package ghdata
 
 import (

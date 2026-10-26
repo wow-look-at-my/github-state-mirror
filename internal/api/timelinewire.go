@@ -1,3 +1,5 @@
+// The Timeline chart's columnar encoding.
+
 package api
 
 import (

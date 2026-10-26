@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"encoding/json"
@@ -189,11 +191,7 @@ func TestDispatch_RunStateEvents_NeverClearTheListing(t *testing.T) {
 		s.seedRun(1, "queued")
 		require.NoError(t, store.MarkWorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", s.now, time.Minute))
 
-		dispatcher.Dispatch(ctx, webhook.ParseEvent("repository", []byte(`{
-			"action": "privatized",
-			"repository": {"name": "repo1", "full_name": "org1/repo1", "private": true,
-				"visibility": "private", "owner": {"login": "org1"}}
-		}`)))
+		dispatcher.Dispatch(ctx, webhook.ParseEvent("repository", []byte(testDispatch_RunStateEvents_NeverClearTheListingJson)))
 
 		assert.Empty(t, s.runStatuses(), "a repository event drops the run rows")
 		complete, err := store.WorkflowRunsListComplete(ctx, "org1", "repo1", "status=queued", s.now)
@@ -221,3 +219,6 @@ func TestFlushWorkflowRunsForSHA_EmptySHA_FallsBackRepoWide(t *testing.T) {
 	assert.False(t, s.workflowRunsServe(r2SHA), "an empty sha must flush repo-wide, not no-op")
 	assert.False(t, s.workflowRunsServe(r2OtherSHA), "an empty sha must flush repo-wide, not no-op")
 }
+
+//go:embed testdata/test-dispatch-run-state-events-never-clear-the-listing.json
+var testDispatch_RunStateEvents_NeverClearTheListingJson string

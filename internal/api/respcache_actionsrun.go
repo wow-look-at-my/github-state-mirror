@@ -1,3 +1,5 @@
+// The single workflow-run read, rebuilt from the workflow_runs truth row.
+
 package api
 
 import (

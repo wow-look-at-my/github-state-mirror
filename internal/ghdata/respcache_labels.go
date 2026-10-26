@@ -1,3 +1,5 @@
+// canonicalized -- GitHub resolves label names case-insensitively but the mirror does not model that.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// combinedStatusUnknownRef is GitHub's message for a combined-status read of a ref that does not exist.
+
 package api
 
 import (

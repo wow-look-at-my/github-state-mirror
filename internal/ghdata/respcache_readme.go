@@ -1,3 +1,5 @@
+// Storage for the README read: a row per (owner, repo, subtree, VERBATIM ref).
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// issuesMaxLabelsLen bounds the labels filter key component.
+
 package api
 
 import (

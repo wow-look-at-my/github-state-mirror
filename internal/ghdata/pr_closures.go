@@ -1,3 +1,5 @@
+// recordPRClosureTx remembers that a PR left the cache closed, at the updated_at of the view that said so.
+
 package ghdata
 
 import (

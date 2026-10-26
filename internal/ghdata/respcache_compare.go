@@ -1,3 +1,5 @@
+// The storage layer for the cached compare route (.../compare/{basehead}); see docs/cache/rest-routes.md.
+
 package ghdata
 
 import (

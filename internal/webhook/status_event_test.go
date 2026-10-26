@@ -1,5 +1,7 @@
 package webhook
 
+import _ "embed"
+
 import (
 	"encoding/json"
 	"testing"
@@ -32,9 +34,7 @@ func TestParseStatusEvent(t *testing.T) {
 // them. The stored documents emit both keys as null -- so they must arrive as
 // absent pointers rather than empty strings.
 func TestParseStatusEvent_NullsStayNull(t *testing.T) {
-	got, ok := ParseStatusEvent(json.RawMessage(`{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"context":"lint","state":"pending","description":null,"target_url":null,
-		"created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:00:00Z"}`))
+	got, ok := ParseStatusEvent(json.RawMessage(testParseStatusEvent_NullsStayNullJson))
 	require.True(t, ok)
 	assert.Nil(t, got.Description)
 	assert.Nil(t, got.TargetURL)
@@ -57,3 +57,6 @@ func TestParseStatusEvent_IncompletePayloadsRefuse(t *testing.T) {
 		})
 	}
 }
+
+//go:embed testdata/test-parse-status-event-nulls-stay-null.json
+var testParseStatusEvent_NullsStayNullJson string

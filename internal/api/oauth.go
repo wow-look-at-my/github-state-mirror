@@ -1,3 +1,5 @@
+// var so tests can point it at a fake server.
+
 package api
 
 import (

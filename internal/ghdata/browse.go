@@ -1,3 +1,5 @@
+// Admin browse over global truth; read-only, unfiltered by the reveal layer.
+
 package ghdata
 
 import (

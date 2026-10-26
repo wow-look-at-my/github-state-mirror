@@ -1,3 +1,5 @@
+// Cached branches-list route (tier of the cache contract, like respcache.go).
+
 package api
 
 import (
