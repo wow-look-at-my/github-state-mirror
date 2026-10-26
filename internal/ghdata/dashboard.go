@@ -1,3 +1,5 @@
+// Dashboard reads: global truth counts/freshness + reveal-layer principals.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// A sub-resource refusal is per credential.
+
 package api
 
 import (

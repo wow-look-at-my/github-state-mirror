@@ -1,3 +1,5 @@
+// Passthrough debouncing coalesces identical in-flight, unmodeled reads behind a caller-credential key.
+
 package api
 
 import (

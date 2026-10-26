@@ -1,3 +1,5 @@
+// WorkflowJobObject is the raw `workflow_job` key of a workflow_job delivery.
+
 package webhook
 
 import "encoding/json"

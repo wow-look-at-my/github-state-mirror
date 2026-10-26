@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"context"
 	"database/sql"
@@ -38,11 +40,7 @@ func TestCachedRepo_SeededPublicRowHit(t *testing.T) {
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "a complete truth row serves without upstream")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&u.probeHits), "public fast path: no probe, no fetch")
 	assertNoURLKeys(t, w.Body.Bytes())
-	assert.JSONEq(t, `{
-		"name": "pub", "full_name": "org1/pub", "owner": {"login": "org1"},
-		"private": false, "visibility": "public", "default_branch": "main",
-		"archived": false, "disabled": false, "fork": false
-	}`, w.Body.String())
+	assert.JSONEq(t, testCachedRepo_SeededPublicRowHitJson, w.Body.String())
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
@@ -68,12 +66,7 @@ func TestCachedRepo_ForkNamesItsParent(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "hit", w.Header().Get(cacheHeader), "the probe's object carries the parent, so the row answers")
 	assertNoURLKeys(t, w.Body.Bytes())
-	assert.JSONEq(t, `{
-		"name": "fork1", "full_name": "org1/fork1", "owner": {"login": "org1"},
-		"private": true, "visibility": "private", "default_branch": "dev",
-		"archived": false, "disabled": false, "fork": true,
-		"parent": {"full_name": "up/stream", "default_branch": "main"}
-	}`, w.Body.String())
+	assert.JSONEq(t, testCachedRepo_ForkNamesItsParentJson, w.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.probeHits))
 }
 
@@ -207,3 +200,9 @@ func TestCachedRepo_Upstream404Passthrough(t *testing.T) {
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.probeHits), "nothing stored; every read fetches")
 	}
 }
+
+//go:embed testdata/test-cached-repo-seeded-public-row-hit.json
+var testCachedRepo_SeededPublicRowHitJson string
+
+//go:embed testdata/test-cached-repo-fork-names-its-parent.json
+var testCachedRepo_ForkNamesItsParentJson string

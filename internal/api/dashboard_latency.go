@@ -1,3 +1,5 @@
+// GitHubDeliveryTimeoutMs is how long GitHub waits for a webhook response before it records the delivery as failed.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// Set before any store write.
+
 package main
 
 import (

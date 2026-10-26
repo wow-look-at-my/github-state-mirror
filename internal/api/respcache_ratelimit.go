@@ -1,3 +1,5 @@
+// Implements GET /rate_limit: rebuilds GitHub's own `resources` shape from ratemeter's passive X-RateLimit-* observations instead of ever asking GitHub again.
+
 package api
 
 import (

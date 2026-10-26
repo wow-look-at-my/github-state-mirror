@@ -1,3 +1,5 @@
+// Session is authenticated refresh identity: a context carrying a GitHub token and cache partition.
+
 package sync
 
 import (

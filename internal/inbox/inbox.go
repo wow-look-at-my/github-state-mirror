@@ -4,6 +4,8 @@
 // lifecycle. A restart never loses a delivery GitHub was told was kept.
 package inbox
 
+import _ "embed"
+
 import (
 	"context"
 	"database/sql"
@@ -17,16 +19,8 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
-const schemaSQL = `
-CREATE TABLE IF NOT EXISTS deliveries (
-	delivery_id TEXT PRIMARY KEY,
-	event_type  TEXT NOT NULL,
-	body        BLOB NOT NULL,
-	received_at INTEGER NOT NULL,
-	applied_at  INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_deliveries_pending ON deliveries (applied_at, received_at);
-`
+//go:embed schema-sql.sql
+var schemaSQL string
 
 // Retention is how long an applied delivery's id is kept to recognize a redelivery.
 const Retention = 72 * time.Hour

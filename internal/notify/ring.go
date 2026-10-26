@@ -1,3 +1,5 @@
+// Delivery outcomes recorded in the activity log.
+
 package notify
 
 import (

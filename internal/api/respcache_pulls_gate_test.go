@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"database/sql"
 	"encoding/json"
@@ -43,12 +45,9 @@ func TestPullsList_GatesPushInvalidatedMergeSha(t *testing.T) {
 	// The list-complete marker, so the route serves from rows.
 	require.NoError(t, store.AbsorbPullsList(ctx, "org1", "repo1",
 		[]dbgen.PullRequest{pr}, nil, true, now, now, time.Hour))
-	// The belt case the guarded writes never produce: force the row's OWN
-	// sha to be the live-marked stale (direct SQL, like a row written
-	// before the guard existed or by a raced writer).
-	_, err := db.ExecContext(ctx, `UPDATE pull_requests
-		SET merge_stale_sha = ?, merge_stale_at = ?
-		WHERE owner = 'org1' AND repo = 'repo1' AND number = 7`,
+	// The belt case the guarded writes never produce: force the row's OWN sha to be the live-marked stale (direct SQL,
+	// like a row written before the guard existed or by a raced writer).
+	_, err := db.ExecContext(ctx, testPullsList_GatesPushInvalidatedMergeShaSql,
 		staleSha, now.UTC().Format(time.RFC3339))
 	require.NoError(t, err)
 
@@ -70,3 +69,6 @@ func TestPullsList_GatesPushInvalidatedMergeSha(t *testing.T) {
 	assert.Nil(t, items[0]["merge_commit_sha"],
 		"a push-invalidated test-merge sha must be gated to null in list items, never served")
 }
+
+//go:embed testdata/test-pulls-list-gates-push-invalidated-merge-sha.sql
+var testPullsList_GatesPushInvalidatedMergeShaSql string

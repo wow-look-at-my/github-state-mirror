@@ -1,3 +1,5 @@
+// Resource kind constants used in cache_metadata.
+
 package sync
 
 import (

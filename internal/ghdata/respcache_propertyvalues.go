@@ -1,4 +1,8 @@
+// State for GET /orgs/{org}/properties/values; see docs/cache/rest-routes.md.
+
 package ghdata
+
+import _ "embed"
 
 import (
 	"bytes"
@@ -70,15 +74,7 @@ func (s *Store) GetCachedOrgPropertyValues(ctx context.Context, tokenFP, org str
 // the LRU tail beyond the cap.
 func (s *Store) PutCachedOrgPropertyValues(ctx context.Context, tokenFP, org string, perPage, page int64, a OrgPropertyValuesAnswer, now time.Time, ttl time.Duration) error {
 	db := s.dbx(ctx)
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO org_property_values_cache (token_fp, org, per_page, page, status, doc, fetched_at, expires_at, last_used_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (token_fp, org, per_page, page) DO UPDATE SET
-    status = excluded.status,
-    doc = excluded.doc,
-    fetched_at = excluded.fetched_at,
-    expires_at = excluded.expires_at,
-    last_used_at = excluded.last_used_at`,
+	if _, err := db.ExecContext(ctx, putCachedOrgPropertyValuesSql,
 		tokenFP, NormalizeRepoKey(org), perPage, page, a.Status, a.Doc, rfc3339(now), rfc3339(now.Add(ttl)), rfc3339(now),
 	); err != nil {
 		return err
@@ -86,10 +82,7 @@ ON CONFLICT (token_fp, org, per_page, page) DO UPDATE SET
 	if _, err := db.ExecContext(ctx, `DELETE FROM org_property_values_cache WHERE expires_at <= ?`, rfc3339(now)); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, `
-DELETE FROM org_property_values_cache WHERE rowid IN (
-    SELECT rowid FROM org_property_values_cache ORDER BY last_used_at DESC LIMIT -1 OFFSET ?
-)`, CacheMaxRows)
+	_, err := db.ExecContext(ctx, putCachedOrgPropertyValuesSql2, CacheMaxRows)
 	return err
 }
 
@@ -188,3 +181,9 @@ func applyPropertyValues(e *OrgPropertyValuesEntry, values []OrgPropertyValue) b
 	}
 	return true
 }
+
+//go:embed put-cached-org-property-values.sql
+var putCachedOrgPropertyValuesSql string
+
+//go:embed put-cached-org-property-values-2.sql
+var putCachedOrgPropertyValuesSql2 string

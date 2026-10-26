@@ -1,3 +1,5 @@
+// GET /repos/{owner}/{repo}/compare/{basehead}, tier of the cache contract.
+
 package api
 
 import (

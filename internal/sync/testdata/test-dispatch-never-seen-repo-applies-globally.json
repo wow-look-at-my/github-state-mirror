@@ -1,0 +1,11 @@
+{
+		"sha": "deadbeef",
+		"state": "success",
+		"context": "ci/test",
+		"branches": [{"name": "main"}],
+		"repository": {"name": "repo-nightmare", "full_name": "wow-look-at-my/repo-nightmare",
+			"private": true, "visibility": "private", "default_branch": "main",
+			"html_url": "https://github.com/wow-look-at-my/repo-nightmare",
+			"owner": {"login": "wow-look-at-my"}},
+		"installation": {"id": 123}
+	}

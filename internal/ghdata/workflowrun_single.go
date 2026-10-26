@@ -1,4 +1,8 @@
+// The single-run read, GET /repos/{owner}/{repo}/actions/runs/{run_id}, is rebuilt from the workflow_runs truth row.
+
 package ghdata
+
+import _ "embed"
 
 import (
 	"context"
@@ -242,14 +246,7 @@ func (s *Store) applyWorkflowRunDetail(ctx context.Context, r WorkflowRun, now t
 		return nil
 	}
 	db := s.dbx(ctx)
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO workflow_run_details (owner, repo, run_id, updated_at, detail, detail_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (owner, repo, run_id) DO UPDATE SET
-    updated_at = excluded.updated_at,
-    detail = excluded.detail,
-    detail_at = excluded.detail_at
-WHERE excluded.updated_at >= workflow_run_details.updated_at`,
+	if _, err := db.ExecContext(ctx, applyWorkflowRunDetailSql,
 		NormalizeRepoKey(r.Owner), NormalizeRepoKey(r.Repo), r.RunID, r.UpdatedAt, r.Detail, rfc3339(now),
 	); err != nil {
 		return err
@@ -263,13 +260,7 @@ WHERE excluded.updated_at >= workflow_run_details.updated_at`,
 func (s *Store) GetWorkflowRun(ctx context.Context, owner, repo string, runID int64) (WorkflowRun, bool, error) {
 	var r WorkflowRun
 	var detail, detailAt sql.NullString
-	err := s.dbx(ctx).QueryRowContext(ctx, `
-SELECT w.owner, w.repo, w.run_id, w.run_attempt, w.name, w.head_sha, w.head_branch,
-       w.status, w.conclusion, w.html_url, w.created_at, w.updated_at, w.run_started_at,
-       d.detail, d.detail_at
-FROM workflow_runs w
-LEFT JOIN workflow_run_details d ON d.owner = w.owner AND d.repo = w.repo AND d.run_id = w.run_id
-WHERE w.owner = ? AND w.repo = ? AND w.run_id = ?`,
+	err := s.dbx(ctx).QueryRowContext(ctx, getWorkflowRunSql,
 		NormalizeRepoKey(owner), NormalizeRepoKey(repo), runID,
 	).Scan(&r.Owner, &r.Repo, &r.RunID, &r.RunAttempt, &r.Name, &r.HeadSHA, &r.HeadBranch,
 		&r.Status, &r.Conclusion, &r.HTMLURL, &r.CreatedAt, &r.UpdatedAt, &r.RunStartedAt,
@@ -284,3 +275,9 @@ WHERE w.owner = ? AND w.repo = ? AND w.run_id = ?`,
 	r.Detail, r.DetailAt = detail.String, detailAt.String
 	return r, true, nil
 }
+
+//go:embed apply-workflow-run-detail.sql
+var applyWorkflowRunDetailSql string
+
+//go:embed get-workflow-run.sql
+var getWorkflowRunSql string

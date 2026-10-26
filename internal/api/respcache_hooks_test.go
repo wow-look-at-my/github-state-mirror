@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"fmt"
 	"io"
@@ -303,9 +305,7 @@ func TestCachedHooks_InsecureSSLKeepsItsJSONType(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.hooks = func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`[{"id":1,"name":"web","active":true,"events":["push"],
-			"config":{"url":"https://h/x","content_type":"json","insecure_ssl":1},
-			"created_at":"","updated_at":""}]`))
+		_, _ = w.Write([]byte(testCachedHooks_InsecureSSLKeepsItsJSONTypeJson))
 	}
 
 	w := do(t, router, authedReq("GET", repoHooksTarget, nil))
@@ -328,3 +328,6 @@ func hooksReq(method, target, bearer string) *http.Request {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	return req
 }
+
+//go:embed testdata/test-cached-hooks-insecure-ssl-keeps-its-json-type.json
+var testCachedHooks_InsecureSSLKeepsItsJSONTypeJson string

@@ -1,3 +1,5 @@
+// IssuePayload is an issues or issue_comment delivery: the repo, the action, and the whole issue object, verbatim.
+
 package webhook
 
 import (

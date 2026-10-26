@@ -1,3 +1,5 @@
+// CachedRepoInstallation is the absorbed state of repo-installation response (App-JWT authed; keyed by the verified "app:<id>").
+
 package ghdata
 
 import (

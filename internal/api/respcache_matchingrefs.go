@@ -1,3 +1,5 @@
+// The cached ref-prefix-search route (GET .../git/matching-refs/heads/{prefix}); see docs/cache/rest-routes.md.
+
 package api
 
 import (

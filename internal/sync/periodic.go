@@ -1,3 +1,5 @@
+// Start runs fleet refresh immediately, then per interval, until ctx is canceled.
+
 package sync
 
 import (

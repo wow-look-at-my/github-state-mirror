@@ -1,3 +1,5 @@
+// The cached Actions JOB reads (.../actions/runs/{run_id}/jobs, .../actions/jobs/{job_id}); see docs/cache/rest-routes.md.
+
 package api
 
 import (

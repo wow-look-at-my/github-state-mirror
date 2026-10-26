@@ -1,3 +1,5 @@
+// applyPRPayload parses full PR data from the webhook and writes it directly into global truth.
+
 package sync
 
 import (

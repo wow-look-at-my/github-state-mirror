@@ -1,3 +1,5 @@
+// GET /repos/{owner}/{repo}/code-quality/setup, tier of the cache contract.
+
 package api
 
 import (

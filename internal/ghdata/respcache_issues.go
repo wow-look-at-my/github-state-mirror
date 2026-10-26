@@ -1,3 +1,5 @@
+// IssueCacheTTL backstops a lost issues or issue_comment delivery.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// Tunable defaults (see Config).
+
 package notify
 
 import (

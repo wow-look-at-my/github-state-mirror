@@ -1,3 +1,5 @@
+// Cached PR REST routes (tier of the cache contract, like respcache.go): the open-PR list, the PR.
+
 package api
 
 import (

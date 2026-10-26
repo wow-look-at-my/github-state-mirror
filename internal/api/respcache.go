@@ -1,3 +1,5 @@
+// This file holds the machinery every cached REST route shares — the upstream fetch, the verbatim replay, the rebuild writer.
+
 package api
 
 import (

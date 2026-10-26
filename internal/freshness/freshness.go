@@ -1,3 +1,5 @@
+// GlobalActor must be set explicitly; an empty Actor fills from the caller's principal.
+
 package freshness
 
 import (

@@ -1,3 +1,5 @@
+// already resolves user-owned repos) but with the ownerPRFields selection so follow-up pages carry the same fields as page.
+
 package ghclient
 
 import (

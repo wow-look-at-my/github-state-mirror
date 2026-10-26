@@ -1,3 +1,5 @@
+// GetCachedPullDiff406 returns the cached body for a PR, or ("", false) on a miss (no verdict, or an expired).
+
 package ghdata
 
 import (

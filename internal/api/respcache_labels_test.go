@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"net/http"
 	"strings"
@@ -41,11 +43,7 @@ func TestCachedLabel_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.labelHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `{
-		"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
-		"name": "auto-pr-merge", "color": "f29513", "default": true,
-		"description": "Something isn't working"
-	}`, w1.Body.String())
+	assert.JSONEq(t, testCachedLabel_MissAbsorbHitJson, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", labelTarget, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -179,3 +177,6 @@ func TestCachedLabel_NamesAreDistinctRows(t *testing.T) {
 	assert.Contains(t, second.Body.String(), `"name":"merge-conflict"`)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.labelHits))
 }
+
+//go:embed testdata/test-cached-label-miss-absorb-hit.json
+var testCachedLabel_MissAbsorbHitJson string

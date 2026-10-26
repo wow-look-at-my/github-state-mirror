@@ -1,3 +1,5 @@
+// compressMinBytes is the floor below which gzip can grow the payload.
+
 package api
 
 import (

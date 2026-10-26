@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"path/filepath"
@@ -44,14 +46,7 @@ func TestDispatch_OneDeliveryTakesTheWriteLockOnce(t *testing.T) {
 	d := NewWebhookDispatcher(freshness.NewManager(freshness.NewStore(db)), store)
 	ctx := context.Background()
 
-	push := []byte(`{
-		"ref": "refs/heads/main",
-		"before": "1111111111111111111111111111111111111111",
-		"after": "2222222222222222222222222222222222222222",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main", "pushed_at": 1767225600, "owner": {"login": "org1"}},
-		"head_commit": {"id": "2222222222222222222222222222222222222222", "timestamp": "2026-01-01T00:00:00Z"},
-		"commits": [{"id": "2222222222222222222222222222222222222222", "tree_id": "3333333333333333333333333333333333333333", "message": "m", "timestamp": "2026-01-01T00:00:00Z", "author": {"name": "a", "email": "a@x"}, "committer": {"name": "a", "email": "a@x"}}]
-	}`)
+	push := []byte(testDispatch_OneDeliveryTakesTheWriteLockOnceJson)
 	event := webhook.ParseEvent("push", push)
 	event.DeliveryID = "d-push"
 
@@ -69,3 +64,6 @@ func TestDispatch_OneDeliveryTakesTheWriteLockOnce(t *testing.T) {
 	require.Len(t, deliveries, 1, "the delivery's log row commits with it")
 	assert.Equal(t, "d-push", deliveries[0].DeliveryID)
 }
+
+//go:embed testdata/test-dispatch-one-delivery-takes-the-write-lock-once.json
+var testDispatch_OneDeliveryTakesTheWriteLockOnceJson string

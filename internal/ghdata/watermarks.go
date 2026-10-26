@@ -1,3 +1,5 @@
+// WatermarkRetention bounds how long a subject's watermark is kept; past it every cache it could corrupt has already expired or refreshed.
+
 package ghdata
 
 import (
