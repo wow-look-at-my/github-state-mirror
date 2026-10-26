@@ -1,3 +1,5 @@
+// invalidator is the freshness operation the dispatcher needs; narrow so tests can fake it.
+
 package sync
 
 import (

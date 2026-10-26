@@ -1,3 +1,5 @@
+// Manager coordinates freshness checks and delegates to registered fetchers.
+
 package freshness
 
 import (

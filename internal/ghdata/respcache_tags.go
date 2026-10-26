@@ -1,3 +1,5 @@
+// Storage for GET /repos/{owner}/{repo}/tags pages on repo_answer_cache.
+
 package ghdata
 
 import (

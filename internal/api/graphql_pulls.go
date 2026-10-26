@@ -1,3 +1,5 @@
+// The cached GraphQL PR-list read: repository(owner, name) { pullRequests(...) }.
+
 package api
 
 import (

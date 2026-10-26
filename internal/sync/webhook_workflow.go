@@ -1,3 +1,5 @@
+// GitHub Actions deliveries applied to global truth: per-JOB state into the workflow_jobs table, and per-RUN state into workflow_runs.
+
 package sync
 
 import (

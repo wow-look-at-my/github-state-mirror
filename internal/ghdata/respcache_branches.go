@@ -1,3 +1,5 @@
+// This file is the storage layer for the cached branches route: GET /repos/{owner}/{repo}/branches.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// The consistency check's APPLY half (POST /api/cache/check?apply=true): the corrections written from the already-fetched snapshot, plus the per-class remediation hints the report attaches.
+
 package sync
 
 import (

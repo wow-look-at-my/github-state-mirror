@@ -1,3 +1,5 @@
+// repoInstallationCacheTTL backstops a cached installation ANSWER; events flush it sooner.
+
 package api
 
 import (

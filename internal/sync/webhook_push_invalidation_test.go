@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"database/sql"
@@ -90,12 +92,7 @@ func TestOnPush_MergeInvalidationSurvivesPushedAtFailure(t *testing.T) {
 	_, err = db.Exec(`ALTER TABLE repos RENAME TO repos_broken`)
 	require.NoError(t, err)
 
-	raw := []byte(`{
-		"ref": "refs/heads/main",
-		"before": "2222222222222222222222222222222222222222",
-		"after": "3333333333333333333333333333333333333333",
-		"repository": {"name": "repo1", "default_branch": "main", "owner": {"login": "org1"}}
-	}`)
+	raw := []byte(testOnPush_MergeInvalidationSurvivesPushedAtFailureJson)
 	result := d.Dispatch(ctx, webhook.ParseEvent("push", raw))
 	assert.Equal(t, webhook.DispError, result.Disposition, "the failed pushed_at apply still reports an error")
 
@@ -106,3 +103,6 @@ func TestOnPush_MergeInvalidationSurvivesPushedAtFailure(t *testing.T) {
 	assert.Equal(t, staleSha, row.MergeStaleSha.String, "the invalidated sha must be remembered")
 	assert.True(t, row.MergeStaleAt.Valid)
 }
+
+//go:embed testdata/test-on-push-merge-invalidation-survives-pushed-at-failure.json
+var testOnPush_MergeInvalidationSurvivesPushedAtFailureJson string

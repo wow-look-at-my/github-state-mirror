@@ -1,3 +1,5 @@
+// Implements the cached workflow-runs route (tier of the cache contract).
+
 package api
 
 import (

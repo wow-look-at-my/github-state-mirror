@@ -1,3 +1,5 @@
+// Commit-check aggregation (the webhook-fed CI rollup) plus the explicit-set correction levers the consistency check's apply mode uses.
+
 package ghdata
 
 import (

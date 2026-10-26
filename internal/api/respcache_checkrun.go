@@ -1,3 +1,5 @@
+// Distinct from commit_ci_cache's LIST route (GET .../commits/{ref}/check-runs, respcache_commitci.go): this route is keyed by the check run's own numeric id rather than a ref.
+
 package api
 
 import (

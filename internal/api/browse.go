@@ -1,3 +1,5 @@
+// The sqlc row types embed sql.NullString/NullInt64, which serialize to {"String":...,"Valid":...}.
+
 package api
 
 import (

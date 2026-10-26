@@ -1,3 +1,5 @@
+// WorkflowRunsCacheTTL backstops run DELETION, the signal GitHub never webhooks, and a missed delivery.
+
 package ghdata
 
 import (

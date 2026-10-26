@@ -1,5 +1,7 @@
 package webhook
 
+import _ "embed"
+
 import (
 	"encoding/json"
 	"testing"
@@ -116,51 +118,11 @@ func TestParseLabelPayload(t *testing.T) {
 	assert.Error(t, err) // no label/repository
 }
 
-// workflowJobJSON is a realistic workflow_job webhook body (trimmed to the
-// fields the mirror reads plus a few it ignores).
-const workflowJobInProgressJSON = `{
-	"action": "in_progress",
-	"workflow_job": {
-		"id": 987654321,
-		"run_id": 123456789,
-		"run_attempt": 2,
-		"workflow_name": "CI",
-		"head_branch": "main",
-		"run_url": "https://api.github.com/repos/o/r/actions/runs/123456789",
-		"head_sha": "d6fde92930d4715a2b49857d24b940956b26d2d3",
-		"html_url": "https://github.com/o/r/actions/runs/123456789/job/987654321",
-		"status": "in_progress",
-		"conclusion": null,
-		"created_at": "2026-07-03T09:59:00Z",
-		"started_at": "2026-07-03T10:00:00Z",
-		"completed_at": null,
-		"name": "build (ubuntu-latest)",
-		"labels": ["ubuntu-latest"],
-		"runner_name": "GitHub Actions 42"
-	},
-	"repository": {"name": "r", "owner": {"login": "o"}},
-	"installation": {"id": 5}
-}`
+//go:embed testdata/workflow-job-in-progress-json.json
+var workflowJobInProgressJSON string
 
-const workflowJobCompletedJSON = `{
-	"action": "completed",
-	"workflow_job": {
-		"id": 987654321,
-		"run_id": 123456789,
-		"run_attempt": 2,
-		"workflow_name": "CI",
-		"head_branch": "main",
-		"head_sha": "d6fde92930d4715a2b49857d24b940956b26d2d3",
-		"html_url": "https://github.com/o/r/actions/runs/123456789/job/987654321",
-		"status": "completed",
-		"conclusion": "failure",
-		"started_at": "2026-07-03T10:00:00Z",
-		"completed_at": "2026-07-03T10:05:30Z",
-		"name": "build (ubuntu-latest)",
-		"runner_name": "GitHub Actions 42"
-	},
-	"repository": {"name": "r", "owner": {"login": "o"}}
-}`
+//go:embed testdata/workflow-job-completed-json.json
+var workflowJobCompletedJSON string
 
 func TestParseWorkflowJobPayload_InProgress(t *testing.T) {
 	p, err := ParseWorkflowJobPayload(json.RawMessage(workflowJobInProgressJSON))

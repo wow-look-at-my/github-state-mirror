@@ -1,3 +1,5 @@
+// The read path every route on repo_answer_cache shares: reveal, the caller's own stored refusal, hit, fetch, absorb, rebuild.
+
 package api
 
 import (

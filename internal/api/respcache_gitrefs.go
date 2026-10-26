@@ -1,3 +1,5 @@
+// gitRefCacheTTL is only the backstop for a missed push delivery; a delivered push applies its own tip.
+
 package api
 
 import (

@@ -1,3 +1,5 @@
+// The dashboard JSON API: /api/me, /api/jobs, /api/requests, and the cache stats the Principals tab renders.
+
 package api
 
 import (

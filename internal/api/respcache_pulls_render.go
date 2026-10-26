@@ -1,3 +1,5 @@
+// restPRJSON is the upstream shape both PR routes parse.
+
 package api
 
 import (

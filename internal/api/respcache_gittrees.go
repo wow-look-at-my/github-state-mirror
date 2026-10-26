@@ -1,3 +1,5 @@
+// cachedGitTree serves a git tree from absorbed state.
+
 package api
 
 import (

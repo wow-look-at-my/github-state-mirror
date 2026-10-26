@@ -1,3 +1,5 @@
+// Disposition values describe what the dispatcher did with a delivery. log shown on the dashboard.
+
 package webhook
 
 import "net/http"

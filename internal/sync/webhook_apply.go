@@ -1,3 +1,5 @@
+// The apply half of the response-cache pass.
+
 package sync
 
 import (

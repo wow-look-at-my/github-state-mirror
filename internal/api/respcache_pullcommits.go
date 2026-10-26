@@ -1,3 +1,5 @@
+// The cached PR commits list (tier): GET /repos/{owner}/{repo}/pulls/{number}/commits, reusing the repo commits-list storage whole.
+
 package api
 
 import (

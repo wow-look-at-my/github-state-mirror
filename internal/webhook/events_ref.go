@@ -1,3 +1,5 @@
+// A create or delete delivery states which ref appeared or vanished, and whether it is a branch or a tag.
+
 package webhook
 
 import (

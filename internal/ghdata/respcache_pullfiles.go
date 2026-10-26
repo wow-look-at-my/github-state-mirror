@@ -1,3 +1,5 @@
+// whenever its head or base moves, so pull_request events flush that PR's pages (head pushes -- including fork heads whose pushes we never see -- base retargets, reopens) and push/repository events flush the whole repo (the belt for missed pull_request deliveries).
+
 package ghdata
 
 import (

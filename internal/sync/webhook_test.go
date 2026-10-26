@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"encoding/json"
@@ -50,17 +52,7 @@ func TestDispatch_NeverSeenRepoAppliesGlobally(t *testing.T) {
 	d, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
 
-	raw := []byte(`{
-		"sha": "deadbeef",
-		"state": "success",
-		"context": "ci/test",
-		"branches": [{"name": "main"}],
-		"repository": {"name": "repo-nightmare", "full_name": "wow-look-at-my/repo-nightmare",
-			"private": true, "visibility": "private", "default_branch": "main",
-			"html_url": "https://github.com/wow-look-at-my/repo-nightmare",
-			"owner": {"login": "wow-look-at-my"}},
-		"installation": {"id": 123}
-	}`)
+	raw := []byte(testDispatch_NeverSeenRepoAppliesGloballyJson)
 	result := d.Dispatch(ctx, webhook.ParseEvent("status", raw))
 
 	assert.Equal(t, webhook.DispApplied, result.Disposition, "a never-seen repo's event must apply, never skip")
@@ -273,3 +265,6 @@ func makePRPayload(t *testing.T, action, state, owner, repo string, number int, 
 	require.Nil(t, err)
 	return data
 }
+
+//go:embed testdata/test-dispatch-never-seen-repo-applies-globally.json
+var testDispatch_NeverSeenRepoAppliesGloballyJson string
