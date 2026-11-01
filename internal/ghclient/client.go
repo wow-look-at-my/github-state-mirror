@@ -1,3 +1,5 @@
+// contextKey is an unexported type for context keys in this package.
+
 package ghclient
 
 import (
@@ -145,6 +147,9 @@ func (c *Client) BaseURL() string {
 // ErrBadCredential marks a on GET /user, distinct from a transient resolution failure.
 var ErrBadCredential = errors.New("github rejected the credential")
 
+// InstallationTokenPrefix starts every GitHub App installation token.
+const InstallationTokenPrefix = "ghs_"
+
 // TokenIdentity is the resolved identity of a bearer token, learned from
 // GET /user with that token.
 type TokenIdentity struct {
@@ -166,6 +171,12 @@ func (c *Client) ResolveTokenIdentity(ctx context.Context) (TokenIdentity, error
 	}
 	if v, ok := c.identityCache.Load(token); ok {
 		return v.(TokenIdentity), nil
+	}
+	// An installation token, such as an Actions GITHUB_TOKEN, has no user behind it.
+	if strings.HasPrefix(token, InstallationTokenPrefix) {
+		ident := TokenIdentity{IsUser: false}
+		c.identityCache.Store(token, ident)
+		return ident, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/user", nil)
@@ -237,16 +248,16 @@ type appResp struct {
 }
 
 // VerifyAppIdentity validates a GitHub App JWT by calling GET /app with it. The
-// App JWT is signed with the app's private key (RS256); GitHub only returns
-// if that signature checks out against the public key it holds for the app, so a
+// App JWT is signed with the app's private key (RS256). GitHub only returns if
+// that signature checks out against the public key it holds for the app. A
 // successful response is unforgeable proof that the caller holds the app's
 // private key — exactly the "GitHub agrees you are app X" assertion. The result
 // is cached per JWT (a caller reuses JWT for its ~-minute validity), so this
 // costs upstream call per JWT, not per request.
 //
-// The returned identity is meant to be used as a stable cache partition for a
-// trusted -party app caller (e.g. a webhook handler) whose underlying
-// installation tokens rotate hourly: every of those tokens proves the same
+// The returned identity is meant to be used as a stable cache partition. For
+// a trusted -party app caller (e.g. a webhook handler) whose underlying
+// installation tokens rotate hourly. Every of those tokens proves the same
 // app identity, so they all share bucket.
 func (c *Client) VerifyAppIdentity(ctx context.Context, jwt string) (AppIdentity, error) {
 	if v, ok := c.appIdentityCache.Load(jwt); ok {

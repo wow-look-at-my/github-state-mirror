@@ -1,3 +1,5 @@
+// Live progress for the consistency check / reconcile.
+
 package sync
 
 import "context"
@@ -7,7 +9,7 @@ import "context"
 // diff, and in apply mode the corrections), so the run reports its phase
 // boundaries through an optional, nil-safe callback. The streaming
 // /api/cache/check?stream= handler relays these events to the operator as
-// NDJSON lines; events are emitted synchronously, in order, on the run's own
+// NDJSON lines. Events are emitted synchronously, in order, on the run's own
 // goroutine.
 
 // ProgressEvent is live-progress notification from a consistency run.

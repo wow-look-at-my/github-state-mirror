@@ -1,3 +1,5 @@
+// A `workflow_job` delivery carries the whole job object, so a moving job rewrites entry rather than dropping the page.
+
 package ghdata
 
 import (
@@ -16,7 +18,7 @@ import (
 // single-job row. Reports false when NOTHING could be rewritten and the caller
 // should flush the run instead.
 //
-// A repo with no cached rows for the run also reports false; there is no stale
+// A repo with no cached rows for the run also reports false. There is no stale
 // answer to correct, and the caller's flush is then a no-op.
 func (s *Store) ApplyWorkflowJob(ctx context.Context, owner, repo string, runID int64, job StoredWorkflowJob, now time.Time) (bool, error) {
 	if runID <= 0 || job.ID <= 0 || job.Status == "" {
@@ -73,7 +75,7 @@ func patchWorkflowJobsDoc(kind, doc string, job StoredWorkflowJob) (string, Jobs
 		}
 		return string(rendered), LivenessOf(job), true
 
-	case WorkflowJobsKindRunJobs:
+	case WorkflowJobsKindRunJobs, WorkflowJobsKindRunJobsAll:
 		var page StoredRunJobsPage
 		if err := json.Unmarshal([]byte(doc), &page); err != nil {
 			return "", JobsSettled, false

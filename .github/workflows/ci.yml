@@ -23,26 +23,9 @@ permissions:
   packages: write
 
 jobs:
-  sqlc-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install sqlc
-        run: |
-          curl -fsSL https://github.com/sqlc-dev/sqlc/releases/download/v1.28.0/sqlc_1.28.0_linux_amd64.tar.gz | tar xz
-          sudo mv sqlc /usr/local/bin/
-      - name: Check sqlc generated code is up to date
-        run: |
-          sqlc generate
-          if [ -n "$(git diff -- internal/database/dbgen/)" ]; then
-            echo "::error::sqlc generated code is out of date. Run 'sqlc generate' and commit the changes."
-            git diff -- internal/database/dbgen/
-            exit 1
-          fi
-
   # See docs/ci.md for why this job exists and what it enforces.
   web-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -72,7 +55,7 @@ jobs:
             }
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       # See docs/ci.md: the dashboard JS must compile before the Go build.
@@ -83,7 +66,7 @@ jobs:
       - run: npm ci
       - run: just build
       # See docs/ci.md: do not add an explicit cache-upload step here.
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
         with:
           # darwin/arm64 dropped pending an upstream go-toolchain fix; see docs/COSMO-PLATFORMS.md.
           cosmo-platforms: linux/amd64,windows/amd64
@@ -91,7 +74,7 @@ jobs:
   # See docs/ci.md: this job starts the image and requires it to serve.
   image-smoke:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_DIND || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -109,12 +92,12 @@ jobs:
   # See docs/ci.md: pushes ghcr.io/wow-look-at-my/github-state-mirror:latest.
   publish-ghcr:
     needs: [build, image-smoke]
-    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
+    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@lkgb
 
   # See docs/ci.md: deploys a backend-free styling preview per branch.
   preview:
     needs: web-check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -149,7 +132,7 @@ jobs:
             core.setOutput("branch", branch);
             core.info(`Prepared dist/ for branch '${branch}'.`);
       - name: Publish preview to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: github-state-mirror

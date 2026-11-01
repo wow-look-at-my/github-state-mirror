@@ -1,0 +1,4 @@
+[
+		{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1"},
+		{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2"}
+	]

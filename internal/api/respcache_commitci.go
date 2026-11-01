@@ -1,3 +1,5 @@
+// combinedStatusUnknownRef is GitHub's message for a combined-status read of a ref that does not exist.
+
 package api
 
 import (
@@ -18,12 +20,15 @@ import (
 
 const commitCICacheTTL = ghdata.CommitCICacheTTL
 
+// combinedStatusUnknownRef is GitHub's message for a combined-status read of a ref that does not exist.
+const combinedStatusUnknownRef = "Ref not found"
+
 const (
 	// commitCIDefaultPerPage is GitHub's default page size across all listing forms.
 	commitCIDefaultPerPage = 30
 
 	// commitCIMaxCachedPage caps modeled pages; deeper pagination (pathological in practice) passes through.
-	commitCIMaxCachedPage = 10
+	commitCIMaxCachedPage = 40
 )
 
 // parseCommitCIShape reports the paging shape of a commit-CI query and
@@ -59,13 +64,13 @@ func parseCommitCIShape(q url.Values) (perPage, page int, ok bool) {
 }
 
 // commitsSubtree dispatches GET /repos/{owner}/{repo}/commits/* by its path
-// tail: a `{ref}/status` tail is the cached combined-status route, a
-// `{ref}/check-runs` tail the cached check-runs route, and a `{ref}/statuses`
-// tail the cached raw statuses list -- the suffix anchor is what lets a ref
-// carry slashes (claude/my-branch/status), which a single-segment route
-// parameter could never match. Every other tail (the single-commit read,
-// /check-suites,...) is forwarded to the passthrough proxy, exactly as it
-// was before this subtree was registered.
+// tail. A `{ref}/status` tail is the cached combined-status route. The
+// `{ref}/status` tail also is a `{ref}/check-runs` tail the cached check-runs
+// route, and a `{ref}/statuses` tail the cached raw statuses list. The suffix
+// anchor is what lets a ref carry slashes (claude/my-branch/status), which a
+// single-segment route parameter could never match. Every other tail (the
+// single-commit read, /check-suites,...) is forwarded to the passthrough
+// proxy, exactly as it was before this subtree was registered.
 func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	tail := chi.URLParam(r, "*")
 	if ref, ok := strings.CutSuffix(tail, "/status"); ok && ref != "" {
@@ -78,6 +83,16 @@ func (h *handlers) commitsSubtree(w http.ResponseWriter, r *http.Request) {
 	}
 	if ref, ok := strings.CutSuffix(tail, "/statuses"); ok && ref != "" {
 		h.cachedCommitCI(w, r, ref, ghdata.CommitCIKindStatusesList, denyKindStatusesList)
+		return
+	}
+	if sha, ok := strings.CutSuffix(tail, "/branches-where-head"); ok && sha != "" {
+		h.cachedBranchesWhereHead(w, r, sha)
+		return
+	}
+	// A slash-free tail is the commit read. A slashed one is ambiguous between a
+	// branch name and a deeper path such as /pulls, so it forwards.
+	if tail != "" && !strings.Contains(tail, "/") {
+		h.cachedCommit(w, r, tail)
 		return
 	}
 	h.passthrough(w, r, PassPath)
@@ -121,6 +136,11 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 		h.revealFailed(w, r)
 		return
 	}
+	resource := owner + "/" + repo + "/commits/" + ref
+	if v, ok := h.subresourceVerdict(r, denyKind, resource); ok {
+		h.serveDenyVerdict(w, r, v, true)
+		return
+	}
 
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedCommitCI(r.Context(), owner, repo, ref, kind, perPage, page, now); err != nil {
@@ -139,6 +159,16 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}
 	defer resp.Body.Close()
 
+	var perPrincipal []int
+	if kind == ghdata.CommitCIKindStatus && resp.StatusCode == http.StatusNotFound &&
+		upstreamErrorMessage(body) != combinedStatusUnknownRef {
+		// Only "Ref not found" is a fact about the ref.
+		perPrincipal = append(perPrincipal, http.StatusNotFound)
+	}
+	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKind, resource, resp, body, perPrincipal...); ok {
+		h.serveDenyVerdict(w, r, v, false)
+		return
+	}
 	status := http.StatusOK
 	doc, absorbed := absorbCommitCI(kind, resp.StatusCode, body)
 	if !absorbed && !overflow && resp.StatusCode == http.StatusNotFound {

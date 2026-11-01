@@ -1,3 +1,5 @@
+// cachedGitTree serves a git tree from absorbed state.
+
 package api
 
 import (
@@ -19,9 +21,9 @@ import (
 // Trees are immutable and content-addressed by sha, the git_commits_cache
 // precedent: no TTL, no webhook invalidation (no delivery ever names a tree
 // object directly), LRU pruning only. recursive is the verbatim query value
-// and part of the row key, because GitHub answers a DIFFERENT entry set for
-// the same sha depending on it -- it is not a rendering option, it changes
-// what the resource IS.
+// and part of the row key. This is because GitHub answers a DIFFERENT entry
+// set for the same sha depending on it. It is not a rendering option, it
+// changes what the resource IS.
 
 // cachedGitTree serves a git tree from absorbed state.
 func (h *handlers) cachedGitTree(w http.ResponseWriter, r *http.Request) {

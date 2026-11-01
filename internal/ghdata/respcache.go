@@ -1,3 +1,5 @@
+// Storage layer for the cached REST routes.
+
 package ghdata
 
 import (
@@ -42,9 +44,10 @@ func NormalizeRepoKey(s string) string { return strings.ToLower(s) }
 
 // Contents cache row kinds.
 const (
-	ContentsKindFile    = "file"
-	ContentsKindDir     = "dir"
-	ContentsKindMissing = "missing" // a cached
+	ContentsKindFile      = "file"
+	ContentsKindDir       = "dir"
+	ContentsKindMissing   = "missing"   // a cached
+	ContentsKindSubmodule = "submodule" // Entries holds the rendered submodule object
 )
 
 // CachedContents is the absorbed state of contents response.
@@ -126,7 +129,7 @@ func (s *Store) InvalidateContentsForRef(ctx context.Context, owner, repo, ref s
 
 // CachedGitCommit is the absorbed state of git commit. Rows come from sources
 // -- an upstream fetch, or a push webhook payload -- and both rebuild to the
-// same trimmed shape, so the struct is the source of truth.
+// same trimmed shape. The struct is the source of truth.
 type CachedGitCommit struct {
 	Owner          string // lowercased
 	Repo           string // lowercased

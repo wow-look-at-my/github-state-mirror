@@ -1,0 +1,7 @@
+{
+		"total_count": 2,
+		"secret_token": "ghs_SUPERSECRETVALUE",
+		"login": "octocat",
+		"nested": {"url": "https://api.github.com/x", "flag": true, "missing": null},
+		"items": [{"id": 7, "name": "one"}, {"id": 8, "name": "two"}]
+	}

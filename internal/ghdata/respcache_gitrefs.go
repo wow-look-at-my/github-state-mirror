@@ -1,3 +1,5 @@
+// IsFullHexSHA reports whether s is a full-length (or) lowercase hex object id.
+
 package ghdata
 
 import (
@@ -68,10 +70,10 @@ func (s *Store) GetCachedGitRef(ctx context.Context, owner, repo, ref string, no
 	}, true, nil
 }
 
-// GetCachedGitRefChecked is GetCachedGitRef plus a contradiction check: it
+// GetCachedGitRefChecked is GetCachedGitRef plus a contradiction check. It
 // also returns a contradicting PR base.sha when a live row disagrees with an
-// absorbed open PR's base, since a caller must not serve a contradicted row.
-// see docs/cache/stale-tip-repair.md
+// absorbed open PR's base. This happens since a caller must not serve a
+// contradicted row. see docs/cache/stale-tip-repair.md
 func (s *Store) GetCachedGitRefChecked(ctx context.Context, owner, repo, ref string, now time.Time) (CachedGitRef, bool, string, error) {
 	c, ok, err := s.GetCachedGitRef(ctx, owner, repo, ref, now)
 	if err != nil || !ok {
@@ -148,18 +150,18 @@ type storedGitRefDoc struct {
 	} `json:"object"`
 }
 
-// ApplyPushedRefTip writes a push's OWN answer into the cached ref rows: the
+// ApplyPushedRefTip writes a push's OWN answer into the cached ref rows. The
 // payload states the ref's exact new tip (`after`), so there is nothing to go
 // ask GitHub for. This is the apply-don't-invalidate rule (CLAUDE.md,
-// docs/webhooks/dispatch.md) on the route whose whole answer a push carries
-// -- deleting the row instead spends a needless GET on the next reader and
+// docs/webhooks/dispatch.md) on the route whose whole answer a push carries.
+// Deleting the row instead spends a needless GET on the next reader and
 // leaves the tip unknown until someone pays for it.
 //
 // Applies only to an existing row, per spelling. A verdict row is LEFT for
 // the caller to delete: promoting it to a real answer would need the ref's
-// node_id, which no push payload carries, and inventing would put a
-// fabricated field on the wire. A missing row stays missing -- there is no
-// stale answer to correct, and caching a ref.
+// node_id. No push payload carries that. Inventing would put a fabricated
+// field on the wire. A missing row stays missing -- there is no stale
+// answer to correct, and caching a ref.
 func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSHA string, now time.Time, ttl time.Duration) (bool, error) {
 	// An all-zeros oid means a deletion and must never be written as a tip; fall through to the caller's delete.
 	if !IsFullHexSHA(afterSHA) || strings.Trim(afterSHA, "0") == "" {
@@ -194,9 +196,9 @@ func (s *Store) ApplyPushedRefTip(ctx context.Context, owner, repo, ref, afterSH
 }
 
 // ApplyMergedBaseTip writes a merged PR's own base.sha into that branch's
-// cached ref row: a merge that postdates the row's established time applies,
-// an earlier is dropped, so no fetch is needed to decide the order.
-// see docs/cache/stale-tip-repair.md
+// cached ref row. A merge that postdates the row's established time applies,
+// an earlier is dropped. No fetch is needed to decide the order. see
+// docs/cache/stale-tip-repair.md
 func (s *Store) ApplyMergedBaseTip(ctx context.Context, owner, repo, ref, mergeCommitSHA string, mergedAt, now time.Time, ttl time.Duration) (bool, error) {
 	if !IsFullHexSHA(mergeCommitSHA) || strings.Trim(mergeCommitSHA, "0") == "" || mergedAt.IsZero() {
 		return false, nil
@@ -268,7 +270,7 @@ func (s *Store) InvalidateGitRefForRef(ctx context.Context, owner, repo, ref str
 	})
 }
 
-// InvalidateGitRefCache drops every cached ref answer for a repo -- the
+// InvalidateGitRefCache drops every cached ref answer for a repo. The
 // repository-event flush (rename/delete/visibility) and the fallback for a
 // push payload that names no usable ref.
 func (s *Store) InvalidateGitRefCache(ctx context.Context, owner, repo string) error {

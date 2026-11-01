@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"encoding/json"
 	"net/http"
@@ -11,15 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The contents-route tests: both Accept shapes it models, the media types it
+// The contents-route tests. Both Accept shapes it models, the media types it
 // refuses, its webhook flushes, and the reveal-layer cases that ride on the
 // same fixture. The fake GitHub and the shared assertions live in
 // respcache_fixture_test.go.
 
-// TestCachedContents_FileHitAndPushInvalidation covers the core contents flow:
-// a file is absorbed on the request (miss), the request is
-// served from state — same trimmed body, no upstream call, X-GSM-Cache: hit —
-// and a push webhook for the repo flushes it so the next request refetches.
+// TestCachedContents_FileHitAndPushInvalidation covers the core contents flow: a
+// file is absorbed on the request (miss). The request is served from state —
+// same trimmed body, no upstream call, X-GSM-Cache: hit. And a push webhook for
+// the repo flushes it so the next request refetches.
 func TestCachedContents_FileHitAndPushInvalidation(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/contents/.github/cfg.jsonc"
@@ -92,23 +94,13 @@ func TestCachedContents_DirListing(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`[
-			{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1",
-			 "url":"https://api.github.com/a","html_url":"https://github.com/a","git_url":"https://g","download_url":"https://d",
-			 "_links":{"self":"https://api.github.com/a"}},
-			{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2",
-			 "url":"https://api.github.com/b","html_url":"https://github.com/b","git_url":"https://g2","download_url":null,
-			 "_links":{"self":"https://api.github.com/b"}}
-		]`))
+		_, _ = w.Write([]byte(testCachedContents_DirListingJson))
 	}
 
 	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/dir", nil))
 	require.Equal(t, http.StatusOK, w1.Code)
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `[
-		{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1"},
-		{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2"}
-	]`, w1.Body.String())
+	assert.JSONEq(t, testCachedContents_DirListingJson2, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/dir", nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -182,8 +174,9 @@ func TestCachedContents_GlobalTruthSharedViaReveal(t *testing.T) {
 
 // TestReveal_DenyVerdictCachedAuthoritativeOnly: a probe GitHub answers is
 // relayed as the caller's truth and remembered briefly (repeat requests are
-// answered from the deny cache without touching GitHub); a TRANSIENT probe
-// failure () is never cached — the next request probes again.
+// answered from the deny cache without touching GitHub). This also covers a
+// TRANSIENT probe failure () is never cached — the next request probes
+// again.
 func TestReveal_DenyVerdictCachedAuthoritativeOnly(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.probe = func(w http.ResponseWriter, r *http.Request) {
@@ -223,10 +216,7 @@ func TestReveal_PublicFastPath(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
 	// A webhook teaches truth the repo exists and is public.
-	postWebhook(t, router, "repository", `{"action":"created","repository":{
-		"name":"pub","full_name":"org1/pub","private":false,"visibility":"public",
-		"html_url":"https://github.com/org1/pub","default_branch":"main",
-		"owner":{"login":"org1"}}}`)
+	postWebhook(t, router, "repository", testReveal_PublicFastPathJson)
 
 	target := "/repos/org1/pub/contents/readme.md"
 	w1 := do(t, router, authedReq("GET", target, nil))
@@ -261,7 +251,7 @@ func TestCachedContents_TTLBackstopExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "expiry must force a refetch")
 }
 
-// TestRespCache_RawAcceptServedFromCache: the raw file-body representation
+// TestRespCache_RawAcceptServedFromCache. The raw file-body representation
 // (Accept: application/vnd.github.raw — what simple-llm-ui's file-read tool
 // sends) is modeled from the SAME row the default JSON representation is,
 // decoded server-side from the absorbed base64 `content`. A miss on EITHER
@@ -363,7 +353,7 @@ func TestRespCache_RawAcceptUnabsorbableFallsBackToPassthrough(t *testing.T) {
 
 // TestRespCache_NonDefaultAcceptPassthrough: media types that change the
 // response shape in ways this package does not model at all (html/object, or
-// an ambiguous mixed Accept) are not modeled — the route must forward them
+// an ambiguous mixed Accept) are not modeled. The route must forward them
 // verbatim, uncached. Raw (application/vnd.github.raw) is NOT of these -- see
 // TestRespCache_RawAcceptServedFromCache.
 func TestRespCache_NonDefaultAcceptPassthrough(t *testing.T) {
@@ -405,3 +395,44 @@ func TestRespCache_RepositoryEventFlushesContents(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&u.contentsHits), "repository event must flush contents state")
 }
+
+// That refusal is kept for the caller's own principal and is never served to
+// another credential.
+func TestCachedContents_ForbiddenIsPerCredential(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	u.contents = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+testToken {
+			writeGitHubJSON(w, map[string]any{"type": "file", "encoding": "base64", "size": 2, "name": "cfg.jsonc",
+				"path": ".github/cfg.jsonc", "content": "e30=", "sha": shaTip})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(mustJSONString(map[string]any{"message": "Resource not accessible by integration", "status": "403"})))
+	}
+	target := "/repos/org1/repo1/contents/.github/cfg.jsonc?ref=main"
+
+	for i, want := range []string{"miss", "hit"} {
+		req := authedReq("GET", target, nil)
+		req.Header.Set("Accept", "application/vnd.github.raw")
+		w := do(t, router, req)
+		require.Equal(t, http.StatusForbidden, w.Code, "request %d", i)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "request %d", i)
+		assert.Contains(t, w.Body.String(), "Resource not accessible by integration")
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.contentsHits), "the stored refusal must answer the repeat")
+
+	other := httptest.NewRequest("GET", target, nil)
+	other.Header.Set("Authorization", "Bearer other-token")
+	w := do(t, router, other)
+	assert.Equal(t, http.StatusOK, w.Code, "another credential must not get the refusal")
+}
+
+//go:embed testdata/test-cached-contents-dir-listing.json
+var testCachedContents_DirListingJson string
+
+//go:embed testdata/test-cached-contents-dir-listing-2.json
+var testCachedContents_DirListingJson2 string
+
+//go:embed testdata/test-reveal-public-fast-path.json
+var testReveal_PublicFastPathJson string

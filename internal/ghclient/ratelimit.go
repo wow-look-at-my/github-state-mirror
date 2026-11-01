@@ -1,3 +1,5 @@
+// RateLimitResource is GitHub rate-limit bucket (core, graphql, search,...).
+
 package ghclient
 
 import "context"

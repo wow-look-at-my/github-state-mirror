@@ -1,3 +1,5 @@
+// The cached Actions WORKFLOW definitions, listing and single.
+
 package api
 
 import (
@@ -50,7 +52,7 @@ func (h *handlers) cachedWorkflowsList(w http.ResponseWriter, r *http.Request) {
 
 // cachedWorkflow serves a single workflow definition. The id is whatever the
 // caller asked with, a numeric id or a file name, and each spelling keys its
-// own row: resolving between them needs the answer this caches.
+// own row. Resolving between them needs the answer this caches.
 func (h *handlers) cachedWorkflow(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
@@ -156,7 +158,7 @@ func parseWorkflowsShape(q url.Values) (perPage, page int64, ok bool) {
 }
 
 // workflowJSON is the trimmed rebuild of a workflow definition. url and
-// badge_url are dropped as the no-URL-keys invariant requires; html_url stays,
+// badge_url are dropped as the no-URL-keys invariant requires. Html_url stays,
 // the workflow-runs precedent, as the only handle a consumer has for linking a
 // workflow back to GitHub.
 type workflowJSON struct {
@@ -189,7 +191,7 @@ type rawWorkflow struct {
 }
 
 // trim reports the rebuild, and false when the answer is not the workflow
-// object this route holds: the id and the path are what identify it.
+// object this route holds. The id and the path are what identify it.
 func (raw rawWorkflow) trim() (workflowJSON, bool) {
 	if raw.ID <= 0 || raw.Path == "" {
 		return workflowJSON{}, false

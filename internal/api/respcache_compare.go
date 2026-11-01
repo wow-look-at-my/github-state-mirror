@@ -1,3 +1,5 @@
+// GET /repos/{owner}/{repo}/compare/{basehead}, tier of the cache contract.
+
 package api
 
 import (
@@ -35,7 +37,11 @@ func compareBaseheadCacheable(basehead string) bool {
 func (h *handlers) cachedCompare(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	basehead := chi.URLParam(r, "*")
+	basehead, ok := wildcardParam(r)
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	// Only the bare default-JSON, no-query shape is modeled.
 	if !acceptsDefaultJSON(r) || r.URL.RawQuery != "" || !compareBaseheadCacheable(basehead) {

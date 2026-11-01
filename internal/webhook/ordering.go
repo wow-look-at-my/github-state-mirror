@@ -1,3 +1,5 @@
+// EventOrder is delivery's position: the subject, the moment, and which payload field it came from.
+
 package webhook
 
 import (
@@ -39,7 +41,8 @@ type orderPayload struct {
 		UpdatedAt string `json:"updated_at"`
 	} `json:"pull_request"`
 	Issue *struct {
-		Number int64 `json:"number"`
+		Number    int64  `json:"number"`
+		UpdatedAt string `json:"updated_at"`
 	} `json:"issue"`
 	Comment *struct {
 		ID        int64  `json:"id"`
@@ -122,6 +125,16 @@ func OrderOf(e Event) (EventOrder, bool) {
 			return EventOrder{}, false
 		}
 		return EventOrder{Subject: fmt.Sprintf("review:%s:%d", repo, p.Review.ID), At: at, Field: "review.submitted_at"}, true
+
+	case "issues":
+		if repo == "" || p.Issue == nil || p.Issue.Number == 0 {
+			return EventOrder{}, false
+		}
+		at, ok := parseEventTime(p.Issue.UpdatedAt)
+		if !ok {
+			return EventOrder{}, false
+		}
+		return EventOrder{Subject: fmt.Sprintf("issue:%s#%d", repo, p.Issue.Number), At: at, Field: "issue.updated_at"}, true
 
 	case "issue_comment":
 		if repo == "" || p.Comment == nil || p.Comment.ID == 0 {

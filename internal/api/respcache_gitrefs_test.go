@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"context"
 	"net/http"
@@ -70,6 +72,34 @@ func TestCachedGitRef_SlashedBranchName(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
 }
 
+// Octokit escapes the ref parameter, so the slash arrives as %2F. chi routes
+// on RawPath, so the wildcard holds the escaped form.
+func TestCachedGitRef_EscapedSlash(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+
+	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/ref/heads%2Fmain", nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+
+	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/git/ref/heads/main", nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader), "both spellings name the same ref")
+	assert.Equal(t, w1.Body.String(), w2.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
+}
+
+// A ref name the caller escaped, such as "v1#latest", is a real name to look up.
+func TestCachedGitRef_EscapedHash(t *testing.T) {
+	router, _, _, u := respCacheStack(t)
+	target := "/repos/org1/repo1/git/ref/tags%2Fv1%23latest"
+
+	w1 := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
+	w2 := do(t, router, authedReq("GET", target, nil))
+	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitRefHits))
+}
+
 // A push APPLIES its own tip to every spelling of the ref, at upstream cost.
 func TestCachedGitRef_PushAppliesTipToEverySpelling(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
@@ -113,9 +143,7 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 	require.Equal(t, "hit", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader))
 	before := atomic.LoadInt32(&u.gitRefHits)
 
-	postWebhook(t, router, "push", `{"ref":"refs/heads/main","deleted":true,
-		"after":"0000000000000000000000000000000000000000",
-		"repository":{"name":"repo1","owner":{"login":"org1"},"default_branch":"main"}}`)
+	postWebhook(t, router, "push", testCachedGitRef_PushDeletionFlushesJson)
 
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", target, nil)).Header().Get(cacheHeader),
 		"a deletion carries no tip to apply, so the row must be dropped")
@@ -124,7 +152,7 @@ func TestCachedGitRef_PushDeletionFlushes(t *testing.T) {
 
 // GitHub sends `delete` for a vanished ref, and a push does not always come
 // with it. On its own the delete must still stop the ref being served, or a
-// branch that no longer exists answers from cache for the rest of its TTL.
+// branch that no longer exists answers. From cache for the rest of its TTL.
 func TestCachedGitRef_DeleteEventFlushesWithoutAPush(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	target := "/repos/org1/repo1/git/ref/heads/main"
@@ -425,3 +453,6 @@ func TestCachedGitRef_UnmergedAndLatePullRequestsLeaveTheTip(t *testing.T) {
 		})
 	}
 }
+
+//go:embed testdata/test-cached-git-ref-push-deletion-flushes.json
+var testCachedGitRef_PushDeletionFlushesJson string

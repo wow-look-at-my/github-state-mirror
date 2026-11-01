@@ -1,3 +1,5 @@
+// The cached Actions JOB reads (.../actions/runs/{run_id}/jobs, .../actions/jobs/{job_id}); see docs/cache/rest-routes.md.
+
 package api
 
 import (
@@ -25,32 +27,41 @@ const (
 )
 
 // parseWorkflowJobsShape reports the paging shape of a run-jobs query and
-// whether the cache models it. `filter` (latest/all) selects a DIFFERENT set
-// of jobs for a re-run and is deliberately unmodeled, as is anything else.
-func parseWorkflowJobsShape(q url.Values) (perPage, page int, ok bool) {
+// whether the cache models it. filter=latest is the default; filter=all
+// selects every attempt's jobs, a different set with its own kind.
+func parseWorkflowJobsShape(q url.Values) (kind string, perPage, page int, ok bool) {
+	kind = ghdata.WorkflowJobsKindRunJobs
 	perPage, page = workflowJobsDefaultPerPage, 1
 	for key, vals := range q {
 		if len(vals) != 1 {
-			return 0, 0, false
+			return "", 0, 0, false
 		}
 		switch key {
 		case "per_page":
 			n, err := strconv.Atoi(vals[0])
 			if err != nil || n < 1 || n > 100 {
-				return 0, 0, false
+				return "", 0, 0, false
 			}
 			perPage = n
 		case "page":
 			n, err := strconv.Atoi(vals[0])
 			if err != nil || n < 1 || n > workflowJobsMaxCachedPage {
-				return 0, 0, false
+				return "", 0, 0, false
 			}
 			page = n
+		case "filter":
+			switch vals[0] {
+			case "latest":
+			case "all":
+				kind = ghdata.WorkflowJobsKindRunJobsAll
+			default:
+				return "", 0, 0, false
+			}
 		default:
-			return 0, 0, false
+			return "", 0, 0, false
 		}
 	}
-	return perPage, page, true
+	return kind, perPage, page, true
 }
 
 // cachedRunJobs serves page of a run's jobs.
@@ -65,16 +76,18 @@ func (h *handlers) cachedRunJobs(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassAccept)
 		return
 	}
-	perPage, page, ok := parseWorkflowJobsShape(r.URL.Query())
+	kind, perPage, page, ok := parseWorkflowJobsShape(r.URL.Query())
 	if !ok {
 		h.passthrough(w, r, PassQuery)
 		return
 	}
 	h.serveWorkflowJobs(w, r, workflowJobsRoute{
-		owner: owner, repo: repo, kind: ghdata.WorkflowJobsKindRunJobs,
+		owner: owner, repo: repo, kind: kind,
 		refID: runID, perPage: int64(perPage), page: int64(page),
 		denyKind: denyKindRunJobs,
-		absorb:   absorbRunJobs,
+		absorb: func(status int, body []byte) (absorbedJobs, bool) {
+			return absorbRunJobs(status, body, runID)
+		},
 	})
 }
 
@@ -177,14 +190,14 @@ type (
 type rawJob = ghdata.RawWorkflowJob
 
 // absorbRunJobs renders a run's jobs page. A page with a job still moving is
-// absorbed too, marked live: the fetch is what proves the page's MEMBERSHIP,
+// absorbed too, marked live. The fetch is what proves the page's MEMBERSHIP,
 // and the `workflow_job` deliveries that follow rewrite each job's entry in
-// place, so the stored answer tracks the run instead of expiring against it.
+// place. The stored answer tracks the run instead of expiring against it.
 //
-// An empty page (past the end) is a valid cacheable answer, but it carries no
-// run id — so it is deliberately NOT stored, since a row nothing can flush is
-// a row that outlives its truth.
-func absorbRunJobs(status int, body []byte) (absorbedJobs, bool) {
+// An empty page is stored too, keyed by the run the PATH names. It is the
+// answer for a run with no jobs yet. It lives on the queued TTL, and the
+// first job delivery for the run flushes it.
+func absorbRunJobs(status int, body []byte, runID int64) (absorbedJobs, bool) {
 	if status != http.StatusOK {
 		return absorbedJobs{}, false
 	}
@@ -200,18 +213,18 @@ func absorbRunJobs(status int, body []byte) (absorbedJobs, bool) {
 		return absorbedJobs{}, false
 	}
 	out := runJobsJSON{TotalCount: *raw.TotalCount, Jobs: []workflowJobJSON{}}
-	got := absorbedJobs{}
+	got := absorbedJobs{runID: runID}
 	for _, j := range *raw.Jobs {
 		tj, ok := ghdata.TrimWorkflowJob(j)
-		if !ok {
+		if !ok || (tj.RunID > 0 && tj.RunID != runID) {
 			return absorbedJobs{}, false
-		}
-		if tj.RunID > 0 {
-			got.runID = tj.RunID
 		}
 		out.Jobs = append(out.Jobs, tj)
 	}
 	got.liveness = ghdata.LivenessOf(out.Jobs...)
+	if len(out.Jobs) == 0 {
+		got.liveness = ghdata.JobsQueued
+	}
 	if got.runID <= 0 {
 		return absorbedJobs{}, false
 	}

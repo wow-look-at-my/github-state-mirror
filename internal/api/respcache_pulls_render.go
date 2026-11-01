@@ -1,3 +1,5 @@
+// restPRJSON is the upstream shape both PR routes parse.
+
 package api
 
 import (
@@ -11,7 +13,7 @@ import (
 
 // ---- absorbing REST PR bodies ----
 
-// restPRJSON is the upstream shape both PR routes parse: the "simple PR" of a
+// restPRJSON is the upstream shape both PR routes parse. The "simple PR" of a
 // list item, plus the merge-status fields only the single-PR response carries.
 type restPRJSON struct {
 	Number         int64   `json:"number"`
@@ -23,6 +25,8 @@ type restPRJSON struct {
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 	MergeCommitSHA *string `json:"merge_commit_sha"`
+	ClosedAt       *string `json:"closed_at"`
+	MergedAt       *string `json:"merged_at"`
 	Merged         *bool   `json:"merged"`    // single-PR responses only
 	Mergeable      *bool   `json:"mergeable"` // single-PR responses only
 	// MergeableState is single-PR only as well, and it is the field that says

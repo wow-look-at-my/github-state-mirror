@@ -1,3 +1,5 @@
+// Cached PR REST routes (tier of the cache contract, like respcache.go): the open-PR list, the PR.
+
 package api
 
 import (
@@ -44,15 +46,14 @@ type pullsListShape struct {
 
 // parsePullsListShape reports the shape of a /pulls query and whether the
 // cache models it. Unknown params, repeated params, state != open, a
-// malformed head, an out-of-range per_page, or any page other than the
-// make it non-cacheable (page > only ever follows a full page, which is
-// itself never served from state).
+// malformed head. An out-of-range per_page, or any page other than the make
+// it non-cacheable (page > only ever follows a full page, which is itself
+// never served from state).
 //
-// head and base are both pure FILTERS over the open set the completeness
-// marker already vouches for -- given the whole open set, selecting the PRs
-// with a given head or base is exactly what GitHub does -- so they are
-// answered from state and, like any filtered response, never used to SET the
-// marker.
+// head and base are both pure FILTERS. Over the open set the completeness
+// marker. Already vouches for -- given the whole open set, selecting the PRs
+// with a given head or base is exactly what GitHub does. So they are answered
+// from state and, like any filtered response, never used to SET the marker.
 func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 	shape := pullsListShape{perPage: pullsDefaultPerPage, sortBy: "created"}
 	for key, vals := range q {
@@ -105,13 +106,12 @@ func parsePullsListShape(q url.Values) (pullsListShape, bool) {
 	return shape, true
 }
 
-// sortPullRows orders a COMPLETE open set the way GitHub's sort and direction
-// ask for. It is safe only there: the caller serves from state only when the
-// whole set fits in a single page, so ordering never decides which rows the caller
-// sees, and a full page continues upstream. The read already emits
-// created-descending, which is GitHub's own default, so an unstated sort and
-// direction reorder nothing. Number descending breaks a tie, matching that
-// read.
+// sortPullRows orders a COMPLETE open set the way GitHub's sort and direction ask
+// for. It is safe only there. The caller serves from state only when the whole set
+// fits in a single page, so ordering never decides which rows the caller sees. A
+// full page continues upstream. The read already emits created-descending, which
+// is GitHub's own default, so an unstated sort and direction reorder nothing.
+// Number descending breaks a tie, matching that read.
 func sortPullRows(rows []dbgen.PullRequest, shape pullsListShape) []dbgen.PullRequest {
 	key := func(pr dbgen.PullRequest) string {
 		if shape.sortBy == "updated" {
@@ -178,6 +178,10 @@ func (h *handlers) cachedPullsList(w http.ResponseWriter, r *http.Request) {
 
 	if !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, PassAccept)
+		return
+	}
+	if pullsSnapshotState(r.URL.Query()) {
+		h.cachedPullsSnapshot(w, r, owner, repo)
 		return
 	}
 	shape, ok := parsePullsListShape(r.URL.Query())
@@ -277,14 +281,14 @@ func allRestComplete(rows []dbgen.PullRequest) bool {
 
 // ---- GET /repos/{owner}/{repo}/pulls/{number} ----
 
-// cachedPull serves a single PR from state: an OPEN row when it is
+// cachedPull serves a single PR from state. An OPEN row when it is
 // rest-complete AND its mergeable is known, or a CLOSED PR's rendered doc
 // (closed_pull_cache -- every drain re-reads settled PRs, and each read used
 // to be a fresh passthrough). Everything else -- unknown or null mergeable,
 // unknown PRs, non-numeric path segments like /pulls/comments, query params,
 // non-default Accept -- misses or passes through. A fetched open PR is
 // absorbed (including GitHub's computed mergeable, null and all) and drops
-// any stale closed doc; a fetched closed PR deletes any cached open row (the
+// any stale closed doc. A fetched closed PR deletes any cached open row (the
 // truth table retains open PRs only) and is absorbed as a whole-doc snapshot,
 // served rebuilt.
 func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +340,9 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 		writeRebuilt(w, http.StatusOK, []byte(doc), true)
 		return
 	}
+	if h.servePullVerdict(w, r, owner, repo, numStr) {
+		return
+	}
 
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
 	if err != nil {
@@ -344,6 +351,9 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if h.storePullVerdict(w, r, owner, repo, numStr, resp, body, overflow) {
+		return
+	}
 	if overflow || resp.StatusCode != http.StatusOK {
 		h.replayUnstored(w, r, resp, body)
 		return
@@ -360,7 +370,7 @@ func (h *handlers) cachedPull(w http.ResponseWriter, r *http.Request) {
 	}
 	if pr.State != "OPEN" {
 		// Closed/merged: the truth table retains open PRs only, so drop any
-		// stale row -- and absorb GitHub's answer as a rendered whole-doc
+		// stale row. And absorb GitHub's answer as a rendered whole-doc
 		// snapshot, served rebuilt (hit and miss byte-identical).
 		if err := h.store.DeletePR(r.Context(), pr.Owner, pr.Repo, pr.Number, pr.UpdatedAt, time.Now()); err != nil {
 			slog.Warn("delete closed PR row failed", "owner", pr.Owner, "repo", pr.Repo, "number", pr.Number, "error", err)

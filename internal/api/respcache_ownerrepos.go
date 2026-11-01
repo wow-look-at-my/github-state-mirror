@@ -1,3 +1,5 @@
+// The cached owner repo listings.
+
 package api
 
 import (
@@ -36,8 +38,8 @@ var (
 
 // cachedOwnerRepos serves an owner's repo listing, at the path spelling the
 // scope names. The spellings answer differently for the same name, since the
-// user listing of an organization omits the organization's own repos, so scope
-// is part of the row key and never a synonym.
+// user listing of an organization omits the organization's own repos. Scope is
+// part of the row key and never a synonym.
 func (h *handlers) cachedOwnerRepos(scope, param string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
@@ -143,10 +145,10 @@ func parseOwnerReposShape(q url.Values) (sort, direction string, perPage, page i
 
 // absorbOwnerRepos parses an owner-repos response into the truth rows it
 // states and the rendered answer. The rebuild reuses the bare-repo route's
-// trimmed object, so a repo reads the same whether a caller asked for it alone
-// or in a listing. The absent verdict, meaning the name is not an owner of
-// this kind, is stable and is stored; a partial entry is not, and the page
-// then relays rather than rendering a hole.
+// trimmed object. A repo reads the same whether a caller asked for it alone or
+// in a listing. The absent verdict, meaning the name is not an owner of this
+// kind, is stable and is stored. A partial entry is not, and the page then
+// relays rather than rendering a hole.
 func absorbOwnerRepos(status int, body []byte) ([]dbgen.Repo, ghdata.CachedOwnerRepos, bool) {
 	switch status {
 	case http.StatusOK:

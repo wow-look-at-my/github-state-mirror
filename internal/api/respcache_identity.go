@@ -1,3 +1,5 @@
+// Implements the identity/self routes on "identical-or-passthrough": the upstream body is cached VERBATIM, never trimmed.
+
 package api
 
 import (
@@ -99,9 +101,9 @@ func absorbVerbatimArray(status int, body []byte) (string, bool) {
 	return string(body), true
 }
 
-// serveIdentity is the shared miss/absorb/hit flow for all identity
-// routes: they differ only in their subject key, their cache kind, and their
-// absorb function.
+// serveIdentity is the shared miss/absorb/hit flow for all identity routes.
+// They differ only in their subject key, their cache kind, and their absorb
+// function.
 func (h *handlers) serveIdentity(w http.ResponseWriter, r *http.Request, subjectKey, kind string, absorb identityAbsorber) {
 	now := time.Now()
 	if doc, ok, err := h.store.GetCachedIdentity(r.Context(), subjectKey, kind, now); err != nil {

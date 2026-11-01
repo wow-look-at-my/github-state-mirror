@@ -1,3 +1,5 @@
+// ConsistencyChecker compares the GLOBAL truth store against GitHub's live state and reports the drift -- comparison for the cache.
+
 package sync
 
 import (
@@ -38,8 +40,8 @@ type InstallationRateLimit struct {
 	Error        string                                `json:"error,omitempty"`
 }
 
-// RateLimits reports the GitHub rate-limit status for each App installation, so
-// the operator can see how much of the App's quota the background fetches and
+// RateLimits reports the GitHub rate-limit status for each App installation.
+// The operator can see how much of the App's quota the background fetches and
 // the consistency check are consuming (and when it resets). It mints a
 // short-lived installation token per installation and queries GET /rate_limit,
 // which does not itself count against the limit.
@@ -144,7 +146,7 @@ type AppliedSummary struct {
 }
 
 // Discrepancy is difference between the cache and GitHub. cached/github are
-// rendered as strings so the report stays flat and pasteable; an empty value
+// rendered as strings so the report stays flat and pasteable. An empty value
 // with issue=only_* means the resource is absent on that side.
 type Discrepancy struct {
 	Kind  string `json:"kind"`         // "repo" | "pr"
@@ -350,8 +352,8 @@ func (c *ConsistencyChecker) run(ctx context.Context, orgFilter string, apply bo
 }
 
 // actorNames returns the recorded principal->display-name map (from
-// actor_identities), or an empty map when the lookup is unavailable or fails
-// — the report's principal keys then carry no name.
+// actor_identities), or an empty map when the lookup is unavailable or
+// fails. The report's principal keys then carry no name.
 func (c *ConsistencyChecker) actorNames(ctx context.Context) map[string]string {
 	names := make(map[string]string)
 	if c.store == nil {

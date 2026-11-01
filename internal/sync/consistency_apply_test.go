@@ -205,7 +205,7 @@ func TestConsistencyChecker_Apply(t *testing.T) {
 	assert.True(t, ok)
 
 	// STICKINESS: the next PR webhook must not re-poison the corrected status.
-	// A pull_request payload carries no CI state; with the ghost rows gone,
+	// A pull_request payload carries no CI state. With the ghost rows gone,
 	// UpsertPRWithChecks derives an empty rollup and its guard skips the
 	// overwrite, while COALESCE preserves the set value.
 	require.NoError(t, store.UpsertPRWithChecks(ctx, dbgen.PullRequest{

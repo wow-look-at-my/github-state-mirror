@@ -1,3 +1,5 @@
+// Passthrough debouncing coalesces identical in-flight, unmodeled reads behind a caller-credential key.
+
 package api
 
 import (
@@ -200,10 +202,10 @@ func (d *Debouncer) run(key string, b *debounceBatch, req *http.Request, cancel 
 	d.recordSaved(req, b.batchSz)
 }
 
-// Drain stops accepting new batches, cuts every pending window short so the
-// waiters are answered immediately, and waits (up to timeout) for the in-flight
-// fetches to finish. cmd/server calls it during shutdown alongside the
-// freshness manager's and the notifier's drains.
+// Drain stops accepting new batches. Drain also stops accepting cuts every
+// pending window short so the waiters are answered immediately, and waits (up
+// to timeout) for the in-flight fetches to finish. cmd/server calls it during
+// shutdown alongside the freshness manager's and the notifier's drains.
 func (d *Debouncer) Drain(timeout time.Duration) {
 	if d == nil {
 		return
@@ -272,7 +274,7 @@ func debounceKey(r *http.Request) (string, bool) {
 
 // writeDebounced replays a batch's captured response to waiter. Upstream
 // headers are ADDED (not assigned) exactly as httputil.ReverseProxy copies
-// them, so a debounced response carries the same headers the streaming
+// them. A debounced response carries the same headers the streaming
 // passthrough would have — including the CORS headers corsMiddleware already
 // put on w. Response TRAILERS are not replayed; GitHub's REST API does not
 // send any.

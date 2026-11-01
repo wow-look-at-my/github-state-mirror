@@ -1,3 +1,5 @@
+// currentFingerprint is schemaFingerprint(schemaSQL), computed.
+
 package database
 
 import (
@@ -17,9 +19,9 @@ func schemaFingerprint(schema string) string {
 }
 
 // scrubSQL strips SQL comments and normalizes formatting: a run of whitespace
-// or comments between tokens becomes a single space, dropped entirely when
-// either side is self-delimiting punctuation, so re-wrapping a CREATE TABLE
-// reads as the same schema.
+// or comments between tokens becomes a single space, dropped entirely. This
+// happens when either side is self-delimiting punctuation. Re-wrapping a
+// CREATE TABLE reads as the same schema.
 func scrubSQL(sql string) string {
 	var out scrubbed
 

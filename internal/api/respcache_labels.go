@@ -1,3 +1,5 @@
+// The cached single-label read (GET /repos/{owner}/{repo}/labels/{name}); see docs/cache/rest-routes.md.
+
 package api
 
 import (

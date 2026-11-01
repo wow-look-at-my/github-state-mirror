@@ -1,3 +1,5 @@
+// Store persists cache metadata to SQLite, wrapping the sqlc-generated queries.
+
 package freshness
 
 import (

@@ -1,3 +1,5 @@
+// Implements the cached commits LIST route, GET /repos/{owner}/{repo}/commits (tier).
+
 package api
 
 import (
@@ -26,11 +28,15 @@ const (
 
 	// commitsMaxCachedPage caps which pages are modeled; deeper pages pass through.
 	commitsMaxCachedPage = 10
+
+	// commitsMaxPathLen bounds the path key component.
+	commitsMaxPathLen = 1024
 )
 
 // commitsListShape is a parsed, cacheable /commits query.
 type commitsListShape struct {
 	refParam string // raw ?sha= value ('' = default branch)
+	path     string // raw ?path= value ('' = unfiltered)
 	perPage  int
 	page     int
 }
@@ -49,6 +55,11 @@ func parseCommitsListShape(q url.Values) (commitsListShape, bool) {
 				return shape, false
 			}
 			shape.refParam = v
+		case "path":
+			if v == "" || len(v) > commitsMaxPathLen || strings.ContainsFunc(v, isControlRune) {
+				return shape, false
+			}
+			shape.path = v
 		case "per_page":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > 100 {
@@ -83,6 +94,10 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 		h.passthrough(w, r, PassQuery)
 		return
 	}
+	if shape.path != "" {
+		h.cachedCommitsByPath(w, r, owner, repo, shape)
+		return
+	}
 
 	switch outcome, verdict, cached := h.reveal(r, owner, repo, denyKindRepoCommits, owner+"/"+repo+"/commits"); outcome {
 	case revealDenied:
@@ -100,6 +115,11 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 		h.serveCommitsList(w, r, commits, true)
 		return
 	}
+	verdictKey := ghdata.RepoAnswerKey{Owner: owner, Repo: repo, Kind: ghdata.RepoAnswerKindCommitsVerdict, RefID: shape.refParam}
+	if a, ok, err := h.store.GetRepoAnswer(r.Context(), verdictKey, now); err == nil && ok {
+		h.writeRepoAnswer(w, r, a, true)
+		return
+	}
 
 	// Miss: fetch from GitHub with the caller's own credentials.
 	resp, body, overflow, err := h.fetchUpstream(r, nil)
@@ -109,6 +129,17 @@ func (h *handlers) cachedCommitsList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound && shape.refParam != "" {
+		// The unknown-ref verdict: no commit list exists under this ref until a push creates it.
+		if a, ok := verdictAnswer(resp.StatusCode, body, now.Add(commitsListCacheTTL)); ok {
+			a.Subject = shape.refParam
+			if err := h.store.PutRepoAnswer(r.Context(), verdictKey, a, now); err != nil {
+				slog.Warn("commits verdict write failed", "owner", owner, "repo", repo, "error", err)
+			}
+			h.writeRepoAnswer(w, r, a, false)
+			return
+		}
+	}
 	commits, absorbed := absorbCommitsList(owner, repo, resp.StatusCode, body)
 	if overflow || !absorbed {
 		//  (unknown ref), (empty repo), and 5xx relay unstored.
@@ -176,7 +207,7 @@ func renderCommitListItem(c ghdata.CachedGitCommit) commitListItemJSON {
 
 // upstreamCommitItem is the GitHub-shaped commit item as it appears in the
 // commits LIST -- and, identically shaped, in a compare response's `commits`
-// array (respcache_compare.go) -- with only the fields the model holds.
+// array (respcache_compare.go). With only the fields the model holds.
 type upstreamCommitItem struct {
 	SHA    string `json:"sha"`
 	Commit struct {
@@ -245,4 +276,39 @@ func absorbCommitsList(owner, repo string, status int, body []byte) ([]ghdata.Ca
 		commits = append(commits, c)
 	}
 	return commits, true
+}
+
+// cachedCommitsByPath serves a commits page filtered by path. The answer is
+// a whole stored page of its own. A push to its ref drops it.
+func (h *handlers) cachedCommitsByPath(w http.ResponseWriter, r *http.Request, owner, repo string, shape commitsListShape) {
+	q := url.Values{"path": {shape.path}, "per_page": {strconv.Itoa(shape.perPage)}, "page": {strconv.Itoa(shape.page)}}
+	h.serveRepoAnswer(w, r, repoAnswerRoute{
+		key:      ghdata.RepoAnswerKey{Owner: owner, Repo: repo, Kind: ghdata.RepoAnswerKindCommitsPath, RefID: shape.refParam, Shape: q.Encode()},
+		denyKind: denyKindRepoCommits,
+		resource: owner + "/" + repo + "/commits",
+		absorb: func(resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool) {
+			a, ok := absorbCommitsByPath(owner, repo, resp, body, now)
+			a.Subject = shape.refParam
+			return a, ok
+		},
+	})
+}
+
+func absorbCommitsByPath(owner, repo string, resp *http.Response, body []byte, now time.Time) (ghdata.RepoAnswer, bool) {
+	if resp.StatusCode == http.StatusNotFound {
+		return verdictAnswer(resp.StatusCode, body, now.Add(commitsListCacheTTL))
+	}
+	commits, ok := absorbCommitsList(owner, repo, resp.StatusCode, body)
+	if !ok {
+		return ghdata.RepoAnswer{}, false
+	}
+	items := make([]commitListItemJSON, 0, len(commits))
+	for _, c := range commits {
+		items = append(items, renderCommitListItem(c))
+	}
+	doc, err := marshalTrimmed(items)
+	if err != nil {
+		return ghdata.RepoAnswer{}, false
+	}
+	return ghdata.RepoAnswer{Status: http.StatusOK, Doc: string(doc), ExpiresAt: now.Add(commitsListCacheTTL)}, true
 }

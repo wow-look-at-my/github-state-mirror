@@ -19,10 +19,10 @@ import (
 )
 
 // Shared fixtures for the cached-route tests: the fake GitHub every route
-// test drives, the router stack over it, and the assertions the tier-
-// contract is checked with. The route tests themselves live file per
-// route (respcache_labels_test.go, respcache_branches_test.go,...); this
-// file holds only what more than of them needs.
+// test drives, the router stack over it. This is and the assertions the
+// tier- contract is checked with. The route tests themselves live file
+// per route (respcache_labels_test.go, respcache_branches_test.go,...);
+// this file holds only what more than of them needs.
 
 // Test object ids (full -hex, as GitHub uses).
 const (
@@ -37,10 +37,10 @@ const (
 // goodAppJWT is the bearer the fake GitHub verifies as app id; any other
 const goodAppJWT = "good-app-jwt"
 
-// respCacheUpstream is a fake GitHub for the cached-route tests: it stubs
+// respCacheUpstream is a fake GitHub for the cached-route tests. It stubs
 // /user (requireAuth) and /app (App JWT verification) and counts + serves the
-// cacheable endpoints, with GitHub-shaped bodies full of URL fields so the
-// tests can prove the rebuilds drop them.
+// cacheable endpoints. That /user is with GitHub-shaped bodies full of URL
+// fields so the tests can prove the rebuilds drop them.
 type respCacheUpstream struct {
 	contentsHits     int32
 	commitHits       int32
@@ -114,6 +114,8 @@ type respCacheUpstream struct {
 	ownerRepos func(w http.ResponseWriter, r *http.Request)
 	// probe answers the reveal probe (GET /repos/{owner}/{repo}); settable
 	probe func(w http.ResponseWriter, r *http.Request)
+	// extra answers ahead of every route above when it reports true; a test sets it for a route the switch does not name.
+	extra func(w http.ResponseWriter, r *http.Request) bool
 	// tokenExpiry is the expires_at minted tokens carry.
 	tokenExpiry time.Time
 }
@@ -126,7 +128,7 @@ func newRespCacheUpstream() *respCacheUpstream {
 			"name": parts[1], "full_name": parts[0] + "/" + parts[1],
 			"private": true, "visibility": "private",
 			"html_url":       "https://github.com/" + parts[0] + "/" + parts[1],
-			"default_branch": "main",
+			"default_branch": "main", "fork": false,
 			"owner": map[string]any{
 				"login": parts[0], "avatar_url": "https://a",
 				"html_url": "https://github.com/" + parts[0],
@@ -188,6 +190,9 @@ var ownerReposPath = regexp.MustCompile(`^/(orgs|users)/[^/]+/repos$`)
 
 func (u *respCacheUpstream) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u.extra != nil && u.extra(w, r) {
+			return
+		}
 		switch {
 		case r.URL.Path == "/user":
 			atomic.AddInt32(&u.userHits, 1)

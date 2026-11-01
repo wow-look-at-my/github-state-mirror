@@ -1,3 +1,5 @@
+// A `status` delivery carries the whole status it announces.
+
 package ghdata
 
 import (
@@ -55,7 +57,7 @@ type storedStatusListItem struct {
 }
 
 // SettleCommitCIFromStatus lands a `status` delivery on the cached commit-CI
-// documents it moves: each is rewritten from the payload where the stored
+// documents it moves. Each is rewritten from the payload where the stored
 // document can provably hold the result, and dropped where it cannot.
 //
 // Which rows it reaches is decided by what the payload can identify, not by
@@ -82,6 +84,11 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 	}
 	for _, row := range combined {
 		if !combinedStatusDescribes(row.Doc, up.SHA) {
+			if row.Ref == up.SHA {
+				if derr := s.deleteCommitCIRow(ctx, ownerKey, repoKey, row); derr != nil {
+					return derr
+				}
+			}
 			continue // a different commit: this status did not move it
 		}
 		patched, ok := patchCombinedStatus(row.Doc, row.PerPage, row.Page, up)
@@ -138,10 +145,10 @@ func (s *Store) SettleCommitCIFromStatus(ctx context.Context, owner, repo string
 }
 
 // ApplyCheckRunToCommitCI lands a run on every cached check-runs page about
-// its commit -- replacing its entry, or adding a run the page does not list
-// yet -- and reports false when the caller should flush instead. See "The
-// check-run rewrite" in docs/webhooks/invalidations.md for the ordering
-// measurement that makes each placement a fact rather than a hope.
+// its commit. This is replacing its entry, or adding a run the page does
+// not list yet -- and reports false when the caller should flush instead.
+// See "The check-run rewrite" in docs/webhooks/invalidations.md for the
+// ordering measurement that makes each placement a fact rather than a hope.
 func (s *Store) ApplyCheckRunToCommitCI(ctx context.Context, owner, repo string, run StoredCheckRun, now time.Time, ttl time.Duration) (bool, error) {
 	if run.ID <= 0 || run.Status == "" || !IsFullHexSHA(run.HeadSHA) {
 		return false, nil
@@ -254,9 +261,9 @@ func pageDescribesSHA(page *StoredCheckRunsPage, sha string) bool {
 // list yet at its place in the id order.
 //
 // The insert is what keeps a finishing CI run out of the flush path. The last
-// deliveries of a run are a new job's creation and a queued job's start, and
-// dropping the row for either sends the next reader to GitHub at the exact
-// moment GitHub's own listing is furthest behind these deliveries -- the
+// deliveries of a run are a new job's creation and a queued job's start.
+// Dropping the row for either sends the next reader to GitHub at the exact
+// moment GitHub's own listing is furthest behind these deliveries. The
 // refetch then stores a view OLDER than what the payloads already carried,
 // and no further delivery for that commit ever arrives to correct it.
 func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (string, bool) {
@@ -289,14 +296,13 @@ func patchCheckRunsPage(doc string, perPage, page int64, run StoredCheckRun) (st
 	return string(rendered), true
 }
 
-// insertCheckRun adds a run the page does not list yet, at its place in the
-// id-descending order the listing uses, and reports false when the page cannot
-// take it. A creation names the commit the run belongs to, so membership GROWS
-// from the payload; what no delivery states is that a run went away, which is
-// what the TTL still bounds.
+// insertCheckRun adds a run the page does not list yet. That insertCheckRun is
+// at its place in the id-descending order the listing uses, and reports false
+// when the page cannot take it. A creation names the commit the run belongs
+// to, so membership GROWS from the payload. What no delivery states is that a
+// run went away, which is what the TTL still bounds.
 func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun) bool {
-	// A page carries no sha of its own -- only its entries do -- so a page
-	// with nothing in it names no commit and cannot be shown to be this run's.
+	// A page carries no sha of its own -- only its entries do.
 	if !pageDescribesSHA(page, run.HeadSHA) {
 		return false
 	}
@@ -310,10 +316,10 @@ func insertCheckRun(page *StoredCheckRunsPage, perPage int64, run StoredCheckRun
 	return true
 }
 
-// InvalidateCommitCIForRefKind drops ref spelling's snapshots of kind.
-// A check delivery uses it for the check-runs kind: a check run never appears
-// in a commit's statuses, so flushing those rows too would re-fetch answers
-// the delivery cannot have changed.
+// InvalidateCommitCIForRefKind drops ref spelling's snapshots of kind. A
+// check delivery uses it for the check-runs kind: a check run never appears
+// in a commit's statuses. Flushing those rows too would re-fetch answers the
+// delivery cannot have changed.
 func (s *Store) InvalidateCommitCIForRefKind(ctx context.Context, owner, repo, ref, kind string) error {
 	return s.qx(ctx).DeleteCommitCICacheForRefKind(ctx, dbgen.DeleteCommitCICacheForRefKindParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo), Ref: ref, Kind: kind,
@@ -334,16 +340,16 @@ func combinedStatusDescribes(doc, sha string) bool {
 	return json.Unmarshal([]byte(doc), &d) == nil && d.SHA == sha
 }
 
-// patchCombinedStatus rewrites a stored combined status from the delivery: the
+// patchCombinedStatus rewrites a stored combined status from the delivery. The
 // context's previous entry is REPLACED (the endpoint holds the latest per
-// context) and the new lands at the end, where the array's oldest-
-// order puts the newest status.
+// context) and the new lands at the end, where the array's oldest- order puts
+// the newest status.
 //
 // Reports false -- the caller drops the row instead -- whenever the result is
-// not provably what a fetch would return: a page other than the, a page
-// that does not hold every context (total_count above its own length), a page
-// with no room for a new context, or a status that is not the newest on the
-// commit and so does not belong at the end.
+// not provably what a fetch would return. A page other than the, a page that
+// does not hold every context (total_count above its own length). A page with
+// no room for a new context. This is or a status that is not the newest on
+// the commit and so does not belong at the end.
 func patchCombinedStatus(doc string, perPage, page int64, up CommitStatusUpdate) (string, bool) {
 	if page != 1 {
 		return "", false
@@ -384,11 +390,11 @@ func patchCombinedStatus(doc string, perPage, page int64, up CommitStatusUpdate)
 }
 
 // patchStatusesList rewrites a stored raw statuses list from the delivery. The
-// list is append-only history, newest-, so the new status is PREPENDED --
-// the context's older entries stay, exactly as upstream keeps them. A page
-// that overflows drops its oldest entry, which is precisely where page
-// begins; every other page of this ref is dropped by the caller's fallback,
-// since their contents shift.
+// list is append-only history, newest-, so the new status is PREPENDED -- the
+// context's older entries stay, exactly as upstream keeps them. A page that
+// overflows drops its oldest entry, which is precisely where page begins.
+// Every other page of this ref is dropped by the caller's fallback, since
+// their contents shift.
 //
 // Reports false for a page other than the, an unreadable document, or a
 // status older than the already at the head (its position is then unknown).

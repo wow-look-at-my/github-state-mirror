@@ -1,3 +1,5 @@
+// StatusEvent keeps GitHub's own field spelling, unlike ParseCheckPayload's normalized truth-side reading of the same body.
+
 package webhook
 
 import (
@@ -18,10 +20,10 @@ type StatusEvent struct {
 }
 
 // ParseStatusEvent reads a `status` delivery's own account of the status it
-// announces, or reports false when the payload states no usable. A status
-// is append-only upstream: re-posting a context creates a NEW status object
-// with a new id and a new created_at, which is why created_at is required here
-// -- it is what places the entry in a stored document's ordering.
+// announces, or reports false when the payload states no usable. A status is
+// append-only upstream. Re-posting a context creates a NEW status object with
+// a new id and a new created_at. Which is why created_at is required here --
+// it is what places the entry in a stored document's ordering.
 func ParseStatusEvent(raw json.RawMessage) (StatusEvent, bool) {
 	var body struct {
 		SHA         string  `json:"sha"`

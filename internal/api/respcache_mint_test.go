@@ -71,7 +71,7 @@ func TestInvalidateMintOnAuthFailure(t *testing.T) {
 	assert.True(t, mintCached(t, store))
 }
 
-// The wiring end to end through the passthrough proxy: mint through the
+// The wiring end to end through the passthrough proxy. Mint through the
 // router (cached), fail an unmodeled proxied call carrying the minted
 // token, and the next mint refetches instead of serving the stale cache.
 func TestMintInvalidatedByProxiedAuthFailure(t *testing.T) {

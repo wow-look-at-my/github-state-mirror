@@ -1,3 +1,5 @@
+// checkStreamLine is NDJSON line: a checker progress event, extended with the terminal report/error fields for the final line.
+
 package api
 
 import (

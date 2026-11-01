@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"net/http"
 	"strings"
@@ -51,14 +53,7 @@ func TestCachedOwnerRepos_MissAbsorbHit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `[
-		{"name":"repo1","full_name":"org1/repo1","owner":{"login":"org1"},
-		 "private":false,"visibility":"public","default_branch":"main",
-		 "archived":false,"disabled":false},
-		{"name":"repo2","full_name":"org1/repo2","owner":{"login":"org1"},
-		 "private":true,"visibility":"private","default_branch":"main",
-		 "archived":false,"disabled":false}
-	]`, w1.Body.String())
+	assert.JSONEq(t, testCachedOwnerRepos_MissAbsorbHitJson, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", orgReposTarget, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -182,3 +177,6 @@ func TestCachedOwnerRepos_PartialEntryIsNeverStored(t *testing.T) {
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.ownerReposHits))
 	}
 }
+
+//go:embed testdata/test-cached-owner-repos-miss-absorb-hit.json
+var testCachedOwnerRepos_MissAbsorbHitJson string

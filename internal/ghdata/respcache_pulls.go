@@ -1,3 +1,5 @@
+// Single-PR staleness backstop; a stale row misses rather than serves stale.
+
 package ghdata
 
 import (
@@ -131,8 +133,9 @@ func (s *Store) PullsListFresh(ctx context.Context, owner, repo string, now time
 
 // HasLivePullsListMarker reports whether the repo's "open-PR list complete"
 // marker is valid, WITHOUT touching its LRU timestamp -- a pure read for the
-// consistency check (which must not mutate the cache), unlike PullsListFresh
-// whose hit refreshes last_used_at.
+// consistency check (which must not mutate the cache). That
+// HasLivePullsListMarker is unlike PullsListFresh whose hit refreshes
+// last_used_at.
 func (s *Store) HasLivePullsListMarker(ctx context.Context, owner, repo string, now time.Time) (bool, error) {
 	row, err := s.qx(ctx).GetPullsListMarker(ctx, dbgen.GetPullsListMarkerParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),
@@ -193,16 +196,16 @@ func (s *Store) RestSinglePull(ctx context.Context, owner, repo string, number i
 }
 
 // AbsorbPullsList upserts the PRs of a fetched /pulls list response (and
-// their labels) into global truth. When complete is true -- an unfiltered
-// page- response that provably holds the WHOLE open set -- it also deletes
-// open rows the response no longer contains (PRs closed while unwatched) and
-// records the "list complete" marker with the given TTL. The delete honors
-// the reconcile grace window: a row touched after fetchStart minus the grace
-// was written by a webhook racing the fetch's eventual consistency and
-// survives. A filtered or possibly-truncated response absorbs rows only:
-// still useful state, but no completeness claim. Rows are written with the
-// response's own (canonical) owner/repo casing so they collide with
-// webhook/GraphQL-written rows.
+// their labels) into global truth. It also deletes open rows the response no
+// longer contains (PRs closed while unwatched) and records the "list
+// complete" marker with the given TTL. This happens when complete is true --
+// an unfiltered page- response that provably holds the WHOLE open set --.
+// The delete honors the reconcile grace window. A row touched after
+// fetchStart minus the grace was written by a webhook racing the fetch's
+// eventual consistency and survives. A filtered or possibly-truncated
+// response absorbs rows only: still useful state, but no completeness claim.
+// Rows are written with the response's own (canonical) owner/repo casing so
+// they collide with webhook/GraphQL-written rows.
 func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []dbgen.PullRequest, labelsByPR map[int64][]dbgen.PrLabel, complete bool, fetchStart, now time.Time, ttl time.Duration) error {
 	tx, err := database.Begin(ctx, s.db)
 	if err != nil {
@@ -269,7 +272,7 @@ func (s *Store) AbsorbPullsList(ctx context.Context, owner, repo string, prs []d
 // AbsorbSinglePull upserts fetched OPEN PR into global truth. Unlike the
 // COALESCE-ing webhook upsert, the fetched mergeable is authoritative --
 // including null ("GitHub is recomputing") -- so it is force-set after the
-// upsert: a null answer must keep the single-PR route missing (and
+// upsert. A null answer must keep the single-PR route missing (and
 // re-fetching) until GitHub resolves it, never resurrect a stale value.
 func (s *Store) AbsorbSinglePull(ctx context.Context, pr dbgen.PullRequest, labels []dbgen.PrLabel, now time.Time) (staleRejected bool, err error) {
 	tx, err := database.Begin(ctx, s.db)

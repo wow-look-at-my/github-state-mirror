@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"encoding/json"
@@ -43,24 +45,14 @@ func setupDispatcher(t *testing.T) (*WebhookDispatcher, *freshness.Manager, *fre
 // TestDispatch_NeverSeenRepoAppliesGlobally is the heart of the global model:
 // a stateful delivery for a repo NOBODY has ever fetched applies straight to
 // global truth (the repos row is created from the payload's own repository
-// object) -- there is no "no cached scope" skip, no on-demand pull, no app
+// object). There is no "no cached scope" skip, no on-demand pull, no app
 // needed. (Operator directive: "just because nobody has fetched something
 // doesn't mean we get to ignore updates from webhooks for it.")
 func TestDispatch_NeverSeenRepoAppliesGlobally(t *testing.T) {
 	d, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
 
-	raw := []byte(`{
-		"sha": "deadbeef",
-		"state": "success",
-		"context": "ci/test",
-		"branches": [{"name": "main"}],
-		"repository": {"name": "repo-nightmare", "full_name": "wow-look-at-my/repo-nightmare",
-			"private": true, "visibility": "private", "default_branch": "main",
-			"html_url": "https://github.com/wow-look-at-my/repo-nightmare",
-			"owner": {"login": "wow-look-at-my"}},
-		"installation": {"id": 123}
-	}`)
+	raw := []byte(testDispatch_NeverSeenRepoAppliesGloballyJson)
 	result := d.Dispatch(ctx, webhook.ParseEvent("status", raw))
 
 	assert.Equal(t, webhook.DispApplied, result.Disposition, "a never-seen repo's event must apply, never skip")
@@ -136,8 +128,8 @@ func TestDispatch_UnknownEvent(t *testing.T) {
 
 // TestDispatch_PushAndRepositoryFlushCommitsListSnapshots: push and repository
 // events flush a repo's cached commits-list snapshots (a push moves every
-// ref-relative listing) while the absorbed git-commit rows -- immutable global
-// truth -- survive the flush.
+// ref-relative listing). This happens while the absorbed git-commit rows --
+// immutable global truth -- survive the flush.
 func TestDispatch_PushAndRepositoryFlushCommitsListSnapshots(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -273,3 +265,6 @@ func makePRPayload(t *testing.T, action, state, owner, repo string, number int, 
 	require.Nil(t, err)
 	return data
 }
+
+//go:embed testdata/test-dispatch-never-seen-repo-applies-globally.json
+var testDispatch_NeverSeenRepoAppliesGloballyJson string

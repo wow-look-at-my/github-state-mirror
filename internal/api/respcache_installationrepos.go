@@ -1,3 +1,5 @@
+// Cached installation-repositories listing (tier of the cache contract).
+
 package api
 
 import (
@@ -138,7 +140,7 @@ type installationOwnerJSON struct {
 //	here so hit and miss serve identical bytes. total_count and the
 //
 // repositories array must both be PRESENT, and every entry must carry a
-// positive id and a full name -- an answer the model cannot hold is relayed
+// positive id and a full name. An answer the model cannot hold is relayed
 // instead. An empty page (past the end) is a valid cacheable answer.
 func absorbInstallationRepos(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {

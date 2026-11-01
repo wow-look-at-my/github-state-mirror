@@ -207,10 +207,9 @@ func TestDashboard_Requests_Admin(t *testing.T) {
 	assert.Positive(t, snap.DBSizeBytes, "the payload reports the SQLite DB's on-disk size")
 }
 
-// TestDashboard_Requests_DBSize verifies /api/requests reports the SQLite
-// database's on-disk footprint: the DB file plus its -wal sidecar when
-// present, with each field omitted — never an error — when its file is
-// missing.
+// TestDashboard_Requests_DBSize checks that /api/requests reports the DB's
+// on-disk size: the file plus its -wal sidecar. A missing file omits its
+// field and is never an error.
 func TestDashboard_Requests_DBSize(t *testing.T) {
 	svc := configuredAuth(t)
 	dir := t.TempDir()

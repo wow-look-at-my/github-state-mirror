@@ -2,14 +2,13 @@
 // (tsc) to ../assets/app.js, which is committed (a generated artifact) and
 // embedded into the Go binary. Edit this .ts file, never the .js.
 //
-// Talks to these endpoints, among others: GET
-//   /api/me -> Me GET /api/cache?scope=mine|all ->
-//   CacheResponse
+// Talks to these endpoints, among others: GET /api/me -> Me GET
+// /api/cache?scope=mine|all -> CacheResponse
 //
-// When window.__GSM_DEMO__ is defined (only the standalone styling preview ships
-// a demo-data.js that sets it), the same rendering runs against canned data and
-// a state switcher is shown. Production never defines it, so the real backend is
-// used.
+// When window.__GSM_DEMO__ is defined (only the standalone styling preview
+// ships a demo-data.js that sets it), the same rendering runs against canned
+// data and a state switcher is shown. Production never defines it, so the
+// real backend is used.
 
 import type {
     Me, Counts, KindFreshness, RecentRefresh, PrincipalStats, CacheResponse,
@@ -175,6 +174,7 @@ async function renderDashboard(me: Me): Promise<void> {
     const main = byId("main");
     main.innerHTML = "";
 
+    // The subtitle gets its own row, so a long one never shifts the tab bar.
     const head = el("div", { class: "page-head" });
     head.appendChild(el("h1", { text: "Cache state" }));
     let tabs: HTMLElement | null = null;
@@ -246,7 +246,7 @@ function loadView(scope: string, silent = false): Promise<void> {
     return loadScope(scope, silent);
 }
 
-// Non-admins only ever see "mine".
+// Each entry equals its tab's data-scope. Non-admins only ever see "mine".
 const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"];
 
 // dataForView fetches one tab's own JSON directly from its endpoint,
@@ -400,10 +400,10 @@ async function loadScope(scope: string, silent = false): Promise<void> {
     for (const s of principals) body.appendChild(principalCard(s, true));
 }
 
-// truthActions renders the admin actions on GLOBAL truth: browse the cached
-// rows, run a read-only consistency check against GitHub, or RECONCILE --
-// the apply-mode check that also corrects the drift it finds. All open the
-// same modal.
+// truthActions renders the admin actions on GLOBAL truth. It browse the
+// cached rows, run a read-only consistency check against GitHub, or
+// RECONCILE. This is the apply-mode check that also corrects the drift it
+// finds. All open the same modal.
 function truthActions(): HTMLElement {
     const reconcile = (): void => {
         if (!confirm(
@@ -615,7 +615,7 @@ const DISPOSITIONS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 // A missing event subscription degrades the mirror SILENTLY -- the caches
-// that depend on it re-fetch forever -- so it gets a banner naming the event
+// that depend on it re-fetch forever. So it gets a banner naming the event
 // and what it costs, not a log line nobody reads.
 function missingSubscriptionsBanner(missing: MissingSubscription[]): HTMLElement {
     const banner = el("div", { class: "error-banner" },
@@ -762,12 +762,12 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
 }
 
 // ---- traffic timeline (admin only) ---- A swimlane chart of incoming
-// webhook deliveries (one lane per event type) and outgoing proxied GitHub
+// webhook deliveries (one lane per event type). It outgoing proxied GitHub
 // requests (one lane per route shape), each bar a REAL measured duration —
 // rendered by the <gsm-timeline> element (src/timeline.ts). Unlike every
 // other tab this loader must NOT wipe and rebuild on refresh: the canvas
-// holds viewport/zoom state, so the element is created ONCE and kept alive
-// — it polls /api/timeline?since=<id> itself (5s, paused while the page is
+// holds viewport/zoom state. The element is created ONCE and kept alive —
+// it polls /api/timeline?since=<id> itself (5s, paused while the page is
 // hidden) and merges new events in place.
 async function loadTimeline(): Promise<void> {
     const body = byId("scope-body");
@@ -782,10 +782,10 @@ async function loadTimeline(): Promise<void> {
 }
 
 // ---- request activity (admin only) ---- Shows data-API requests hitting the
-// cache and how each was served: a cache HIT (no GitHub call), a MISS
-// (fetched then cached), or a PASSTHROUGH (forwarded to GitHub uncached).
-// This is the live view of how much the cache is used vs. proxied straight
-// through.
+// cache and how each was served: a cache HIT (no GitHub call). This also
+// covers a MISS (fetched then cached), or a PASSTHROUGH (forwarded to GitHub
+// uncached). This is the live view of how much the cache is used vs. proxied
+// straight through.
 async function loadRequests(silent = false): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
@@ -843,6 +843,8 @@ function pctLabel(count: number | undefined, total: number): string {
     return total > 0 ? " (" + (((count || 0) / total) * 100).toFixed(1) + "%)" : "";
 }
 
+// formatBytes renders a byte count human-readably: decimal KB/MB/GB/TB with
+// one decimal place, and plain bytes below a kilobyte.
 function formatBytes(n: number): string {
     if (n < 1000) return n + " B";
     const units = ["KB", "MB", "GB", "TB"];
@@ -859,7 +861,7 @@ function dbSizeLabel(db?: number, wal?: number): string {
     return "DB " + formatBytes(db) + (wal ? " (+" + formatBytes(wal) + " WAL)" : "");
 }
 
-// ---- request groups (aggregate hot spots) ---- Tables over the server's per-route-shape counters.
+// ---- request groups: per-route-shape counters since restart, not the recent ring ----
 
 const TOP_GROUPS = 15;
 
@@ -908,8 +910,10 @@ function wideWrap(table: HTMLElement): HTMLElement {
     return el("div", { class: "table-wide" }, table);
 }
 
-// groupSection wraps a grouped table. Only a table that runs out of room asks
-// for it.
+// groupSection wraps a grouped table. `wide` opts into the page-margin bleed
+// (see .table-wide). It is deliberately NOT the default: stretching a narrow
+// table to the width of a wide one spreads its content across empty space.
+// Only a table that runs out of room asks for it.
 function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {
     return el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: true },
         el("summary", { text: title }),
@@ -941,7 +945,7 @@ function topGroupsSection(groups: RequestGroup[], total: number): HTMLElement {
 // PASSTHROUGH_REASONS documents the server's closed reason vocabulary
 // (requestlog.go): the label shown in the "Why" column and the tooltip
 // explaining what it means for caching. A high-volume uncached route is only a
-// caching CANDIDATE for some of these — "unrouted" means nothing models the
+// caching CANDIDATE for some of these. "unrouted" means nothing models the
 // path yet, while "unmodeled-query" on a filter that changes which resources
 // the body describes is the model working as designed. An unknown reason from
 // a newer server renders verbatim rather than vanishing.
@@ -958,7 +962,7 @@ const PASSTHROUGH_REASONS: Readonly<Record<string, string>> = {
 
 // reasonCell renders a group's passthrough reasons, biggest first, plus the
 // sampled query-parameter names when the reason is about the query — the
-// difference between "this route is 82% uncached" and knowing WHICH shape did
+// difference between "this route is 82% uncached". Knowing WHICH shape did
 // it, without reading the source of the calling service.
 function reasonCell(g: RequestGroup): HTMLElement {
     const cell = el("td", { class: "grp-breakdown" });
@@ -1011,8 +1015,9 @@ function debounceCell(g: RequestGroup): HTMLElement {
 }
 
 // uncachedGroupsSection: the groups with passthrough traffic — reads the
-// cache did not handle, ranked by passthrough count. Null when nothing
-// qualifies.
+// cache did not handle, ranked by passthrough count. Write-only groups never
+// appear: a mutation is proxied by design, not a caching gap, and the
+// passthrough filter excludes them. Null when nothing qualifies.
 function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number): HTMLElement | null {
     const uncached = groups.filter((g) => (g.passthrough || 0) > 0)
         .sort((a, b) => b.passthrough - a.passthrough).slice(0, TOP_GROUPS);
@@ -1038,12 +1043,14 @@ function uncachedGroupsSection(groups: RequestGroup[], passthroughTotal: number)
             )),
             el("tbody", null, rows),
         ),
-        true);
+        true); // the widest table of chips: this is the one that needs the room
 }
 
 // ---- implementation brief (admin) ---- The tables above say WHICH routes
-// are uncached and why. Modeling one needs both things a counter cannot hold:
-// the query shapes callers send, and the SHAPE of what GitHub answers.
+// are uncached and why. Modeling one needs what a counter cannot hold: the
+// query shapes callers send, and the SHAPE of what GitHub answers. The server
+// captures both (keys and types only, never values) and renders them, with
+// this repo's cached-route checklist, as one Markdown document.
 function briefBar(): HTMLElement {
     return el("div", { class: "brief-bar" },
         el("button", { class: "btn btn-sm", onclick: () => void openBrief() }, "Capture implementation brief"),
@@ -1220,9 +1227,9 @@ function requestTable(events: RequestEvent[]): HTMLElement {
         const dispTitle = e.reason
             ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
             : null;
-        // Path goes LAST: it is far and away the widest field, so trailing it
+        // Path goes LAST: it is far and away the widest field. Trailing it
         // keeps the fixed-width columns packed together on the left instead of
-        // separated by a column of mostly-empty space, and puts the ragged
+        // separated by a column of mostly-empty space. It puts the ragged
         // (ellipsized) edge where nothing has to line up after it.
         const cells = [
             el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp, title: dispTitle })),
@@ -1232,9 +1239,9 @@ function requestTable(events: RequestEvent[]): HTMLElement {
             el("td", { class: "wh-caller", text: e.actor_name || e.actor || "" }),
             el("td", { class: "wh-path", text: e.path }),
         ];
-        // The row is dense and its cells ellipsize; everything cut off — the
+        // The row is dense and its cells ellipsize. Everything cut off — the
         // full path, the principal key, the exact time the "When" column used
-        // to show — lives one click away in the detail panel.
+        // to show. Everything lives one click away in the detail panel.
         return collapsibleRow("requests", requestRowKey(e, i), cells, () => detailPairs([
             ["Path", e.path],
             ["Method", e.method],
@@ -1269,7 +1276,7 @@ function statusBadge(status?: number): Node {
     return el("span", { class: "status-code " + cls, text: String(status) });
 }
 
-// ---- GitHub rate limit (admin only) ---- Halves.
+// ---- rate limit: the App's own live poll, plus headers observed on every upstream response ----
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
 async function loadRateLimits(silent = false): Promise<void> {
@@ -1291,7 +1298,7 @@ async function loadRateLimits(silent = false): Promise<void> {
     if (currentView !== "ratelimit") return;
     body.innerHTML = "";
     const installs = data.live ?? [];
-    // Zero-usage observations are noise; an empty result falls through to the empty state below.
+    // A reading that consumed nothing this window is noise, so it is hidden.
     const observed = (data.observed ?? []).filter((o) => o.used > 0);
     sub.textContent = "GitHub rate limits — the App's live per-installation poll" +
         (installs.length ? " (" + installs.length + " installation" + (installs.length === 1 ? "" : "s") + ")" : "") +
@@ -1670,9 +1677,9 @@ function splitNdjson(buf: string): { lines: string[]; rest: string } {
 
 // CheckProgressState is what the modal renders while a run streams.
 interface CheckProgressState {
-    ownersTotal: number;
-    ownerIndex: number;
-    within: number;
+    ownersTotal: number; // unset until the start event
+    ownerIndex: number; // the current owner, counted from one; unset before the first
+    within: number; // the fraction done inside the current owner
     status: string; // the live status line
 }
 
@@ -1729,7 +1736,8 @@ function reduceCheckProgress(p: CheckProgressState, ev: CheckProgressEvent): Che
     return next;
 }
 
-// Pure.
+// checkProgressFraction maps the state to the bar's fill fraction: the owners
+// completed plus the within-owner sub-progress. Pure.
 function checkProgressFraction(p: CheckProgressState): number {
     if (p.ownersTotal <= 0) return 0;
     const f = (Math.max(p.ownerIndex, 1) - 1 + p.within) / p.ownersTotal;
@@ -1766,7 +1774,6 @@ async function runCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) 
     };
 
     if (!res.body) {
-        // No ReadableStream support: the whole run arrives as one buffered body.
         for (const line of splitNdjson((await res.text()) + "\n").lines) handle(line);
     } else {
         const reader = res.body.getReader();
@@ -1789,7 +1796,7 @@ async function runCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) 
 }
 
 // demoCheckStream replays the canned progress sequence on a timer (the demo
-// mock can't stream), then resolves the canned report — so the preview
+// mock can't stream), then resolves the canned report. So the preview
 // exercises the live progress UI end to end.
 function demoCheckStream(apply: boolean, onEvent: (ev: CheckProgressEvent) => void): Promise<ConsistencyReport> {
     const cfg = DEMO as DemoConfig;

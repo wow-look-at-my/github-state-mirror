@@ -1,3 +1,5 @@
+// Storage for the owner repo listings.
+
 package ghdata
 
 import (

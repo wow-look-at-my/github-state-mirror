@@ -1,3 +1,5 @@
+// AppInstallationsCacheTTL bounds a stale answer for a missed delivery.
+
 package ghdata
 
 import (

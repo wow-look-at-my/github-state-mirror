@@ -1,3 +1,5 @@
+// Store wraps sqlc-generated queries plus transaction logic for the global truth store.
+
 package ghdata
 
 import (
@@ -422,6 +424,9 @@ func repoToParams(r dbgen.Repo) dbgen.UpsertRepoParams {
 		OwnerLogin:          r.OwnerLogin,
 		OwnerAvatar:         r.OwnerAvatar,
 		OwnerUrl:            r.OwnerUrl,
+		IsFork:              r.IsFork,
+		ParentFullName:      r.ParentFullName,
+		ParentDefaultBranch: r.ParentDefaultBranch,
 	}
 }
 

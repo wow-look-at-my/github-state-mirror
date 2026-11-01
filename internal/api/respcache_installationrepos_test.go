@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"fmt"
 	"net/http"
@@ -16,24 +18,7 @@ import (
 
 func defaultInstallationReposUpstream(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write([]byte(`{
-		"total_count": 1,
-		"repository_selection": "selected",
-		"repositories": [{
-			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
-			"name": "repo1", "full_name": "org1/repo1",
-			"owner": {"login": "org1", "id": 1, "type": "Organization",
-				"url": "https://api.github.com/users/org1",
-				"avatar_url": "https://a", "html_url": "https://github.com/org1"},
-			"private": true, "visibility": "private",
-			"default_branch": "main", "fork": false,
-			"archived": false, "disabled": false,
-			"url": "https://api.github.com/repos/org1/repo1",
-			"html_url": "https://github.com/org1/repo1",
-			"hooks_url": "https://api.github.com/repos/org1/repo1/hooks",
-			"git_url": "git://github.com/org1/repo1.git"
-		}]
-	}`))
+	_, _ = w.Write([]byte(defaultInstallationReposUpstreamJson))
 }
 
 const installationReposTarget = "/installation/repositories"
@@ -53,18 +38,7 @@ func TestCachedInstallationRepos_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installReposHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `{
-		"total_count": 1,
-		"repository_selection": "selected",
-		"repositories": [{
-			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
-			"name": "repo1", "full_name": "org1/repo1",
-			"owner": {"login": "org1", "type": "Organization"},
-			"private": true, "visibility": "private",
-			"default_branch": "main", "fork": false,
-			"archived": false, "disabled": false
-		}]
-	}`, w1.Body.String())
+	assert.JSONEq(t, testCachedInstallationRepos_MissAbsorbHitJson, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", installationReposTarget, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -73,8 +47,8 @@ func TestCachedInstallationRepos_MissAbsorbHit(t *testing.T) {
 }
 
 // The load-bearing property: rows key the CREDENTIAL. bearers must never
-// read each other's listing, even though the answers differ only by token --
-// this is what makes a route with no reveal gate safe.
+// read each other's listing, even though the answers differ only by token.
+// This is what makes a route with no reveal gate safe.
 func TestCachedInstallationRepos_KeyedByCredential(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.installRepos = func(w http.ResponseWriter, r *http.Request) {
@@ -167,3 +141,9 @@ func TestCachedInstallationRepos_NonOKRelayedUnstored(t *testing.T) {
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.installReposHits))
 	}
 }
+
+//go:embed testdata/default-installation-repos-upstream.json
+var defaultInstallationReposUpstreamJson string
+
+//go:embed testdata/test-cached-installation-repos-miss-absorb-hit.json
+var testCachedInstallationRepos_MissAbsorbHitJson string

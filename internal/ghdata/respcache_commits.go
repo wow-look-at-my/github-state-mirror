@@ -1,3 +1,5 @@
+// The listed commits live in the SAME global git_commits_cache rows that the git-commit route and push payloads maintain.
+
 package ghdata
 
 import (
@@ -15,21 +17,21 @@ import (
 //
 //	GET /repos/{owner}/{repo}/commits
 //
-// Following the absorb-don't-byte-cache doctrine, the listed commits
-// themselves live in the SAME global git_commits_cache rows the git-commit
-// route and push payloads maintain (respcache.go). What is here is only the
+// The listed commits live in the SAME global git_commits_cache rows that the
+// git-commit route and push payloads maintain. What is here is only the
 // per-query ORDERING/COMPLETENESS proof: a commits_list_cache snapshot
-// holding the response's shas in order, keyed by the exact modeled query
-// shape (owner, repo, ref_param, per_page, page) -- the same rows + marker
-// split the pulls list uses. A snapshot whose commits were LRU-pruned out of
-// git_commits_cache degrades to a miss (self-healing) rather than serving a
-// hole. WHO may read a rebuilt list is the reveal layer's job (internal/api).
+// holding the response's shas in order. That order is keyed by the exact
+// modeled query shape (owner, repo, ref_param, per_page, page). The exact the
+// same rows + marker split the pulls list uses. A snapshot whose commits were
+// LRU-pruned out of git_commits_cache degrades to a miss (self-healing)
+// rather than serving a hole. WHO may read a rebuilt list is the reveal
+// layer's job (internal/api).
 
-// GetCachedCommitsList returns the commits of cached list page in
-// response order, or (nil, false) on a miss: no snapshot, an expired
-// snapshot, an unreadable sha array, or any listed sha no longer resolving in
+// GetCachedCommitsList returns the commits of cached list page in response
+// order, or (nil, false) on a miss: no snapshot, an expired snapshot. An
+// unreadable sha array, or any listed sha no longer resolving in
 // git_commits_cache. A hit refreshes the snapshot's LRU timestamp and each
-// commit row's (via GetCachedGitCommit), so a list-served commit earns LRU
+// commit row's (via GetCachedGitCommit). A list-served commit earns LRU
 // lifetime like a single-read and the pair stays resident together.
 func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam string, perPage, page int, now time.Time) ([]CachedGitCommit, bool, error) {
 	ownerKey, repoKey := NormalizeRepoKey(owner), NormalizeRepoKey(repo)
@@ -68,9 +70,9 @@ func (s *Store) GetCachedCommitsList(ctx context.Context, owner, repo, refParam 
 	return commits, true, nil
 }
 
-// PutCachedCommitsList absorbs fetched list page: every listed commit is
+// PutCachedCommitsList absorbs fetched list page. Every listed commit is
 // upserted into the global git_commits_cache and the page's ordered sha
-// snapshot is recorded, all in transaction, then both tables are pruned
+// snapshot is recorded, all in transaction. Then both tables are pruned
 // (expired snapshots + LRU beyond the cap). commits must carry normalized
 // owner/repo and lowercased shas (the API layer's absorb does).
 func (s *Store) PutCachedCommitsList(ctx context.Context, owner, repo, refParam string, perPage, page int, commits []CachedGitCommit, now time.Time, ttl time.Duration) error {

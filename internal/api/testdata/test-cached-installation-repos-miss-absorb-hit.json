@@ -1,0 +1,12 @@
+{
+		"total_count": 1,
+		"repository_selection": "selected",
+		"repositories": [{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "repo1", "full_name": "org1/repo1",
+			"owner": {"login": "org1", "type": "Organization"},
+			"private": true, "visibility": "private",
+			"default_branch": "main", "fork": false,
+			"archived": false, "disabled": false
+		}]
+	}

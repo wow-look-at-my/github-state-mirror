@@ -1,3 +1,5 @@
+// corsMiddleware adds CORS headers so browser apps on other origins (e.g. the repo-nightmare PR viewer served from GitHub Pages) can call the mirror's API.
+
 package api
 
 import (
@@ -9,7 +11,7 @@ import (
 // repo-nightmare PR viewer served from GitHub Pages) can call the mirror's API.
 //
 // The mirror's security boundary is the per-token fingerprint, not the request
-// origin, so a permissive default is safe: a cross-origin caller still must
+// origin, so a permissive default is safe. A cross-origin caller still must
 // present a valid GitHub token, which a browser cannot read from another origin.
 //
 // allowed is the set of permitted origins. When it is empty or contains "*",

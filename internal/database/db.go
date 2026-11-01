@@ -1,3 +1,5 @@
+// schemaSQL is the whole schema: created together, fingerprinted together.
+
 package database
 
 import (
@@ -10,7 +12,13 @@ import (
 )
 
 //go:embed schema.sql
-var schemaSQL string
+var sqlcSchema string
+
+//go:embed schema_plain.sql
+var plainSchema string
+
+// schemaSQL is the whole schema: created together, fingerprinted together.
+var schemaSQL = sqlcSchema + "\n" + plainSchema
 
 // What each schema change was and why: docs/schema-history.md.
 

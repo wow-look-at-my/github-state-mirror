@@ -1,3 +1,5 @@
+// stampRequestStart is the router middleware: it stamps the receipt time into the request context.
+
 package api
 
 import (
@@ -56,7 +58,7 @@ func withUpstreamDisposition(ctx context.Context, disp string) context.Context {
 }
 
 // TimelineUpstreamObserver charts every call the API layer's own client makes
-// -- cached-route miss fetches and reveal probes today, and anything added
+// -- cached-route miss fetches. It reveal probes today, and anything added
 // later without a line of its own, which is the point.
 func TimelineUpstreamObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
@@ -75,8 +77,8 @@ func TimelineUpstreamObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 // TimelineProxyObserver charts the mirror→GitHub leg of the passthrough
 // proxy, including the debounced batches that share call between many
 // waiters. Identity comes from the outbound request, which carries the
-// inbound 's context, so it lands under the same label the request log
-// used for the inbound side.
+// inbound 's context. It lands under the same label the request log used
+// for the inbound side.
 func TimelineProxyObserver(tl *reqtimeline.Recorder) httpobs.Observer {
 	return func(req *http.Request, status int, start time.Time, dur time.Duration) {
 		who := callerLabel(req)
@@ -130,8 +132,9 @@ func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.Dis
 
 // TimelineExchangeObserver adapts the timeline ring onto ghclient's
 // transport-level exchange observer, so every call the mirror's own GitHub
-// client makes is charted — per real attempt, under the same bounded route
-// lanes the proxied traffic uses. Wired in cmd/server next to SetRateObserver.
+// client makes is charted. Every call per real attempt, under the same bounded
+// route lanes the proxied traffic uses. Wired in cmd/server next to
+// SetRateObserver.
 func TimelineExchangeObserver(tl *reqtimeline.Recorder) ghclient.ExchangeObserver {
 	return func(identity, name, method, path string, status int, start time.Time, dur time.Duration) {
 		disp := dispInternal
@@ -175,15 +178,15 @@ type timelineResponse struct {
 	Now            string `json:"now"`
 }
 
-// handleTimeline returns the timed traffic events for the dashboard's
-// Timeline chart. Admin-only, like /api/requests — it spans every
-// actor/tenant. read shapes, all answering the same payload:
+// handleTimeline returns the timed traffic events for the dashboard's Timeline chart. Admin-only, like /api/requests — it spans every actor/tenant. It reads these query shapes, all answering the same payload:
 //
 //	(no params)          the whole retained window
-//	?since=<id>          only events newer than that cursor — the 5s live poll
-//	?from=&to=<unix ms>  the events overlapping a time window — the chart's
+//	?since=<id>          only events newer than that cursor: the 5s live poll
+//	?from=&to=<unix ms>  the events overlapping a time window: the chart's async history loader
 //
-// async history loader.
+// The history loader keeps a paint from decoding the whole 24h ring to draw the hour on screen.
+//
+// since and from/to are mutually exclusive: they answer different questions (what is NEW vs what was HAPPENING), and silently ANDing them would let a history request come back empty. This is because the live cursor had moved past it.
 func (d *dashboard) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return

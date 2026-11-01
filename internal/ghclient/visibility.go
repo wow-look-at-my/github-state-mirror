@@ -1,3 +1,5 @@
+// ownerRepoVisibilityQuery is a consistency-checker-private query, deliberately separate from the cached route's locked orgDataQuery.
+
 package ghclient
 
 import (

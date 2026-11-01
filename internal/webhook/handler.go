@@ -1,3 +1,5 @@
+// Dispatcher is called to process a parsed webhook event.
+
 package webhook
 
 import (
@@ -142,8 +144,8 @@ func localDeliveryID() string {
 }
 
 // writeResult serializes the dispatch outcome as the HTTP response. The status
-// distinguishes "applied" () from a no-op () and an internal error ();
-// the body and headers carry the detail so it shows up in GitHub's delivery UI.
+// distinguishes "applied" () from a no-op () and an internal error (). The body
+// and headers carry the detail so it shows up in GitHub's delivery UI.
 func writeResult(w http.ResponseWriter, result DispatchResult) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-GSM-Disposition", result.Disposition)

@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"testing"
@@ -54,10 +56,10 @@ func (s r2Seeder) commitsListServe(ref string) bool {
 	return ok
 }
 
-// seedCommitCI seeds ref's snapshot of EVERY kind: a push moves them all
-// (the branch points somewhere else afterwards), while the CI deliveries move
-// only the kind they can have changed, so a test asserting on kind alone
-// could not tell those apart.
+// seedCommitCI seeds ref's snapshot of EVERY kind. A push moves them all (the
+// branch points somewhere else afterwards). This happens while the CI
+// deliveries move only the kind they can have changed. A test asserting on
+// kind alone could not tell those apart.
 func (s r2Seeder) seedCommitCI(ref string) {
 	s.t.Helper()
 	for _, kind := range commitCIKinds {
@@ -137,7 +139,7 @@ func (s r2Seeder) seedRun(id int64, status string) {
 
 // TestDispatch_PushToBranch_FlushesOnlyThatRef: a push to branch X flushes
 // X's contents/commits-list/commit-CI rows and the comparisons naming X on
-// either side -- while branch Y's rows, the default-branch (empty-ref) rows,
+// either side. While branch Y's rows, the default-branch (empty-ref) rows,
 // and comparisons not touching X all survive.
 func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -154,11 +156,7 @@ func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 	s.seedCompare("feat...other", "feat", "other")
 	s.seedCompare("main...other", "main", "other")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/feat",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_PushToBranch_FlushesOnlyThatRefJson)))
 
 	assert.False(t, s.contentsServe("feat"), "the pushed branch's contents rows must flush")
 	assert.False(t, s.commitsListServe("feat"), "the pushed branch's commits-list snapshots must flush")
@@ -174,9 +172,9 @@ func TestDispatch_PushToBranch_FlushesOnlyThatRef(t *testing.T) {
 	assert.True(t, s.compareServe("main...other"), "a comparison not naming the pushed branch must survive")
 }
 
-// TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows: a default-branch push
-// owns spellings of the same rows -- the branch name and the empty ref
-// (the default-branch-relative key contents/commits-list use) -- so both
+// TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows. A default-branch push
+// owns spellings of the same rows -- the branch name and the empty ref (the
+// default-branch-relative key contents/commits-list use). This is so both
 // flush, while an unrelated branch's rows survive.
 func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -188,11 +186,7 @@ func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
 		s.seedCommitsList(ref)
 	}
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/main",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_PushToDefaultBranch_FlushesEmptyRefRowsJson)))
 
 	assert.False(t, s.contentsServe("main"), "the default branch's named contents rows must flush")
 	assert.False(t, s.contentsServe(""), "the default branch's empty-ref contents rows must flush too")
@@ -203,7 +197,7 @@ func TestDispatch_PushToDefaultBranch_FlushesEmptyRefRows(t *testing.T) {
 }
 
 // TestDispatch_TagPush_FlushesOnlyThatRef: a refs/tags/T push is a ref move
-// like any other -- T's rows flush per-ref, NOT repo-wide, so branch rows and
+// like any other. T's rows flush per-ref, NOT repo-wide, so branch rows and
 // the default-branch spelling survive.
 func TestDispatch_TagPush_FlushesOnlyThatRef(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
@@ -221,11 +215,7 @@ func TestDispatch_TagPush_FlushesOnlyThatRef(t *testing.T) {
 	s.seedCompare("main...v1.2.3", "main", "v1.2.3")
 	s.seedCompare("main...other", "main", "other")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/tags/v1.2.3",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_TagPush_FlushesOnlyThatRefJson)))
 
 	assert.False(t, s.contentsServe("v1.2.3"), "the pushed tag's contents rows must flush")
 	assert.False(t, s.commitsListServe("v1.2.3"), "the pushed tag's listing must flush")
@@ -271,9 +261,9 @@ func TestDispatch_UnparseablePush_FallsBackRepoWide(t *testing.T) {
 	assert.False(t, s.compareServe("main...feat"), "repo-wide fallback must flush compare docs")
 }
 
-// TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns: a check_run event
+// TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns. A check_run event
 // flushes the commit-CI snapshots for its head_sha AND head_branch spellings
-// plus the sha's workflow-runs pages -- another sha's rows survive both.
+// plus the sha's workflow-runs pages. Another sha's rows survive both.
 func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -311,10 +301,11 @@ func TestDispatch_CheckRun_FlushesNamedRefsAndWorkflowRuns(t *testing.T) {
 }
 
 // TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA: a workflow_job delivery
-// flushes the job sha's workflow-runs pages -- for EVERY action, including
-// the queued the disposition logic drops as ignored, because the
-// invalidation pass runs before it (a queued job is exactly a run the cached
-// listing may not have shown yet).
+// flushes the job sha's workflow-runs pages -- for EVERY action. That
+// TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA is including the queued
+// the disposition logic drops as ignored. This is because the invalidation
+// pass runs before it (a queued job is exactly a run the cached listing may
+// not have shown yet).
 func TestDispatch_WorkflowJob_FlushesWorkflowRunsForSHA(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -354,11 +345,12 @@ func TestDispatch_PullRequest_ClearsPullDiff406(t *testing.T) {
 	assert.True(t, ok, "another PR's 406 verdict must survive")
 }
 
-// TestDispatch_Push_FlushesAlternateRefSpellings: the cached routes key rows
-// by the VERBATIM requested ref, and GitHub also accepts the heads/<name> and
-// refs/heads/<name> spellings on the CI routes, contents ?ref=, commits
-// ?sha=, and compare baseheads -- so a push to main flushes ALL of main's
-// spellings, while an unrelated ref's rows (in any spelling) survive.
+// TestDispatch_Push_FlushesAlternateRefSpellings. Consider the cached routes
+// key rows by the VERBATIM. Those routes requested ref. GitHub also accepts
+// the heads/<name> and refs/heads/<name> spellings on the CI routes, contents
+// ?ref=, commits ?sha=, and compare baseheads. So a push to main flushes ALL
+// of main's spellings, while an unrelated ref's rows (in any spelling)
+// survive.
 func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	dispatcher, _, _, store := setupDispatcher(t)
 	ctx := context.Background()
@@ -373,11 +365,7 @@ func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	s.seedCommitsList("refs/heads/main")
 	s.seedCompare("refs/heads/main...feat", "refs/heads/main", "feat")
 
-	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(`{
-		"ref": "refs/heads/main",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main",
-			"owner": {"login": "org1"}}
-	}`)))
+	dispatcher.Dispatch(ctx, webhook.ParseEvent("push", []byte(testDispatch_Push_FlushesAlternateRefSpellingsJson)))
 
 	assert.False(t, s.commitCIServe("heads/main"), "the heads/<name> commit-CI spelling must flush")
 	assert.False(t, s.commitCIServe("refs/heads/main"), "the refs/heads/<name> commit-CI spelling must flush")
@@ -388,3 +376,15 @@ func TestDispatch_Push_FlushesAlternateRefSpellings(t *testing.T) {
 	assert.False(t, s.commitsListServe("refs/heads/main"), "the refs/heads/<name> commits-list spelling must flush")
 	assert.False(t, s.compareServe("refs/heads/main...feat"), "a comparison naming a qualified spelling must flush")
 }
+
+//go:embed testdata/test-dispatch-push-to-branch-flushes-only-that-ref.json
+var testDispatch_PushToBranch_FlushesOnlyThatRefJson string
+
+//go:embed testdata/test-dispatch-push-to-default-branch-flushes-empty-ref-rows.json
+var testDispatch_PushToDefaultBranch_FlushesEmptyRefRowsJson string
+
+//go:embed testdata/test-dispatch-tag-push-flushes-only-that-ref.json
+var testDispatch_TagPush_FlushesOnlyThatRefJson string
+
+//go:embed testdata/test-dispatch-push-flushes-alternate-ref-spellings.json
+var testDispatch_Push_FlushesAlternateRefSpellingsJson string

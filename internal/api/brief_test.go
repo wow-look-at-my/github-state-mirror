@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"bytes"
 	"compress/gzip"
@@ -14,13 +16,7 @@ import (
 // The property the whole capture rests on: a sampled response body is
 // reduced to keys and TYPES, and no value survives into anything retained.
 func TestJSONSkeletonKeepsNoValues(t *testing.T) {
-	body := []byte(`{
-		"total_count": 2,
-		"secret_token": "ghs_SUPERSECRETVALUE",
-		"login": "octocat",
-		"nested": {"url": "https://api.github.com/x", "flag": true, "missing": null},
-		"items": [{"id": 7, "name": "one"}, {"id": 8, "name": "two"}]
-	}`)
+	body := []byte(testJSONSkeletonKeepsNoValuesJson)
 	sk := jsonSkeleton(body)
 
 	for _, leak := range []string{"ghs_SUPERSECRETVALUE", "octocat", "api.github.com", "true", "7", "one"} {
@@ -45,12 +41,12 @@ func TestJSONSkeletonRefusesNonJSON(t *testing.T) {
 }
 
 // The passthrough proxy relays a caller's own Accept-Encoding to GitHub
-// unchanged, so a captured sample is the WIRE body: a caller that requests
-// gzip (most HTTP libraries do, by default) gets a gzip-encoded sample here.
-// Without decoding it, json.Unmarshal always fails on gzip bytes, the
-// route's shape never records a skeleton, and — because a failed sample never
-// advances lastSampleAt — wantsBody keeps asking forever: the exact "no
-// response outline yet" stall the operator sees no matter how long they wait.
+// unchanged. A captured sample is the WIRE body: a caller that requests gzip
+// (most HTTP libraries do, by default) gets a gzip-encoded sample here. Without
+// decoding it, json.Unmarshal always fails on gzip bytes. The route's shape
+// never records a skeleton, and — because a failed sample never advances
+// lastSampleAt — wantsBody keeps asking forever. The exact "no response
+// outline yet" stall the operator sees no matter how long they wait.
 func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 	s := newShapeStore()
 	route := "/repos/{owner}/{repo}/labels"
@@ -81,13 +77,13 @@ func TestShapeStoreDecodesGzipEncodedPassthrough(t *testing.T) {
 }
 
 // TestShapeStoreNonJSONBodyStopsAskingForever is the regression test for the
-// stall this fix removes: a route whose answer is genuinely never JSON (a
+// stall this fix removes. A route whose answer is genuinely never JSON (a
 // diff/patch representation, a plain-text from requireAuth) used to keep
-// wantsBody returning true on every subsequent passthrough forever, because
-// lastSampleAt only ever advanced inside the "skeleton succeeded" branch. A
-// confirmed-non-JSON sample must resample on the same -minute cadence as a
-// real skeleton, not on every request, and the brief must say so as a
-// permanent fact rather than "not yet captured".
+// wantsBody returning true on every subsequent passthrough forever. This is
+// because lastSampleAt only ever advanced inside the "skeleton succeeded"
+// branch. A confirmed-non-JSON sample must resample on the same -minute
+// cadence as a real skeleton, not on every request. And the brief must say
+// so as a permanent fact rather than "not yet captured".
 func TestShapeStoreNonJSONBodyStopsAskingForever(t *testing.T) {
 	s := newShapeStore()
 	route := "/repos/{owner}/{repo}/pulls/{number}"
@@ -220,9 +216,9 @@ func TestShapeStoreNilSafe(t *testing.T) {
 }
 
 // The brief endpoint end to end: admin-only, and its payload carries both the
-// Markdown deliverable and the structured candidates — built from traffic the
-// router itself recorded, so the wiring (proxy sampling -> shape store ->
-// brief) is exercised rather than mocked.
+// Markdown deliverable and the structured candidates. Built from traffic the
+// router itself recorded. The wiring (proxy sampling -> shape store -> brief)
+// is exercised rather than mocked.
 func TestDashboardBrief_AdminOnlyAndRendersRecordedTraffic(t *testing.T) {
 	svc := configuredAuth(t)
 	router, _, _ := newTestStack(t, svc)
@@ -256,7 +252,7 @@ func TestDashboardBrief_AdminOnlyAndRendersRecordedTraffic(t *testing.T) {
 }
 
 // The template is parsed at init (template.Must), so a syntax error is already
-// a startup panic. What a test still has to cover is EXECUTION: a field
+// a startup panic. What a test still has to cover is EXECUTION. A field
 // renamed out from under the template, or a FuncMap entry dropped, fails only
 // when something renders. Both edges do.
 func TestRenderBriefTemplateExecutes(t *testing.T) {
@@ -307,7 +303,7 @@ func TestRenderBriefTemplateExecutes(t *testing.T) {
 }
 
 // The end-to-end property the whole feature exists for: a route the mirror
-// does not model at all is forwarded, its ANSWER's shape is captured, and that
+// does not model at all is forwarded. Its ANSWER's shape is captured, and that
 // shape lands in the Markdown the button copies -- so "we have no evidence for
 // this route" fixes itself the moment the route sees traffic.
 //
@@ -321,12 +317,7 @@ func TestBrief_CapturesUnroutedRouteAndItsResponseShape(t *testing.T) {
 		}
 		// GitHub's milestone object, URL fields and all.
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{
-			"id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=",
-			"url": "https://api.github.com/repos/o/r/milestones/3",
-			"name": "bug", "color": "f29513", "default": true,
-			"description": "Something isn't working"
-		}`))
+		_, _ = w.Write([]byte(testBrief_CapturesUnroutedRouteAndItsResponseShapeJson))
 	})
 	svc := configuredAuth(t)
 	router, _, _, _ := newTestStackWithGitHub(t, svc, gh)
@@ -353,3 +344,9 @@ func TestBrief_CapturesUnroutedRouteAndItsResponseShape(t *testing.T) {
 		require.NotContains(t, md, leak, "a captured value must never reach the brief")
 	}
 }
+
+//go:embed testdata/test-json-skeleton-keeps-no-values.json
+var testJSONSkeletonKeepsNoValuesJson string
+
+//go:embed testdata/test-brief-captures-unrouted-route-and-its-response-shape.json
+var testBrief_CapturesUnroutedRouteAndItsResponseShapeJson string

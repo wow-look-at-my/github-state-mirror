@@ -1,3 +1,5 @@
+// This file is the whole GET /repos/{owner}/{repo}/contents/{path...} route family: the absorb/render machinery and BOTH Accept shapes the route models.
+
 package api
 
 import (
@@ -26,7 +28,11 @@ import (
 func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	owner := ghdata.NormalizeRepoKey(chi.URLParam(r, "owner"))
 	repo := ghdata.NormalizeRepoKey(chi.URLParam(r, "repo"))
-	path := chi.URLParam(r, "*")
+	path, ok := wildcardParam(r)
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	// Only the default JSON and raw file-body representations are absorbed; any other Accept (html/object, or a mix) passes through.
 	rawAccept := acceptsRawContents(r)
@@ -53,6 +59,13 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token that can read the repo can still lack the contents permission.
+	resourceKey := contentsResourceKey(owner, repo, path, ref)
+	if v, ok := h.subresourceVerdict(r, denyKindContents, resourceKey); ok {
+		h.serveDenyVerdict(w, r, v, true)
+		return
+	}
+
 	now := time.Now()
 	if c, ok, err := h.store.GetCachedContents(r.Context(), owner, repo, path, ref, now); err == nil && ok {
 		h.serveContentsHit(w, r, c, rawAccept)
@@ -75,6 +88,10 @@ func (h *handlers) cachedContents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if v, ok := h.recordSubresourceVerdict(r, owner, repo, denyKindContents, resourceKey, resp, body); ok {
+		h.serveDenyVerdict(w, r, v, false)
+		return
+	}
 	c, absorbed := absorbContents(owner, repo, path, ref, resp.StatusCode, body)
 	if overflow || !absorbed {
 		if rawAccept {
@@ -193,6 +210,9 @@ func absorbContents(owner, repo, path, ref string, status int, body []byte) (ghd
 		if err := json.Unmarshal(trimmed, &f); err != nil {
 			return c, false
 		}
+		if f.Type == "submodule" {
+			return absorbSubmodule(c, trimmed)
+		}
 		if f.Type != "file" || f.Encoding != "base64" || f.Content == nil || f.SHA == "" {
 			return c, false
 		}
@@ -226,7 +246,7 @@ func renderContents(c ghdata.CachedContents) (int, []byte, error) {
 			Name: c.Name, Path: c.Path, Content: c.Content, SHA: c.SHA,
 		})
 		return http.StatusOK, body, err
-	case ghdata.ContentsKindDir:
+	case ghdata.ContentsKindDir, ghdata.ContentsKindSubmodule:
 		return http.StatusOK, []byte(c.Entries), nil
 	case ghdata.ContentsKindMissing:
 		body, err := marshalTrimmed(notFoundJSON{Message: c.Message, Status: "404"})
@@ -236,9 +256,9 @@ func renderContents(c ghdata.CachedContents) (int, []byte, error) {
 	}
 }
 
-// serveContentsHit renders whichever Accept shape the caller asked for; a
+// serveContentsHit renders whichever Accept shape the caller asked for. A
 // stored file row always has base64 content, decodable for a raw-Accept
-// caller too, so there is no partial-row case to fall back from.
+// caller too. There is no partial-row case to fall back from.
 func (h *handlers) serveContentsHit(w http.ResponseWriter, r *http.Request, c ghdata.CachedContents, rawAccept bool) {
 	if rawAccept && c.Kind == ghdata.ContentsKindFile {
 		h.serveContentsRaw(w, r, c, true)
@@ -291,4 +311,30 @@ func acceptsRawContents(r *http.Request) bool {
 		}
 	}
 	return true
+}
+
+// contentsSubmoduleJSON is the trimmed submodule object. submodule_git_url is
+// a pinned exception: it names the submodule and is not a link into the API.
+type contentsSubmoduleJSON struct {
+	Type            string `json:"type"`
+	SubmoduleGitURL string `json:"submodule_git_url"`
+	Size            int64  `json:"size"`
+	Name            string `json:"name"`
+	Path            string `json:"path"`
+	SHA             string `json:"sha"`
+}
+
+// absorbSubmodule stores a submodule object, rendered, in the row's entries.
+func absorbSubmodule(c ghdata.CachedContents, body []byte) (ghdata.CachedContents, bool) {
+	var s contentsSubmoduleJSON
+	if err := json.Unmarshal(body, &s); err != nil || s.SHA == "" || s.SubmoduleGitURL == "" {
+		return c, false
+	}
+	rendered, err := marshalTrimmed(s)
+	if err != nil {
+		return c, false
+	}
+	c.Kind = ghdata.ContentsKindSubmodule
+	c.Name, c.SHA, c.Size, c.Entries = s.Name, s.SHA, s.Size, string(rendered)
+	return c, true
 }

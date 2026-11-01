@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"net/http"
 	"net/http/httptest"
@@ -17,15 +19,7 @@ import (
 
 func defaultCodeQualityUpstream(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write([]byte(`{
-		"state": "configured",
-		"languages": ["javascript-typescript", "python"],
-		"runner_type": "standard",
-		"runner_label": null,
-		"updated_at": "2023-01-01T00:00:00Z",
-		"schedule": "weekly",
-		"ai_findings_option": "on_push"
-	}`))
+	_, _ = w.Write([]byte(defaultCodeQualityUpstreamJson))
 }
 
 const codeQualityTarget = "/repos/org1/repo1/code-quality/setup"
@@ -39,15 +33,7 @@ func TestCachedCodeQualitySetup_MissAbsorbHit(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.codeQualityHits))
 	assertNoURLKeys(t, w1.Body.Bytes())
 	// Every documented field, with the nullables keyed rather than dropped.
-	assert.JSONEq(t, `{
-		"state": "configured",
-		"languages": ["javascript-typescript", "python"],
-		"runner_type": "standard",
-		"runner_label": null,
-		"updated_at": "2023-01-01T00:00:00Z",
-		"schedule": "weekly",
-		"ai_findings_option": "on_push"
-	}`, w1.Body.String())
+	assert.JSONEq(t, testCachedCodeQualitySetup_MissAbsorbHitJson, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", codeQualityTarget, nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -74,7 +60,7 @@ func TestCachedCodeQualitySetup_NotConfiguredIsCacheable(t *testing.T) {
 }
 
 // A write is the ONLY change signal the mirror can see, so proxying must drop
-// the row — otherwise a caller reads its own stale config for the TTL. Every
+// the row. Otherwise a caller reads its own stale config for the TTL. Every
 // write spelling counts: a method that only proxies is a silent staleness hole.
 func TestCachedCodeQualitySetup_ProxiedWriteFlushes(t *testing.T) {
 	for _, method := range []string{"PATCH", "PUT", "DELETE"} {
@@ -136,3 +122,9 @@ func TestCachedCodeQualitySetup_ShapeGuardsPassThrough(t *testing.T) {
 	req.Header.Set("Accept", "application/vnd.github.raw")
 	assert.Empty(t, do(t, router, req).Header().Get(cacheHeader))
 }
+
+//go:embed testdata/default-code-quality-upstream.json
+var defaultCodeQualityUpstreamJson string
+
+//go:embed testdata/test-cached-code-quality-setup-miss-absorb-hit.json
+var testCachedCodeQualitySetup_MissAbsorbHitJson string

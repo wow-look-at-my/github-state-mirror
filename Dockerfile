@@ -1,13 +1,13 @@
-# The binary is built by go-toolchain in CI and downloaded into build/ by the
-# publish-ghcr reusable workflow before this image is built -- it is NOT compiled
-# here. go-toolchain's build is a GOOS=cosmo fat APE: it writes exactly one
-# file, named the bare binary name (server), and no per-platform name such as
+# The binary is built by go-toolchain in CI. The binary downloaded into build/ by
+# the publish-ghcr reusable workflow before this image is built -- it is NOT
+# compiled here. go-toolchain's build is a GOOS=cosmo fat APE. It writes exactly
+# one file, named the bare binary name (server), and no per-platform name such as
 # server_linux_amd64 or server_cosmo_fat.
 #
-# An APE needs a SHELL to start. The kernel refuses the file -- it begins with
-# the DOS/shell magic, not an ELF header -- so a shell runs its boot script,
-# which writes the real header over a copy it stages under /tmp.
-# see https://github.com/wow-look-at-my/gosmopolitan/blob/master/docs/APE-STAGING.md
+# An APE needs a SHELL to start. The kernel refuses the file -- it begins with the
+# DOS/shell magic, not an ELF header -- so a shell runs its boot script. This writes
+# the real header over a copy it stages under /tmp. see
+# https://github.com/wow-look-at-my/gosmopolitan/blob/master/docs/APE-STAGING.md
 #
 # distroless ships no shell, so busybox supplies one. The base stays distroless
 # because it carries the CA certificates every upstream GitHub call needs.
@@ -52,7 +52,7 @@ STOPSIGNAL SIGTERM
 
 USER nonroot
 
-# Through the shell ON PURPOSE. The exec form execve()s the file directly, and
-# the kernel cannot exec an APE -- that ENOEXEC is what left this image unable
-# to start.
+# Through the shell ON PURPOSE. The exec form execve()s the file directly. The
+# kernel cannot exec an APE -- that ENOEXEC is what left this image unable to
+# start.
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/github-state-mirror"]

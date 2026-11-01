@@ -1,3 +1,5 @@
+// gitRefCacheTTL is only the backstop for a missed push delivery; a delivered push applies its own tip.
+
 package api
 
 import (
@@ -18,12 +20,17 @@ import (
 const gitRefCacheTTL = ghdata.GitRefCacheTTL
 
 // cachedGitRef serves ref's tip from a stored snapshot, fetching and
-// absorbing on a miss -- or when the stored snapshot contradicts something
+// absorbing on a miss. Or when the stored snapshot contradicts something
 // else this mirror holds (see the contradiction check below).
 func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
-	ref := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	ref, ok := wildcardParam(r)
+	ref = strings.TrimPrefix(ref, "/")
+	if !ok {
+		h.passthrough(w, r, PassPath)
+		return
+	}
 
 	if !acceptsDefaultJSON(r) {
 		h.passthrough(w, r, PassAccept)
@@ -98,7 +105,7 @@ func (h *handlers) cachedGitRef(w http.ResponseWriter, r *http.Request) {
 
 // gitRefCacheable requires a fully-qualified -part ref; a bare ref answers an ARRAY, a shape this route does not hold.
 func gitRefCacheable(ref string) bool {
-	if ref == "" || strings.ContainsAny(ref, "?#") {
+	if ref == "" || strings.ContainsFunc(ref, isControlRune) {
 		return false
 	}
 	rest, ok := strings.CutPrefix(ref, "refs/")
@@ -124,11 +131,11 @@ type gitRefObjJSON struct {
 	Type string `json:"type"`
 }
 
-// absorbGitRef parses a /git/ref/{ref} into the trimmed document,
-// rendered here so hit and miss serve identical bytes. Reports false --
-// serve verbatim, store nothing -- for any other status, for the ARRAY form
-// (a partial ref, which the route guard already refuses), and for a body
-// missing the ref name or a full-hex object sha.
+// absorbGitRef parses a /git/ref/{ref} into the trimmed document, rendered
+// here so hit and miss serve identical bytes. Reports false -- serve
+// verbatim, store nothing -- for any other status. Those Reports are for
+// the ARRAY form (a partial ref, which the route guard already refuses),
+// and for a body missing the ref name or a full-hex object sha.
 func absorbGitRef(status int, body []byte) (string, bool) {
 	if status != http.StatusOK {
 		return "", false

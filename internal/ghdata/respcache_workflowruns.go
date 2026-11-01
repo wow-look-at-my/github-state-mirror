@@ -1,3 +1,5 @@
+// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as JSON blob, keyed by the exact request (owner, repo, head_sha, per_page, page) -- self-contained answer per page.
+
 package ghdata
 
 import (
@@ -15,16 +17,16 @@ import (
 //
 //	GET /repos/{owner}/{repo}/actions/runs?head_sha=...
 //
-// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as
-// JSON blob, keyed by the exact request (owner, repo, head_sha, per_page,
-// page) -- self-contained answer per page, like the PR-files pages.
-// pr-minder's hasWorkflowRuns zombie probe reads this listing per bot PR and
-// the reconcile hook repeats it fleet-wide, so between CI events the answer
-// is stable. A sha's runs change when its CI moves: status/check_run/
+// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as JSON
+// blob, keyed by the exact request (owner, repo, head_sha, per_page, page)
+// -- self-contained answer per page. Those stores are like the PR-files
+// pages. pr-minder's hasWorkflowRuns zombie probe reads this listing per bot
+// PR. The reconcile hook repeats it fleet-wide, so between CI events the
+// answer is stable. A sha's runs change when its CI moves. Status/check_run/
 // check_suite/workflow_job webhooks flush that sha's rows (workflow_job's
 // head_sha names the row directly) and repository events flush the whole
-// repo; expires_at is the 24h TTL backstop. WHO may read a cached page is
-// the reveal layer's job (internal/api).
+// repo. This also covers expires_at is the 24h TTL backstop. WHO may read a
+// cached page is the reveal layer's job (internal/api).
 
 // GetCachedWorkflowRuns returns the cached trimmed runs document for
 // exact pagination shape, or ("", false) on a miss (no row, or an expired
@@ -99,7 +101,7 @@ func (s *Store) ApplyWorkflowRunToPages(ctx context.Context, owner, repo string,
 }
 
 // patchWorkflowRunsPage replaces run's entry inside a stored page. The
-// page number does not matter: an in-place replacement changes neither the
+// page number does not matter. An in-place replacement changes neither the
 // membership nor the ordering, so whichever page lists the run is the page
 // that holds the new value.
 func patchWorkflowRunsPage(doc string, run StoredWorkflowRunItem) (string, bool) {
@@ -126,9 +128,9 @@ func patchWorkflowRunsPage(doc string, run StoredWorkflowRunItem) (string, bool)
 }
 
 // InvalidateWorkflowRunsCache drops every cached workflow-runs page for a
-// repo -- the repository webhook flush, and the fallback when a CI/job
-// payload carries no head sha. owner/repo are normalized here so callers can
-// pass payload casing.
+// repo. The repository webhook flush, and the fallback when a CI/job payload
+// carries no head sha. owner/repo are normalized here so callers can pass
+// payload casing.
 func (s *Store) InvalidateWorkflowRunsCache(ctx context.Context, owner, repo string) error {
 	return s.qx(ctx).DeleteWorkflowRunsCacheByRepo(ctx, dbgen.DeleteWorkflowRunsCacheByRepoParams{
 		Owner: NormalizeRepoKey(owner), Repo: NormalizeRepoKey(repo),

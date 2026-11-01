@@ -1,3 +1,5 @@
+// Request dispositions recorded for the dashboard's "Requests" view.
+
 package api
 
 import (
@@ -25,7 +27,7 @@ const (
 )
 
 // Passthrough REASONS: WHY a read was forwarded to GitHub uncached. The
-// disposition alone says a route did not serve from state; the reason says
+// disposition alone says a route did not serve from state. The reason says
 // whether that is a caching GAP (a shape worth modeling) or the model working
 // as designed (a shape deliberately left uncacheable).
 const (
@@ -241,9 +243,9 @@ func (l *requestLog) snapshot(limit int) requestLogSnapshot {
 
 // recordPassthrough wraps the GitHub reverse proxy so every request it serves
 // is recorded as a passthrough — with the upstream HTTP status GitHub
-// returned, so the dashboard shows whether the forwarded call succeeded. Used
+// returned. The dashboard shows whether the forwarded call succeeded. Used
 // both as the router's NotFound/MethodNotAllowed fallback and as the GraphQL
-// handler's forward target, so each proxied request is counted exactly
+// handler's forward target. Each proxied request is counted exactly
 // regardless of entry path. observeStatus also times it end-to-end (upstream
 // round-trip plus response streaming) into the timeline ring.
 func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) http.Handler {
@@ -260,10 +262,10 @@ func recordPassthrough(next http.Handler, log *requestLog, shapes *shapeStore) h
 	})
 }
 
-// observeRequest records passthrough's shape. body is nil unless this
-// request was selected for sampling; it is reduced to a skeleton and dropped.
+// observeRequest records passthrough's shape. body is nil unless this request
+// was selected for sampling; it is reduced to a skeleton and dropped.
 // contentEncoding is the upstream response's own Content-Encoding (e.g.
-// "gzip") — body is the WIRE bytes, not decoded, since the passthrough proxy
+// "gzip"). Body is the WIRE bytes, not decoded, since the passthrough proxy
 // relays a caller's Accept-Encoding to GitHub unchanged (see decodeSample).
 func (s *shapeStore) observeRequest(r *http.Request, route string, status int, contentType, contentEncoding string, body []byte) {
 	if s == nil {
@@ -338,12 +340,12 @@ type callerIdent struct {
 }
 
 // callerLabel derives a best-effort, display-only caller identity for a
-// request. It never makes a network call: it uses the actor (and its verified
+// request. It never makes a network call. It uses the actor (and its verified
 // display name) already resolved by requireAuth when present (the
 // cached-endpoint path), else the App id from an X-Mirror-Identity assertion
-// (decoded WITHOUT verifying — a forged header only mislabels a metric row,
-// never a security boundary; deliberately NO name, names require
-// verification), else a short token fingerprint, else "anonymous".
+// (decoded WITHOUT verifying. A forged header only mislabels a metric row,
+// never a security boundary. This also covers deliberately NO name, names
+// require verification), else a short token fingerprint, else "anonymous".
 func callerLabel(r *http.Request) callerIdent {
 	ctx := r.Context()
 	if a := actor.FromContext(ctx); a != "" {

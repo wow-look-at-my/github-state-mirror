@@ -1,3 +1,5 @@
+// SearchIssuesCacheTTL is short.
+
 package ghdata
 
 import (
