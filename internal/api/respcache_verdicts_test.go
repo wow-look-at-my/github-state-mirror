@@ -36,6 +36,33 @@ func TestCachedCommitCI_ForbiddenIsPerCaller(t *testing.T) {
 	assert.Equal(t, "miss", do(t, router, authedReq("GET", "/repos/org1/repo1/commits/main/check-runs?per_page=100&page=12", nil)).Header().Get(cacheHeader))
 }
 
+// A token refusal is about that token, not its user: another token of the same user must still reach GitHub.
+func TestCachedCommitCI_TokenRefusalStaysWithTheToken(t *testing.T) {
+	router, _, _, u := commitCIStack(t)
+	const pat = "fine-grained-pat"
+	u.checkRuns = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer "+pat {
+			writeStatus(w, http.StatusForbidden, `{"message":"Resource not accessible by personal access token","status":"403"}`)
+			return
+		}
+		writeStatus(w, http.StatusOK, `{"total_count":0,"check_runs":[]}`)
+	}
+	target := "/repos/org1/repo1/commits/" + shaTip + "/check-runs?per_page=100"
+	asPAT := func() *http.Request {
+		req := authedReq("GET", target, nil)
+		req.Header.Set("Authorization", "Bearer "+pat)
+		return req
+	}
+
+	for i, want := range []string{"miss", "hit"} {
+		w := do(t, router, asPAT())
+		require.Equal(t, http.StatusForbidden, w.Code)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "the refusal is stored for the token that earned it, request %d", i)
+	}
+	w := do(t, router, authedReq("GET", target, nil))
+	require.Equal(t, http.StatusOK, w.Code, "the same user's other token is not refused on the PAT's account: %s", w.Body.String())
+}
+
 func TestCachedReadme_LegalBlockIsStored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.readme = func(w http.ResponseWriter, _ *http.Request) {
