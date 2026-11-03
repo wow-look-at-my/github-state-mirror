@@ -111,7 +111,7 @@ The service has **no static service token**. API requests authenticate with the 
 ## Building
 
 ```sh
-npm ci && npm run build   # dashboard JS — the Go embed needs it on disk
+npm ci && just build   # dashboard JS — the Go embed needs it on disk
 go-toolchain
 ```
 
@@ -119,13 +119,13 @@ Binary is output to `build/server` (a GOOS=cosmo fat APE covering linux/amd64, d
 
 Start it through a shell (`sh build/server`): the kernel cannot exec an APE directly. The shell runs the boot script, which stages a runnable copy under `/tmp`. The container image does the same thing, which is why it carries busybox.
 
-`npm run test:image` builds the image, starts it, and requires it to serve. It needs docker and the binary above, and CI gates the GHCR publish on it.
+`just test-image` builds the image, starts it, and requires it to serve. It needs docker and the binary above, and CI gates the GHCR publish on it.
 
-The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `npm run build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
+The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `just build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 
 ```sh
 npm ci        # first time only
-npm run build # tsc: src/*.ts -> assets/*.js (required before go-toolchain)
+just build # tsc: src/*.ts -> assets/*.js (required before go-toolchain)
 ```
 
 CI builds the JS itself in every job that needs it, and `web-check` fails if any generated `.js` is ever committed. A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.

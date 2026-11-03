@@ -20,4 +20,4 @@ The skeletons above are what THIS fleet actually received — the authority on w
 - `internal/ghdata/respcache_<route>.go` — the store methods.
 - `internal/api/respcache_<route>.go` — the handler (guard → show → hit → fetch → absorb → rebuild) and `internal/api/router.go` — the registration.
 - `internal/sync/webhook.go` — the invalidation, wired into `invalidateResponseCaches` / `invalidateForPush`.
-- Tests: a hit/miss pair, the shape-guard passthroughs, the invalidation, and the no-URL-keys assertion. Then `npm run build && go-toolchain`.
+- Tests: a hit/miss pair, the shape-guard passthroughs, the invalidation, and the no-URL-keys assertion. Then `just build && go-toolchain`.
