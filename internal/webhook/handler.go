@@ -1,3 +1,5 @@
+// Dispatcher is called to process a parsed webhook event.
+
 package webhook
 
 import (

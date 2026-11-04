@@ -1,3 +1,5 @@
+// Storage for GET /user/repos, cached VERBATIM.
+
 package ghdata
 
 import (

@@ -1,3 +1,5 @@
+// doJSON's transient-failure retry policy.
+
 package ghclient
 
 import (

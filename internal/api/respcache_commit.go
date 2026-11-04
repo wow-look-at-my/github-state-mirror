@@ -1,3 +1,5 @@
+// The commit read, GET /repos/{owner}/{repo}/commits/{ref}, and the branches whose tip a commit is, .../commits/{sha}/branches-where-head.
+
 package api
 
 import (

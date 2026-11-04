@@ -1,5 +1,7 @@
 package database
 
+import _ "embed"
+
 import (
 	"path/filepath"
 	"strings"
@@ -19,7 +21,7 @@ func TestScrubSQL(t *testing.T) {
 		{"block comment", "CREATE /* aside */ TABLE t (a TEXT);", "CREATE TABLE t(a TEXT);"},
 		{"unterminated block comment", "CREATE TABLE t (a TEXT); /* dangling", "CREATE TABLE t(a TEXT);"},
 		{"whitespace collapses", "CREATE\n\tTABLE   t (a\tTEXT);", "CREATE TABLE t(a TEXT);"},
-		{"reflowed around punctuation", "CREATE TABLE t(\n\ta TEXT ,\n\tb TEXT\n) ;", "CREATE TABLE t(a TEXT,b TEXT);"},
+		{"reflowed around punctuation", testScrubSQLSql, "CREATE TABLE t(a TEXT,b TEXT);"},
 		{"a comment cannot fuse its neighbours", "a--note\nb", "a b"},
 		{"-- inside a string literal is data", "DEFAULT 'a -- b'", "DEFAULT 'a -- b'"},
 		{"/* inside a string literal is data", "DEFAULT 'a /* b'", "DEFAULT 'a /* b'"},
@@ -40,7 +42,7 @@ func TestSchemaFingerprint_TracksStructureNotProse(t *testing.T) {
 
 	assert.Equal(t, schemaFingerprint(base), schemaFingerprint("CREATE TABLE t (a TEXT); -- holds a DIFFERENT thing\n"),
 		"rewording a comment must not nuke a fleet's cache")
-	assert.Equal(t, schemaFingerprint(base), schemaFingerprint("CREATE TABLE t (\n\ta TEXT\n); -- holds a thing\n"),
+	assert.Equal(t, schemaFingerprint(base), schemaFingerprint(testSchemaFingerprint_TracksStructureNotProseSql),
 		"reindenting must not nuke either")
 	assert.NotEqual(t, schemaFingerprint(base), schemaFingerprint("CREATE TABLE t (a TEXT, b TEXT); -- holds a thing\n"),
 		"a new column MUST nuke -- deploying one against the old table is the breakage this prevents")
@@ -82,3 +84,9 @@ func TestOpen_CommentOnlySchemaChangeKeepsTheCache(t *testing.T) {
 
 	assert.Equal(t, 1, count, "the row must survive: nothing about the tables changed")
 }
+
+//go:embed testdata/test-scrub-sql.sql
+var testScrubSQLSql string
+
+//go:embed testdata/test-schema-fingerprint-tracks-structure-not-prose.sql
+var testSchemaFingerprint_TracksStructureNotProseSql string

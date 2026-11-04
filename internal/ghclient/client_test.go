@@ -77,8 +77,8 @@ func TestResolveTokenIdentity_BadCredential(t *testing.T) {
 }
 
 // TestResolveTokenIdentity_NotAUserVerdictCached: a plain (no rate-limit
-// headers) or a is a DEFINITIVE "not a user" answer (e.g. an installation
-// token) — returned as IsUser=false, not an error, and cached per token.
+// headers) or a is a DEFINITIVE "not a user" answer (a token with
+// no user behind it) — returned as IsUser=false, not an error, and cached per token.
 func TestResolveTokenIdentity_NotAUserVerdictCached(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
 		callCount := 0
@@ -88,7 +88,7 @@ func TestResolveTokenIdentity_NotAUserVerdictCached(t *testing.T) {
 			w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 		})
 
-		ctx := WithToken(context.Background(), "ghs_installation-token")
+		ctx := WithToken(context.Background(), "machine-token")
 		ident, err := c.ResolveTokenIdentity(ctx)
 		require.NoError(t, err, "status %d", status)
 		assert.False(t, ident.IsUser)

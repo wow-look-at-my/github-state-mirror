@@ -1,3 +1,5 @@
+// Installation is a GitHub App installation (the app installed on account).
+
 package ghclient
 
 import (

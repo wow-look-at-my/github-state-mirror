@@ -1,3 +1,5 @@
+// IsFullHexSHA reports whether s is a full-length (or) lowercase hex object id.
+
 package ghdata
 
 import (

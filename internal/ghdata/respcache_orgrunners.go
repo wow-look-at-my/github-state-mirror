@@ -1,3 +1,5 @@
+// State for GET /orgs/{org}/actions/runners; see docs/cache/rest-routes.md.
+
 package ghdata
 
 import (

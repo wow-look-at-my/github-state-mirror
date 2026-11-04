@@ -1,3 +1,5 @@
+// A `status` delivery carries the whole status it announces.
+
 package ghdata
 
 import (

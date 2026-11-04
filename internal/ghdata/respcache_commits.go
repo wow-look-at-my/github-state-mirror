@@ -1,3 +1,5 @@
+// The listed commits live in the SAME global git_commits_cache rows that the git-commit route and push payloads maintain.
+
 package ghdata
 
 import (

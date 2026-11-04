@@ -1,3 +1,5 @@
+// These clocks live here since both writers (fetch-on-miss and the rewriting delivery) need the same clock for a fresh answer.
+
 package ghdata
 
 import (

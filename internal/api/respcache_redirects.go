@@ -1,3 +1,5 @@
+// The cached redirects: Actions log downloads.
+
 package api
 
 import (

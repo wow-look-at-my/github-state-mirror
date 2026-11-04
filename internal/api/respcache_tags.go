@@ -1,3 +1,5 @@
+// The cached tags listing, GET /repos/{owner}/{repo}/tags.
+
 package api
 
 import (

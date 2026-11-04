@@ -1,3 +1,5 @@
+// CheckRunCacheTTL bounds a stale answer when no delivery ever reaches this run's terminal state.
+
 package ghdata
 
 import (

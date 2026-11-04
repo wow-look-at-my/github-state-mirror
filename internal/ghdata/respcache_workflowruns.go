@@ -1,3 +1,5 @@
+// A workflow_runs_cache row stores the ALREADY-TRIMMED runs document as JSON blob, keyed by the exact request (owner, repo, head_sha, per_page, page) -- self-contained answer per page.
+
 package ghdata
 
 import (

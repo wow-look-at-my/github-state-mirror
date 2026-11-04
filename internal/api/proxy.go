@@ -1,3 +1,5 @@
+// newGitHubProxy reverse-proxies uncached requests to GitHub verbatim, rejecting a request with no Authorization header.
+
 package api
 
 import (

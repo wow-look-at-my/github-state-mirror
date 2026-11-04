@@ -1,3 +1,5 @@
+// A small GraphQL reader for the cached query shapes.
+
 package api
 
 import (

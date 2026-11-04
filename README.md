@@ -47,9 +47,9 @@ Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign
 
   Nothing is deliberately hidden. On it, each with its **real measured duration**: every incoming webhook delivery try, verified or not (`⇐ push`, `⇐ pull_request`, …. This also covers rejected/unverified deliveries on the fixed `⇐ (unverified)` lane — untrusted headers never mint lanes). This also covers every inbound data-API request the mirror serves, timed end-to-end — cache hits, misses, passthroughs, writes, errors. One lane per route shape (`GET /repos/{owner}/{repo}/pulls`, `POST /graphql`, …).
 
-  This also covers the mirror→GitHub leg of every cached-route miss (`upstream`) and every show probe (`probe`). This also covers every call the mirror's own GitHub client makes. Identity resolution, app verification, token mints, fleet-refresh and consistency-check GraphQL, rate-limit polls — one event per real try (`internal`). This also covers the github.com login relays (`relay`). This also covers every outbound subscriber-notification try (`⇒ notify`, with status/attempt/final).
+  This also covers the mirror→GitHub leg of every cached-route miss (`upstream`) and every show probe (`probe`). This also covers every call the mirror's own GitHub client makes. Identity resolution, app verification, token mints, fleet-refresh and consistency-check GraphQL, rate-limit polls — one event per real try (`internal`). This also covers the github.com login relays (`relay`). This also covers every outbound subscriber-notification try (`⇒ notify`, with status/try/last).
 
-  The uncharted surface, stated openly: the dashboard's own UI endpoints — the chart polling itself will recursively fill the chart with the act of viewing it. Failures (rejected deliveries, dispatch errors, upstream 5xx, failed notify attempts) are emphasized. `ignored` deliveries render dim. Ms-scale events render as instant pips at wide zooms and re-promote to bars zoomed in. Tooltips carry the delivery/actor/attempt detail.
+  The uncharted surface, stated openly: the dashboard's own UI endpoints — the chart polling itself will recursively fill the chart with the act of viewing it. Failures (rejected deliveries, dispatch errors, upstream 5xx, failed notify attempts) are emphasized. `ignored` deliveries render dim. Ms-scale events render as instant pips at wide zooms and re-promote to bars zoomed in. Tooltips carry the delivery/actor/try detail.
 
   The backing ring keeps the **last many hours** (plus a 100k-event cap) in memory — like the request log, a live view that resets on start.
 - **Admins can browse and audit global truth.** The Principals tab carries truth-wide actions:
@@ -62,7 +62,7 @@ Visit the service root (e.g. `https://github-state-mirror.pazer.io/`) and **sign
 
     The report includes `truth_freshness`: per owner, the most recent org list-sync any principal ran. It needs a configured GitHub App. Without one the action reports "unavailable". Owners the app is not installed on are listed as skipped rather than reported as missing.
   - **Reconcile** runs the same check. Reconcile then **corrects** the drift from the same fetched snapshot (`POST /api/cache/check?apply=true`, behind a confirmation). Missing repos/open PRs are absorbed into truth (grants recorded under the installation principal), stale cached-open PRs are deleted. `visibility` / `default_branch_status` / `auto_merge_method` are set from GitHub's answers **including nulls** the COALESCE upserts can never write. A poisoned CI rollup (a ghost PENDING `commit_checks` row whose completion delivery was missed) is fixed by deleting the contradicted rows and setting GitHub's verdict — a correction that survives the next PR webhook. The response is the normal report plus an `applied` tally per action. A plain GET stays strictly read-only. Both actions stream live NDJSON progress (`?stream=1`) so the modal shows a per-owner, per-page progress bar instead of sitting silent. For the minutes a fleet run takes.
-- **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's bearer-token + reveal model. The principal→display-name mapping (`actor_identities`: a user's login, an app's slug, or an installation's account login) exists purely so the UI can attribute principals. It is written by `requireAuth`, the self-verifying app-JWT routes (token mint, repo installation), and the background refresher's installations listing — never by extra GitHub calls.
+- **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's bearer-token + show model. The principal→display-name mapping (`actor_identities`: a user's login, an app's slug, or an installation's account login) exists purely so the UI can attribute principals. `requireAuth` writes it, the self-verifying app-JWT routes (token mint, repo installation), and the background refresher's installations listing — never by extra GitHub calls.
 - **Separate from the data API.** Dashboard authorization is by GitHub login (an OAuth session cookie), distinct from the data API's bearer-token + show model. The principal→display-name mapping (`actor_identities`: a user's login, an app's slug, or an installation's account login) exists purely so the UI can attribute principals. Requ writes itireAuth`, the self-verifying app-JWT routes (token mint, repo installation), and the background refresher's installations listing — never by extra GitHub calls.
 
 Dashboard routes (session-cookie auth, not bearer tokens):
@@ -120,13 +120,13 @@ Binary is output to `build/server` (a GOOS=cosmo fat APE covering linux/amd64, d
 
 Start it through a shell (`sh build/server`): the kernel cannot exec an APE directly. The shell runs the boot script, which stages a runnable copy under `/tmp`. The container image does the same thing, which is why it carries busybox.
 
-`npm run test:image` builds the image, starts it, and requires it to serve. It needs docker and the binary above, and CI gates the GHCR publish on it.
+`just test-image` builds the image, starts it, and requires it to serve. It needs docker and the binary above, and CI gates the GHCR publish on it.
 
 The dashboard front-end's only source is TypeScript, under `internal/api/web/src/`. `just build` compiles it to `internal/api/web/assets/*.js` — a build output, gitignored and never committed — which `//go:embed` then bakes into the binary. Build the JS before building the server:
 
 ```sh
 npm ci        # first time only
-just build    # tsc: src/*.ts -> assets/*.js (required before go-toolchain)
+just build # tsc: src/*.ts -> assets/*.js (required before go-toolchain)
 ```
 
 CI builds the JS itself in every job that needs it, and `web-check` fails if any generated `.js` is ever committed. A `preview` job deploys a standalone, backend-free styling preview of the dashboard to buildhost for each branch, served at `https://sites.pazer.build/github-state-mirror/branch/<branch>/`.

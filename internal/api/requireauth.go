@@ -1,3 +1,5 @@
+// This file is the data API's front door: who is asking.
+
 package api
 
 import (
@@ -114,7 +116,10 @@ func bearerToken(r *http.Request) string {
 	if auth == "" {
 		return ""
 	}
-	token := strings.TrimPrefix(auth, "Bearer ")
-	token = strings.TrimPrefix(token, "token ")
-	return strings.TrimSpace(token)
+	// An auth scheme is case-insensitive (RFC 7235). Octokit sends a JWT-shaped token,
+	// such as a new-format installation token, as "bearer <token>".
+	if scheme, rest, ok := strings.Cut(auth, " "); ok && (strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "token")) {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(auth)
 }

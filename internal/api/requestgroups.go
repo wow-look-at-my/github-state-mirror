@@ -1,3 +1,5 @@
+// Request grouping for the dashboard's Requests tab: a cumulative per-(method, route-shape) counter, live on the requestLog.
+
 package api
 
 import (

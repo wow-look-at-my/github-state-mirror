@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"bytes"
 	"encoding/json"
@@ -13,45 +15,9 @@ import (
 )
 
 // THE CLIENT MUST NOT FALL BACK.
-//
-// /api/timeline serves encodings: the columnar payload to a caller that names its
-// media type, readable JSON to everyone else. The JSON is only safe because the
-// CHART REFUSES IT. An earlier version took whatever came back, so an Accept that
-// drifted silently cost ~10x the frames with nothing logged.
-//
-// The refusal is therefore what lets the JSON exist at all. This drives the
-// REAL BUILT module under node against a stubbed fetch rather than trusting a
-// comment to hold it.
 
-const nodeClientStrict = `
-// The module registers a custom element at import time; stub the two DOM
-// globals that costs so the shipped file needs no test-only accommodation.
-globalThis.HTMLElement = class {};
-globalThis.customElements = { define() {} };
-
-// A response the SERVER legitimately produces — this is exactly what
-// handleTimeline answers a caller that did not name the wire type.
-const jsonBody = JSON.stringify({ events: [], max_id: 0, retention_start: "", now: "" });
-let sentAccept = null;
-globalThis.fetch = async (_url, init) => {
-    sentAccept = init?.headers?.Accept ?? null;
-    return {
-        ok: true,
-        headers: { get: (k) => (k.toLowerCase() === "content-type" ? "application/json" : null) },
-        json: async () => JSON.parse(jsonBody),
-        arrayBuffer: async () => new TextEncoder().encode(jsonBody).buffer,
-    };
-};
-
-const { fetchTimelineBytes } = await import("%s");
-let threw = false;
-try {
-    await fetchTimelineBytes("/api/timeline");
-} catch (e) {
-    threw = true;
-}
-process.stdout.write(JSON.stringify({ threw, sentAccept }));
-`
+//go:embed testdata/node-client-strict.js
+var nodeClientStrict string
 
 func TestTimelineClientRefusesJSON(t *testing.T) {
 	module, err := filepath.Abs("web/assets/timeline.js")

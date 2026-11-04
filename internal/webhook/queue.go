@@ -1,3 +1,5 @@
+// Stored is a verified delivery as the journal keeps it: enough to parse and apply it again.
+
 package webhook
 
 import (

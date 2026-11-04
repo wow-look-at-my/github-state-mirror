@@ -1,3 +1,5 @@
+// gh reads a host that is not github.com as GitHub Enterprise Server.
+
 package api
 
 import (

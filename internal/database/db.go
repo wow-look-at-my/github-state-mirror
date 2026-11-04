@@ -1,3 +1,5 @@
+// schemaSQL is the whole schema: created together, fingerprinted together.
+
 package database
 
 import (

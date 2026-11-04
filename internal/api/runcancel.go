@@ -1,3 +1,5 @@
+// runCancelRefusal is the body of every refused cancel, shaped like a GitHub error.
+
 package api
 
 import (

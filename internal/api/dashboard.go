@@ -1,3 +1,5 @@
+// contentAsset is an embedded asset served at a content-addressed URL.
+
 package api
 
 import (
@@ -219,20 +221,8 @@ func (d *dashboard) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.auth.AuthCodeURL(d.redirectURI(r), state), http.StatusFound)
 }
 
-// signinFailedHTML is the page every callback failure renders. Fixed content
-// only — no user-controlled text ever lands in it (details belong in the logs),
-// so it is injection-proof by construction. The retry link points at /login,
-// which mints a fresh state cookie and restarts the flow cleanly.
-const signinFailedHTML = `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Sign-in failed</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem;">
-<h1>Sign-in failed</h1>
-<p>Sign-in could not be completed.</p>
-<p><a href="/login">Try signing in again</a></p>
-</body>
-</html>
-`
+//go:embed signin-failed-html.html
+var signinFailedHTML string
 
 // signinFailed answers a callback failure with the retry page at 4xx, NEVER 5xx.
 // See docs/dashboard/dashboard.md for why.

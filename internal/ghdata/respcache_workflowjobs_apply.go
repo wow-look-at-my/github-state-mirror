@@ -1,3 +1,5 @@
+// A `workflow_job` delivery carries the whole job object, so a moving job rewrites entry rather than dropping the page.
+
 package ghdata
 
 import (

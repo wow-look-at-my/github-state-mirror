@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"context"
 	"net/http"
@@ -31,12 +33,7 @@ func TestCachedRepoInstallation_HitAndFlush(t *testing.T) {
 	require.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, "miss", w1.Header().Get(cacheHeader))
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `{
-		"id": 42,
-		"account": {"login": "org1", "type": "Organization"},
-		"repository_selection": "all",
-		"app_id": 777, "app_slug": "testapp", "target_type": "Organization"
-	}`, w1.Body.String())
+	assert.JSONEq(t, testCachedRepoInstallation_HitAndFlushJson, w1.Body.String())
 
 	w2 := get(goodAppJWT)
 	require.Equal(t, http.StatusOK, w2.Code)
@@ -192,3 +189,6 @@ func TestCachedOwnerInstallation_UnverifiedForwards(t *testing.T) {
 	assert.Empty(t, w.Header().Get(cacheHeader))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.installHits))
 }
+
+//go:embed testdata/test-cached-repo-installation-hit-and-flush.json
+var testCachedRepoInstallation_HitAndFlushJson string

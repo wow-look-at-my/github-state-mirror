@@ -24,7 +24,7 @@ Reports whether the row carries a live push-invalidated-sha marker (both columns
 
 ## staleShaOffered
 
-Reports whether `offered` is exactly the test-merge sha a recent push invalidated on the existing row — presumed pre-push. This is because the push moved the PR's base or head and a tip change always changes the sha of a SUCCESSFUL test merge. Deliberately raw: the exemptions that can overrule the presumption — the push-tip proof (`pushProvenPostPush`) and the dirty-retained CONFLICTING pattern (`conflictingPastReplicaLag`). It are applied by the absorbing callers, not here.
+Reports whether `offered` is exactly the test-merge sha a recent push invalidated on the existing row — presumed pre-push. This is because the push moved the PR's base or head and a tip change always changes the sha of a SUCCESSFUL test merge. Deliberately raw: the exemptions that can overrule the presumption — the push-tip proof (`pushProvenPostPush`) and the dirty-retained CONFLICTING pattern (`conflictingPastReplicaLag`). The absorbing callers apply it, not here.
 
 ## PRMergeShaStale
 

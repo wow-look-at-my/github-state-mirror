@@ -1,3 +1,5 @@
+// corsMiddleware adds CORS headers so browser apps on other origins (e.g. the repo-nightmare PR viewer served from GitHub Pages) can call the mirror's API.
+
 package api
 
 import (

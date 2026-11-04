@@ -1,3 +1,5 @@
+// defaultCacheMaxRows matches ghdata.CacheMaxRows' own initializer, pinned by TestCacheMaxRowsDefaultMatchesGhdata.
+
 package config
 
 import (

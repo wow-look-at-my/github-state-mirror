@@ -1,3 +1,5 @@
+// pullDiff406TTL backstops a stale verdict; webhooks flush sooner.
+
 package api
 
 import (

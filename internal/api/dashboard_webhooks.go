@@ -1,3 +1,5 @@
+// The dashboard's Webhooks tab: the delivery log, plus the check for event subscriptions the mirror depends on and has not seen.
+
 package api
 
 import (

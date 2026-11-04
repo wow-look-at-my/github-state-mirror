@@ -1,3 +1,5 @@
+// Storage layer for the cached commit-CI routes (status, check-runs, statuses list).
+
 package ghdata
 
 import (

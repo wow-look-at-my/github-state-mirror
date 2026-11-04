@@ -6,7 +6,7 @@ The contract these all obey (show gate, absorb-and-rebuild, no URL keys, explici
 
 ## The identical-or-passthrough rule (internal/api/proxy_test.go)
 
-An endpoint is either served byte-same to GitHub (from a verbatim cache, or a live forward) or it is not cached at all. Never a trimmed subset a consumer can read a dropped field from. `/user`, `/compare`, and `/pulls/{n}/files` were all, at different points, cached with a trim that broke or will break a consumer. Each was fixed by keeping the rule rather than relitigating it. `/compare` and `/pulls/{n}/files` are tier-2 routes whose rebuilds preserve the consumer-read fields exactly (`respcache_compare_test.go`, `respcache_pullfiles_test.go`). `/user` (and `/app`, `/user/orgs` alongside it) cache the upstream body VERBATIM, byte for byte.
+An endpoint is either served byte-same to GitHub (from a verbatim cache, or a live forward) or it is not cached at all. Never a trimmed subset a consumer can read a dropped field from. `/user`, `/compare`, and `/pulls/{n}/files` were all, at different points, cached with a trim that broke or will break a consumer. Keeping the rule rather than relitigating it fixed each. `/compare` and `/pulls/{n}/files` are tier-2 routes whose rebuilds preserve the consumer-read fields exactly (`respcache_compare_test.go`, `respcache_pullfiles_test.go`). `/user` (and `/app`, `/user/orgs` alongside it) cache the upstream body VERBATIM, byte for byte.
 
 They no longer guess a field subset. See `respcache_identity_test.go` for the hit/miss byte-identity proof.
 

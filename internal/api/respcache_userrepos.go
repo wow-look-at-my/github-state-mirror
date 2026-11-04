@@ -1,3 +1,5 @@
+// Implements the cached GET /user/repos listing, distinct from the org-repos GraphQL tier- query.
+
 package api
 
 import (

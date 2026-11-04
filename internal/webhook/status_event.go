@@ -1,3 +1,5 @@
+// StatusEvent keeps GitHub's own field spelling, unlike ParseCheckPayload's normalized truth-side reading of the same body.
+
 package webhook
 
 import (

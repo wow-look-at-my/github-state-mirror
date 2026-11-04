@@ -1,3 +1,5 @@
+// RulesetPayload is what a repository_ruleset delivery says: which ruleset changed, and where it lives.
+
 package webhook
 
 import (

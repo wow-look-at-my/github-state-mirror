@@ -1,5 +1,7 @@
 package api
 
+import _ "embed"
+
 import (
 	"encoding/json"
 	"net/http"
@@ -92,23 +94,13 @@ func TestCachedContents_DirListing(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.contents = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`[
-			{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1",
-			 "url":"https://api.github.com/a","html_url":"https://github.com/a","git_url":"https://g","download_url":"https://d",
-			 "_links":{"self":"https://api.github.com/a"}},
-			{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2",
-			 "url":"https://api.github.com/b","html_url":"https://github.com/b","git_url":"https://g2","download_url":null,
-			 "_links":{"self":"https://api.github.com/b"}}
-		]`))
+		_, _ = w.Write([]byte(testCachedContents_DirListingJson))
 	}
 
 	w1 := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/dir", nil))
 	require.Equal(t, http.StatusOK, w1.Code)
 	assertNoURLKeys(t, w1.Body.Bytes())
-	assert.JSONEq(t, `[
-		{"type":"file","size":12,"name":"a.txt","path":"dir/a.txt","sha":"s1"},
-		{"type":"dir","size":0,"name":"sub","path":"dir/sub","sha":"s2"}
-	]`, w1.Body.String())
+	assert.JSONEq(t, testCachedContents_DirListingJson2, w1.Body.String())
 
 	w2 := do(t, router, authedReq("GET", "/repos/org1/repo1/contents/dir", nil))
 	assert.Equal(t, "hit", w2.Header().Get(cacheHeader))
@@ -224,10 +216,7 @@ func TestReveal_PublicFastPath(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
 	// A webhook teaches truth the repo exists and is public.
-	postWebhook(t, router, "repository", `{"action":"created","repository":{
-		"name":"pub","full_name":"org1/pub","private":false,"visibility":"public",
-		"html_url":"https://github.com/org1/pub","default_branch":"main",
-		"owner":{"login":"org1"}}}`)
+	postWebhook(t, router, "repository", testReveal_PublicFastPathJson)
 
 	target := "/repos/org1/pub/contents/readme.md"
 	w1 := do(t, router, authedReq("GET", target, nil))
@@ -438,3 +427,12 @@ func TestCachedContents_ForbiddenIsPerCredential(t *testing.T) {
 	w := do(t, router, other)
 	assert.Equal(t, http.StatusOK, w.Code, "another credential must not get the refusal")
 }
+
+//go:embed testdata/test-cached-contents-dir-listing.json
+var testCachedContents_DirListingJson string
+
+//go:embed testdata/test-cached-contents-dir-listing-2.json
+var testCachedContents_DirListingJson2 string
+
+//go:embed testdata/test-reveal-public-fast-path.json
+var testReveal_PublicFastPathJson string

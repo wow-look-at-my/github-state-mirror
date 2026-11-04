@@ -1,3 +1,5 @@
+// CORS is mounted before the auth group, so preflight is answered without a token.
+
 package api
 
 import (

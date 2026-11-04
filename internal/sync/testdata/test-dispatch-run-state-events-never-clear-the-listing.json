@@ -1,0 +1,5 @@
+{
+			"action": "privatized",
+			"repository": {"name": "repo1", "full_name": "org1/repo1", "private": true,
+				"visibility": "private", "owner": {"login": "org1"}}
+		}
