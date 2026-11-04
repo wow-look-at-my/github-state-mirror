@@ -101,12 +101,7 @@ func (h *handlers) reveal(r *http.Request, owner, repo, kind, resourceKey string
 		}
 
 		// . Cached deny verdict for this exact resource.
-		v, ok, err := h.store.GetDenyVerdict(ctx, principal, kind, resourceKey, now)
-		if err != nil {
-			slog.Warn("reveal: deny lookup failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
-			return revealError, ghdata.DenyVerdict{}, false
-		}
-		if ok {
+		if v, ok := h.storedVerdict(r, principal, kind, resourceKey); ok {
 			return revealDenied, v, true
 		}
 	}
@@ -168,10 +163,11 @@ func (h *handlers) probeRepoAccess(r *http.Request, principal, owner, repo, kind
 		//  is keyed to the exact resource, not the repo: GitHub's can't be told apart from a readable repo's missing resource.
 		v := ghdata.DenyVerdict{Status: resp.StatusCode, Message: upstreamErrorMessage(body)}
 		if principal != "" {
-			if err := h.store.RecordDenyVerdict(ctx, principal, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
+			key := verdictKey(r, principal, v.Message)
+			if err := h.store.RecordDenyVerdict(ctx, key, kind, resourceKey, owner, repo, v.Status, v.Message, now); err != nil {
 				slog.Warn("reveal probe: record deny failed", "principal", actor.Short(principal), "repo", owner+"/"+repo, "error", err, principalNameAttr(ctx))
 			}
-			if resp.StatusCode == http.StatusForbidden {
+			if resp.StatusCode == http.StatusForbidden && key == principal {
 				// A is unambiguous about repo access; a stale grant (if
 				// any survived) must go.
 				if err := h.store.RevokeGrant(ctx, principal, owner, repo); err != nil {
