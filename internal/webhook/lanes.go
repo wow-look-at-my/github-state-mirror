@@ -1,3 +1,5 @@
+// lanes.go holds the lanes code.
+
 package webhook
 
 // Lane is the queue a recorded delivery waits in.

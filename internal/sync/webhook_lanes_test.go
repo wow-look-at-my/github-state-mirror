@@ -1,5 +1,7 @@
 package sync
 
+import _ "embed"
+
 import (
 	"context"
 	"path/filepath"
@@ -38,26 +40,21 @@ func TestDispatch_BulkDeliveryNeverMovesPushedAtBack(t *testing.T) {
 		return repo.PushedAt.String
 	}
 
-	dispatch("push", "d-push", []byte(`{
-		"ref": "refs/heads/main",
-		"before": "1111111111111111111111111111111111111111",
-		"after": "2222222222222222222222222222222222222222",
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "default_branch": "main", "pushed_at": 1767225600, "owner": {"login": "org1"}},
-		"head_commit": {"id": "2222222222222222222222222222222222222222", "timestamp": "2026-01-01T00:00:00Z"}
-	}`))
+	dispatch("push", "d-push", []byte(testDispatch_BulkDeliveryNeverMovesPushedAtBackJson))
 	require.Equal(t, "2026-01-01T00:00:00Z", pushedAt())
 
-	dispatch("workflow_job", "d-job-old", []byte(`{
-		"action": "queued",
-		"workflow_job": {"id": 7, "run_id": 9, "status": "queued", "head_sha": "1111111111111111111111111111111111111111"},
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "pushed_at": "2025-12-31T00:00:00Z", "owner": {"login": "org1"}}
-	}`))
+	dispatch("workflow_job", "d-job-old", []byte(testDispatch_BulkDeliveryNeverMovesPushedAtBackJson2))
 	assert.Equal(t, "2026-01-01T00:00:00Z", pushedAt(), "an older view's pushed_at does not land")
 
-	dispatch("workflow_job", "d-job-new", []byte(`{
-		"action": "queued",
-		"workflow_job": {"id": 8, "run_id": 10, "status": "queued", "head_sha": "2222222222222222222222222222222222222222"},
-		"repository": {"name": "repo1", "full_name": "org1/repo1", "pushed_at": "2026-01-02T00:00:00Z", "owner": {"login": "org1"}}
-	}`))
+	dispatch("workflow_job", "d-job-new", []byte(testDispatch_BulkDeliveryNeverMovesPushedAtBackJson3))
 	assert.Equal(t, "2026-01-02T00:00:00Z", pushedAt(), "a newer view's pushed_at lands")
 }
+
+//go:embed testdata/test-dispatch-bulk-delivery-never-moves-pushed-at-back.json
+var testDispatch_BulkDeliveryNeverMovesPushedAtBackJson string
+
+//go:embed testdata/test-dispatch-bulk-delivery-never-moves-pushed-at-back-2.json
+var testDispatch_BulkDeliveryNeverMovesPushedAtBackJson2 string
+
+//go:embed testdata/test-dispatch-bulk-delivery-never-moves-pushed-at-back-3.json
+var testDispatch_BulkDeliveryNeverMovesPushedAtBackJson3 string
