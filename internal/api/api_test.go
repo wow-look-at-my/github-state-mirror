@@ -142,6 +142,7 @@ type testStack struct {
 	// debouncer is nil unless the test asked for passthrough coalescing via
 	debouncer *Debouncer
 	queue     *webhook.Queue
+	meter     *ratemeter.Store
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
@@ -194,7 +195,7 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	debouncer := NewDebouncer(window)
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
 	lat := latency.New()
-	eng := newTestEngine(t, ghSrv.URL, timeline)
+	eng := newTestEngine(t, ghSrv.URL, timeline, meter)
 	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier, eng.Deliveries())
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, eng)
 	webhookQueues.Store(router, testDeliveries{queue: queue, engine: eng.Deliveries()})

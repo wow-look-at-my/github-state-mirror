@@ -78,13 +78,27 @@
 
 		<secret><value name="env.WEBHOOK_SECRET"/></secret>
 
-		<!-- A tag moves by a push to refs/tags, a create or a delete. None of them states the page a tag sits on. -->
+		<!--
+			A push that moves a tag states its new commit. Each stored page
+			that lists the tag gets that sha, and the other pages stay.
+		-->
 		<event type="push" resource="tags_list" clock="repository.pushed_at"
-			when='{{ hasPrefix "refs/tags/" .payload.ref }}'>
+			when='{{ and (hasPrefix "refs/tags/" .payload.ref) (ne .payload.before "0000000000000000000000000000000000000000") (ne .payload.after "0000000000000000000000000000000000000000") }}'>
 			<subject>tags:<value name="payload.repository.full_name"/></subject>
 			<key field="owner">repository.owner.login</key>
 			<key field="repo">repository.name</key>
-			<invalidate reason="the listing is pages of tags in the upstream's order, and the push names one tag"/>
+			<patch match="name" expr='{{ trimPrefix "refs/tags/" .payload.ref }}'>
+				<set field="commit.sha">after</set>
+			</patch>
+		</event>
+
+		<!-- A push that creates or deletes a tag changes the set, and the payload states no page. -->
+		<event type="push" resource="tags_list" clock="repository.pushed_at"
+			when='{{ and (hasPrefix "refs/tags/" .payload.ref) (or (eq .payload.before "0000000000000000000000000000000000000000") (eq .payload.after "0000000000000000000000000000000000000000")) }}'>
+			<subject>tags:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="a created or deleted tag shifts every later page, and the push names only the tag"/>
 		</event>
 
 		<event type="create" resource="tags_list" clock="repository.pushed_at"

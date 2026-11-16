@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	apimirror "github.com/wow-look-at-my/api-mirror/engine"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
@@ -49,9 +50,14 @@ func (l *requestLog) recordEngine(r apimirror.Request) {
 	l.timeline.RecordRequest(r.At, r.Duration, r.Method, normalizeRoute(r.Path), r.Status, disp, who.Key, who.Name)
 }
 
-// TimelineEngineObserver charts every outbound request the engine sends, under the labels the API layer's own client uses.
-func TimelineEngineObserver(tl *reqtimeline.Recorder) func(apimirror.Exchange) {
+// EngineObserver charts every outbound request the engine sends. Those charts are under the labels the API layer's
+// own client uses. Reports each answer's X-RateLimit-* headers to the rate meter, as the API layer's own fetches
+// do.
+func EngineObserver(tl *reqtimeline.Recorder, meter *ratemeter.Store) func(apimirror.Exchange) {
 	return func(x apimirror.Exchange) {
+		if x.Header != nil {
+			meter.Observe(x.Principal, "", &http.Response{Header: x.Header})
+		}
 		disp := dispUpstream
 		switch {
 		case x.Err != nil || x.Status == 0:
