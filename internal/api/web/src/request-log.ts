@@ -277,7 +277,12 @@ if (typeof customElements !== "undefined") {
         private grouped = true;
         private sort: LogSort = "first";
         private filter = "";
+<<<<<<< HEAD
         private hiddenDisps = new Set<string>();
+=======
+        /** Dispositions the user turned off. Not HTMLElement.hidden, hence the name. */
+        private hiddenDisp = new Set<string>();
+>>>>>>> 37e6ac2786d51da12795cf8c60d1427a7d7d62a2
         private limit = PAGE;
         private paused = false;
         private heldWhilePaused = 0;
@@ -338,9 +343,15 @@ if (typeof customElements !== "undefined") {
                 chip.title = "Show or hide " + d + " requests";
                 chip.setAttribute("aria-pressed", "true");
                 chip.addEventListener("click", () => {
+<<<<<<< HEAD
                     const off = !this.hiddenDisps.has(d);
                     if (off) this.hiddenDisps.add(d);
                     else this.hiddenDisps.delete(d);
+=======
+                    const off = !this.hiddenDisp.has(d);
+                    if (off) this.hiddenDisp.add(d);
+                    else this.hiddenDisp.delete(d);
+>>>>>>> 37e6ac2786d51da12795cf8c60d1427a7d7d62a2
                     chip.classList.toggle("off", off);
                     chip.setAttribute("aria-pressed", off ? "false" : "true");
                     this.limit = PAGE;
@@ -444,7 +455,11 @@ if (typeof customElements !== "undefined") {
             // A paused log keeps what is on screen. Only the counters above move.
             if (this.paused) return;
 
+<<<<<<< HEAD
             const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hiddenDisps, limit: this.limit });
+=======
+            const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hiddenDisp, limit: this.limit });
+>>>>>>> 37e6ac2786d51da12795cf8c60d1427a7d7d62a2
             const items: Item[] = this.grouped
                 ? res.groups.map((g) => ({ key: "g" + g.key, event: g.sample, group: g }))
                 : res.events.map((e) => ({ key: "e" + e.seq, event: e, group: null }));
