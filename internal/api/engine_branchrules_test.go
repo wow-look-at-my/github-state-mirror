@@ -136,26 +136,46 @@ func TestEngineBranchRules_PrivateRepoNotRevealed(t *testing.T) {
 }
 
 // Any other refusal is relayed and forgotten.
-func TestEngineBranchRules_RefusalsStoredAndUnstored(t *testing.T) {
-	for _, status := range []int{http.StatusNotFound, http.StatusForbidden} {
-		f := newBranchRulesFixture(t)
-		f.status.Store(int32(status))
-		for i := range 2 {
-			w := f.get(t, branchRulesTarget)
-			require.Equal(t, status, w.Code, "status %d, request %d", status, i)
-		}
-		assert.EqualValues(t, 1, f.calls.Load(), "status %d is answered from the denial", status)
+func TestEngineBranchRules_NotFoundIsStored(t *testing.T) {
+	f := newBranchRulesFixture(t)
+	f.status.Store(http.StatusNotFound)
+	for i, want := range []string{"miss", "hit"} {
+		w := f.get(t, branchRulesTarget)
+		require.Equal(t, http.StatusNotFound, w.Code, "request %d", i)
+		assert.Equal(t, want, w.Header().Get(cacheHeader), "request %d", i)
 	}
-	for _, status := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
-		f := newBranchRulesFixture(t)
-		f.status.Store(int32(status))
-		for i := range 2 {
-			w := f.get(t, branchRulesTarget)
-			assert.Equal(t, status, w.Code, "status %d, request %d", status, i)
-			assert.NotEqual(t, "hit", w.Header().Get(cacheHeader))
-		}
-		assert.EqualValues(t, 2, f.calls.Load(), "status %d is never stored", status)
+	assert.EqualValues(t, 1, f.calls.Load())
+}
+
+func TestEngineBranchRules_ForbiddenIsTheCallersDenial(t *testing.T) {
+	f := newBranchRulesFixture(t)
+	f.status.Store(http.StatusForbidden)
+	for i := range 2 {
+		w := f.get(t, branchRulesTarget)
+		require.Equal(t, http.StatusForbidden, w.Code, "request %d", i)
+		assert.NotEqual(t, "hit", w.Header().Get(cacheHeader), "request %d", i)
 	}
+	assert.EqualValues(t, 1, f.calls.Load(), "the second request is answered from the denial")
+}
+
+func TestEngineBranchRules_UnauthorizedIsNeverStored(t *testing.T) {
+	f := newBranchRulesFixture(t)
+	f.status.Store(http.StatusUnauthorized)
+	for i := range 2 {
+		w := f.get(t, branchRulesTarget)
+		assert.Equal(t, http.StatusUnauthorized, w.Code, "request %d", i)
+		assert.NotEqual(t, "hit", w.Header().Get(cacheHeader), "request %d", i)
+	}
+	assert.EqualValues(t, 2, f.calls.Load())
+}
+
+// A server failure is relayed once.
+func TestEngineBranchRules_ServerFailureBacksOff(t *testing.T) {
+	f := newBranchRulesFixture(t)
+	f.status.Store(http.StatusInternalServerError)
+	assert.Equal(t, http.StatusInternalServerError, f.get(t, branchRulesTarget).Code)
+	assert.Equal(t, http.StatusBadGateway, f.get(t, branchRulesTarget).Code)
+	assert.EqualValues(t, 1, f.calls.Load())
 }
 
 func TestEngineBranchRules_UnmodeledShapesPassThrough(t *testing.T) {

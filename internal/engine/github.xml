@@ -90,13 +90,15 @@
 	<!--
 		A branch name of 1 to 255 bytes with no control character. Each %XX
 		escape is one byte, and an escape of a control byte does not match.
-		Any other spelling, and pages past 10, are passed through. A 403 or 404
-		is the caller's own denial, never a stored answer.
+		Any other spelling, and pages past 10, are passed through. A 404 is
+		stored, because the probe already proved the caller sees the repository.
+		A 403 is the caller's own denial.
 	-->
 	<route method="GET" path="/repos/{owner}/{repo}/rules/branches/{branch...}" resource="branch_rules" list="true">
 		<match param="branch" pattern="^(?:[^%]|%(?:[2-689A-Fa-f][0-9A-Fa-f]|7[0-9A-Ea-e])){1,255}$"/>
 		<param name="per_page" type="int" default="30" min="1" max="100" key="true"/>
 		<param name="page" type="int" default="1" min="1" max="10" key="true"/>
+		<absorb status="404"/>
 	</route>
 
 	<!--
