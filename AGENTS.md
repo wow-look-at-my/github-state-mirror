@@ -85,7 +85,7 @@ Storage and authorization are **separate axes**:
 
 ## Environment Variables
 
-- `GITHUB_APP_ID` (optional) — GitHub App ID. When it is set with a private key, the service signs in as this app for background work. That covers periodic refreshes and the source-of-truth fetch for the admin consistency check (`/api/cache/check`). It never serves a normal data-API request, which needs the caller's own `Authorization` header and answers 401 without it. Unset means periodic refreshes are disabled and the consistency check reports "unavailable" (503). Webhooks apply to global truth either way.
+- `GITHUB_APP_ID` (optional) — GitHub App ID. When it is set with a private key, the service signs in as this app for background work. That covers periodic refreshes and the source-of-truth fetch for the admin consistency check (`/api/cache/check`). A data-API request needs the caller's own `Authorization` header and answers 401 without it. The app answers for a caller only on the Checks API, after reveal: see docs/reveal-layer.md. Unset means periodic refreshes are disabled and the consistency check reports "unavailable" (503). Webhooks apply to global truth either way.
 - `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_PRIVATE_KEY_PATH` — the App's PEM private key (PKCS#1 or PKCS#8), inline (optionally `\n`-escaped) or as a file path (path wins). Required when `GITHUB_APP_ID` is set.
 - `WEBHOOK_SECRET` — secret of the GitHub webhook HMAC
 - `LISTEN_ADDR` — HTTP listen address (default `:8080`)

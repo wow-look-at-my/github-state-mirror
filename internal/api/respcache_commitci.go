@@ -151,8 +151,19 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 		return
 	}
 
-	// Miss: fetch from GitHub with the caller's own credentials.
-	resp, body, overflow, err := h.fetchUpstream(r, nil)
+	// Miss: fetch from GitHub with the caller's own credentials. A check-runs read falls back to the App.
+	var (
+		resp     *http.Response
+		body     []byte
+		overflow bool
+		viaApp   bool
+		err      error
+	)
+	if kind == ghdata.CommitCIKindCheckRuns {
+		resp, body, overflow, viaApp, err = h.fetchChecks(r, owner)
+	} else {
+		resp, body, overflow, err = h.fetchUpstream(r, nil)
+	}
 	if err != nil {
 		h.upstreamError(w, r, err)
 		return
@@ -188,7 +199,10 @@ func (h *handlers) cachedCommitCI(w http.ResponseWriter, r *http.Request, ref, k
 	}, perPage, page, now, commitCICacheTTL); err != nil {
 		slog.Warn("commit CI cache write failed", "owner", owner, "repo", repo, "ref", ref, "kind", kind, "error", err)
 	}
-	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+	if !viaApp {
+		// A grant is earned only from an answer to the caller's own token.
+		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+	}
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	h.serveCommitCI(w, r, status, doc, false)
 }
