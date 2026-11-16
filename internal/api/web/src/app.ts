@@ -410,7 +410,7 @@ function startLive(): void {
     }
     // The poll left: it asks whether the push channel is still alive.
     streamWatch = setInterval(() => {
-        if (stream && streamLive && Date.now() - streamLastAt > STREAM_STALL_MS) streamDown("no heartbeat");
+        if (stream && Date.now() - streamLastAt > STREAM_STALL_MS) streamDown(streamLive ? "no heartbeat" : "no answer");
     }, STREAM_WATCH_MS);
     openStream();
 }
@@ -419,6 +419,7 @@ function openStream(): void {
     const since = requestLog?.model.maxSeq ?? 0;
     const es = new EventSource("/api/stream" + (since ? "?requests_since=" + since : ""));
     stream = es;
+    streamLastAt = Date.now();
     es.onmessage = (ev) => { if (stream === es) onStreamMessage(JSON.parse(ev.data as string) as StreamMessage); };
     es.onerror = () => { if (stream === es) streamDown("connection lost"); };
 }

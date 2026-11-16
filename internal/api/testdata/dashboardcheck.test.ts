@@ -13,7 +13,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createHmac, randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
@@ -113,4 +116,188 @@ test("the Copy JSON menu opens and closes", async (t) => {
 	await page.click(".copy-json-trigger");
 	await page.click("body", { position: { x: 5, y: 5 } });
 	assert.equal(await displayOf(page, ".copy-json-menu"), "none", "an outside click did not close the menu");
+});
+
+// ---- the live dashboard ----
+
+const BIN = join(import.meta.dirname, "..", "..", "..", "build", "server");
+const LIVE_PORT = 18097;
+const LIVE = `http://127.0.0.1:${LIVE_PORT}`;
+const SESSION_SECRET = "livecheck-session";
+const WEBHOOK_SECRET = "livecheck-webhook";
+
+// The server signs a session with HMAC-SHA256 (internal/auth), so the check signs one the same way.
+function sessionCookie(login: string): string {
+	const body = Buffer.from(JSON.stringify({ login, exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url");
+	return `gsm_session=${body}.${createHmac("sha256", SESSION_SECRET).update(body).digest("base64url")}`;
+}
+
+async function startServer(dbDir: string): Promise<ChildProcess> {
+	// build/server is an APE: the kernel cannot exec it, a shell can.
+	const proc = spawn("/bin/sh", [BIN], {
+		env: { ...process.env, LISTEN_ADDR: `127.0.0.1:${LIVE_PORT}`, DB_PATH: join(dbDir, "cache.db"), SESSION_SECRET, WEBHOOK_SECRET },
+		stdio: "ignore",
+	});
+	for (let i = 0; i < 100; i++) {
+		try {
+			if ((await fetch(`${LIVE}/.well-known/docker-updater/health`)).ok) return proc;
+		} catch {
+		}
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	proc.kill();
+	throw new Error("the server did not start");
+}
+
+// /wp-json/* is answered locally and recorded in the request log: traffic with no GitHub behind it.
+async function hit(path: string, times = 1): Promise<void> {
+	await Promise.all(Array.from({ length: times }, () => fetch(`${LIVE}/wp-json/${path}`)));
+}
+
+async function sendWebhook(): Promise<void> {
+	const body = JSON.stringify({ zen: "live", hook_id: 1 });
+	const res = await fetch(`${LIVE}/webhook`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"X-GitHub-Event": "ping",
+			"X-GitHub-Delivery": randomUUID(),
+			"X-Hub-Signature-256": "sha256=" + createHmac("sha256", WEBHOOK_SECRET).update(body).digest("hex"),
+		},
+		body,
+	});
+	assert.ok(res.ok, `the webhook was refused: ${res.status}`);
+}
+
+// logRows reads the log as [path, count] pairs, top row first.
+function logRows(page: Page): Promise<Array<[string, string]>> {
+	return page.$eval("gsm-request-log", (el) => Array.from(el.querySelectorAll("tr.row-toggle")).map((tr) => {
+		const tds = tr.querySelectorAll("td");
+		return [tds[6]?.textContent ?? "", tds[4]?.textContent ?? ""] as [string, string];
+	}));
+}
+
+async function until<T>(what: string, read: () => Promise<T>, ok: (v: T) => boolean, timeoutMs: number): Promise<T> {
+	const start = Date.now();
+	let last = await read();
+	while (!ok(last)) {
+		if (Date.now() - start > timeoutMs) assert.fail(`${what}: not within ${timeoutMs}ms; last saw ${JSON.stringify(last)}`);
+		await new Promise((r) => setTimeout(r, 25));
+		last = await read();
+	}
+	return last;
+}
+
+test("the dashboard is pushed its updates and polls for nothing", async (t) => {
+	assert.ok(existsSync(BIN), `${BIN} is missing: run go-toolchain first`);
+	const dbDir = mkdtempSync(join(tmpdir(), "gsm-live-"));
+	let server = await startServer(dbDir);
+	const exe = process.env.GSM_CHROMIUM ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+	let browser: Browser | undefined;
+	t.after(async () => {
+		await browser?.close();
+		server.kill();
+	});
+	browser = await chromium.launch(existsSync(exe) ? { executablePath: exe, args: ["--no-sandbox"] } : { args: ["--no-sandbox"] });
+	const page = await browser.newPage({ viewport: { width: 1400, height: 1200 } });
+	await page.setExtraHTTPHeaders({ Cookie: sessionCookie("PazerOP") });
+	const apiCalls: string[] = [];
+	page.on("request", (req) => {
+		const url = new URL(req.url());
+		if (url.pathname.startsWith("/api/")) apiCalls.push(url.pathname + url.search);
+	});
+
+	await page.goto(`${LIVE}/#requests`);
+	await page.waitForSelector(".live-pill.live");
+	await page.waitForSelector("gsm-request-log");
+
+	await t.test("a request shows up at once, grouped", async () => {
+		const sent = Date.now();
+		await hit("first", 3);
+		await until("the pushed row", () => logRows(page), (r) => r.some(([p, c]) => p === "/wp-json/first" && c === "×3"), 1500);
+		t.diagnostic(`request to row: ${Date.now() - sent}ms`);
+		await hit("second");
+		const r = await until("a new kind of request on top", () => logRows(page), (v) => v[0]?.[0] === "/wp-json/second", 1500);
+		assert.deepEqual(r.map(([p]) => p), ["/wp-json/second", "/wp-json/first"]);
+		await hit("first", 4);
+		const after = await until("the counter", () => logRows(page), (v) => v[1]?.[1] === "×7", 1500);
+		assert.equal(after[0]?.[0], "/wp-json/second", "a busy row counts up where it is and never jumps");
+	});
+
+	await t.test("an idle page makes no request at all", async () => {
+		// The Requests tab loads its group tables once more after traffic. Let that pass first.
+		await page.waitForTimeout(3000);
+		apiCalls.length = 0;
+		await page.waitForTimeout(12000);
+		assert.deepEqual(apiCalls, [], "the page polled while nothing was happening");
+		assert.equal(await page.getAttribute("#live-pill", "class"), "live-pill live", "the heartbeat keeps the stream live");
+
+		// A tab whose own load raised its own topic would load itself forever. Every tab must settle.
+		for (const tab of ["mine", "all", "webhooks", "ratelimit", "latency", "timeline"]) {
+			await page.goto(`${LIVE}/#${tab}`);
+			await page.waitForTimeout(2500);
+			apiCalls.length = 0;
+			await page.waitForTimeout(6000);
+			assert.deepEqual(apiCalls, [], `the ${tab} tab kept loading with nothing happening`);
+		}
+		await page.goto(`${LIVE}/#requests`);
+		await page.waitForSelector("gsm-request-log");
+	});
+
+	await t.test("a flood loses nothing and blocks no frame", async () => {
+		await page.evaluate(() => {
+			const w = window as unknown as { __long: number };
+			w.__long = 0;
+			new PerformanceObserver((list) => { w.__long += list.getEntries().length; }).observe({ entryTypes: ["longtask"] });
+		});
+		const total = 3000;
+		for (let i = 0; i < total; i += 100) {
+			await Promise.all(Array.from({ length: 100 }, (_, j) => hit(`flood/${(i + j) % 400}`)));
+		}
+		const held = (): Promise<number> => page.$eval("gsm-request-log", (el) => (el as unknown as { model: { size: number } }).model.size);
+		assert.equal(await until("every event", held, (n) => n >= total + 8, 5000), total + 8);
+		const worst = await page.$eval("gsm-request-log", (el) => (el as unknown as { worstRenderMs: number }).worstRenderMs);
+		const long = await page.evaluate(() => (window as unknown as { __long: number }).__long);
+		const drawn = await page.$eval("gsm-request-log", (el) => el.querySelectorAll("tr.row-toggle").length);
+		t.diagnostic(`worst render ${worst.toFixed(1)}ms, long tasks ${long}, rows in the DOM ${drawn}`);
+		assert.ok(worst < 50, `one render of the log took ${worst.toFixed(1)}ms`);
+		assert.equal(long, 0, "the flood produced a task over 50ms");
+		assert.equal(drawn, 100, "the DOM holds one page of rows however long the log is");
+	});
+
+	await t.test("pause holds the view and the filter narrows it", async () => {
+		await page.click(".reqlog-pause");
+		const before = await logRows(page);
+		await hit("while-paused", 5);
+		await until("the held count", () => page.$eval(".reqlog-pause", (el) => el.textContent ?? ""), (s) => s === "Resume (+5)", 1500);
+		assert.deepEqual(await logRows(page), before, "a paused log moved");
+		await page.click(".reqlog-pause");
+		await until("the resumed row", () => logRows(page), (r) => r[0]?.[0] === "/wp-json/while-paused" && r[0]?.[1] === "×5", 1500);
+
+		await page.fill(".reqlog-filter", "wp-json/first");
+		const r = await until("the filtered log", () => logRows(page), (v) => v.length === 1, 1500);
+		assert.deepEqual(r, [["/wp-json/first", "×7"]]);
+		await page.fill(".reqlog-filter", "");
+	});
+
+	await t.test("the Webhooks tab hears a delivery", async () => {
+		await page.goto(`${LIVE}/#webhooks`);
+		await page.waitForSelector(".empty");
+		await sendWebhook();
+		await until("the delivery row", () => page.$eval("#scope-body", (el) => el.querySelectorAll("table.cols-webhooks tr.row-toggle").length), (n) => n === 1, 2500);
+	});
+
+	await t.test("a dead server is reported and a new one is picked up", async () => {
+		await page.goto(`${LIVE}/#requests`);
+		await page.waitForSelector("gsm-request-log tr.row-toggle");
+		server.kill();
+		await page.waitForSelector(".live-pill.down");
+		server = await startServer(dbDir);
+		await page.waitForSelector(".live-pill.live");
+		await hit("after-restart");
+		const r = await until("the new server's log", () => logRows(page), (v) => v.length === 1, 3000);
+		assert.deepEqual(r, [["/wp-json/after-restart", "×1"]], "the old process's log must not mix with the new one");
+	});
+
+	if (process.env.GSM_SCREENSHOT) await page.screenshot({ path: process.env.GSM_SCREENSHOT, fullPage: true });
 });

@@ -29,6 +29,9 @@ declare module "playwright" {
 
     interface Page {
         on(event: "console", handler: (msg: ConsoleMessage) => void): void;
+        on(event: "request", handler: (req: Request) => void): void;
+        setExtraHTTPHeaders(headers: Record<string, string>): Promise<void>;
+        fill(selector: string, value: string): Promise<void>;
         route(url: string, handler: (route: Route) => unknown): Promise<void>;
         goto(url: string): Promise<unknown>;
         waitForFunction(fn: () => unknown, arg?: unknown, options?: { timeout?: number }): Promise<unknown>;

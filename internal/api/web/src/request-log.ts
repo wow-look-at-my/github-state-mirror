@@ -277,7 +277,7 @@ if (typeof customElements !== "undefined") {
         private grouped = true;
         private sort: LogSort = "first";
         private filter = "";
-        private hidden = new Set<string>();
+        private hiddenDisps = new Set<string>();
         private limit = PAGE;
         private paused = false;
         private heldWhilePaused = 0;
@@ -338,9 +338,9 @@ if (typeof customElements !== "undefined") {
                 chip.title = "Show or hide " + d + " requests";
                 chip.setAttribute("aria-pressed", "true");
                 chip.addEventListener("click", () => {
-                    const off = !this.hidden.has(d);
-                    if (off) this.hidden.add(d);
-                    else this.hidden.delete(d);
+                    const off = !this.hiddenDisps.has(d);
+                    if (off) this.hiddenDisps.add(d);
+                    else this.hiddenDisps.delete(d);
                     chip.classList.toggle("off", off);
                     chip.setAttribute("aria-pressed", off ? "false" : "true");
                     this.limit = PAGE;
@@ -439,11 +439,12 @@ if (typeof customElements !== "undefined") {
                 : "Pause";
             this.pauseBtn.classList.toggle("btn-primary", this.paused);
             const held = this.model.size.toLocaleString() + " request" + (this.model.size === 1 ? "" : "s") + " held";
-            this.status.textContent = (this.grouped ? this.model.groupCount.toLocaleString() + " groups · " : "") + held;
+            const kinds = this.model.groupCount;
+            this.status.textContent = (this.grouped ? kinds.toLocaleString() + " group" + (kinds === 1 ? "" : "s") + " · " : "") + held;
             // A paused log keeps what is on screen. Only the counters above move.
             if (this.paused) return;
 
-            const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hidden, limit: this.limit });
+            const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hiddenDisps, limit: this.limit });
             const items: Item[] = this.grouped
                 ? res.groups.map((g) => ({ key: "g" + g.key, event: g.sample, group: g }))
                 : res.events.map((e) => ({ key: "e" + e.seq, event: e, group: null }));
