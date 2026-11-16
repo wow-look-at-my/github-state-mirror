@@ -88,7 +88,31 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden: admin only", http.StatusForbidden)
 		return
 	}
-	snap := d.reqlog.snapshot(200)
+	// ?limit= sizes Recent, and ?since= cuts it to the events after a cursor.
+	q := r.URL.Query()
+	limit := 200
+	var cursor uint64
+	hasCursor := q.Get("since") != ""
+	if hasCursor {
+		v, err := strconv.ParseUint(q.Get("since"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad since", http.StatusBadRequest)
+			return
+		}
+		cursor, limit = v, requestLogRecentCap
+	}
+	if s := q.Get("limit"); s != "" {
+		v, err := strconv.Atoi(s)
+		if err != nil || v < 1 {
+			http.Error(w, "bad limit", http.StatusBadRequest)
+			return
+		}
+		limit = min(v, requestLogRecentCap)
+	}
+	snap := d.reqlog.snapshotSince(cursor, hasCursor, limit)
+	if d.live != nil {
+		snap.Boot = d.live.boot
+	}
 	snap.DBSizeBytes, snap.DBWALSizeBytes = dbFileSizes(d.dbPath)
 	writeJSON(w, snap)
 }

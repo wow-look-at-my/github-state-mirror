@@ -194,7 +194,7 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
 	lat := latency.New()
 	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, nil)
 	webhookQueues.Store(router, queue)
 	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
 }

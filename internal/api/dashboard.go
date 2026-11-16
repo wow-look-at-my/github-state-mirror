@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
@@ -58,7 +59,17 @@ type dashboard struct {
 	ordering func() syncpkg.OrderingSnapshot
 	// latency backs the Latency tab; nil serves an empty snapshot.
 	latency *latency.Recorder
+	// live is the push hub behind GET /api/stream.
+	live *LiveHub
+	// A pushed refresh reads these tabs again on every change, so their GitHub calls are held for a short time.
+	liveRates  ttlValue[[]syncpkg.InstallationRateLimit]
+	subscribed ttlValue[[]string]
 }
+
+const (
+	liveRatesTTL  = 15 * time.Second
+	subscribedTTL = time.Minute
+)
 
 func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
@@ -141,6 +152,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
 	r.Get("/api/timeline", d.handleTimeline)
+	r.Get("/api/stream", d.handleStream)
 
 	// Admin-only truth browse and consistency check/reconcile; see docs/dashboard/operator-tooling.md.
 	r.Get("/api/cache/data", d.handleCacheData)

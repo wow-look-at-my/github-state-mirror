@@ -128,8 +128,13 @@ type requestEvent struct {
 	Status int `json:"status,omitempty"`
 	// Reason is why a passthrough was forwarded uncached (of the Pass* vocabulary above); empty for every other disposition.
 	Reason string `json:"reason,omitempty"`
-	At     string `json:"at"` // RFC3339
+	At     string `json:"at"`
+	// It is the log's cursor.
+	Seq uint64 `json:"seq"`
 }
+
+// requestEventTime is RFC3339 with milliseconds: a busy log has many requests per second.
+const requestEventTime = "2006-01-02T15:04:05.000Z07:00"
 
 // requestLog is an in-memory, bounded record of recent requests plus
 // per-disposition and per-route-shape counters (requestgroups.go).
@@ -138,12 +143,15 @@ type requestLog struct {
 	total  int64
 	byDisp map[string]int64
 	groups map[string]*routeGroup // key: method + " " + normalizeRoute(path); bounded (requestgroups.go)
-	recent []requestEvent         // newest last; capped at requestLogRecentCap
+	recent []requestEvent         // newest last; capped at requestLogRecentCap; contiguous in Seq
+	seq    uint64
 	// timeline mirrors every request onto the Timeline chart with its real duration; nil-safe.
 	timeline *reqtimeline.Recorder
+	// live tells the open dashboard streams that the log grew; nil-safe.
+	live *LiveHub
 }
 
-const requestLogRecentCap = 500
+const requestLogRecentCap = 10000
 
 func newRequestLog() *requestLog {
 	return &requestLog{byDisp: make(map[string]int64), groups: make(map[string]*routeGroup)}
@@ -187,10 +195,10 @@ func (l *requestLog) recordFull(who callerIdent, method, path, disposition strin
 	now := time.Now().UTC()
 	route := normalizeRoute(path) // pure; kept outside the critical section
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.total++
 	l.byDisp[disposition]++
 	l.bumpGroupLocked(method, route, path, disposition, reason, qshape, now)
+	l.seq++
 	l.recent = append(l.recent, requestEvent{
 		Actor:       who.Key,
 		ActorName:   who.Name,
@@ -199,11 +207,59 @@ func (l *requestLog) recordFull(who callerIdent, method, path, disposition strin
 		Disposition: disposition,
 		Status:      status,
 		Reason:      reason,
-		At:          now.Format(time.RFC3339),
+		At:          now.Format(requestEventTime),
+		Seq:         l.seq,
 	})
 	if len(l.recent) > requestLogRecentCap {
 		l.recent = l.recent[len(l.recent)-requestLogRecentCap:]
 	}
+	l.mu.Unlock()
+	l.live.publish(topicRequests)
+}
+
+func (l *requestLog) latestSeq() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seq
+}
+
+// requestDelta is the events after a cursor, oldest first.
+type requestDelta struct {
+	events []requestEvent
+	// next is the cursor for the following read.
+	next uint64
+	// missed counts events the ring dropped before this read reached them.
+	missed uint64
+	// more says the batch limit cut this read short.
+	more   bool
+	total  int64
+	byDisp map[string]int64
+}
+
+// since returns at most limit events with Seq above cursor, oldest first.
+func (l *requestLog) since(cursor uint64, limit int) requestDelta {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	d := requestDelta{next: cursor, total: l.total, byDisp: make(map[string]int64, len(l.byDisp)), events: []requestEvent{}}
+	for k, v := range l.byDisp {
+		d.byDisp[k] = v
+	}
+	if cursor >= l.seq {
+		d.next = l.seq
+		return d
+	}
+	oldest := l.seq - uint64(len(l.recent)) + 1
+	if cursor+1 < oldest {
+		d.missed = oldest - cursor - 1
+		cursor = oldest - 1
+	}
+	rest := l.recent[cursor+1-oldest:]
+	if limit > 0 && len(rest) > limit {
+		rest, d.more = rest[:limit], true
+	}
+	d.events = append(d.events, rest...)
+	d.next = cursor + uint64(len(rest))
+	return d
 }
 
 // requestLogSnapshot is the dashboard payload: totals + route-shape groups
@@ -213,31 +269,61 @@ type requestLogSnapshot struct {
 	ByDisposition map[string]int64       `json:"by_disposition"`
 	Groups        []requestGroupSnapshot `json:"groups"`
 	Recent        []requestEvent         `json:"recent"`
+	// Seq is the newest event's Seq. A client reads on from it with ?since=.
+	Seq uint64 `json:"seq"`
+	// Missed counts events after ?since= that the ring had already dropped.
+	Missed uint64 `json:"missed,omitempty"`
+	// LogCap is how many events the ring keeps.
+	LogCap int `json:"log_cap"`
+	// Boot identifies this process. Seq restarts when it changes.
+	Boot string `json:"boot,omitempty"`
 	// The DB file's (and its -wal sidecar's) on-disk sizes.
 	DBSizeBytes    int64 `json:"db_size_bytes,omitempty"`
 	DBWALSizeBytes int64 `json:"db_wal_size_bytes,omitempty"`
 }
 
 func (l *requestLog) snapshot(limit int) requestLogSnapshot {
+	return l.snapshotSince(0, false, limit)
+}
+
+// snapshotSince is snapshot with Recent cut to the events above a cursor.
+// Recent stays newest first, and limit keeps the newest ones.
+func (l *requestLog) snapshotSince(cursor uint64, hasCursor bool, limit int) requestLogSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	byDisp := make(map[string]int64, len(l.byDisp))
 	for k, v := range l.byDisp {
 		byDisp[k] = v
 	}
-	n := len(l.recent)
+	window := l.recent
+	var missed uint64
+	if hasCursor {
+		oldest := l.seq - uint64(len(l.recent)) + 1
+		switch {
+		case cursor >= l.seq:
+			window = nil
+		case cursor+1 < oldest:
+			missed = oldest - cursor - 1
+		default:
+			window = l.recent[cursor+1-oldest:]
+		}
+	}
+	n := len(window)
 	if limit > 0 && limit < n {
 		n = limit
 	}
 	recent := make([]requestEvent, 0, n)
-	for i := len(l.recent) - 1; i >= 0 && len(recent) < n; i-- {
-		recent = append(recent, l.recent[i])
+	for i := len(window) - 1; i >= 0 && len(recent) < n; i-- {
+		recent = append(recent, window[i])
 	}
 	return requestLogSnapshot{
 		Total:         l.total,
 		ByDisposition: byDisp,
 		Groups:        l.groupSnapshotsLocked(requestGroupsSnapshotCap),
 		Recent:        recent,
+		Seq:           l.seq,
+		Missed:        missed,
+		LogCap:        requestLogRecentCap,
 	}
 }
 
