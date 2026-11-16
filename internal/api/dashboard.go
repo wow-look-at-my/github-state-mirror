@@ -24,7 +24,7 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/request-log.js web/assets/style.css
 var webFS embed.FS
 
 // contentAsset is an embedded asset served at a content-addressed URL.
@@ -80,16 +80,19 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	appJS := mustReadAsset("web/assets/app.js")
 	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
 	timelineJS := mustReadAsset("web/assets/timeline.js")
+	requestLogJS := mustReadAsset("web/assets/request-log.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
 	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
 	timelineName := hashedAssetName("timeline", "js", timelineJS)
+	requestLogName := hashedAssetName("request-log", "js", requestLogJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// The committed index.html keeps the stable names so the CI preview still resolves them.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
 	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
 	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
+	served = strings.ReplaceAll(served, "assets/request-log.js", "assets/"+requestLogName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -101,6 +104,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + requestLogName, content: requestLogJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
 		reqlog:    reqlog,
