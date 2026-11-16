@@ -80,6 +80,26 @@ func TestApplier_AnIgnoredDeliveryReportsTheEnginesOutcome(t *testing.T) {
 	}
 }
 
+func TestApplier_AmendsTheLogOnlyWhenTheEngineChangedTheOutcome(t *testing.T) {
+	type amended struct{ id, disposition, detail string }
+	for _, tc := range []struct {
+		own, engine string
+		status      int
+		want        *amended
+	}{
+		{webhook.DispIgnored, webhook.DispInvalidated, http.StatusAccepted, &amended{"d", webhook.DispInvalidated, "engine: invalidated"}},
+		{webhook.DispApplied, "", http.StatusForbidden, &amended{"d", webhook.DispError, "engine: status 403: "}},
+		{webhook.DispApplied, webhook.DispInvalidated, http.StatusAccepted, nil},
+		{webhook.DispIgnored, webhook.DispIgnored, http.StatusAccepted, nil},
+	} {
+		var got *amended
+		a := newApplier(&ownApply{disposition: tc.own}, &fakeEvents{status: tc.status, answer: tc.engine}, "secret")
+		a.amend = func(_ context.Context, id, disposition, detail string) { got = &amended{id, disposition, detail} }
+		a.Dispatch(context.Background(), webhook.Event{Type: "repository_ruleset", DeliveryID: "d"})
+		assert.Equal(t, tc.want, got, "own %s, engine %s %d", tc.own, tc.engine, tc.status)
+	}
+}
+
 // ownApply stands in for the service's dispatcher and answers with one disposition.
 type ownApply struct {
 	disposition string

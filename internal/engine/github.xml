@@ -20,6 +20,7 @@
 	<accept>application/json</accept>
 	<accept>application/vnd.github+json</accept>
 	<accept>application/vnd.github.v3+json</accept>
+	<accept>application/vnd.github.merge-info-preview</accept>
 	<accept>application/vnd.github.merge-info-preview+json</accept>
 	<accept>application/vnd.github.nebula-preview</accept>
 	<accept>application/vnd.github.nebula-preview+json</accept>

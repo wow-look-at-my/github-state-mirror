@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 // The rules in force on a branch, served by the embedded engine through the real router.
@@ -19,6 +22,7 @@ const branchRulesTarget = "/repos/org1/repo1/rules/branches/release/v1"
 // branchRulesFixture is the router with the engine mounted, over a fake GitHub that counts rules calls.
 type branchRulesFixture struct {
 	router http.Handler
+	store  *ghdata.Store
 	up     *respCacheUpstream
 	calls  atomic.Int32
 	status atomic.Int32
@@ -59,7 +63,8 @@ func newBranchRulesFixture(t *testing.T) *branchRulesFixture {
 		}
 		return true
 	}
-	f.router = newFullTestStack(t, testAuth(), f.up.handler()).router
+	s := newFullTestStack(t, testAuth(), f.up.handler())
+	f.router, f.store = s.router, s.store
 	return f
 }
 
@@ -219,6 +224,17 @@ func rulesetDelivery(repo map[string]any, org string) map[string]any {
 }
 
 // A delivery that can change the merged rules drops the answer.
+func TestEngineBranchRules_TheDeliveryLogShowsTheEnginesOutcome(t *testing.T) {
+	f := newBranchRulesFixture(t)
+	postWebhookJSON(t, f.router, "repository_ruleset", rulesetDelivery(tagsRepo(1), "org1"))
+	rows, err := f.store.RecentWebhookDeliveries(context.Background(), 5)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "repository_ruleset", rows[0].EventType)
+	assert.Equal(t, webhook.DispInvalidated, rows[0].Disposition, "only the engine handles this type, and the Webhooks tab reads this row")
+	assert.Equal(t, "engine: invalidated", rows[0].Detail)
+}
+
 func TestEngineBranchRules_DeliveriesRefetch(t *testing.T) {
 	f := newBranchRulesFixture(t)
 	deliveries := []struct {

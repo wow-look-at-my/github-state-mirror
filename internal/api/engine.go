@@ -4,10 +4,13 @@
 package api
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	apimirror "github.com/wow-look-at-my/api-mirror/engine"
 	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
@@ -53,6 +56,16 @@ func (l *requestLog) recordEngine(r apimirror.Request) {
 	disp := string(r.Disposition)
 	l.recordFull(who, r.Method, r.Path, disp, r.Status, r.Reason, "")
 	l.timeline.RecordRequest(r.At, r.Duration, r.Method, normalizeRoute(r.Path), r.Status, disp, who.Key, who.Name)
+}
+
+// AmendDelivery writes the engine's outcome into the delivery log the Webhooks tab reads. A failed write is logged:
+// the delivery stands, and the Timeline already carries the outcome.
+func AmendDelivery(store *ghdata.Store) func(ctx context.Context, deliveryID, disposition, detail string) {
+	return func(ctx context.Context, deliveryID, disposition, detail string) {
+		if err := store.AmendWebhookDelivery(ctx, deliveryID, disposition, detail); err != nil {
+			slog.Error("engine: the delivery log keeps this service's own outcome", "delivery", deliveryID, "engine_outcome", disposition, "error", err)
+		}
+	}
 }
 
 // EngineObserver charts every outbound request the engine sends. Those charts are under the labels the API layer's

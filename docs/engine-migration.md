@@ -8,11 +8,12 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 
 1. Find the route in api-mirror's `samples/github/github.xml`. Copy its resource, route and event declarations into `internal/engine/github.xml`, trimmed to this route.
 2. Make the spec match the old contract. The TTL, the `<param>` ranges (page caps included), the `<absorb status=>` codes, and `<drop key="url"/>` plus `<drop key="*_url"/>` for the URL keys the old rebuild dropped.
-3. Delete the `r.Get` line in `internal/api/router.go`. Do not add a line for the engine: the dispatch in `internal/api/engine.go` finds the route from the spec.
-4. Delete the handler, its `ghdata` store code, its `denyKind*` and `RepoAnswerKind*` constants, and every flush of its rows in `internal/sync`. Keep a helper that another route still calls.
-5. Port the handler's tests to the real router with the engine mounted (`newFullTestStack` builds both). Deliveries go through `postWebhookJSON`, which waits until the worker applied them. The worker applies each to the engine too. Each delivery needs the clock field its `<event>` names.
-6. Update the route's entry in `docs/cache/rest-routes.md` and its rows in `docs/webhooks/invalidations.md`.
-7. Leave a table in `schema.sql` when another route still reads it. A table that nothing reads goes, with `sqlc generate`.
+3. Check which permission the endpoint needs. The engine records a 403 from the fetch as the caller's denial of the repository, for every engine route and for the deny window. Move a route only when a caller who passes the `/repos/{owner}/{repo}` probe can also read the endpoint.
+4. Delete the `r.Get` line in `internal/api/router.go`. Do not add a line for the engine: the dispatch in `internal/api/engine.go` finds the route from the spec.
+5. Delete the handler, its `ghdata` store code, its `denyKind*` and `RepoAnswerKind*` constants, and every flush of its rows in `internal/sync`. Keep a helper that another route still calls.
+6. Port the handler's tests to the real router with the engine mounted (`newFullTestStack` builds both). Deliveries go through `postWebhookJSON`, which waits until the worker applied them. The worker applies each to the engine too. Each delivery needs the clock field its `<event>` names.
+7. Update the route's entry in `docs/cache/rest-routes.md` and its rows in `docs/webhooks/invalidations.md`.
+8. Leave a table in `schema.sql` when another route still reads it. A table that nothing reads goes, with `sqlc generate`.
 
 ## What differs between the two implementations
 
@@ -41,9 +42,8 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 - A branch that is too long or holds a control byte reaches the router's fallback, which forwards it with the reason `unrouted` and without `requireAuth`. The handler ran behind `requireAuth` and forwarded it with the reason `unmodeled-path`.
 - The engine stores any 200 array. The handler passed through an answer whose entries lacked a `type` or a positive `ruleset_id`.
 - The handler kept the fields of each rule and `parameters` whole. The engine keeps every field and drops each URL key at any depth, inside `parameters` too.
-- The spec's `<accept>` list has no bare `application/vnd.github.merge-info-preview`, so a request that names it passes through. The handler served it.
 - A 404 is stored for every caller for the TTL. The handler remembered it per caller for the deny window.
 - A 403 from the fetch denies the caller the repository proof for the deny window, and every engine route that probes `/repos/{owner}/{repo}` shares that proof. The handler remembered it for this branch and shape only, and keyed a token permission refusal to the token's fingerprint. The engine keys it to the principal, so one token's refusal denies the user's other tokens too.
 - A 5xx puts the key in a backoff, and a request inside it answers 502 without an upstream call. The handler relayed every 5xx and asked again on the next request.
 - A `repository` delivery still drops the repository's rows. The engine needs an `<event>` of its own for it, where the handler shared the repo-wide flush.
-- This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Timeline and the subscriber notifiers see `invalidated`. The delivery log row this service writes inside its own apply still reads `ignored`, where the handler wrote `invalidated`.
+- This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Timeline and the subscriber notifiers see `invalidated`. The applier also rewrites the delivery log row this service wrote inside its own apply. The Webhooks tab reads `invalidated` too.

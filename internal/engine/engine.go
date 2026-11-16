@@ -83,8 +83,10 @@ func (g *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) { g.e.ServeHT
 func (g *Engine) Declares(method, path string) bool { return g.e.Declares(method, path) }
 
 // Applier wraps the service's dispatcher, so the webhook worker applies each delivery to the engine too before the journal marks it applied.
-func (g *Engine) Applier(next webhook.Dispatcher) webhook.Dispatcher {
-	return newApplier(next, g.e, g.secret)
+func (g *Engine) Applier(next webhook.Dispatcher, amend func(ctx context.Context, deliveryID, disposition, detail string)) webhook.Dispatcher {
+	a := newApplier(next, g.e, g.secret)
+	a.amend = amend
+	return a
 }
 
 // Start runs the engine's background jobs.

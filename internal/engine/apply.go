@@ -31,6 +31,8 @@ type applier struct {
 	eng    http.Handler
 	path   string
 	secret string
+	// amend rewrites the delivery-log row of a delivery whose outcome the engine changed.
+	amend func(ctx context.Context, deliveryID, disposition, detail string)
 }
 
 func newApplier(next webhook.Dispatcher, eng eventsHandler, secret string) *applier {
@@ -43,22 +45,23 @@ func newApplier(next webhook.Dispatcher, eng eventsHandler, secret string) *appl
 // a type only the engine handles must not read as untracked.
 func (a *applier) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	result := a.next.Dispatch(ctx, event)
+	own := result.Disposition
 	disp, err := a.forward(ctx, event)
-	if err != nil {
+	switch {
+	case err != nil:
 		slog.Error("engine: a delivery was refused; its routes keep their last state until the TTL",
 			"delivery", event.DeliveryID, "type", event.Type, "error", err)
-		if result.Disposition != webhook.DispError {
+		if own != webhook.DispError {
 			result.Disposition = webhook.DispError
 			result.Detail = "engine: " + err.Error()
 		}
-		return result
+	case own == webhook.DispIgnored && (disp == webhook.DispApplied || disp == webhook.DispInvalidated || disp == webhook.DispSuperseded):
+		result.Disposition = disp
+		result.Detail = "engine: " + disp
 	}
-	if result.Disposition == webhook.DispIgnored {
-		switch disp {
-		case webhook.DispApplied, webhook.DispInvalidated, webhook.DispSuperseded:
-			result.Disposition = disp
-			result.Detail = "engine: " + disp
-		}
+	// This service logged its own outcome before the engine saw the delivery.
+	if result.Disposition != own && a.amend != nil {
+		a.amend(ctx, event.DeliveryID, result.Disposition, result.Detail)
 	}
 	return result
 }

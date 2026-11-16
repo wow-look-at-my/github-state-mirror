@@ -150,7 +150,7 @@ func main() {
 	eng.Start()
 
 	// see docs/webhooks/dispatch.md; the worker applies each delivery to the engine too, before the inbox marks it applied.
-	queue := webhook.NewQueue(journal, eng.Applier(dispatcher), api.DeliveryRecorder(timeline, lat), notifier)
+	queue := webhook.NewQueue(journal, eng.Applier(dispatcher, api.AmendDelivery(store)), api.DeliveryRecorder(timeline, lat), notifier)
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
 	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, eng)

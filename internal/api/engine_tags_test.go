@@ -206,6 +206,23 @@ func TestEngineTags_UnmodeledShapesPassThrough(t *testing.T) {
 	assert.EqualValues(t, len(targets)+1, f.calls.Load())
 }
 
+// The gh CLI names both previews on every request. Neither changes a REST JSON body.
+func TestEngineTags_TheGhCLIAcceptHeaderIsServedFromTheCache(t *testing.T) {
+	f := newTagsFixture(t)
+	require.Equal(t, "miss", f.get(t, tagsTarget).Header().Get(cacheHeader))
+	for _, accept := range []string{
+		"application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+		"application/vnd.github.merge-info-preview, application/vnd.github.nebula-preview+json",
+		"*/*",
+		"application/vnd.github.v3+json; charset=utf-8",
+	} {
+		req := authedReq(http.MethodGet, tagsTarget, nil)
+		req.Header.Set("Accept", accept)
+		assert.Equal(t, "hit", do(t, f.router, req).Header().Get(cacheHeader), accept)
+	}
+	assert.EqualValues(t, 1, f.calls.Load())
+}
+
 func TestEngineTags_EnterpriseSpellingReachesTheRoute(t *testing.T) {
 	f := newTagsFixture(t)
 	assert.Equal(t, "miss", f.get(t, "/api/v3"+tagsTarget).Header().Get(cacheHeader))
