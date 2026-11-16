@@ -4,7 +4,7 @@
 
 ## Checklist for the next route
 
-1. Trim them to this route.
+1. Find the route in api-mirror's `samples/github/github.xml`. Copy its resource, route and event declarations into `internal/engine/github.xml`, trimmed to this route.
 2. Make the spec match the old contract. The TTL, the `<param>` ranges (page caps included), the `<absorb status=>` codes, and `<drop key="url"/>` plus `<drop key="*_url"/>` for the URL keys the old rebuild dropped.
 3. Delete the `r.Get` line in `internal/api/router.go`. Do not add a line for the engine: the dispatch in `internal/api/engine.go` finds the route from the spec.
 4. Delete the handler, its `ghdata` store code, its `denyKind*` and `RepoAnswerKind*` constants, and every flush of its rows in `internal/sync`. Keep a helper that another route still calls.
