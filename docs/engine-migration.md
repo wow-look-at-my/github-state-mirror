@@ -33,6 +33,16 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 - A page whose entries lack a name or a full sha is stored. The handler passed such an answer through unstored.
 - A `repository` delivery drops the repository's pages through an `<event>` of its own.
 
+## The git tree
+
+`GET /repos/{owner}/{repo}/git/trees/{sha}` is on the engine. Differences from the old handler:
+
+- A row is refetched after the resource's long TTL. The handler kept a row until the LRU prune.
+- The engine keeps GitHub's answer whole, less every `url` key. The handler rebuilt a fixed set of fields. For the documented tree shape the two are the same fields.
+- An answer with no `sha` is stored. The handler passed it through.
+- A short sha or a branch name does not match the route, so it reaches the proxy with the reason `unrouted`. The handler forwarded it with the reason `unmodeled-path`.
+- The `git_trees_cache` table stays in the schema and nothing reads it.
+
 ## The branch rules
 
 `GET /repos/{owner}/{repo}/rules/branches/{branch}` is the second route on the engine. Differences from the old handler:

@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Git-tree route tests. The default body carries the full documented shape
-// (per-entry url, plus size on the blob entry only) so the rebuild has
-// something to drop.
+// The git tree, served by the embedded engine through the real router. The
+// default body carries the full documented shape (per-entry url, plus size on
+// the blob entry only) so the rebuild has something to drop.
 
 func defaultGitTreeUpstream(w http.ResponseWriter, r *http.Request) {
 	writeGitHubJSON(w, map[string]any{
@@ -86,29 +86,35 @@ func TestCachedGitTree_ImmutableAcrossWebhooks(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&u.gitTreeHits))
 }
 
-// Shape guards: a short sha, a non-default Accept, and an unmodeled query
-// parameter all forward with a counted reason instead of minting a row.
+// Shape guards: a short sha, a branch name, a non-default Accept, and an
+// unmodeled query value all forward instead of minting a row. A path the spec
+// does not match reaches the proxy with no cache header. A shape the engine
+// refuses carries its passthrough header.
 func TestCachedGitTree_ShapeGuards(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 
-	for _, target := range []string{
-		"/repos/org1/repo1/git/trees/" + shaTree1[:7], // short sha
-		gitTreeTarget + "?recursive=0",                // GitHub only defines recursive=
-		gitTreeTarget + "?per_page=1",
+	for _, tc := range []struct{ target, header string }{
+		{"/repos/org1/repo1/git/trees/" + shaTree1[:7], ""},
+		{"/repos/org1/repo1/git/trees/main", ""},
+		{gitTreeTarget + "?recursive=0", "passthrough"},
+		{gitTreeTarget + "?recursive=true", "passthrough"},
+		{gitTreeTarget + "?per_page=1", "passthrough"},
 	} {
-		w := do(t, router, authedReq("GET", target, nil))
-		require.Equal(t, http.StatusOK, w.Code, target)
-		assert.Empty(t, w.Header().Get(cacheHeader), "%s must forward", target)
+		for range 2 {
+			w := do(t, router, authedReq("GET", tc.target, nil))
+			require.Equal(t, http.StatusOK, w.Code, tc.target)
+			assert.Equal(t, tc.header, w.Header().Get(cacheHeader), "%s must forward", tc.target)
+		}
 	}
 
 	req := authedReq("GET", gitTreeTarget, nil)
 	req.Header.Set("Accept", "application/vnd.github.raw")
-	assert.Empty(t, do(t, router, req).Header().Get(cacheHeader))
-	assert.Equal(t, int32(4), atomic.LoadInt32(&u.gitTreeHits), "every unmodeled shape forwards to GitHub uncached")
+	assert.Equal(t, "passthrough", do(t, router, req).Header().Get(cacheHeader))
+	assert.Equal(t, int32(11), atomic.LoadInt32(&u.gitTreeHits), "every unmodeled shape forwards to GitHub uncached, each time")
 }
 
-// A (bad or GC'd sha) relays unstored -- no miss-marker table exists for
-// this route (see the file header).
+// A missing tree relays unstored, and the next request asks GitHub again. A
+// tree that appears a moment after its commit is then served at once.
 func TestCachedGitTree_NotFoundRelayedUnstored(t *testing.T) {
 	router, _, _, u := respCacheStack(t)
 	u.gitTree = func(w http.ResponseWriter, _ *http.Request) {
@@ -120,7 +126,12 @@ func TestCachedGitTree_NotFoundRelayedUnstored(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		w := do(t, router, authedReq("GET", gitTreeTarget, nil))
 		require.Equal(t, http.StatusNotFound, w.Code)
-		assert.Empty(t, w.Header().Get(cacheHeader))
+		assert.NotEqual(t, "hit", w.Header().Get(cacheHeader))
 		assert.Equal(t, int32(i), atomic.LoadInt32(&u.gitTreeHits), "a 404 must never be served from state on this route")
 	}
+
+	u.gitTree = defaultGitTreeUpstream
+	w := do(t, router, authedReq("GET", gitTreeTarget, nil))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "miss", w.Header().Get(cacheHeader), "a tree that now exists is served on the next request")
 }
