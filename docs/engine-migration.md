@@ -38,11 +38,12 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 `GET /repos/{owner}/{repo}/rules/branches/{branch}` is the second route on the engine. Differences from the old handler:
 
 - The key is the branch as the path escapes it. The handler unescaped it, so `a/b` and `a%2Fb` were one row. They are separate rows now, each holding GitHub's answer.
-- A branch that is too long or holds a control byte reaches the router's fallback, which forwards it with the reason `unrouted` and without `requireAuth`. The handler ran behind `requireAuth` and forwarded it with the reason `path`.
+- A branch that is too long or holds a control byte reaches the router's fallback, which forwards it with the reason `unrouted` and without `requireAuth`. The handler ran behind `requireAuth` and forwarded it with the reason `unmodeled-path`.
 - The engine stores any 200 array. The handler passed through an answer whose entries lacked a `type` or a positive `ruleset_id`.
 - The handler kept the fields of each rule and `parameters` whole. The engine keeps every field and drops each URL key at any depth, inside `parameters` too.
+- The spec's `<accept>` list has no bare `application/vnd.github.merge-info-preview`, so a request that names it passes through. The handler served it.
 - A 404 is stored for every caller for the TTL. The handler remembered it per caller for the deny window.
-- A 403 from the fetch denies the caller the repository proof for the deny window, and every engine route that probes `/repos/{owner}/{repo}` shares that proof. The handler remembered it for this branch and shape only.
+- A 403 from the fetch denies the caller the repository proof for the deny window, and every engine route that probes `/repos/{owner}/{repo}` shares that proof. The handler remembered it for this branch and shape only, and keyed a token permission refusal to the token's fingerprint. The engine keys it to the principal, so one token's refusal denies the user's other tokens too.
 - A 5xx puts the key in a backoff, and a request inside it answers 502 without an upstream call. The handler relayed every 5xx and asked again on the next request.
 - A `repository` delivery still drops the repository's rows. The engine needs an `<event>` of its own for it, where the handler shared the repo-wide flush.
 - This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Timeline and the subscriber notifiers see `invalidated`. The delivery log row this service writes inside its own apply still reads `ignored`, where the handler wrote `invalidated`.
