@@ -118,6 +118,29 @@ test("the Copy JSON menu opens and closes", async (t) => {
 	assert.equal(await displayOf(page, ".copy-json-menu"), "none", "an outside click did not close the menu");
 });
 
+// The backend-free preview has no stream, so app.ts replays canned requests.
+test("the preview's request log is filled and keeps moving", async (t) => {
+	const server = serve();
+	const exe = process.env.GSM_CHROMIUM ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+	let browser: Browser | undefined;
+	t.after(async () => {
+		await browser?.close();
+		server.close();
+	});
+	browser = await chromium.launch(existsSync(exe) ? { executablePath: exe, args: ["--no-sandbox"] } : { args: ["--no-sandbox"] });
+	const page = await browser.newPage({ viewport: { width: 1400, height: 1500 } });
+	await page.goto(`http://127.0.0.1:${PORT}/#requests`);
+	await page.waitForSelector("gsm-request-log tr.row-toggle");
+	assert.equal(await page.$eval("#live-pill", (el) => el.textContent), "Demo", "the preview must not claim to be live");
+	assert.ok(await page.$eval("#req-summary", (el) => el.querySelectorAll("details.req-groups").length) >= 2, "the group tables sit above the log");
+
+	const held = (): Promise<number> => page.$eval("gsm-request-log", (el) => (el as unknown as { model: { size: number } }).model.size);
+	const first = await held();
+	await until("more canned requests", held, (n) => n > first, 5000);
+
+	if (process.env.GSM_SCREENSHOT_DEMO) await page.screenshot({ path: process.env.GSM_SCREENSHOT_DEMO, fullPage: true });
+});
+
 // ---- the live dashboard ----
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "build", "server");
