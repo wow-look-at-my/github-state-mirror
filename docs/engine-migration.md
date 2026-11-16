@@ -38,7 +38,7 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 `GET /repos/{owner}/{repo}/rules/branches/{branch}` is the second route on the engine. Differences from the old handler:
 
 - The key is the branch as the path escapes it. The handler unescaped it, so `a/b` and `a%2Fb` were one row. They are separate rows now, each holding GitHub's answer.
-- A branch that is too long or holds a control byte reaches the proxy as an unrouted path. The handler forwarded it with the reason `path`.
+- A branch that is too long or holds a control byte reaches the router's fallback, which forwards it with the reason `unrouted` and without `requireAuth`. The handler ran behind `requireAuth` and forwarded it with the reason `path`.
 - The engine stores any 200 array. The handler passed through an answer whose entries lacked a `type` or a positive `ruleset_id`.
 - The handler kept the fields of each rule and `parameters` whole. The engine keeps every field and drops each URL key at any depth, inside `parameters` too.
 - A 404 is stored for every caller for the TTL. The handler remembered it per caller for the deny window.
