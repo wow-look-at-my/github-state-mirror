@@ -51,7 +51,6 @@ const (
 	denyKindCommit            = "commit"              // GET /repos/{owner}/{repo}/commits/{ref}
 	denyKindBranchesWhereHead = "branches_where_head" // GET /repos/{owner}/{repo}/commits/{sha}/branches-where-head
 	denyKindAnnotations       = "annotations"         // GET /repos/{owner}/{repo}/check-runs/{id}/annotations
-	denyKindBranchRules       = "branch_rules"        // GET /repos/{owner}/{repo}/rules/branches/{branch}
 	denyKindArchive           = "archive"             // GET /repos/{owner}/{repo}/{tarball,zipball}/{ref}
 	denyKindBranch            = "branch"              // GET /repos/{owner}/{repo}/branches/{branch}
 	denyKindIssue             = "issue"               // GET /repos/{owner}/{repo}/issues/{number}

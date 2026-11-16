@@ -203,9 +203,6 @@ func NewRouter(
 		// Cached check-run annotations, flushed by the run's own deliveries; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations", h.cachedCheckRunAnnotations)
 
-		// Cached rules in force on a branch; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/rules/branches/*", h.cachedBranchRules)
-
 		// Cached Code Quality setup; the PATCH flushes before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
 		// Every write spelling flushes; a proxy-only method leaves a stale GET.
