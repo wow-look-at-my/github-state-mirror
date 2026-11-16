@@ -1,4 +1,4 @@
-// Storage for the identity/self routes (GET /app, /user, /user/orgs).
+// Storage for the identity/self routes.
 
 package ghdata
 
@@ -11,7 +11,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
 )
 
-// Storage for the identity/self routes (GET /app, /user, /user/orgs).
+// Storage for the identity/self routes.
 
 // IdentityCacheTTL bounds how long a stale identity answer may be served.
 const IdentityCacheTTL = 30 * time.Minute

@@ -22,7 +22,7 @@ Before this, recovering those meant pasting the whole dashboard page into a chat
 - up to 3 concrete sample paths.
 - per status, the response's **key/type skeleton**, its content type, and its real size.
 
-**No value is ever retained.** `jsonSkeleton` reduces a body before anything is stored: every scalar becomes its type name (`string`, `number`, `bool`, `null` — nulls survive as `null`. This is because a nullable field's key must still be emitted by a rebuild). Every array collapses to its first element's shape plus the observed length, and objects keep only key names. A non-JSON body yields no skeleton at all — which is itself the answer, since an opaque body has no state to absorb. This is therefore cannot become a tier-2 route.
+**No value is ever retained.** `jsonSkeleton` reduces a body before anything is stored. This is because a nullable field's key must still be emitted by a rebuild). Every array collapses to its first element's shape plus the observed length, and objects keep only key names. A non-JSON body yields no skeleton at all — which is itself the answer, since an opaque body has no state to absorb. This is therefore cannot become a tier-2 route.
 
 Query parameters keep their names and never their values, matching the existing `pass_query` rule (a value can carry a credential. A name cannot).
 
