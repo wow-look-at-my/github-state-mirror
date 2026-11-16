@@ -36,7 +36,7 @@ func (h *handlers) cachedApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectKey := "app:" + strconv.FormatInt(ident.ID, 10)
-	ctx := actor.WithActor(r.Context(), subjectKey)
+	ctx := withPrincipal(r.Context(), subjectKey)
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}
