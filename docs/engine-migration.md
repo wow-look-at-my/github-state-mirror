@@ -45,4 +45,4 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 - A 403 from the fetch denies the caller the repository proof for the deny window, and every engine route that probes `/repos/{owner}/{repo}` shares that proof. The handler remembered it for this branch and shape only.
 - A 5xx puts the key in a backoff, and a request inside it answers 502 without an upstream call. The handler relayed every 5xx and asked again on the next request.
 - A `repository` delivery still drops the repository's rows. The engine needs an `<event>` of its own for it, where the handler shared the repo-wide flush.
-- This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Webhooks tab shows it as `invalidated`.
+- This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Timeline and the subscriber notifiers see `invalidated`. The delivery log row this service writes inside its own apply still reads `ignored`, where the handler wrote `invalidated`.
