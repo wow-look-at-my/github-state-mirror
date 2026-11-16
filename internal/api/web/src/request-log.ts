@@ -277,7 +277,8 @@ if (typeof customElements !== "undefined") {
         private grouped = true;
         private sort: LogSort = "first";
         private filter = "";
-        private hidden = new Set<string>();
+        /** Dispositions the user turned off. Not HTMLElement.hidden, hence the name. */
+        private hiddenDisp = new Set<string>();
         private limit = PAGE;
         private paused = false;
         private heldWhilePaused = 0;
@@ -338,9 +339,9 @@ if (typeof customElements !== "undefined") {
                 chip.title = "Show or hide " + d + " requests";
                 chip.setAttribute("aria-pressed", "true");
                 chip.addEventListener("click", () => {
-                    const off = !this.hidden.has(d);
-                    if (off) this.hidden.add(d);
-                    else this.hidden.delete(d);
+                    const off = !this.hiddenDisp.has(d);
+                    if (off) this.hiddenDisp.add(d);
+                    else this.hiddenDisp.delete(d);
                     chip.classList.toggle("off", off);
                     chip.setAttribute("aria-pressed", off ? "false" : "true");
                     this.limit = PAGE;
@@ -443,7 +444,7 @@ if (typeof customElements !== "undefined") {
             // A paused log keeps what is on screen. Only the counters above move.
             if (this.paused) return;
 
-            const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hidden, limit: this.limit });
+            const res = this.model.query({ grouped: this.grouped, sort: this.sort, filter: this.filter, hidden: this.hiddenDisp, limit: this.limit });
             const items: Item[] = this.grouped
                 ? res.groups.map((g) => ({ key: "g" + g.key, event: g.sample, group: g }))
                 : res.events.map((e) => ({ key: "e" + e.seq, event: e, group: null }));

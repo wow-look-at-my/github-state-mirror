@@ -1,4 +1,4 @@
-// The dashboard JSON API: /api/me, /api/jobs, /api/requests, and the cache stats the Principals tab renders.
+// dashboard_api.go holds jobsDefaultLimit.
 
 package api
 
@@ -18,9 +18,8 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// The dashboard JSON API: /api/me, /api/jobs, /api/requests, and the cache
-// stats the Principals tab renders. The page shell, asset embedding, and the
-// OAuth sign-in flow live in dashboard.go.
+// The page shell, asset embedding, and the OAuth sign-in flow live in
+// dashboard.go.
 
 // ---- dashboard API ----
 

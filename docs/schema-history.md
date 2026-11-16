@@ -30,8 +30,6 @@ Un-resolved alongside `mergeable` wherever a tip moves, plus on CI events, which
 
 Diff bodies are never stored).
 
-**15:** added `pull_files_cache`, `closed_pull_cache`, and `branches_list_cache`.
-
 **14: a no-schema-change nuke** of truth rows poisoned by the collaborator-repo bleed -- repos a User login merely collaborates on, absorbed keyed. This is by the Incorrect owner. The fixed fetch (`ownerAffiliations: OWNER` + the `dropForeignRepoNode` guard in ghclient) keeps them out afterwards. This is the entry the fingerprint can not express, and deliberately so: poisoned rows are a data problem. The fix for one is to correct or re-fetch the rows, not to hand every deploy a lever that empties the cache.
 
 **13: `commit_ci_cache`** — trimmed combined-commit-status and check-runs snapshots backing the cached `GET /repos/{owner}/{repo}/commits/{ref}/status` and `.../commits/{ref}/check-runs` routes.
