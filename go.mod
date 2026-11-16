@@ -11,6 +11,8 @@ require (
 
 require github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch
 
+require github.com/wow-look-at-my/api-mirror v0.0.0 // go-toolchain:auto-branch
+
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -193,7 +194,7 @@ func tagsRepo(clock int) map[string]any {
 		"owner":          map[string]any{"login": "org1"},
 		"default_branch": "main",
 		"pushed_at":      1767225600 + clock,
-		"updated_at":     "2026-01-01T00:00:0" + string(rune('0'+clock)) + "Z",
+		"updated_at":     time.Unix(int64(1767225600+clock), 0).UTC().Format(time.RFC3339),
 	}
 }
 
