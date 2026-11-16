@@ -56,7 +56,7 @@ func (h *handlers) cachedCheckRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, body, overflow, err := h.fetchUpstream(r, nil)
+	resp, body, overflow, viaApp, err := h.fetchChecks(r, owner)
 	if err != nil {
 		h.upstreamError(w, r, err)
 		return
@@ -80,7 +80,9 @@ func (h *handlers) cachedCheckRun(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.PutCachedCheckRun(r.Context(), owner, repo, checkRunID, string(doc), now, ghdata.CheckRunCacheTTL); err != nil {
 		slog.Warn("check run cache write failed", "owner", owner, "repo", repo, "id", checkRunID, "error", err)
 	}
-	h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+	if !viaApp {
+		h.refreshGrantOn2xx(r, owner, repo, resp.StatusCode)
+	}
 	h.reqlog.observeStatus(r, DispMiss, resp.StatusCode)
 	writeRebuilt(w, http.StatusOK, doc, false)
 }
