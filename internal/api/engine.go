@@ -44,7 +44,7 @@ func engineDispatch(eng Engine, authed func(http.Handler) http.Handler) func(htt
 
 // recordEngine puts one engine answer in the request log and on the Timeline. The engine's
 // disposition words are the log's own words, plus denied and refusal for a reveal or absorbed refusal.
-// A forwarded delivery is skipped: the webhook worker already put it on the Timeline, and the forwarder logs a refusal.
+// A delivery is skipped: the webhook worker already put it on the Timeline, with an engine refusal as its error.
 func (l *requestLog) recordEngine(r apimirror.Request) {
 	if r.Disposition == apimirror.DispositionDelivery {
 		return

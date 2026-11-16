@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apimirror "github.com/wow-look-at-my/api-mirror/engine"
+	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
 )
 
 //go:embed github.xml
@@ -36,14 +37,14 @@ type Options struct {
 	OnExchange func(apimirror.Exchange)
 }
 
-// Engine is the embedded engine plus the delivery forwarder.
+// Engine is the embedded engine and the secret that signs the deliveries it is given.
 type Engine struct {
-	e    *apimirror.Engine
-	sink atomic.Pointer[func(apimirror.Request)]
-	fwd  *Forwarder
+	e      *apimirror.Engine
+	sink   atomic.Pointer[func(apimirror.Request)]
+	secret string
 }
 
-// New builds the engine from the embedded spec. secret signs the deliveries the forwarder posts.
+// New builds the engine from the embedded spec. secret signs the deliveries the applier posts.
 func New(ctx context.Context, opts Options, secret string) (*Engine, error) {
 	if opts.DB == "" || opts.Base == "" {
 		return nil, fmt.Errorf("engine: DB and Base are required")
@@ -52,7 +53,7 @@ func New(ctx context.Context, opts Options, secret string) (*Engine, error) {
 		return nil, fmt.Errorf("engine: github.xml must name %s exactly once, found %d", basePlaceholder, n)
 	}
 	spec := bytes.Replace(specSource, []byte(basePlaceholder), []byte(strings.TrimRight(opts.Base, "/")), 1)
-	g := &Engine{}
+	g := &Engine{secret: secret}
 	inner, err := apimirror.New(ctx, "github.xml", spec, apimirror.Options{
 		DB:         opts.DB,
 		OnExchange: opts.OnExchange,
@@ -62,7 +63,6 @@ func New(ctx context.Context, opts Options, secret string) (*Engine, error) {
 		return nil, fmt.Errorf("engine: %w", err)
 	}
 	g.e = inner
-	g.fwd = newForwarder(inner, secret)
 	return g, nil
 }
 
@@ -82,21 +82,16 @@ func (g *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) { g.e.ServeHT
 // Declares reports whether a spec route answers method on the escaped path.
 func (g *Engine) Declares(method, path string) bool { return g.e.Declares(method, path) }
 
-// Deliveries is the webhook.IngestNotifier that posts each applied delivery to the engine.
-func (g *Engine) Deliveries() *Forwarder { return g.fwd }
-
-// Start runs the engine's background jobs and the forwarder.
-func (g *Engine) Start() {
-	g.e.Start()
-	g.fwd.start()
+// Applier wraps the service's dispatcher, so the webhook worker applies each delivery to the engine too before the journal marks it applied.
+func (g *Engine) Applier(next webhook.Dispatcher) webhook.Dispatcher {
+	return newApplier(next, g.e, g.secret)
 }
 
-// Drain finishes the queued deliveries, then the engine's in-flight work. It reports false when either ran out of time.
-func (g *Engine) Drain(timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	fwdOK := g.fwd.drain(timeout)
-	return g.e.Drain(time.Until(deadline)) && fwdOK
-}
+// Start runs the engine's background jobs.
+func (g *Engine) Start() { g.e.Start() }
+
+// Drain finishes the engine's in-flight work. Call it after the webhook worker stopped. It reports false when it ran out of time.
+func (g *Engine) Drain(timeout time.Duration) bool { return g.e.Drain(timeout) }
 
 // Close releases the engine's database. Call it after Drain.
 func (g *Engine) Close() error { return g.e.Close() }

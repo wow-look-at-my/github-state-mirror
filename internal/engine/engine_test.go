@@ -48,15 +48,11 @@ type fakeEvents struct {
 	got    []*http.Request
 	bodies [][]byte
 	status int
-	block  chan struct{}
 }
 
 func (f *fakeEvents) EventsPath() string { return "/events" }
 
 func (f *fakeEvents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if f.block != nil {
-		<-f.block
-	}
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.got = append(f.got, r)
@@ -65,17 +61,29 @@ func (f *fakeEvents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(f.status)
 }
 
-func TestForwarder_SignsAndKeepsOrder(t *testing.T) {
+// ownApply stands in for the service's dispatcher and answers with one disposition.
+type ownApply struct {
+	disposition string
+	calls       int
+}
+
+func (o *ownApply) Dispatch(context.Context, webhook.Event) webhook.DispatchResult {
+	o.calls++
+	return webhook.DispatchResult{Disposition: o.disposition}
+}
+
+func TestApplier_TheEngineHasEachDeliveryWhenDispatchReturns(t *testing.T) {
 	ev := &fakeEvents{status: http.StatusAccepted}
-	f := newForwarder(ev, "secret")
-	f.start()
-	for _, id := range []string{"d1", "d2", "d3"} {
+	own := &ownApply{disposition: webhook.DispApplied}
+	a := newApplier(own, ev, "secret")
+	for n, id := range []string{"d1", "d2", "d3"} {
 		raw, err := json.Marshal(map[string]string{"id": id})
 		require.NoError(t, err)
-		f.NotifyIngest(webhook.Event{Type: "create", DeliveryID: id, Raw: raw}, webhook.DispatchResult{}, time.Now())
+		res := a.Dispatch(context.Background(), webhook.Event{Type: "create", DeliveryID: id, Raw: raw})
+		assert.Equal(t, webhook.DispApplied, res.Disposition, "the service's own outcome stands when the engine accepts")
+		require.Len(t, ev.got, n+1, "the engine has the delivery before the worker marks it applied")
 	}
-	require.True(t, f.Idle(5*time.Second))
-	require.Len(t, ev.got, 3)
+	assert.Equal(t, 3, own.calls)
 	for i, id := range []string{"d1", "d2", "d3"} {
 		r := ev.got[i]
 		assert.Equal(t, "/events", r.URL.Path)
@@ -85,46 +93,25 @@ func TestForwarder_SignsAndKeepsOrder(t *testing.T) {
 		mac.Write(ev.bodies[i])
 		assert.Equal(t, "sha256="+hex.EncodeToString(mac.Sum(nil)), r.Header.Get("X-Hub-Signature-256"))
 	}
-	assert.True(t, f.drain(5*time.Second))
 }
 
-func TestForwarder_NeverBlocksTheWorker(t *testing.T) {
-	ev := &fakeEvents{status: http.StatusAccepted, block: make(chan struct{})}
-	f := newForwarder(ev, "secret")
-	f.start()
-	done := make(chan struct{})
-	go func() {
-		for range 3 {
-			f.NotifyIngest(webhook.Event{Type: "push", DeliveryID: "d"}, webhook.DispatchResult{}, time.Now())
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		require.Fail(t, "NotifyIngest waited on the engine")
-	}
-	close(ev.block)
-	assert.True(t, f.drain(5*time.Second))
-}
-
-func TestForwarder_LogsARefusalAtErrorLevel(t *testing.T) {
+func TestApplier_AnEngineRefusalIsAnErrorResult(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	ev := &fakeEvents{status: http.StatusForbidden}
-	f := newForwarder(ev, "secret")
-	f.start()
-	f.NotifyIngest(webhook.Event{Type: "delete", DeliveryID: "d-refused"}, webhook.DispatchResult{}, time.Now())
-	require.True(t, f.drain(5*time.Second))
+	a := newApplier(&ownApply{disposition: webhook.DispApplied}, ev, "secret")
+	res := a.Dispatch(context.Background(), webhook.Event{Type: "delete", DeliveryID: "d-refused"})
+	assert.Equal(t, webhook.DispError, res.Disposition, "the worker tries a delivery the engine refused again")
+	assert.Contains(t, res.Detail, "engine: status 403")
 	out := buf.String()
 	assert.Contains(t, out, "level=ERROR")
 	assert.Contains(t, out, "delivery=d-refused")
 	assert.Contains(t, out, "type=delete")
 
-	buf.Reset()
-	f.NotifyIngest(webhook.Event{Type: "push", DeliveryID: "d-late"}, webhook.DispatchResult{}, time.Now())
-	assert.Contains(t, buf.String(), "delivery=d-late", "a delivery after drain is reported, not dropped quietly")
+	own := newApplier(&ownApply{disposition: webhook.DispError}, &fakeEvents{status: http.StatusAccepted}, "secret").
+		Dispatch(context.Background(), webhook.Event{Type: "push", DeliveryID: "d-own"})
+	assert.Equal(t, webhook.DispError, own.Disposition, "the service's own error stands when the engine accepts")
 }

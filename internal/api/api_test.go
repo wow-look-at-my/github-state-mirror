@@ -196,9 +196,9 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
 	lat := latency.New()
 	eng := newTestEngine(t, ghSrv.URL, timeline, meter)
-	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier, eng.Deliveries())
+	queue := newTestQueue(t, eng.Applier(dispatcher), DeliveryRecorder(timeline, lat), notifier)
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, eng)
-	webhookQueues.Store(router, testDeliveries{queue: queue, engine: eng.Deliveries()})
+	webhookQueues.Store(router, queue)
 	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue, meter: meter}
 }
 
@@ -222,13 +222,7 @@ func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder, me
 	return eng
 }
 
-// testDeliveries is what awaitWebhooks waits on for one router.
-type testDeliveries struct {
-	queue  *webhook.Queue
-	engine *engine.Forwarder
-}
-
-// webhookQueues maps each test router to its webhook queue and engine forwarder, so a test can wait for what it posted to apply.
+// webhookQueues maps each test router to its webhook queue, so a test can wait for what it posted to apply.
 var webhookQueues sync.Map
 
 // newTestQueue runs a webhook queue over a throwaway inbox until the test ends.
@@ -252,9 +246,7 @@ func awaitWebhooks(t *testing.T, router http.Handler) {
 	t.Helper()
 	v, ok := webhookQueues.Load(router)
 	require.True(t, ok, "router was not built by a test stack")
-	d := v.(testDeliveries)
-	require.True(t, d.queue.Idle(10*time.Second), "posted deliveries were not applied in time")
-	require.True(t, d.engine.Idle(10*time.Second), "applied deliveries did not reach the engine in time")
+	require.True(t, v.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {

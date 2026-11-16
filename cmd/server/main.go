@@ -149,8 +149,8 @@ func main() {
 	}
 	eng.Start()
 
-	// see docs/webhooks/dispatch.md; every applied delivery also reaches the engine.
-	queue := webhook.NewQueue(journal, dispatcher, api.DeliveryRecorder(timeline, lat), notifier, eng.Deliveries())
+	// see docs/webhooks/dispatch.md; the worker applies each delivery to the engine too, before the inbox marks it applied.
+	queue := webhook.NewQueue(journal, eng.Applier(dispatcher), api.DeliveryRecorder(timeline, lat), notifier)
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
 	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, eng)
@@ -200,7 +200,7 @@ func main() {
 	if !notifier.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight notifications did not drain in time; closing DBs anyway")
 	}
-	// The worker has stopped, so no delivery joins the engine's queue after this.
+	// The worker has stopped, so the engine gets no delivery after this.
 	if !eng.Drain(30 * time.Second) {
 		slog.Warn("shutdown: the engine did not drain in time; closing its DB anyway")
 	}

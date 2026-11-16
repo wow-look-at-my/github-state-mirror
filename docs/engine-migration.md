@@ -10,7 +10,7 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 2. Make the spec match the old contract. The TTL, the `<param>` ranges (page caps included), the `<absorb status=>` codes, and `<drop key="url"/>` plus `<drop key="*_url"/>` for the URL keys the old rebuild dropped.
 3. Delete the `r.Get` line in `internal/api/router.go`. Do not add a line for the engine: the dispatch in `internal/api/engine.go` finds the route from the spec.
 4. Delete the handler, its `ghdata` store code, its `denyKind*` and `RepoAnswerKind*` constants, and every flush of its rows in `internal/sync`. Keep a helper that another route still calls.
-5. Port the handler's tests to the real router with the engine mounted (`newFullTestStack` builds both). Deliveries go through `postWebhookJSON`, which waits until the engine has them. Each delivery needs the clock field its `<event>` names.
+5. Port the handler's tests to the real router with the engine mounted (`newFullTestStack` builds both). Deliveries go through `postWebhookJSON`, which waits until the worker applied them. The worker applies each to the engine too. Each delivery needs the clock field its `<event>` names.
 6. Update the route's entry in `docs/cache/rest-routes.md` and its rows in `docs/webhooks/invalidations.md`.
 7. Leave a table in `schema.sql` when another route still reads it. A table that nothing reads goes, with `sqlc generate`.
 
@@ -24,7 +24,7 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 | Passthrough header | no `X-GSM-Cache` | `X-GSM-Cache: passthrough` |
 | Request log disposition of a refusal | `hit` or `miss` | `denied` (reveal) or `refusal` (an absorbed 404) |
 | Caller name on the Timeline | the verified login or slug | the principal key only |
-| Delivery | applied in the webhook worker | forwarded after the worker's apply, then ordered by the engine's own watermark |
+| Delivery | applied in the webhook worker | applied in the same worker step, before the inbox marks the delivery applied, and ordered by the engine's own watermark. An engine refusal makes the delivery an `error` |
 
 ## The tags listing
 
