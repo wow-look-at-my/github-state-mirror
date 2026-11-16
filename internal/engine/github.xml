@@ -1,0 +1,114 @@
+<?xml version="1.1" encoding="UTF-8"?>
+
+<!--
+	The routes this service serves through the embedded api-mirror engine.
+	A route lives here or in a hand-written handler, never in both.
+	docs/engine-migration.md has the procedure to move a route here.
+-->
+
+<!--
+	The host replaces GSM_UPSTREAM_BASE with its own GitHub base URL, so the
+	engine and the hand-written handlers always ask the same upstream.
+	header-prefix keeps the X-GSM-* answer headers that consumers read.
+-->
+<mirror name="github-state-mirror" header-prefix="X-GSM-"
+	max-rows='{{ .env.CACHE_MAX_ROWS | default "1000000" }}'>
+
+	<description>The engine half of github-state-mirror. Storage is global, and a read needs proof that the caller can read the same thing from GitHub.</description>
+
+	<!-- Every spelling a client uses for GitHub's default JSON. -->
+	<accept>application/json</accept>
+	<accept>application/vnd.github+json</accept>
+	<accept>application/vnd.github.v3+json</accept>
+	<accept>application/vnd.github.merge-info-preview+json</accept>
+	<accept>application/vnd.github.nebula-preview</accept>
+	<accept>application/vnd.github.nebula-preview+json</accept>
+
+	<!--
+		The caller's own Authorization rides every call the engine makes for
+		them, so a probe proves the caller's access. The rate-limit headers
+		tell a budget refusal from an access refusal.
+	-->
+	<upstream base="GSM_UPSTREAM_BASE" debounce='{{ .env.PASSTHROUGH_DEBOUNCE | default "5s" }}' retry-after="Retry-After">
+		<header name="Accept">application/vnd.github+json</header>
+		<header name="X-GitHub-Api-Version">2022-11-28</header>
+		<forward name="Authorization"/>
+		<ratelimit limit="X-RateLimit-Limit" remaining="X-RateLimit-Remaining"
+			used="X-RateLimit-Used" reset="X-RateLimit-Reset" resource="X-RateLimit-Resource"/>
+	</upstream>
+
+	<!-- A verified App JWT names the caller app:<id>, as requireAuth does. -->
+	<identity header="X-Mirror-Identity" method="GET" path="/app" scheme="Bearer"
+		id="id" name="slug" prefix="app" ttl="10m"/>
+
+	<!-- A user's token names the caller user:<id>, as requireAuth does. -->
+	<whoami method="GET" path="/user" id="id" prefix="user" ttl="1h"/>
+
+	<!--
+		The repository's tags, one row per page. The URL keys go, as in every
+		rebuilt answer of this service. The TTL backstops a lost delivery.
+	-->
+	<resource name="tags_list" store="document" ttl="24h">
+		<key name="owner" fold="true"/>
+		<key name="repo" fold="true"/>
+		<key name="per_page"/>
+		<key name="page"/>
+		<drop key="url"/>
+		<drop key="*_url"/>
+		<reveal>
+			<probe method="GET" path="/repos/{{ .key.owner }}/{{ .key.repo }}"/>
+			<grant ttl="24h"/>
+			<deny ttl="5m"/>
+		</reveal>
+	</resource>
+
+	<!-- Pages past 10 are passed through. A 404 is the upstream's answer for a missing repo. -->
+	<route method="GET" path="/repos/{owner}/{repo}/tags" resource="tags_list" list="true">
+		<param name="per_page" type="int" default="30" min="1" max="100" key="true"/>
+		<param name="page" type="int" default="1" min="1" max="10" key="true"/>
+		<absorb status="404"/>
+	</route>
+
+	<!--
+		The host posts every delivery it applies to this path. The router
+		never sends a request here.
+	-->
+	<events path="/_engine/webhook" signature-header="X-Hub-Signature-256" type-header="X-GitHub-Event"
+		id-header="X-GitHub-Delivery">
+
+		<secret><value name="env.WEBHOOK_SECRET"/></secret>
+
+		<!-- A tag moves by a push to refs/tags, a create or a delete. None of them states the page a tag sits on. -->
+		<event type="push" resource="tags_list" clock="repository.pushed_at"
+			when='{{ hasPrefix "refs/tags/" .payload.ref }}'>
+			<subject>tags:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the listing is pages of tags in the upstream's order, and the push names one tag"/>
+		</event>
+
+		<event type="create" resource="tags_list" clock="repository.pushed_at"
+			when='{{ eq .payload.ref_type "tag" }}'>
+			<subject>tags-create:<value name="payload.repository.full_name"/>:<value name="payload.ref"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the listing is pages of tags in the upstream's order, and the payload names one tag and no sha"/>
+		</event>
+
+		<event type="delete" resource="tags_list" clock="repository.pushed_at"
+			when='{{ eq .payload.ref_type "tag" }}'>
+			<subject>tags-delete:<value name="payload.repository.full_name"/>:<value name="payload.ref"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="a deleted tag leaves every later page one entry short, and the payload names only the tag"/>
+		</event>
+
+		<!-- A rename or a transfer moves the listing to a name the payload cannot map to a stored page. -->
+		<event type="repository" resource="tags_list" clock="repository.updated_at">
+			<subject>tags-repo:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states the repository, never its tags"/>
+		</event>
+	</events>
+</mirror>

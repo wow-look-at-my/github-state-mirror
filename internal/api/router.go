@@ -39,6 +39,7 @@ func NewRouter(
 	debouncer *Debouncer,
 	app *ghclient.AppAuthenticator,
 	lat *latency.Recorder,
+	eng Engine,
 ) http.Handler {
 	r := chi.NewRouter()
 	r.Use(stampRequestStart)
@@ -70,6 +71,12 @@ func NewRouter(
 
 	// recordIdentity: shared by requireAuth and the self-verifying app-JWT routes; see CLAUDE.md.
 	recordIdentity := newIdentityRecorder(store)
+
+	// A route the engine spec declares goes to the engine, behind requireAuth; see engine.go.
+	if eng != nil {
+		eng.SetRequestSink(reqlog.recordEngine)
+	}
+	r.Use(engineDispatch(eng, requireAuth(gh, recordIdentity)))
 
 	// upstream is observed at its transport, so every call it makes reaches the Timeline.
 	upstream := httpobs.Client(0, TimelineUpstreamObserver(timeline))
@@ -219,9 +226,6 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/tarball/*", h.cachedArchive(ghdata.RepoAnswerKindTarball))
 		r.Get("/repos/{owner}/{repo}/zipball", h.cachedArchive(ghdata.RepoAnswerKindZipball))
 		r.Get("/repos/{owner}/{repo}/zipball/*", h.cachedArchive(ghdata.RepoAnswerKindZipball))
-
-		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)
