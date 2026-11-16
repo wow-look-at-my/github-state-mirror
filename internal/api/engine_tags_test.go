@@ -127,6 +127,21 @@ func TestEngineTags_OutboundCallsAreOnTheTimeline(t *testing.T) {
 	assert.True(t, probe, "the engine's reveal probe is charted")
 }
 
+func TestEngineTags_TheEngineKeysByThePrincipalRequireAuthResolved(t *testing.T) {
+	f := newTagsFixture(t)
+	require.Equal(t, http.StatusOK, f.get(t, tagsTarget).Code)
+	assert.EqualValues(t, 1, atomic.LoadInt32(&f.up.userHits), "the engine repeats no identity lookup")
+	var seen int
+	for _, e := range f.timeline.Snapshot(0).Events {
+		if e.Route != tagsRoute {
+			continue
+		}
+		seen++
+		assert.Equal(t, testUserActor, e.Actor, "%s %s", e.Kind, e.Disposition)
+	}
+	assert.GreaterOrEqual(t, seen, 2, "the inbound request and the engine's fetch are both charted")
+}
+
 func TestEngineTags_FetchReachesTheRateMeter(t *testing.T) {
 	f := newTagsFixture(t)
 	require.Equal(t, http.StatusOK, f.get(t, tagsTarget).Code)

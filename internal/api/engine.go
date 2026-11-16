@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	apimirror "github.com/wow-look-at-my/api-mirror/engine"
+	"github.com/wow-look-at-my/github-state-mirror/internal/actor"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
@@ -26,7 +27,11 @@ func engineDispatch(eng Engine, authed func(http.Handler) http.Handler) func(htt
 		if eng == nil {
 			return next
 		}
-		served := authed(eng)
+		// requireAuth already named the caller. The engine keys its grants by that principal and asks GitHub nothing about who asks.
+		served := authed(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := apimirror.WithPrincipal(r.Context(), actor.FromContext(r.Context()))
+			eng.ServeHTTP(w, r.WithContext(ctx))
+		}))
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if eng.Declares(r.Method, r.URL.EscapedPath()) {
 				served.ServeHTTP(w, r)

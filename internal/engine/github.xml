@@ -37,12 +37,10 @@
 			used="X-RateLimit-Used" reset="X-RateLimit-Reset" resource="X-RateLimit-Resource"/>
 	</upstream>
 
-	<!-- A verified App JWT names the caller app:<id>, as requireAuth does. -->
-	<identity header="X-Mirror-Identity" method="GET" path="/app" scheme="Bearer"
-		id="id" name="slug" prefix="app" ttl="10m"/>
-
-	<!-- A user's token names the caller user:<id>, as requireAuth does. -->
-	<whoami method="GET" path="/user" id="id" prefix="user" ttl="1h"/>
+	<!--
+		No identity rule: requireAuth names the caller, and the router passes
+		that principal to the engine with each request.
+	-->
 
 	<!--
 		The repository's tags, one row per page. The URL keys go, as in every

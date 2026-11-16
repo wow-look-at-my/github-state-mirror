@@ -2,6 +2,8 @@
 
 `internal/engine/github.xml` is an api-mirror spec. The engine serves every route it declares, from its own database file (`DB_PATH` with `-engine.db`). The router sends a request to the engine when `Declares` answers true for it, and keeps every other request. A route lives in exactly one place: the spec, or a hand-written handler.
 
+The router passes the engine the principal `requireAuth` resolved. The spec therefore declares no `<identity>` and no `<whoami>`, and the engine asks GitHub nothing about who asks.
+
 ## Checklist for the next route
 
 1. Find the route in api-mirror's `samples/github/github.xml`. Copy its resource, route and event declarations into `internal/engine/github.xml`, trimmed to this route.
