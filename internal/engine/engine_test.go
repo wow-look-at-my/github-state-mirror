@@ -29,6 +29,7 @@ func TestNew_LoadsTheEmbeddedSpec(t *testing.T) {
 	g, err := New(context.Background(), Options{DB: filepath.Join(t.TempDir(), "e.db"), Base: "https://api.example.com/"}, "s")
 	require.NoError(t, err)
 	assert.True(t, g.Declares(http.MethodGet, "/repos/o/r/tags"))
+	assert.True(t, g.Declares(http.MethodGet, "/repos/o/r/rules/branches/release/v1"))
 	assert.False(t, g.Declares(http.MethodGet, "/repos/o/r/branches"))
 	g.Start()
 	assert.True(t, g.Drain(5*time.Second))
@@ -48,6 +49,7 @@ type fakeEvents struct {
 	got    []*http.Request
 	bodies [][]byte
 	status int
+	answer string
 }
 
 func (f *fakeEvents) EventsPath() string { return "/events" }
@@ -59,6 +61,23 @@ func (f *fakeEvents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.bodies = append(f.bodies, body)
 	f.mu.Unlock()
 	w.WriteHeader(f.status)
+	if f.answer != "" {
+		_, _ = io.WriteString(w, f.answer+"\n")
+	}
+}
+
+func TestApplier_AnIgnoredDeliveryReportsTheEnginesOutcome(t *testing.T) {
+	for _, tc := range []struct{ own, engine, want string }{
+		{webhook.DispIgnored, webhook.DispInvalidated, webhook.DispInvalidated},
+		{webhook.DispIgnored, webhook.DispApplied, webhook.DispApplied},
+		{webhook.DispIgnored, webhook.DispIgnored, webhook.DispIgnored},
+		{webhook.DispApplied, webhook.DispInvalidated, webhook.DispApplied},
+	} {
+		ev := &fakeEvents{status: http.StatusAccepted, answer: tc.engine}
+		res := newApplier(&ownApply{disposition: tc.own}, ev, "secret").
+			Dispatch(context.Background(), webhook.Event{Type: "repository_ruleset", DeliveryID: "d"})
+		assert.Equal(t, tc.want, res.Disposition, "own %s, engine %s", tc.own, tc.engine)
+	}
 }
 
 // ownApply stands in for the service's dispatcher and answers with one disposition.

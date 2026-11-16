@@ -68,6 +68,38 @@
 	</route>
 
 	<!--
+		The rules in force on a branch: every ruleset of the repository and of
+		its organization whose conditions name it. The branch is the key as the
+		path spells it, case kept. The TTL backstops a lost ruleset delivery.
+	-->
+	<resource name="branch_rules" store="document" ttl="1h">
+		<key name="owner" fold="true"/>
+		<key name="repo" fold="true"/>
+		<key name="branch"/>
+		<key name="per_page"/>
+		<key name="page"/>
+		<drop key="url"/>
+		<drop key="*_url"/>
+		<reveal>
+			<probe method="GET" path="/repos/{{ .key.owner }}/{{ .key.repo }}"/>
+			<grant ttl="24h"/>
+			<deny ttl="5m"/>
+		</reveal>
+	</resource>
+
+	<!--
+		A branch name of 1 to 255 bytes with no control character. Each %XX
+		escape is one byte, and an escape of a control byte does not match.
+		Any other spelling, and pages past 10, are passed through. A 403 or 404
+		is the caller's own denial, never a stored answer.
+	-->
+	<route method="GET" path="/repos/{owner}/{repo}/rules/branches/{branch...}" resource="branch_rules" list="true">
+		<match param="branch" pattern="^(?:[^%]|%(?:[2-689A-Fa-f][0-9A-Fa-f]|7[0-9A-Ea-e])){1,255}$"/>
+		<param name="per_page" type="int" default="30" min="1" max="100" key="true"/>
+		<param name="page" type="int" default="1" min="1" max="10" key="true"/>
+	</route>
+
+	<!--
 		The host posts every delivery it applies to this path. The router
 		never sends a request here.
 	-->
@@ -121,6 +153,35 @@
 			<key field="owner">repository.owner.login</key>
 			<key field="repo">repository.name</key>
 			<invalidate reason="the payload states the repository, never its tags"/>
+		</event>
+
+		<!--
+			A ruleset created, edited or deleted. The clock is the ruleset's own
+			edit time and the subject is the repository, so a watermark would
+			refuse the delete of an old ruleset after an edit of a newer one. A
+			drop is the same whatever the order.
+		-->
+		<event type="repository_ruleset" resource="branch_rules" unordered="true"
+			when='{{ hasKey .payload "repository" }}'>
+			<subject>rules:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states one ruleset, and the answer merges every ruleset whose conditions name the branch"/>
+		</event>
+
+		<event type="repository_ruleset" resource="branch_rules" unordered="true"
+			when='{{ not (hasKey .payload "repository") }}'>
+			<subject>rules-org:<value name="payload.organization.login"/></subject>
+			<key field="owner">organization.login</key>
+			<invalidate reason="an organization ruleset names no repository, and GitHub alone matches its conditions to a repository and a branch"/>
+		</event>
+
+		<!-- A rename, a transfer, a delete or a visibility change makes every answer under the old name wrong. -->
+		<event type="repository" resource="branch_rules" clock="repository.updated_at">
+			<subject>rules-repo:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states the repository, never the rules of its branches"/>
 		</event>
 	</events>
 </mirror>

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wow-look-at-my/github-state-mirror/internal/webhook"
@@ -37,27 +38,39 @@ func newApplier(next webhook.Dispatcher, eng eventsHandler, secret string) *appl
 }
 
 // Dispatch reports the worse of the outcomes. An engine refusal is an error,
-// so the worker tries the delivery again and the Webhooks tab shows it.
+// so the worker tries the delivery again and the Webhooks tab shows it. A
+// delivery this service ignores reports what the engine did with it, because
+// a type only the engine handles must not read as untracked.
 func (a *applier) Dispatch(ctx context.Context, event webhook.Event) webhook.DispatchResult {
 	result := a.next.Dispatch(ctx, event)
-	if err := a.forward(ctx, event); err != nil {
+	disp, err := a.forward(ctx, event)
+	if err != nil {
 		slog.Error("engine: a delivery was refused; its routes keep their last state until the TTL",
 			"delivery", event.DeliveryID, "type", event.Type, "error", err)
 		if result.Disposition != webhook.DispError {
 			result.Disposition = webhook.DispError
 			result.Detail = "engine: " + err.Error()
 		}
+		return result
+	}
+	if result.Disposition == webhook.DispIgnored {
+		switch disp {
+		case webhook.DispApplied, webhook.DispInvalidated, webhook.DispSuperseded:
+			result.Disposition = disp
+			result.Detail = "engine: " + disp
+		}
 	}
 	return result
 }
 
-// forward posts one delivery in process, signed as GitHub signs it.
-func (a *applier) forward(ctx context.Context, event webhook.Event) error {
+// forward posts one delivery in process, signed as GitHub signs it, and
+// returns the engine's disposition.
+func (a *applier) forward(ctx context.Context, event webhook.Event) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.path, bytes.NewReader(event.Raw))
 	if err != nil {
-		return err
+		return "", err
 	}
 	mac := hmac.New(sha256.New, []byte(a.secret))
 	mac.Write(event.Raw)
@@ -68,9 +81,9 @@ func (a *applier) forward(ctx context.Context, event webhook.Event) error {
 	w := &statusWriter{header: http.Header{}}
 	a.eng.ServeHTTP(w, req)
 	if w.code >= 300 {
-		return fmt.Errorf("status %d: %s", w.code, w.body.String())
+		return "", fmt.Errorf("status %d: %s", w.code, w.body.String())
 	}
-	return nil
+	return strings.TrimSpace(w.body.String()), nil
 }
 
 // statusWriter keeps the status and a capped body of an in-process answer.
