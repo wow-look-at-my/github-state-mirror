@@ -156,9 +156,6 @@ func NewRouter(
 
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
-		// Cached git tree read, content-addressed and immutable; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/git/trees/{sha}", h.cachedGitTree)
-
 		// Cached ref-prefix search; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/git/matching-refs/heads/*", h.cachedMatchingRefs)
 

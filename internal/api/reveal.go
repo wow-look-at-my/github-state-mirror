@@ -40,7 +40,6 @@ const (
 	denyKindWorkflowJob       = "workflow_job"        // GET /repos/{owner}/{repo}/actions/jobs/{job_id}
 	denyKindCodeQuality       = "code_quality"        // GET /repos/{owner}/{repo}/code-quality/setup
 	denyKindLabel             = "label"               // GET /repos/{owner}/{repo}/labels/{name}
-	denyKindGitTree           = "git_tree"            // GET /repos/{owner}/{repo}/git/trees/{sha}
 	denyKindSingleCheckRun    = "check_run"           // GET /repos/{owner}/{repo}/check-runs/{check_run_id}
 	denyKindMatchingRefs      = "matching_refs"       // GET /repos/{owner}/{repo}/git/matching-refs/heads/*
 	denyKindReadme            = "readme"              // GET /repos/{owner}/{repo}/readme[/{dir}]

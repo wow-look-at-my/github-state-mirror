@@ -12,7 +12,7 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 4. Delete the handler, its `ghdata` store code, its `denyKind*` and `RepoAnswerKind*` constants, and every flush of its rows in `internal/sync`. Keep a helper that another route still calls.
 5. Port the handler's tests to the real router with the engine mounted (`newFullTestStack` builds both). Deliveries go through `postWebhookJSON`, which waits until the worker applied them. The worker applies each to the engine too. Each delivery needs the clock field its `<event>` names.
 6. Update the route's entry in `docs/cache/rest-routes.md` and its rows in `docs/webhooks/invalidations.md`.
-7. Leave a table in `schema.sql` when another route still reads it. A table that nothing reads goes, with `sqlc generate`.
+7. Leave the route's table in `schema.sql`, even when nothing reads it any more. Dropping it changes the generated queries, and a branch push may not change a generated file. Delete only the hand-written store code.
 
 ## What differs between the two implementations
 
