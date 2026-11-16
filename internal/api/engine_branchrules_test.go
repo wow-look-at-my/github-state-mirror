@@ -160,6 +160,13 @@ func TestEngineBranchRules_ForbiddenIsTheCallersDenial(t *testing.T) {
 		assert.NotEqual(t, "hit", w.Header().Get(cacheHeader), "request %d", i)
 	}
 	assert.EqualValues(t, 1, f.calls.Load(), "the second request is answered from the denial")
+
+	// The repository probe still passes, so the refusal is this branch's alone.
+	f.status.Store(http.StatusOK)
+	other := f.get(t, "/repos/org1/repo1/rules/branches/main")
+	require.Equal(t, http.StatusOK, other.Code, other.Body.String())
+	assert.Equal(t, "miss", other.Header().Get(cacheHeader), "another branch of the same repository is still served")
+	assert.Equal(t, http.StatusForbidden, f.get(t, branchRulesTarget).Code, "the refused branch stays refused for the deny window")
 }
 
 func TestEngineBranchRules_UnauthorizedIsNeverStored(t *testing.T) {
