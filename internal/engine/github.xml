@@ -7,7 +7,7 @@
 -->
 
 <!--
-	The host replaces GSM_UPSTREAM_BASE with its own GitHub base URL, so the
+	The host replaces the placeholder in base= with its own GitHub base URL, so the
 	engine and the hand-written handlers always ask the same upstream.
 	header-prefix keeps the X-GSM-* answer headers that consumers read.
 -->
