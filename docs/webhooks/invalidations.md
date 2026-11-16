@@ -98,7 +98,7 @@ Pages of the Org property values (`org_property_values_cache`). A `custom_proper
 
 Branch rules (engine resource `branch_rules`, `internal/engine/github.xml`). **Justified**: a branch's answer merges every ruleset whose ref conditions match it, from the repo and from its organization. The payload states one ruleset and never the merged answer for any branch. A repository ruleset drops the repo's rows. An organization ruleset names no repository and drops every row of the owner. Both events are unordered: the clock is the ruleset's own edit time.
 
-A watermark per repository refuses the delete of an old ruleset after an edit of a newer one. A `repository` delivery drops the repo's rows through an `<event>` of its own, as in the section above.
+An ordered event refuses the delete of an old ruleset after an edit of a newer one, because its watermark is per repository. A `repository` delivery drops the repo's rows through an `<event>` of its own, as in the section above.
 
 ## installation / installation_repositories
 

@@ -135,7 +135,6 @@ func TestEngineBranchRules_PrivateRepoNotRevealed(t *testing.T) {
 	assert.Zero(t, f.calls.Load(), "a refused caller never reaches the rules")
 }
 
-// Any other refusal is relayed and forgotten.
 func TestEngineBranchRules_NotFoundIsStored(t *testing.T) {
 	f := newBranchRulesFixture(t)
 	f.status.Store(http.StatusNotFound)
