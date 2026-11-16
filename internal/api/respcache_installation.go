@@ -45,7 +45,7 @@ func (h *handlers) cachedRepoInstallation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	actorKey := fmt.Sprintf("app:%d", ident.ID)
-	ctx := actor.WithActor(r.Context(), actorKey)
+	ctx := withPrincipal(r.Context(), actorKey)
 	if ident.Slug != "" {
 		ctx = actor.WithName(ctx, ident.Slug)
 	}
@@ -206,7 +206,7 @@ func (h *handlers) cachedOwnerInstallation(scope, ownerParam string) http.Handle
 			return
 		}
 		actorKey := fmt.Sprintf("app:%d", ident.ID)
-		ctx := actor.WithActor(r.Context(), actorKey)
+		ctx := withPrincipal(r.Context(), actorKey)
 		if ident.Slug != "" {
 			ctx = actor.WithName(ctx, ident.Slug)
 		}

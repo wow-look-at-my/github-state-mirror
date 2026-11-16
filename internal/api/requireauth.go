@@ -48,7 +48,7 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 					return
 				}
 				actorKey := fmt.Sprintf("app:%d", ident.ID)
-				ctx = actor.WithActor(ctx, actorKey)
+				ctx = withPrincipal(ctx, actorKey)
 				if ident.Slug != "" {
 					// The app slug is GitHub-verified (GET /app answered it):
 					ctx = actor.WithName(ctx, ident.Slug)
@@ -74,7 +74,7 @@ func requireAuth(gh *ghclient.Client, record identityRecorder) func(http.Handler
 			if ident.IsUser {
 				actorKey = fmt.Sprintf("user:%d", ident.ID)
 			}
-			ctx = actor.WithActor(ctx, actorKey)
+			ctx = withPrincipal(ctx, actorKey)
 			if ident.IsUser && ident.Login != "" {
 				// The login came from GitHub's own GET /user answer: carry it
 				ctx = actor.WithName(ctx, ident.Login)
