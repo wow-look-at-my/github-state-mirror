@@ -33,6 +33,8 @@ type handlers struct {
 	timeline *reqtimeline.Recorder
 	// shapes captures uncached traffic's key/type shape for /api/brief. Nil-safe.
 	shapes *shapeStore
+	// appRead reads a Checks API route with the mirror's own App. Nil-safe.
+	appRead *appReader
 }
 
 // Cached REST routes rebuild the response without any URL field, under an
