@@ -26,7 +26,9 @@ type repoAnswerRoute struct {
 	// fetch, when set, is the upstream request in place of the caller's.
 	fetch      *http.Request
 	noRedirect bool
-	writeOK    func(w http.ResponseWriter, doc string, hit bool)
+	// checks marks a Checks API route, which the App reads for a caller whose token has no Checks scope.
+	checks  bool
+	writeOK func(w http.ResponseWriter, doc string, hit bool)
 }
 
 func (h *handlers) writeRouteAnswer(w http.ResponseWriter, r *http.Request, route repoAnswerRoute, a ghdata.RepoAnswer, hit bool) {
@@ -73,7 +75,10 @@ func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route
 	var body []byte
 	var overflow bool
 	var err error
-	if route.noRedirect {
+	viaApp := false
+	if route.checks {
+		resp, body, overflow, viaApp, err = h.fetchChecks(fetch, key.Owner)
+	} else if route.noRedirect {
 		resp, body, overflow, err = h.fetchUpstreamNoRedirect(fetch)
 	} else {
 		resp, body, overflow, err = h.fetchUpstream(fetch, nil)
@@ -100,7 +105,9 @@ func (h *handlers) serveRepoAnswer(w http.ResponseWriter, r *http.Request, route
 	if err := h.store.PutRepoAnswer(r.Context(), key, a, now); err != nil {
 		slog.Warn("repo answer cache write failed", "owner", key.Owner, "repo", key.Repo, "kind", key.Kind, "ref", key.RefID, "error", err)
 	}
-	h.refreshGrantOn2xx(r, key.Owner, key.Repo, resp.StatusCode)
+	if !viaApp {
+		h.refreshGrantOn2xx(r, key.Owner, key.Repo, resp.StatusCode)
+	}
 	h.writeRouteAnswer(w, r, route, a, false)
 }
 

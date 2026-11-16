@@ -58,6 +58,7 @@ func (h *handlers) cachedCheckRunAnnotations(w http.ResponseWriter, r *http.Requ
 			return a, ok
 		},
 		refusals: []int{http.StatusNotFound},
+		checks:   true,
 	})
 }
 
