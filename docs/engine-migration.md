@@ -21,7 +21,6 @@
 | Public fast path | the `repos` truth row | only when the spec declares a `<public>` predicate on a resource it stores |
 | Passthrough header | no `X-GSM-Cache` | `X-GSM-Cache: passthrough` |
 | Request log disposition of a refusal | `hit` or `miss` | `denied` (reveal) or `refusal` (an absorbed 404) |
-| Rate-limit tab | every upstream answer's `X-RateLimit-*` | the engine's calls are absent: its exchange tap carries no headers |
 | Caller name on the Timeline | the verified login or slug | the principal key only |
 | Delivery | applied in the webhook worker | forwarded after the worker's apply, then ordered by the engine's own watermark |
 
@@ -29,6 +28,5 @@
 
 `GET /repos/{owner}/{repo}/tags` is the first route on the engine. Differences from the old handler:
 
-- A push that moves an existing tag drops the stored pages. The handler wrote the new sha into each page. The spec language has no apply into one item of a stored document list.
 - A page whose entries lack a name or a full sha is stored. The handler passed such an answer through unstored.
 - A `repository` delivery drops the repository's pages through an `<event>` of its own.

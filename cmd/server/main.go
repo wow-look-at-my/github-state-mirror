@@ -141,7 +141,7 @@ func main() {
 	eng, err := engine.New(context.Background(), engine.Options{
 		DB:         engine.DeriveDBPath(cfg.DBPath),
 		Base:       gh.BaseURL(),
-		OnExchange: api.TimelineEngineObserver(timeline),
+		OnExchange: api.EngineObserver(timeline, meter),
 	}, cfg.WebhookSecret)
 	if err != nil {
 		slog.Error("build the api-mirror engine", "error", err)

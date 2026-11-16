@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apimirror "github.com/wow-look-at-my/api-mirror/engine"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
@@ -34,6 +35,7 @@ func tagObject(name, sha string) map[string]any {
 type tagsFixture struct {
 	router   http.Handler
 	timeline *reqtimeline.Recorder
+	meter    *ratemeter.Store
 	up       *respCacheUpstream
 	calls    atomic.Int32
 	status   atomic.Int32
@@ -48,6 +50,9 @@ func newTagsFixture(t *testing.T) *tagsFixture {
 			return false
 		}
 		f.calls.Add(1)
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "4321")
+		w.Header().Set("X-RateLimit-Resource", "tags-test")
 		switch status := int(f.status.Load()); status {
 		case http.StatusOK:
 			writeGitHubJSON(w, []any{tagObject("v1", shaBase), tagObject("v0", shaTree1)})
@@ -62,7 +67,7 @@ func newTagsFixture(t *testing.T) *tagsFixture {
 		return true
 	}
 	s := newFullTestStack(t, testAuth(), f.up.handler())
-	f.router, f.timeline = s.router, s.timeline
+	f.router, f.timeline, f.meter = s.router, s.timeline, s.meter
 	return f
 }
 
@@ -120,6 +125,20 @@ func TestEngineTags_OutboundCallsAreOnTheTimeline(t *testing.T) {
 	}
 	assert.True(t, fetch, "the engine's fetch is charted")
 	assert.True(t, probe, "the engine's reveal probe is charted")
+}
+
+func TestEngineTags_FetchReachesTheRateMeter(t *testing.T) {
+	f := newTagsFixture(t)
+	require.Equal(t, http.StatusOK, f.get(t, tagsTarget).Code)
+	var seen bool
+	for _, o := range f.meter.Snapshot() {
+		if o.Resource == "tags-test" {
+			seen = true
+			assert.Equal(t, 5000, o.Limit)
+			assert.Equal(t, 4321, o.Remaining)
+		}
+	}
+	assert.True(t, seen, "the engine's fetch reports its X-RateLimit-* headers")
 }
 
 func TestEngineTags_PrivateRepoNotRevealed(t *testing.T) {
@@ -198,17 +217,20 @@ func tagsRepo(clock int) map[string]any {
 	}
 }
 
-// A delivery the engine reaches through this service's own webhook path drops the listing.
+const zeroSHA = "0000000000000000000000000000000000000000"
+
+// A delivery that changes the set of tags drops the listing.
 func TestEngineTags_DeliveriesRefetch(t *testing.T) {
 	f := newTagsFixture(t)
 	deliveries := []struct {
 		event   string
 		payload map[string]any
 	}{
-		{"push", map[string]any{"ref": "refs/tags/v1", "before": shaBase, "after": shaTip, "repository": tagsRepo(1), "commits": []any{}}},
-		{"create", map[string]any{"ref": "v2", "ref_type": "tag", "repository": tagsRepo(2)}},
-		{"delete", map[string]any{"ref": "v0", "ref_type": "tag", "repository": tagsRepo(3)}},
-		{"repository", map[string]any{"action": "renamed", "repository": tagsRepo(4)}},
+		{"push", map[string]any{"ref": "refs/tags/v2", "before": zeroSHA, "after": shaTip, "repository": tagsRepo(1), "commits": []any{}}},
+		{"push", map[string]any{"ref": "refs/tags/v0", "before": shaTree1, "after": zeroSHA, "repository": tagsRepo(2), "commits": []any{}}},
+		{"create", map[string]any{"ref": "v2", "ref_type": "tag", "repository": tagsRepo(3)}},
+		{"delete", map[string]any{"ref": "v0", "ref_type": "tag", "repository": tagsRepo(4)}},
+		{"repository", map[string]any{"action": "renamed", "repository": tagsRepo(5)}},
 	}
 	for i, d := range deliveries {
 		require.Equal(t, "miss", f.get(t, tagsTarget).Header().Get(cacheHeader), "before delivery %d", i)
@@ -217,6 +239,26 @@ func TestEngineTags_DeliveriesRefetch(t *testing.T) {
 	}
 	assert.Equal(t, "miss", f.get(t, tagsTarget).Header().Get(cacheHeader))
 	assert.EqualValues(t, len(deliveries)+1, f.calls.Load())
+}
+
+// A push that moves a tag writes its new commit into every stored page that lists it.
+func TestEngineTags_MovedTagIsPatched(t *testing.T) {
+	f := newTagsFixture(t)
+	require.Equal(t, "miss", f.get(t, tagsTarget).Header().Get(cacheHeader))
+	require.Equal(t, "miss", f.get(t, tagsTarget+"?per_page=100").Header().Get(cacheHeader))
+	postWebhookJSON(t, f.router, "push", map[string]any{
+		"ref": "refs/tags/v1", "before": shaBase, "after": shaTip, "repository": tagsRepo(1), "commits": []any{},
+	})
+	want := mustJSONString([]any{
+		map[string]any{"name": "v1", "commit": map[string]any{"sha": shaTip}, "node_id": "REF_v1"},
+		map[string]any{"name": "v0", "commit": map[string]any{"sha": shaTree1}, "node_id": "REF_v0"},
+	})
+	for _, target := range []string{tagsTarget, tagsTarget + "?per_page=100"} {
+		w := f.get(t, target)
+		assert.Equal(t, "hit", w.Header().Get(cacheHeader), target)
+		assert.JSONEq(t, want, w.Body.String(), target)
+	}
+	assert.EqualValues(t, 2, f.calls.Load(), "the move is served with no new upstream call")
 }
 
 func TestEngineTags_BranchPushKeepsTheListing(t *testing.T) {

@@ -199,11 +199,11 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier, eng.Deliveries())
 	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, eng)
 	webhookQueues.Store(router, testDeliveries{queue: queue, engine: eng.Deliveries()})
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue, meter: meter}
 }
 
 // newTestEngine builds the embedded engine against the fake GitHub, as cmd/server does.
-func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder) *engine.Engine {
+func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder, meter *ratemeter.Store) *engine.Engine {
 	t.Helper()
 	// The spec reads both at build time; production sets the same variables.
 	t.Setenv("WEBHOOK_SECRET", testWebhookSecret)
@@ -211,7 +211,7 @@ func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder) *e
 	eng, err := engine.New(context.Background(), engine.Options{
 		DB:         filepath.Join(t.TempDir(), "engine.db"),
 		Base:       base,
-		OnExchange: TimelineEngineObserver(timeline),
+		OnExchange: EngineObserver(timeline, meter),
 	}, testWebhookSecret)
 	require.NoError(t, err)
 	eng.Start()
