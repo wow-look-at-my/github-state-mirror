@@ -21,6 +21,11 @@ var specSource []byte
 // basePlaceholder is the upstream base in github.xml. New replaces it, so the engine asks the same upstream as the rest of this service.
 const basePlaceholder = "GSM_UPSTREAM_BASE"
 
+// DeriveDBPath names the engine's database next to the cache DB: a trailing .db is stripped, then -engine.db is appended.
+func DeriveDBPath(dbPath string) string {
+	return strings.TrimSuffix(dbPath, ".db") + "-engine.db"
+}
+
 // Options configures New.
 type Options struct {
 	// DB is the engine's own SQLite file. The engine rebuilds it when its schema changes.

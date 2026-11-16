@@ -46,7 +46,6 @@ const (
 	denyKindReadme            = "readme"              // GET /repos/{owner}/{repo}/readme[/{dir}]
 	denyKindWorkflows         = "workflows"           // GET /repos/{owner}/{repo}/actions/workflows[/{id}]
 	denyKindWorkflowRun       = "workflow_run"        // GET /repos/{owner}/{repo}/actions/runs/{run_id}
-	denyKindTags              = "tags"                // GET /repos/{owner}/{repo}/tags
 	denyKindRunLogs           = "run_logs"            // GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs
 	denyKindJobLogs           = "job_logs"            // GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
 	denyKindCommit            = "commit"              // GET /repos/{owner}/{repo}/commits/{ref}

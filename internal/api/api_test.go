@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/engine"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -193,13 +194,40 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	debouncer := NewDebouncer(window)
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
 	lat := latency.New()
-	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat)
-	webhookQueues.Store(router, queue)
+	eng := newTestEngine(t, ghSrv.URL, timeline)
+	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier, eng.Deliveries())
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, eng)
+	webhookQueues.Store(router, testDeliveries{queue: queue, engine: eng.Deliveries()})
 	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
 }
 
-// webhookQueues maps each test router to its webhook queue, so a test can wait for what it posted to apply.
+// newTestEngine builds the embedded engine against the fake GitHub, as cmd/server does.
+func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder) *engine.Engine {
+	t.Helper()
+	// The spec reads both at build time; production sets the same variables.
+	t.Setenv("WEBHOOK_SECRET", testWebhookSecret)
+	t.Setenv("PASSTHROUGH_DEBOUNCE", "0")
+	eng, err := engine.New(context.Background(), engine.Options{
+		DB:         filepath.Join(t.TempDir(), "engine.db"),
+		Base:       base,
+		OnExchange: TimelineEngineObserver(timeline),
+	}, testWebhookSecret)
+	require.NoError(t, err)
+	eng.Start()
+	t.Cleanup(func() {
+		eng.Drain(5 * time.Second)
+		_ = eng.Close()
+	})
+	return eng
+}
+
+// testDeliveries is what awaitWebhooks waits on for one router.
+type testDeliveries struct {
+	queue  *webhook.Queue
+	engine *engine.Forwarder
+}
+
+// webhookQueues maps each test router to its webhook queue and engine forwarder, so a test can wait for what it posted to apply.
 var webhookQueues sync.Map
 
 // newTestQueue runs a webhook queue over a throwaway inbox until the test ends.
@@ -221,9 +249,11 @@ func newTestQueue(t *testing.T, dispatcher webhook.Dispatcher, rec webhook.Deliv
 // awaitWebhooks waits until every delivery posted to router has been applied.
 func awaitWebhooks(t *testing.T, router http.Handler) {
 	t.Helper()
-	q, ok := webhookQueues.Load(router)
+	v, ok := webhookQueues.Load(router)
 	require.True(t, ok, "router was not built by a test stack")
-	require.True(t, q.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
+	d := v.(testDeliveries)
+	require.True(t, d.queue.Idle(10*time.Second), "posted deliveries were not applied in time")
+	require.True(t, d.engine.Idle(10*time.Second), "applied deliveries did not reach the engine in time")
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {
