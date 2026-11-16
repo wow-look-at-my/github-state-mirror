@@ -50,6 +50,8 @@ func NewRouter(
 	r.Use(gheCompat)
 	// No caller may cancel an Actions run through the mirror; see runcancel.go.
 	r.Use(refuseRunCancel)
+	// Every answer carries the caller's X-RateLimit-* headers; see ratelimit_headers.go.
+	r.Use(rateLimitHeaders(meter))
 
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
