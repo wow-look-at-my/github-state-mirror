@@ -86,11 +86,11 @@ Sign-in requires a GitHub OAuth App. Set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUT
 
 ## Configuration
 
-The service has **no static service token**. API requests authenticate with the caller's own bearer token. The only credential the service itself uses is an optional GitHub App, exclusively for background work. This is periodic refreshes and the consistency check's source-of-truth fetch.
+The service has **no static service token**. API requests authenticate with the caller's own bearer token. The only credential the service itself uses is an optional GitHub App, for background work. This is periodic refreshes and the consistency check's source-of-truth fetch. It also reads the Checks API for a caller whose token GitHub gives no Checks scope. Once that caller has proven it can read the repository.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_APP_ID` | No | — | GitHub App ID. When set (together with a private key), the service signs in as this app for background work — periodic refreshes and the consistency check — minting a short-lived access token per installation. It is **never** used to serve API callers, who always authenticate with their own `Authorization` header. Leave unset to disable periodic refreshes and the consistency check; webhooks maintain global truth either way. |
+| `GITHUB_APP_ID` | No | — | GitHub App ID. When set (together with a private key), the service signs in as this app for background work — periodic refreshes and the consistency check — minting a short-lived access token per installation. API callers always authenticate with their own `Authorization` header. The app answers for one only on the Checks API, which GitHub closes to a fine-grained PAT, and only after the caller has proven read access to the repository. Leave unset to disable periodic refreshes and the consistency check; webhooks maintain global truth either way. |
 | `GITHUB_APP_PRIVATE_KEY` | With `GITHUB_APP_ID` | — | The app's PEM private key (PKCS#1 or PKCS#8). May be `\n`-escaped onto a single line for convenience in env vars. |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | Alt. to inline | — | Path to a PEM private-key file. Takes precedence over `GITHUB_APP_PRIVATE_KEY`. |
 | `WEBHOOK_SECRET` | For `/webhook` | — | HMAC secret for webhook signature verification. If unset, `POST /webhook` fails closed and rejects every delivery. |
