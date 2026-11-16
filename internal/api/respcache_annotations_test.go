@@ -81,4 +81,3 @@ func TestCachedAnnotations_ForbiddenIsPerCaller(t *testing.T) {
 	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
 }
-

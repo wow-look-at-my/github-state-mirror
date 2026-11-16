@@ -32,3 +32,15 @@ The router passes the engine the principal `requireAuth` resolved. The spec ther
 
 - A page whose entries lack a name or a full sha is stored. The handler passed such an answer through unstored.
 - A `repository` delivery drops the repository's pages through an `<event>` of its own.
+
+## The branch rules
+
+`GET /repos/{owner}/{repo}/rules/branches/{branch}` is the second route on the engine. Differences from the old handler:
+
+- The key is the branch as the path escapes it. The handler unescaped it, so `a/b` and `a%2Fb` were one row. They are a couple of rows now, each holding GitHub's answer.
+- A branch that is too long or holds a control byte reaches the proxy as an unrouted path. The handler forwarded it with the reason `path`.
+- The engine stores any 200 array. The handler passed through an answer whose entries lacked a `type` or a positive `ruleset_id`.
+- The handler kept the fields of each rule and `parameters` whole. The engine keeps every field and drops each URL key at any depth, inside `parameters` too.
+- A 403 or 404 from the fetch denies the caller the repository proof for a few minutes, which every engine route that probes `/repos/{owner}/{repo}` shares. The handler remembered it for this branch and shape only.
+- A `repository` delivery drops the repository's rows through an `<event>` of its own.
+- This service ignores a `repository_ruleset` delivery now. The applier reports the engine's outcome for a delivery this service ignores, so the Webhooks tab shows it as `invalidated`.
