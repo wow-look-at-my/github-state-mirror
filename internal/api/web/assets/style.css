@@ -418,11 +418,46 @@ table.webhooks .wh-delivery { overflow: hidden; text-overflow: ellipsis; }
 /* Fixed layout needs explicit widths; the one column left unsized absorbs all
    remaining space, so each table gives its slack to the field worth reading in
    full (Path / Detail). Widths are per table — the two shapes differ. */
-table.cols-requests th:nth-child(1) { width: 132px; } /* Result   */
-table.cols-requests th:nth-child(2) { width: 92px; }  /* Upstream */
-table.cols-requests th:nth-child(3) { width: 74px; }  /* Method   */
-table.cols-requests th:nth-child(4) { width: 220px; } /* Caller   */
-/* Path is column 5 and deliberately unsized: last, and takes all the slack. */
+table.cols-reqlog th:nth-child(1) { width: 132px; } /* Result    */
+table.cols-reqlog th:nth-child(2) { width: 92px; }  /* Upstream  */
+table.cols-reqlog th:nth-child(3) { width: 74px; }  /* Method    */
+table.cols-reqlog th:nth-child(4) { width: 200px; } /* Caller    */
+table.cols-reqlog th:nth-child(5) { width: 84px; text-align: right; } /* Count */
+table.cols-reqlog th:nth-child(6) { width: 96px; }  /* Last seen */
+/* Path is the last column and deliberately unsized: it takes all the slack. */
+
+/* ---- Live request log (<gsm-request-log>) ---- */
+gsm-request-log { display: block; }
+.reqlog-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    margin-bottom: 10px; font-size: 13px;
+}
+.reqlog-filter, .reqlog-sort {
+    background: var(--bg-elev); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font: inherit;
+}
+.reqlog-filter { flex: 1 1 260px; min-width: 180px; }
+.reqlog-chips { display: inline-flex; gap: 6px; }
+.reqlog-chips .disp { border: none; cursor: pointer; font-family: inherit; }
+.reqlog-chips .disp.off { opacity: 0.35; text-decoration: line-through; }
+.reqlog-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
+.reqlog-status, .reqlog-foot { color: var(--fg-muted); font-size: 12px; }
+.reqlog-status { margin-left: auto; font-variant-numeric: tabular-nums; }
+.reqlog-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+
+/* ---- Live connection pill (page head) ---- */
+.live-pill {
+    flex: none; font-size: 12px; color: var(--fg-muted);
+    display: inline-flex; align-items: center; gap: 6px; cursor: default;
+}
+.live-pill::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--gray);
+}
+.live-pill.live::before { background: var(--green); }
+.live-pill.down { color: var(--red); }
+.live-pill.down::before { background: var(--red); }
 table.cols-webhooks th:nth-child(1) { width: 132px; } /* Result   */
 table.cols-webhooks th:nth-child(2) { width: 190px; } /* Event    */
 table.cols-webhooks th:nth-child(3) { width: 200px; } /* Repo     */

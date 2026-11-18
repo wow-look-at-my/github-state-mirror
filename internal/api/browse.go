@@ -270,7 +270,9 @@ func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.checker == nil || !d.checker.Available() {
 		resp.Note = "no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY): live per-installation polling is unavailable; showing passively observed rate limits only"
-	} else if limits, err := d.checker.RateLimits(r.Context()); err != nil {
+	} else if limits, err := d.liveRates.get(liveRatesTTL, func() ([]syncpkg.InstallationRateLimit, error) {
+		return d.checker.RateLimits(r.Context())
+	}); err != nil {
 		slog.Warn("rate limit fetch failed", "error", err)
 		resp.Note = "live rate-limit poll failed: " + err.Error()
 	} else if limits != nil {

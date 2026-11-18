@@ -1,6 +1,6 @@
 # The push-invalidated merge_stale_sha marker
 
-The mechanism behind `internal/ghdata/respcache_pulls.go`'s `MergeStaleTTL`, `MergeStaleConflictingWindow`, `mergeStaleMarkerLive`, `staleShaOffered`, `PRMergeShaStale`, `pushProvenPostPush`, `conflictingPastReplicaLag`, and `AbsorbSinglePull`'s stale-rejection path. Mirrors `UpsertPullRequest`'s SQL guard in `queries/ghdata.sql`. Keep the two in sync.
+Mirrors `UpsertPullRequest`'s SQL guard in `queries/ghdata.sql`. Keep the two in sync.
 
 ## MergeStaleTTL
 

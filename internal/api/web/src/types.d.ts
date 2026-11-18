@@ -125,6 +125,28 @@ export interface RequestEvent {
     // Why this read was forwarded uncached; passthroughs only, absent otherwise.
     reason?: string;
     at: string;
+    // The log's cursor: every recorded request gets the next number.
+    seq: number;
+}
+
+// One frame of GET /api/stream.
+export interface StreamMessage {
+    boot?: string; // first frame only; a new value means the server restarted
+    now: number; // server clock, epoch ms
+    topics: string[]; // what changed: cache, requests, webhooks, timeline, ratelimit, latency
+    requests?: {
+        events: RequestEvent[]; // oldest first
+        total: number;
+        by_disposition: Record<string, number>;
+        missed?: number;
+    };
+}
+
+// What app.ts tells the other modules, as the detail of a window "gsm:stream" event.
+export interface StreamSignal {
+    live: boolean;
+    now: number;
+    topics: string[];
 }
 
 // One route-shape group: cumulative (since restart) per-disposition counts for
@@ -155,7 +177,10 @@ export interface RequestsResponse {
     total: number;
     by_disposition: Record<string, number>;
     groups?: RequestGroup[] | null; // sorted by total desc, capped server-side
-    recent: RequestEvent[] | null;
+    recent: RequestEvent[] | null; // newest first; with ?since=, only the events after that cursor
+    seq?: number; // the newest event's seq
+    boot?: string; // identifies the server process; seq restarts when it changes
+    log_cap?: number;
     db_size_bytes?: number; // SQLite DB file's on-disk size; absent when the file is missing
     db_wal_size_bytes?: number; // its -wal sidecar's size; absent when missing/empty
 }
