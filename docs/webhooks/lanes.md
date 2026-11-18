@@ -7,7 +7,7 @@ A push burst across the org sends a few deliveries per push and several per CI j
 `webhook.LaneOf` puts each delivery in one of two lanes:
 
 - **bulk**: `workflow_job` and `workflow_run`. These carry the most volume and are the least time-critical.
-- **client**: every other event type: `pull_request`, `pull_request_review`, `check_run`, `check_suite`, `status`, `push`, `create`, `delete`, `repository`, `label` and the rest. Clients wait on these.
+- **client**: every other event type. Clients wait on these.
 
 The inbox reads one lane at a time, oldest first (`inbox.Store.Pending`). The worker (`webhook.Queue.pick`) applies by these rules:
 
