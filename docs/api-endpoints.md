@@ -87,7 +87,7 @@ GitHub's login endpoints live on `github.com` — not `api.github.com` — and s
 
 ## Webhook
 
-- `POST /webhook` - receives GitHub webhook events. The handler writes each verified delivery to the inbox, synced to disk, and answers. A worker applies it to the cache in arrival order (docs/webhooks/dispatch.md, "Receipt and apply"). A success means the delivery is kept, and will be applied across a start:
+- `POST /webhook` - receives GitHub webhook events. The handler writes each verified delivery to the inbox, synced to disk, and answers. A worker applies it to the cache, the client lane ahead of Actions churn (docs/webhooks/dispatch.md, "Receipt and apply", and docs/webhooks/lanes.md). A success means the delivery is kept, and will be applied across a start:
   - `202 Accepted`, `queued` - recorded. The worker applies it
   - `202 Accepted`, `duplicate` - this `X-GitHub-Delivery` is already recorded, and is not applied twice
   - `500`, `error` - the inbox can not record it. It lands in GitHub's failure log, and the replayer asks for it again

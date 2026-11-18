@@ -71,11 +71,23 @@ func (s *Store) Put(ctx context.Context, d webhook.Stored) (bool, error) {
 	return n == 1, nil
 }
 
-// Pending returns up to limit unapplied deliveries, oldest first.
-func (s *Store) Pending(ctx context.Context, limit int) ([]webhook.Stored, error) {
+// Pending returns up to limit unapplied deliveries of lane, oldest first.
+func (s *Store) Pending(ctx context.Context, lane webhook.Lane, limit int) ([]webhook.Stored, error) {
+	bulk := webhook.BulkEventTypes()
+	args := make([]any, 0, len(bulk)+1)
+	for _, t := range bulk {
+		args = append(args, t)
+	}
+	args = append(args, limit)
+	membership := "IN"
+	if lane == webhook.LaneClient {
+		membership = "NOT IN"
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(bulk)), ",")
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT delivery_id, event_type, body, received_at FROM deliveries
-		WHERE applied_at = 0 ORDER BY received_at, delivery_id LIMIT ?`, limit)
+		WHERE applied_at = 0 AND event_type `+membership+` (`+placeholders+`)
+		ORDER BY received_at, delivery_id LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

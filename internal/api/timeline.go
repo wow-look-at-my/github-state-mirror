@@ -124,6 +124,7 @@ func (d deliveryTimeline) RecordDelivery(event webhook.Event, result webhook.Dis
 		}
 	default:
 		d.lat.Observe(KindWebhook, duration)
+		d.lat.Observe(KindWebhook+"."+webhook.LaneOf(event.Type).String(), duration)
 		if d.tl != nil {
 			d.tl.RecordWebhook(receivedAt, duration, event.Type, event.Action, event.DeliveryID, event.RepoFullName(), result.Disposition)
 		}
