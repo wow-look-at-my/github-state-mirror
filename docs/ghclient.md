@@ -8,13 +8,13 @@ client of the API of the GraphQL of the GitHub REST +. Includes the in-memory to
 
 ## Retries (`doJSON`)
 
-`doJSON` — the shared HTTP exchange behind the REST/GraphQL helpers (`GetOrgData`, `GetOwnerData(WithProgress)`, `OwnerRepoVisibilities`, `Installations`, `InstallationToken`, `GetRateLimit`) — **retries transient failures**: 502/503/504/429 and network errors, attempts total with a short backoff (500ms/2s. A parseable `Retry-After` raises the floor but is capped at 10s so a large value cannot wedge a deadline-bounded fetch. Bodies are buffered once so retries resend them).
+`doJSON` — the shared HTTP exchange behind the REST/GraphQL helpers — **retries transient failures**: 502/503/504/429 and network errors, attempts total with a short backoff (500ms/2s. A parseable `Retry-After` raises the floor but is capped at 10s so a large value cannot wedge a deadline-bounded fetch. Bodies are buffered once so retries resend them).
 
 Deliberately NOT retried: authoritative 4xx answers (the show layer and deny-cache semantics depend on them), the caller's own context cancellation/deadline, and GraphQL-level `errors[]` bodies (HTTP 200 semantic answers, checked by the callers). The passthrough proxy does not go through `doJSON` and is untouched.
 
 ## The two GraphQL fetch families
 
-The identity-locked `GetOrgData` (`organization(login:)`, the lazy /graphql route's byte-frozen contract) and the sync/checker-private `GetOwnerData` + `OwnerRepoVisibilities` (`repositoryOwner(login:)` — resolves Users AND Organizations. Selects extras the locked query must never grow: `isArchived`, `labels(first: 100)`, `autoMergeRequest`, the connection's `totalCount` (lets per-page progress reporting say "N of M repos" from the first page), the `visibility` enum. The DATA query now carries per-repo `visibility` too (lowercased in `convertRepo`), so a fleet-refresher/consistency-apply `SyncOrgTruth` STAMPS visibility into truth. This is while `UpsertRepo`'s non-empty guard means the visibility-less locked org query can never blank a stamped value. Before this, refresher-synced rows sat at `''` = fail-closed unknown — the 2026-07-20 report's 203 `visibility_unknown` entries covering essentially every PazerOP/read-only-reference repo).
+The identity-locked `GetOrgData` (`organization(login:)`, the lazy /graphql route's byte-frozen contract) and the sync/checker-private `GetOwnerData` + `OwnerRepoVisibilities` (`repositoryOwner(login:)` — resolves Users AND Organizations. Selects extras the locked query must never grow. The DATA query now carries per-repo `visibility` too (lowercased in `convertRepo`), so a fleet-refresher/consistency-apply `SyncOrgTruth` STAMPS visibility into truth. This is while `UpsertRepo`'s non-empty guard means the visibility-less locked org query can never blank a stamped value. Before this, refresher-synced rows sat at `''` = fail-closed unknown — the 2026-07-20 report's 203 `visibility_unknown` entries covering essentially every PazerOP/read-only-reference repo).
 
 `OwnerRepoVisibilities` applies no `isArchived` filter, unlike `GetOwnerData`'s `repositories(isArchived: false)`. The consistency checker needs archived repos back too, so a cached repo missing from the org data can be positively classified. This is as archived rather than deleted or renamed. Its response per repo is tiny (name, visibility, isArchived), so it pages 100 at a time.
 
@@ -54,7 +54,7 @@ The owner-agnostic `owne selects gqlPR.AutoMergeRequest`rPRFields`.
 
 `actor.WithName` carries the actor's VERIFIED display name (a user's login, an app's slug, or an installation's account login) as display-only metadata alongside the partition key, not a key itself. Only set names proven by GitHub's own answers (`ResolveTokenIdentity`, `VerifyAppIdentity`, an installations listing). Never a name derived from an unverified header.
 
-`actor.Short` abbreviates an actor for display and logs. Only opaque hex token fingerprints (longer than multiple chars) are shortened, to their first hex chars. Structured actors — `user:<id>`, `app:<id>`, `app-installation:<id>` — are short and meaningful already, and truncating them will drop significant digits. They are returned whole.
+`actor.Short` abbreviates an actor for display and logs. Only opaque hex token fingerprints (longer than multiple chars) are shortened, to their first hex chars. They are returned whole.
 
 ## `RateLimitResponse` (`ratelimit.go`)
 

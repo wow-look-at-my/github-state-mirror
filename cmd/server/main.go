@@ -140,7 +140,8 @@ func main() {
 	queue := webhook.NewQueue(journal, dispatcher, api.DeliveryRecorder(timeline, lat), notifier)
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat)
+	live := api.NewLiveHub()
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, live)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -162,6 +163,8 @@ func main() {
 		Addr:    cfg.ListenAddr,
 		Handler: router,
 	}
+	// A stream never ends by itself, and Shutdown waits for every connection.
+	srv.RegisterOnShutdown(live.Close)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	go func() {

@@ -445,9 +445,10 @@ func TestDashboard_ServeAssets(t *testing.T) {
 	// Every embedded asset is also reachable at its stable name (the fallback
 	// path the backend-free preview relies on).
 	for path, wantType := range map[string]string{
-		"/assets/app.js":        "javascript",
-		"/assets/rate-meter.js": "javascript",
-		"/assets/style.css":     "css",
+		"/assets/app.js":         "javascript",
+		"/assets/rate-meter.js":  "javascript",
+		"/assets/request-log.js": "javascript",
+		"/assets/style.css":      "css",
 	} {
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()

@@ -35,7 +35,7 @@ Stated openly: the dashboard's own UI endpoints (`/api/*`, login, assets). The c
 - `Start` is when handling/fetching began. `DurMs` is the real measured duration in milliseconds (0 for a sub-millisecond event -- still its true rounding, not a fabricated instant).
 - `Actor` is the caller's principal/label key. `ActorName` its verified display name when one is known (display-only, like the request log).
 - `Detail` is a short free-form tooltip line (e.g. an unverified delivery's claimed event type). Metadata only -- never bodies or secrets.
-- The Notify fields (`Target`, `Attempt`, `Final`) are the delivery target's host, the 1-based try number, and whether this try was terminal (success, or the last retry).
+- The Notify fields are the delivery target's host, the 1-based try number, and whether this try was terminal (success, or the last retry).
 - `Recorder.events[head:]` are the live entries, ordered by insertion (≈ end time, since events are recorded at completion) and therefore by ID. `head` is advanced on eviction and the slice compacted periodically so the backing array cannot grow unboundedly.
 - `Snapshot.MaxID` is the newest assigned event ID -- the client's next `?since=` cursor. It keeps advancing even when every event was evicted.
 - END time orders SnapshotRange`'s live entries. As a result, the first candidate is the first whose end is at/after `from`. An event overlaps the range if it starts before the end of it.

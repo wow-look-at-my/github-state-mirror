@@ -1,3 +1,5 @@
+// respcache_searchissues.go holds parseSearchIssuesShape.
+
 package api
 
 import (

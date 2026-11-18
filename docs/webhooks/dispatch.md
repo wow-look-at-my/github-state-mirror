@@ -20,8 +20,6 @@ A cached route added without walking those steps is unfinished. That is the same
 
 | Event | Carried, therefore applicable | Genuinely not carried |
 |---|---|---|
-| `push` | `ref` + `after` (the ref's exact new tip), `before`, `created`/`deleted`/`forced`, `base_ref`, `repository.default_branch`, and up to **2,048** full commit objects (`id`, `tree_id`, `message`, `timestamp`, author/committer, and the added/removed/modified path lists) | file CONTENTS, comparison results, recomputed `mergeable` |
-| `create` / `delete` | `ref` and `ref_type` (`branch` or `tag`), and `repository.pushed_at` as the view's clock | the ref's SHA on a create, so nothing states the new tip |
 | `pull_request` | the whole PR object, its labels, base/head refs and shas | `mergeable` while GitHub recomputes (arrives `null`) — hence the COALESCE |
 | `status` / `check_run` / `check_suite` | the check's name, state and head sha | — |
 | `label` | the label's new name and color (an `edited` carries both names) | — |
@@ -67,7 +65,7 @@ Ordering treats a ref lifecycle delivery as its own subject, `ref:<repo>:<ref_ty
 The dispatcher is `internal/sync/webhook.go`. It applies payloads **directly** to global truth, so a high-frequency event never triggers a GitHub re-fetch.
 
 - `pull_request` and `pull_request_review` upsert the PR. They upsert the repos row from the payload first, so a never-fetched repo is absorbed on its first delivery.
-- `status`, `check_run` and `check_suite` aggregate per-check state in the `commit_checks` table. They roll it up onto each PR's `last_commit_status`, and onto the repo's `default_branch_status` when the check ran on the default branch.
+- They roll it up onto each PR's `last_commit_status`, and onto the repo's `default_branch_status` when the check ran on the default branch.
 - A `check_suite` whose normalized state is PENDING is the exception. It is dropped as `ignored` and writes no row. GitHub auto-creates a suite per sha for every app holding checks:write, and an app that runs. No checks leaves its empty suite queued FOREVER. The PENDING row that minted was a permanent ghost. It pinned the low-water-mark rollup and re-poisoned `last_commit_status` on every PR upsert. Nothing real is lost. A genuine suite's pending phase rides its own check runs' queued and in_progress events, and GitHub's own statusCheckRollup ignores suites. A completed suite with a real conclusion still applies. The response-cache flush still runs, because invalidation precedes the disposition logic.
 - `push` updates `pushed_at` and absorbs the pushed commits into `git_commits_cache`. It **un-resolves `mergeable`** on every open PR whose base or head is the pushed branch, through `NullPRMergeableByBranch`. GitHub recomputes mergeability after either side moves, and never webhooks the result. When the pushed ref IS the default branch it **un-resolves `default_branch_status`** the same way. The stored rollup describes the previous tip. A tip with no CI otherwise keeps that rollup forever, because the COALESCE upsert can never clear it. The next default-branch check event repopulates it.
 - `create` and `delete` flush the ref's cached answers, as the ref lifecycle section above describes.
@@ -81,7 +79,7 @@ Invalidation through `MarkStaleByKindKey` is only a **fallback**, for a structur
 
 `UpsertPullRequest` COALESCEs `last_commit_status` AND `mergeable` against the existing row. A PR webhook carries no CI state, and carries `mergeable: null` while GitHub is still computing it. It therefore does not clobber a known value. The un-resolve signal is the PUSH event, not the PR event's transient null. A genuinely resolved `mergeable` still overwrites. GraphQL-sourced REST-only columns are guarded the same way.
 
-A GraphQL sync therefore cannot blank what a webhook or REST absorb recorded. Those columns include `node_id`, `body`, `auto_merge_method` and `merge_commit_sha`.
+A GraphQL sync therefore cannot blank what a webhook or REST absorb recorded.
 
 `UpsertPRWithChecks` additionally derives `last_commit_status` from the commit checks already recorded for the PR's head sha. A PR opened *after* its head commit's CI finished therefore does not sit at NULL forever. That is what pr-minder's auto-opened PRs look like.
 
@@ -89,7 +87,7 @@ A GraphQL sync therefore cannot blank what a webhook or REST absorb recorded. Th
 
 The handler verifies the signature, writes the raw delivery to the inbox (`internal/inbox`, its own SQLite file, `synchronous(FULL)`), and answers. GitHub records `queued` at 202 for a new delivery id and `duplicate` at 202 for one the inbox already holds. A delivery the inbox can not record is answered `error` at 500, so it appears in GitHub's failure log and the replayer asks for it again. GitHub never waits on an apply: a burst queues in the inbox, not in front of the write lock with GitHub's 10s deadline running.
 
-One worker (`webhook.Queue`) applies inbox rows in multiple lanes, each in arrival order, the client lane ahead of the `workflow_job`/`workflow_run` bulk lane (docs/webhooks/lanes.md). Each apply is one transaction (`ghdata.Store.InTx`). The watermark claim, the cache flushes, the repo absorb, the event's own writes and the `webhook_deliveries` row commit together. As a result, the write lock is taken once per delivery. The applied disposition (`applied`, `ignored`, `invalidated`, `superseded`, `error`) goes to the `webhook_deliveries` log, the Timeline and the subscriber notifiers. An `error` is retried twice, then set aside with an ERROR log.
+One worker (`webhook.Queue`) applies inbox rows in multiple lanes, each in arrival order, the client lane ahead of the `workflow_job`/`workflow_run` bulk lane (docs/webhooks/lanes.md). Each apply is one transaction (`ghdata.Store.InTx`). The watermark claim, the cache flushes, the repo absorb, the event's own writes and the `webhook_deliveries` row commit together. As a result, the write lock is taken once per delivery. The applied disposition goes to the `webhook_deliveries` log, the Timeline and the subscriber notifiers. An `error` is retried twice, then set aside with an ERROR log.
 
 A row is marked applied after its apply. A process that stops between the applies the row again on start. Every apply is idempotent under the watermark. On start the worker applies whatever the last process left unapplied before anything new. Applied rows are kept 72h, the window in which GitHub lets a delivery be redelivered. As a result, a redelivery of an applied delivery is answered `duplicate` and not applied twice.
 

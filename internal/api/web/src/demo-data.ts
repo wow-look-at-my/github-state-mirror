@@ -4,7 +4,7 @@
 import type {
     Counts, PrincipalStats, WebhooksResponse, BrowseResponse, GrantsResponse,
     ConsistencyReport, CheckProgressEvent, RequestsResponse, RateLimitResponse, LatencyResponse, DemoConfig,
-    TimelineEvent, TimelineResponse,
+    TimelineEvent, TimelineResponse, RequestEvent,
 } from "./types";
 
 function ago(seconds: number): string {
@@ -159,7 +159,7 @@ const demoRequests: RequestsResponse = {
         { key: "PATCH /repos/{owner}/{repo}/pulls/{number}", method: "PATCH", route: "/repos/{owner}/{repo}/pulls/{number}", total: 21, hit: 0, miss: 0, passthrough: 0, write: 21, error: 0, sample: "/repos/wow-look-at-my/actions/pulls/92", last_seen: ago(20) },
         { key: "PUT /repos/{owner}/{repo}/pulls/{number}/update-branch", method: "PUT", route: "/repos/{owner}/{repo}/pulls/{number}/update-branch", total: 17, hit: 0, miss: 0, passthrough: 0, write: 17, error: 0, sample: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", last_seen: ago(24) },
     ],
-    recent: [
+    recent: demoEvents([
         { actor: "app:3433933", actor_name: "pr-minder", method: "POST", path: "/graphql", disposition: "hit", at: ago(2) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/pulls/318", disposition: "hit", at: ago(3) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "GET", path: "/repos/wow-look-at-my/buildhost/compare/main...release", disposition: "passthrough", status: 200, reason: "unmodeled-query", at: ago(4) },
@@ -170,8 +170,14 @@ const demoRequests: RequestsResponse = {
         { actor: "token:00ff11ee22dd", method: "GET", path: "/repos/wow-look-at-my/buildhost/branches", disposition: "passthrough", status: 200, at: ago(17) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PATCH", path: "/repos/wow-look-at-my/actions/pulls/92", disposition: "write", status: 200, at: ago(20) },
         { actor: "app:3433933", actor_name: "pr-minder", method: "PUT", path: "/repos/wow-look-at-my/buildhost/pulls/318/update-branch", disposition: "write", status: 202, at: ago(24) },
-    ],
+    ]),
 };
+demoRequests.seq = demoRequests.recent?.length ?? 0;
+
+// The rows are newest first, so the first one carries the highest seq.
+function demoEvents(rows: Array<Omit<RequestEvent, "seq">>): RequestEvent[] {
+    return rows.map((e, i) => ({ ...e, seq: rows.length - i }));
+}
 
 // --- traffic timeline (admin "Timeline" tab) ---
 // Canned timed events over the last hour, one of every recorded source —

@@ -1,3 +1,5 @@
+// fetcher.go holds OrgReposFetcher.
+
 package sync
 
 import (

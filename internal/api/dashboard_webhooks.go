@@ -64,7 +64,7 @@ func (d *dashboard) missingSubscriptions(r *http.Request) []missingSubscription 
 	if d.appEvents == nil {
 		return nil // no App credential: unknowable, so claim nothing
 	}
-	subscribed, err := d.appEvents(r.Context())
+	subscribed, err := d.subscribed.get(subscribedTTL, func() ([]string, error) { return d.appEvents(r.Context()) })
 	if err != nil {
 		// Loud, but never fatal to the tab: the deliveries below still render.
 		slog.Warn("read app event subscriptions failed; not reporting subscription state", "error", err)

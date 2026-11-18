@@ -26,6 +26,16 @@ type Recorder struct {
 	mu    sync.Mutex
 	since time.Time
 	kinds map[string]*hist
+	// onObserve: see SetOnObserve.
+	onObserve func(kind string)
+}
+
+// SetOnObserve installs a hook that runs after every observation, outside the
+// lock, with its kind. Call it before the first observation.
+func (r *Recorder) SetOnObserve(fn func(kind string)) {
+	if r != nil {
+		r.onObserve = fn
+	}
 }
 
 type hist struct {
@@ -46,7 +56,6 @@ func (r *Recorder) Observe(kind string, d time.Duration) {
 	}
 	i := sort.Search(len(Bounds), func(i int) bool { return d <= Bounds[i] })
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	h := r.kinds[kind]
 	if h == nil {
 		h = &hist{counts: make([]int64, len(Bounds)+1)}
@@ -57,6 +66,10 @@ func (r *Recorder) Observe(kind string, d time.Duration) {
 	h.total += d
 	if d > h.max {
 		h.max = d
+	}
+	r.mu.Unlock()
+	if r.onObserve != nil {
+		r.onObserve(kind)
 	}
 }
 

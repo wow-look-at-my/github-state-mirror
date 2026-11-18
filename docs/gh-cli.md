@@ -1,6 +1,6 @@
 # Pointing the `gh` CLI at the mirror
 
-`GH_HOST=github-state-mirror.pazer.io gh ...` sends every REST and GraphQL call through the mirror. `gh api`, `gh pr list` and `gh repo view` then read the cache instead of GitHub.
+`GH_HOST=github-state-mirror.pazer.io gh ...` sends every REST and GraphQL call through the mirror.
 
 ## What gh does with a host that is not github.com
 
@@ -40,4 +40,4 @@ These commands ran against a locally built server behind TLS, with `GH_HOST` nam
 - `gh auth status` reports the account. It asks GraphQL for `viewer{login}`.
 - `gh pr list -R wow-look-at-my/github-state-mirror` and `gh repo view --json` both answer. Both are GraphQL.
 
-The server log records the paths gh really calls: `/api/v3/user`, `/api/v3/` and `/api/graphql`.
+The server log records the paths gh calls.
