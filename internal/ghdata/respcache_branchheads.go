@@ -15,10 +15,15 @@ import (
 // BranchesWhereHeadTTL backstops a lost push delivery.
 const BranchesWhereHeadTTL = time.Hour
 
+// StoredCommitSHA is an entry's commit, trimmed to its sha.
+type StoredCommitSHA struct {
+	SHA string `json:"sha"`
+}
+
 // StoredBranchHead is one trimmed entry: commit.url is dropped.
 type StoredBranchHead struct {
 	Name      string          `json:"name"`
-	Commit    StoredTagCommit `json:"commit"`
+	Commit    StoredCommitSHA `json:"commit"`
 	Protected bool            `json:"protected"`
 }
 

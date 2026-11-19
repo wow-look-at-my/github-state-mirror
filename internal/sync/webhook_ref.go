@@ -48,9 +48,6 @@ func (d *WebhookDispatcher) onRefLifecycle(ctx context.Context, event webhook.Ev
 		flush("branches list cache", scope, d.store.InvalidateBranchesListCache(ctx, owner, repo))
 		flush("branch answers", scope, d.store.InvalidateRepoAnswersForSubject(ctx, owner, repo, ghdata.RepoAnswerKindBranch, ref))
 		d.settleBranchHeads(ctx, scope, owner, repo, ref, event.Type == "delete")
-	} else {
-		// The tags listing is a set too; the payload does not say which page holds the name.
-		flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
 	}
 	// A matching-refs answer is a prefix search over the same refs.
 	flush("matching refs cache", scope, d.store.InvalidateMatchingRefsCache(ctx, owner, repo))
