@@ -12,7 +12,7 @@ Note what it does **not** carry: the repositories that team can reach. A team's 
 
 ## Why it is not applied
 
-The persisted truth is `repos`, `pull_requests`, `pr_labels`, `commit_checks` and `workflow_runs`, plus response caches keyed off them. **No table represents an account, a team, or a membership.** The affected user in this payload has no row to update. The team has no row to update. The organization appears only as the `owner` half of a repo key — already kept current by `absorbRepoFromPayload`, which runs on every delivery regardless of type.
+**No table represents an account, a team, or a membership.** The affected user in this payload has no row to update. The team has no row to update. The organization appears only as the `owner` half of a repo key — already kept current by `absorbRepoFromPayload`, which runs on every delivery regardless of type.
 
 What moved is freshness, not data: who can see the org's repos may changed. As a result, a cached org-repos list-sync may no longer match what GitHub will return. The mirror has one mechanism for that. It is an invalidation.
 

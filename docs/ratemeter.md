@@ -22,7 +22,7 @@ An actively observed identity is re-observed with a fresh future reset on every 
 
 ## Observation fields
 
-`Identity` labels WHO consums the limit: the request's principal (`user:<id>`, `app:<id>`, `app-installation:<id>`, a token fingerprint) or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
+`Identity` labels WHO consums the limit: the request's principal or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
 
 `Name` is the identity's verified display name (a user login, an app slug, an installation's account login) when the caller supplied one. Display-only. Never part of the (identity, resource) key. A later observation without a name keeps the last known one — the identity is the same principal either way. In `Observe`: the (identity, resource) key already pins the principal. As a result, a nameless reading is the same actor seen through a path that did not carry the name.
 

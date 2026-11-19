@@ -40,7 +40,13 @@ func NewRouter(
 	app *ghclient.AppAuthenticator,
 	lat *latency.Recorder,
 	eng Engine,
+	live *LiveHub,
 ) http.Handler {
+	// live: the dashboard's push channel; see docs/dashboard/live-stream.md.
+	if live == nil {
+		live = NewLiveHub()
+	}
+	live.watch(timeline, meter, lat)
 	r := chi.NewRouter()
 	r.Use(stampRequestStart)
 	r.Use(middleware.Logger)
@@ -57,6 +63,7 @@ func NewRouter(
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
 	reqlog.timeline = timeline
+	reqlog.live = live
 
 	// shapes captures uncached-traffic shapes for the admin brief; see docs/dashboard/implementation-brief.md.
 	shapes := newShapeStore()
@@ -89,6 +96,7 @@ func NewRouter(
 	}
 	dash := newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering)
 	dash.latency = lat
+	dash.live = live
 	dash.routes(r)
 
 	// Webhook endpoint: HMAC-signed, outside requireAuth; see docs/webhooks/dispatch.md.

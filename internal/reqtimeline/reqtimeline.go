@@ -97,6 +97,8 @@ type Recorder struct {
 	head   int
 	// now is the clock; injectable by tests.
 	now func() time.Time
+	// onRecord: see SetOnRecord.
+	onRecord func(kind string)
 }
 
 // New returns a Recorder with the default 24h retention and 100k count cap.
@@ -210,11 +212,22 @@ func (r *Recorder) RecordRequest(start time.Time, dur time.Duration, method, rou
 
 func (r *Recorder) record(e Event) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.nextID++
 	e.ID = r.nextID
 	r.events = append(r.events, e)
 	r.evictLocked(r.now())
+	r.mu.Unlock()
+	if r.onRecord != nil {
+		r.onRecord(e.Kind)
+	}
+}
+
+// SetOnRecord installs a hook that runs after every recorded event, outside
+// the lock, with the event's kind.
+func (r *Recorder) SetOnRecord(fn func(kind string)) {
+	if r != nil {
+		r.onRecord = fn
+	}
 }
 
 // evictLocked drops entries older than the retention window (by end time —
