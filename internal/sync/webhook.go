@@ -124,8 +124,6 @@ func (d *WebhookDispatcher) handle(ctx context.Context, event webhook.Event) out
 		return d.onWorkflowJob(ctx, event)
 	case "workflow_run":
 		return d.onWorkflowRun(ctx, event)
-	case "repository_ruleset":
-		return d.onRuleset(ctx, event)
 	case "custom_property_values":
 		return d.onCustomPropertyValues(ctx, event)
 	case "custom_property":
@@ -375,31 +373,6 @@ func (d *WebhookDispatcher) onOrgChange(ctx context.Context, event webhook.Event
 	}
 	d.invalidate(ctx, KindOrgRepos, event.OrgLogin)
 	return outcome{disposition: webhook.DispInvalidated, detail: "membership change; marked principals' org syncs stale"}
-}
-
-// onRuleset lands a ruleset change on the stored branch-rules answers. A
-// branch's answer merges every ruleset whose conditions match it. The payload
-// states one ruleset, not the merged answer for any branch, so the answers it
-// can reach go. This covers the repo's for a repository ruleset, every repo
-// of the owner for an organization one. see docs/webhooks/invalidations.md
-func (d *WebhookDispatcher) onRuleset(ctx context.Context, event webhook.Event) outcome {
-	payload, err := webhook.ParseRulesetPayload(event.Raw)
-	if err != nil {
-		slog.Warn("webhook: failed to parse repository_ruleset payload", "error", err)
-		return ignored("unparseable repository_ruleset payload")
-	}
-	if payload.Repo == "" {
-		if err := d.store.InvalidateOwnerAnswersOfKind(ctx, payload.Owner, ghdata.RepoAnswerKindBranchRules); err != nil {
-			slog.Warn("webhook: flush branch rules failed", "owner", payload.Owner, "error", err)
-			return errored("flush branch rules failed")
-		}
-		return outcome{disposition: webhook.DispInvalidated, detail: fmt.Sprintf("org ruleset %d; dropped %s's branch rules", payload.RulesetID, payload.Owner)}
-	}
-	if err := d.store.InvalidateRepoAnswersOfKind(ctx, payload.Owner, payload.Repo, ghdata.RepoAnswerKindBranchRules); err != nil {
-		slog.Warn("webhook: flush branch rules failed", "repo", payload.Owner+"/"+payload.Repo, "error", err)
-		return errored("flush branch rules failed")
-	}
-	return outcome{disposition: webhook.DispInvalidated, detail: fmt.Sprintf("ruleset %d; dropped the repo's branch rules", payload.RulesetID)}
 }
 
 func (d *WebhookDispatcher) onLabel(ctx context.Context, event webhook.Event) outcome {

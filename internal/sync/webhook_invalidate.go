@@ -187,7 +187,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	}
 	// (onPush re-parses the payload for the apply side.
 
-	d.applyOrFlushTags(ctx, scope, owner, repo, refName, before, after, isTag)
 	d.applyPushToCommitAnswers(ctx, scope, owner, repo, refName, before, after, isTag)
 	d.flushBranchAnswer(ctx, scope, owner, repo, refName, isTag)
 
@@ -255,25 +254,6 @@ func (d *WebhookDispatcher) invalidateForPush(ctx context.Context, event webhook
 	flush("pull diff 406 cache", scope, d.store.InvalidatePullDiff406Cache(ctx, owner, repo))
 	flush("pull diff cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindPullDiff))
 	flush("pull commits cache", scope, d.store.InvalidatePullCommitsSnapshots(ctx, owner, repo))
-}
-
-// applyOrFlushTags lands a push on the stored tags pages. A moved tag is
-// rewritten in place from the push's after sha. A created or deleted tag
-// changes page membership, and the listing's page for a name is not in the
-// payload, so the pages go. A branch push leaves them alone.
-// see docs/webhooks/invalidations.md
-func (d *WebhookDispatcher) applyOrFlushTags(ctx context.Context, scope, owner, repo, refName, before, after string, isTag bool) {
-	if refName != "" && !isTag {
-		return
-	}
-	if refName != "" && !zeroSHA(before) && !zeroSHA(after) {
-		applied, err := d.store.ApplyPushedTagTip(ctx, owner, repo, refName, after, time.Now())
-		flush("tags tip apply", scope, err)
-		if err == nil && applied {
-			return
-		}
-	}
-	flush("tags cache", scope, d.store.InvalidateRepoAnswersOfKind(ctx, owner, repo, ghdata.RepoAnswerKindTags))
 }
 
 // applyPushToCommitAnswers lands a push on the single-commit and

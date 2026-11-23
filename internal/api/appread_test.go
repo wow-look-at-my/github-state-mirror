@@ -115,7 +115,7 @@ func checksStack(t *testing.T, installed ...string) (http.Handler, *checksGitHub
 
 	checker := syncpkg.NewConsistencyChecker(client, store, fStore, app)
 	queue := newTestQueue(t, dispatcher, nil)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, client, []string{"*"}, testAuth(), "", checker, ratemeter.New(), nil, dbPath, nil, nil, app, nil, nil)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, client, []string{"*"}, testAuth(), "", checker, ratemeter.New(), nil, dbPath, nil, nil, app, nil, nil, nil)
 	return router, g
 }
 
