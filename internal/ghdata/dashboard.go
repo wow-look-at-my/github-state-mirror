@@ -137,6 +137,17 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, d WebhookDelivery) er
 	return s.qx(ctx).PruneWebhookDeliveries(ctx, webhookDeliveryKeep)
 }
 
+// AmendWebhookDelivery rewrites the logged outcome of a delivery. The engine applies a delivery after the dispatcher
+// logged its own outcome, and the log must show the worse of those.
+func (s *Store) AmendWebhookDelivery(ctx context.Context, deliveryID, disposition, detail string) error {
+	if deliveryID == "" {
+		return nil
+	}
+	_, err := s.dbx(ctx).ExecContext(ctx,
+		`UPDATE webhook_deliveries SET disposition = ?, detail = ? WHERE delivery_id = ?`, disposition, detail, deliveryID)
+	return err
+}
+
 // RequiredWebhookEvents is the set of GitHub App event subscriptions the
 // mirror's correctness depends on, each with what breaks without it. A
 // missing subscription degrades SILENTLY -- the affected caches re-fetch

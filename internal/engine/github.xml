@@ -1,0 +1,219 @@
+<?xml version="1.1" encoding="UTF-8"?>
+
+<!--
+	The routes this service serves through the embedded api-mirror engine.
+	A route lives here or in a hand-written handler, never in both.
+	docs/engine-migration.md has the procedure to move a route here.
+-->
+
+<!--
+	The host replaces the placeholder in base= with its own GitHub base URL, so the
+	engine and the hand-written handlers always ask the same upstream.
+	header-prefix keeps the X-GSM-* answer headers that consumers read.
+-->
+<mirror name="github-state-mirror" header-prefix="X-GSM-"
+	max-rows='{{ .env.CACHE_MAX_ROWS | default "1000000" }}'>
+
+	<description>The engine half of github-state-mirror. Storage is global, and a read needs proof that the caller can read the same thing from GitHub.</description>
+
+	<!-- Every spelling a client uses for GitHub's default JSON. -->
+	<accept>application/json</accept>
+	<accept>application/vnd.github+json</accept>
+	<accept>application/vnd.github.v3+json</accept>
+	<accept>application/vnd.github.merge-info-preview</accept>
+	<accept>application/vnd.github.merge-info-preview+json</accept>
+	<accept>application/vnd.github.nebula-preview</accept>
+	<accept>application/vnd.github.nebula-preview+json</accept>
+
+	<!--
+		The caller's own Authorization rides every call the engine makes for
+		them, so a probe proves the caller's access. The rate-limit headers
+		tell a budget refusal from an access refusal.
+	-->
+	<upstream base="GSM_UPSTREAM_BASE" debounce='{{ .env.PASSTHROUGH_DEBOUNCE | default "5s" }}' retry-after="Retry-After">
+		<header name="Accept">application/vnd.github+json</header>
+		<header name="X-GitHub-Api-Version">2022-11-28</header>
+		<forward name="Authorization"/>
+		<ratelimit limit="X-RateLimit-Limit" remaining="X-RateLimit-Remaining"
+			used="X-RateLimit-Used" reset="X-RateLimit-Reset" resource="X-RateLimit-Resource"/>
+	</upstream>
+
+	<!--
+		No identity rule: requireAuth names the caller, and the router passes
+		that principal to the engine with each request.
+	-->
+
+	<!--
+		The repository's tags, one row per page. The URL keys go, as in every
+		rebuilt answer of this service. The TTL backstops a lost delivery.
+	-->
+	<resource name="tags_list" store="document" ttl="24h">
+		<key name="owner" fold="true"/>
+		<key name="repo" fold="true"/>
+		<key name="per_page"/>
+		<key name="page"/>
+		<drop key="url"/>
+		<drop key="*_url"/>
+		<reveal>
+			<probe method="GET" path="/repos/{{ .key.owner }}/{{ .key.repo }}"/>
+			<grant ttl="24h"/>
+			<deny ttl="5m"/>
+		</reveal>
+	</resource>
+
+	<!-- Pages past 10 are passed through. A 404 is the upstream's answer for a missing repo. -->
+	<route method="GET" path="/repos/{owner}/{repo}/tags" resource="tags_list" list="true">
+		<param name="per_page" type="int" default="30" min="1" max="100" key="true"/>
+		<param name="page" type="int" default="1" min="1" max="10" key="true"/>
+		<absorb status="404"/>
+	</route>
+
+	<!--
+		The rules in force on a branch: every ruleset of the repository and of
+		its organization whose conditions name it. The branch is the key as the
+		path spells it, case kept. The TTL backstops a lost ruleset delivery.
+	-->
+	<resource name="branch_rules" store="document" ttl="1h">
+		<key name="owner" fold="true"/>
+		<key name="repo" fold="true"/>
+		<key name="branch"/>
+		<key name="per_page"/>
+		<key name="page"/>
+		<drop key="url"/>
+		<drop key="*_url"/>
+		<reveal>
+			<probe method="GET" path="/repos/{{ .key.owner }}/{{ .key.repo }}"/>
+			<grant ttl="24h"/>
+			<deny ttl="5m"/>
+		</reveal>
+	</resource>
+
+	<!--
+		A branch name of 1 to 255 bytes with no control character. Each %XX
+		escape is one byte, and an escape of a control byte does not match.
+		Any other spelling, and pages past 10, are passed through. A 404 is
+		stored, because the probe already proved the caller sees the repository.
+		A 403 is the caller's own denial.
+	-->
+	<route method="GET" path="/repos/{owner}/{repo}/rules/branches/{branch...}" resource="branch_rules" list="true">
+		<match param="branch" pattern="^(?:[^%]|%(?:[2-689A-Fa-f][0-9A-Fa-f]|7[0-9A-Ea-e])){1,255}$"/>
+		<param name="per_page" type="int" default="30" min="1" max="100" key="true"/>
+		<param name="page" type="int" default="1" min="1" max="10" key="true"/>
+		<absorb status="404"/>
+	</route>
+
+	<!--
+		A git tree is content-addressed, so no delivery moves it. recursive is
+		part of the key, because the upstream answers a different entry set for
+		the same sha. The TTL only makes an old row refetch.
+	-->
+	<resource name="git_tree" store="document" ttl="720h">
+		<key name="owner" fold="true"/>
+		<key name="repo" fold="true"/>
+		<key name="sha" fold="true"/>
+		<key name="recursive"/>
+		<drop key="url"/>
+		<drop key="*_url"/>
+		<reveal>
+			<probe method="GET" path="/repos/{{ .key.owner }}/{{ .key.repo }}"/>
+			<grant ttl="24h"/>
+			<deny ttl="5m"/>
+		</reveal>
+	</resource>
+
+	<!--
+		Only a full sha is modelled. A branch name here names a tree that
+		moves, so it is passed through. A missing tree is relayed and not
+		stored, and the next request asks again.
+	-->
+	<route method="GET" path="/repos/{owner}/{repo}/git/trees/{sha}" resource="git_tree">
+		<match param="sha" pattern="^[0-9a-fA-F]{40}$"/>
+		<param name="recursive" type="int" default="" min="1" max="1" key="true"/>
+	</route>
+
+	<!--
+		The host posts every delivery it applies to this path. The router
+		never sends a request here.
+	-->
+	<events path="/_engine/webhook" signature-header="X-Hub-Signature-256" type-header="X-GitHub-Event"
+		id-header="X-GitHub-Delivery">
+
+		<secret><value name="env.WEBHOOK_SECRET"/></secret>
+
+		<!--
+			A push that moves a tag states its new commit. Each stored page
+			that lists the tag gets that sha, and the other pages stay.
+		-->
+		<event type="push" resource="tags_list" clock="repository.pushed_at"
+			when='{{ and (hasPrefix "refs/tags/" .payload.ref) (ne .payload.before "0000000000000000000000000000000000000000") (ne .payload.after "0000000000000000000000000000000000000000") }}'>
+			<subject>tags:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<patch match="name" expr='{{ trimPrefix "refs/tags/" .payload.ref }}'>
+				<set field="commit.sha">after</set>
+			</patch>
+		</event>
+
+		<!-- A push that creates or deletes a tag changes the set, and the payload states no page. -->
+		<event type="push" resource="tags_list" clock="repository.pushed_at"
+			when='{{ and (hasPrefix "refs/tags/" .payload.ref) (or (eq .payload.before "0000000000000000000000000000000000000000") (eq .payload.after "0000000000000000000000000000000000000000")) }}'>
+			<subject>tags:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="a created or deleted tag shifts every later page, and the push names only the tag"/>
+		</event>
+
+		<event type="create" resource="tags_list" clock="repository.pushed_at"
+			when='{{ eq .payload.ref_type "tag" }}'>
+			<subject>tags-create:<value name="payload.repository.full_name"/>:<value name="payload.ref"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the listing is pages of tags in the upstream's order, and the payload names one tag and no sha"/>
+		</event>
+
+		<event type="delete" resource="tags_list" clock="repository.pushed_at"
+			when='{{ eq .payload.ref_type "tag" }}'>
+			<subject>tags-delete:<value name="payload.repository.full_name"/>:<value name="payload.ref"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="a deleted tag leaves every later page one entry short, and the payload names only the tag"/>
+		</event>
+
+		<!-- A rename or a transfer moves the listing to a name the payload cannot map to a stored page. -->
+		<event type="repository" resource="tags_list" clock="repository.updated_at">
+			<subject>tags-repo:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states the repository, never its tags"/>
+		</event>
+
+		<!--
+			A ruleset created, edited or deleted. The clock is the ruleset's own
+			edit time and the subject is the repository, so a watermark would
+			refuse the delete of an old ruleset after an edit of a newer one. A
+			drop is the same whatever the order.
+		-->
+		<event type="repository_ruleset" resource="branch_rules" unordered="true"
+			when='{{ hasKey .payload "repository" }}'>
+			<subject>rules:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states one ruleset, and the answer merges every ruleset whose conditions name the branch"/>
+		</event>
+
+		<event type="repository_ruleset" resource="branch_rules" unordered="true"
+			when='{{ not (hasKey .payload "repository") }}'>
+			<subject>rules-org:<value name="payload.organization.login"/></subject>
+			<key field="owner">organization.login</key>
+			<invalidate reason="an organization ruleset names no repository, and GitHub alone matches its conditions to a repository and a branch"/>
+		</event>
+
+		<!-- A rename, a transfer, a delete or a visibility change makes every answer under the old name wrong. -->
+		<event type="repository" resource="branch_rules" clock="repository.updated_at">
+			<subject>rules-repo:<value name="payload.repository.full_name"/></subject>
+			<key field="owner">repository.owner.login</key>
+			<key field="repo">repository.name</key>
+			<invalidate reason="the payload states the repository, never the rules of its branches"/>
+		</event>
+	</events>
+</mirror>

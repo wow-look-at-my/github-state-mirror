@@ -39,6 +39,7 @@ func NewRouter(
 	debouncer *Debouncer,
 	app *ghclient.AppAuthenticator,
 	lat *latency.Recorder,
+	eng Engine,
 	live *LiveHub,
 ) http.Handler {
 	// live: the dashboard's push channel; see docs/dashboard/live-stream.md.
@@ -77,6 +78,12 @@ func NewRouter(
 
 	// recordIdentity: shared by requireAuth and the self-verifying app-JWT routes; see CLAUDE.md.
 	recordIdentity := newIdentityRecorder(store)
+
+	// A route the engine spec declares goes to the engine, behind requireAuth; see engine.go.
+	if eng != nil {
+		eng.SetRequestSink(reqlog.recordEngine)
+	}
+	r.Use(engineDispatch(eng, requireAuth(gh, recordIdentity)))
 
 	// upstream is observed at its transport, so every call it makes reaches the Timeline.
 	upstream := httpobs.Client(0, TimelineUpstreamObserver(timeline))
@@ -157,9 +164,6 @@ func NewRouter(
 
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
-		// Cached git tree read, content-addressed and immutable; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/git/trees/{sha}", h.cachedGitTree)
-
 		// Cached ref-prefix search; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/git/matching-refs/heads/*", h.cachedMatchingRefs)
 
@@ -204,9 +208,6 @@ func NewRouter(
 		// Cached check-run annotations, flushed by the run's own deliveries; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations", h.cachedCheckRunAnnotations)
 
-		// Cached rules in force on a branch; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/rules/branches/*", h.cachedBranchRules)
-
 		// Cached Code Quality setup; the PATCH flushes before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
 		// Every write spelling flushes; a proxy-only method leaves a stale GET.
@@ -227,9 +228,6 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/tarball/*", h.cachedArchive(ghdata.RepoAnswerKindTarball))
 		r.Get("/repos/{owner}/{repo}/zipball", h.cachedArchive(ghdata.RepoAnswerKindZipball))
 		r.Get("/repos/{owner}/{repo}/zipball/*", h.cachedArchive(ghdata.RepoAnswerKindZipball))
-
-		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)

@@ -15,6 +15,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/config"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
+	"github.com/wow-look-at-my/github-state-mirror/internal/engine"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -136,12 +137,24 @@ func main() {
 		slog.Error("open webhook inbox", "error", err)
 		os.Exit(1)
 	}
-	// see docs/webhooks/dispatch.md
-	queue := webhook.NewQueue(journal, dispatcher, api.DeliveryRecorder(timeline, lat), notifier)
+	// The engine serves the routes internal/engine/github.xml declares, from its own database file.
+	eng, err := engine.New(context.Background(), engine.Options{
+		DB:         engine.DeriveDBPath(cfg.DBPath),
+		Base:       gh.BaseURL(),
+		OnExchange: api.EngineObserver(timeline, meter),
+	}, cfg.WebhookSecret)
+	if err != nil {
+		slog.Error("build the api-mirror engine", "error", err)
+		os.Exit(1)
+	}
+	eng.Start()
+
+	// see docs/webhooks/dispatch.md; the worker applies each delivery to the engine too, before the inbox marks it applied.
+	queue := webhook.NewQueue(journal, eng.Applier(dispatcher, api.AmendDelivery(store)), api.DeliveryRecorder(timeline, lat), notifier)
 
 	// cfg.DBPath is only statted; data access uses the already-open db handle.
 	live := api.NewLiveHub()
-	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, live)
+	router := api.NewRouter(mgr, store, cfg.WebhookSecret, dispatcher, queue, gh, cfg.AllowedOrigins, authSvc, cfg.BaseURL, checker, meter, notifier, cfg.DBPath, timeline, debouncer, app, lat, eng, live)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -189,6 +202,13 @@ func main() {
 	// Same rule for detached subscriber-notification deliveries.
 	if !notifier.Drain(30 * time.Second) {
 		slog.Warn("shutdown: in-flight notifications did not drain in time; closing DBs anyway")
+	}
+	// The worker has stopped, so the engine gets no delivery after this.
+	if !eng.Drain(30 * time.Second) {
+		slog.Warn("shutdown: the engine did not drain in time; closing its DB anyway")
+	}
+	if cerr := eng.Close(); cerr != nil {
+		slog.Warn("close engine database", "error", cerr)
 	}
 	if cerr := db.Close(); cerr != nil {
 		slog.Warn("close database", "error", cerr)

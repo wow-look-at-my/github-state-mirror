@@ -4,7 +4,7 @@ Extracted verbatim from the package doc comment and per-field/per-function comme
 
 ## What it is
 
-GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the show probe, and ghclient's own calls) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
+GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the show probe, ghclient's own calls, and every call of the embedded engine through `api.EngineObserver`) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
 
 The store is deliberately in-memory — the same live-view-not-audit-log stance as the api package's request log. Rate-limit windows reset within the hour. As a result, the data is sub-hour-ephemeral, and persisting it will add a schema.sql table, whose every edit nukes the whole cache. It resets on start.
 
