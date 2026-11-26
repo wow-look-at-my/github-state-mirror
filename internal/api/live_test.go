@@ -128,12 +128,6 @@ func (lf *liveFrames) quiet(d time.Duration, why string) {
 // The feeds push at the stream's own flush interval, so a test waits for nothing else.
 func liveDashboard(t *testing.T) (*dashboard, *auth.Service, *httptest.Server) {
 	t.Helper()
-	for _, p := range []*time.Duration{&livePaceCache, &livePaceRequests, &livePaceAggregate, &livePaceEvents} {
-		was := *p
-		*p = 0
-		t.Cleanup(func() { *p = was })
-	}
-
 	svc := configuredAuth(t)
 	db := openTestDB(t, filepath.Join(t.TempDir(), "live.db"))
 	t.Cleanup(func() { db.Close() })
@@ -143,6 +137,7 @@ func liveDashboard(t *testing.T) (*dashboard, *auth.Service, *httptest.Server) {
 	d := &dashboard{
 		auth: svc, reqlog: log, live: hub, store: ghdata.NewStore(db),
 		timeline: reqtimeline.New(), meter: ratemeter.New(), latency: latency.New(),
+		liveTuning: &liveTuning{timelineBatch: defaultLiveTuning.timelineBatch},
 	}
 	hub.watch(d.timeline, d.meter, d.latency)
 	srv := httptest.NewServer(http.HandlerFunc(d.handleStream))

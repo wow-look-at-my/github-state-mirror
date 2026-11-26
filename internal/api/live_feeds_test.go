@@ -26,13 +26,13 @@ func TestLiveStream_PushesTheTabOnOpenAndOnChange(t *testing.T) {
 	var first latencyResponse
 	lf.view("latency", &first)
 	require.Len(t, first.Kinds, 1, "the first push of a stream is the tab's whole data")
-	assert.Equal(t, int64(uint64(1)), first.Kinds[0].Count)
+	assert.Equal(t, int64(1), first.Kinds[0].Count)
 	assert.Equal(t, float64(GitHubDeliveryTimeoutMs), first.WebhookTimeoutMs)
 
 	d.latency.Observe(KindWebhook, 7*time.Millisecond)
 	var second latencyResponse
 	lf.view("latency", &second)
-	assert.Equal(t, int64(uint64(2)), second.Kinds[0].Count, "a change is pushed, with no request from the page")
+	assert.Equal(t, int64(2), second.Kinds[0].Count, "a change is pushed, with no request from the page")
 
 	d.live.publish(topicLatency)
 	lf.quiet(400*time.Millisecond, "a build that changed nothing must send nothing")
@@ -160,9 +160,7 @@ func TestLiveStream_TimelineContinuesFromTheCursorOfTheChart(t *testing.T) {
 
 func TestLiveStream_TimelineBatchesALongCatchUp(t *testing.T) {
 	d, svc, srv := liveDashboard(t)
-	was := liveTimelineBatch
-	liveTimelineBatch = 2
-	t.Cleanup(func() { liveTimelineBatch = was })
+	d.liveTuning.timelineBatch = 2
 	for range 5 {
 		d.timeline.RecordRequest(time.Now(), time.Millisecond, "GET", "/x", 200, DispHit, "user:1", "")
 	}

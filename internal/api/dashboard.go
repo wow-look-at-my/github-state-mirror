@@ -61,6 +61,8 @@ type dashboard struct {
 	latency *latency.Recorder
 	// live is the push hub behind GET /api/stream.
 	live *LiveHub
+	// Only a test sets it.
+	liveTuning *liveTuning
 	// A pushed refresh reads these tabs again on every change, so their GitHub calls are held for a short time.
 	liveRates  ttlValue[[]syncpkg.InstallationRateLimit]
 	subscribed ttlValue[[]string]

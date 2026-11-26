@@ -28,22 +28,39 @@ type liveFeed struct {
 	build func(ctx context.Context) (any, error)
 }
 
-// The least time between pushes of one tab. A cache tab runs SQL counts on
-// each build, so its pace is the longest. A test shortens these.
-var (
-	livePaceCache     = 5 * time.Second
-	livePaceRequests  = 2 * time.Second
-	livePaceAggregate = time.Second
-	livePaceEvents    = 250 * time.Millisecond
-)
+// liveTuning bounds what the pushed tabs cost. A pace is the least time
+// between builds of a tab.
+type liveTuning struct {
+	// paceCache is the longest: each build of a cache tab runs SQL counts.
+	paceCache     time.Duration
+	paceRequests  time.Duration
+	paceAggregate time.Duration
+	paceEvents    time.Duration
+	// timelineBatch bounds the events in one Timeline frame.
+	timelineBatch int
+}
 
-// liveTimelineBatch bounds the events in one Timeline frame. A test lowers it.
-var liveTimelineBatch = 5000
+var defaultLiveTuning = liveTuning{
+	paceCache:     5 * time.Second,
+	paceRequests:  2 * time.Second,
+	paceAggregate: time.Second,
+	paceEvents:    250 * time.Millisecond,
+	timelineBatch: 5000,
+}
+
+// liveTune returns the dashboard's tuning. Only a test sets its own.
+func (d *dashboard) liveTune() liveTuning {
+	if d.liveTuning != nil {
+		return *d.liveTuning
+	}
+	return defaultLiveTuning
+}
 
 // liveFeedFor picks the feed that ?view= names. A nil feed with a zero status
 // is a stream that carries no tab. A non-zero status refuses the request.
 func (d *dashboard) liveFeedFor(q url.Values, login string, admin bool) (*liveFeed, int, string) {
 	view := q.Get("view")
+	tune := d.liveTune()
 	switch view {
 	case "":
 		return nil, 0, ""
@@ -62,16 +79,16 @@ func (d *dashboard) liveFeedFor(q url.Values, login string, admin bool) (*liveFe
 	case "webhooks":
 		return d.webhooksFeed(), 0, ""
 	case "requests":
-		return &liveFeed{name: view, topic: topicRequests, every: livePaceRequests, build: func(context.Context) (any, error) {
+		return &liveFeed{name: view, topic: topicRequests, every: tune.paceRequests, build: func(context.Context) (any, error) {
 			// The events ride the stream's own cursor. A cursor past the tip leaves them out of this.
 			return d.requestsSnapshot(math.MaxUint64, true, 0), nil
 		}}, 0, ""
 	case "ratelimit":
-		return &liveFeed{name: view, topic: topicRateLimit, every: livePaceAggregate, build: func(ctx context.Context) (any, error) {
+		return &liveFeed{name: view, topic: topicRateLimit, every: tune.paceAggregate, build: func(ctx context.Context) (any, error) {
 			return d.rateLimits(ctx), nil
 		}}, 0, ""
 	case "latency":
-		return &liveFeed{name: view, topic: topicLatency, every: livePaceAggregate, build: func(context.Context) (any, error) {
+		return &liveFeed{name: view, topic: topicLatency, every: tune.paceAggregate, build: func(context.Context) (any, error) {
 			return d.latencySnapshot(), nil
 		}}, 0, ""
 	}
@@ -88,7 +105,7 @@ func (d *dashboard) liveFeedFor(q url.Values, login string, admin bool) (*liveFe
 }
 
 func (d *dashboard) cacheFeed(scope, login string, admin bool) *liveFeed {
-	return &liveFeed{name: scope, topic: topicCache, every: livePaceCache, build: func(ctx context.Context) (any, error) {
+	return &liveFeed{name: scope, topic: topicCache, every: d.liveTune().paceCache, build: func(ctx context.Context) (any, error) {
 		return d.cacheStats(ctx, login, admin, scope)
 	}}
 }
@@ -169,7 +186,7 @@ func (d *dashboard) webhooksFeed() *liveFeed {
 		first = false
 		return out, nil
 	}
-	return &liveFeed{name: "webhooks", topic: topicWebhooks, every: livePaceEvents, build: build}
+	return &liveFeed{name: "webhooks", topic: topicWebhooks, every: d.liveTune().paceEvents, build: build}
 }
 
 // liveTimeline is one Timeline frame: the ring's events after Since, in the
@@ -185,7 +202,8 @@ type liveTimeline struct {
 
 // timelineFeed pushes the ring's events after cursor.
 func (d *dashboard) timelineFeed(cursor uint64) *liveFeed {
-	feed := &liveFeed{name: "timeline", topic: topicTimeline, every: livePaceEvents}
+	tune := d.liveTune()
+	feed := &liveFeed{name: "timeline", topic: topicTimeline, every: tune.paceEvents}
 	feed.build = func(context.Context) (any, error) {
 		snap := d.timeline.Snapshot(cursor)
 		if cursor > snap.MaxID {
@@ -196,9 +214,9 @@ func (d *dashboard) timelineFeed(cursor uint64) *liveFeed {
 		if len(snap.Events) == 0 {
 			return nil, nil
 		}
-		more := len(snap.Events) > liveTimelineBatch
+		more := len(snap.Events) > tune.timelineBatch
 		if more {
-			snap.Events = snap.Events[:liveTimelineBatch]
+			snap.Events = snap.Events[:tune.timelineBatch]
 			// The page's cursor must stop where this frame stops.
 			snap.MaxID = snap.Events[len(snap.Events)-1].ID
 			d.live.publish(topicTimeline)
