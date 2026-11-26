@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
@@ -23,7 +24,7 @@ import (
 	syncpkg "github.com/wow-look-at-my/github-state-mirror/internal/sync"
 )
 
-//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/style.css
+//go:embed web/index.html web/assets/app.js web/assets/rate-meter.js web/assets/timeline.js web/assets/request-log.js web/assets/style.css
 var webFS embed.FS
 
 // contentAsset is an embedded asset served at a content-addressed URL.
@@ -58,7 +59,17 @@ type dashboard struct {
 	ordering func() syncpkg.OrderingSnapshot
 	// latency backs the Latency tab; nil serves an empty snapshot.
 	latency *latency.Recorder
+	// live is the push hub behind GET /api/stream.
+	live *LiveHub
+	// A pushed refresh reads these tabs again on every change, so their GitHub calls are held for a short time.
+	liveRates  ttlValue[[]syncpkg.InstallationRateLimit]
+	subscribed ttlValue[[]string]
 }
+
+const (
+	liveRatesTTL  = 15 * time.Second
+	subscribedTTL = time.Minute
+)
 
 func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, reqlog *requestLog, checker *syncpkg.ConsistencyChecker, meter *ratemeter.Store, notifier *notify.Notifier, dbPath string, timeline *reqtimeline.Recorder, shapes *shapeStore, appEvents func(context.Context) ([]string, error), ordering func() syncpkg.OrderingSnapshot) *dashboard {
 	index, err := webFS.ReadFile("web/index.html")
@@ -69,16 +80,19 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 	appJS := mustReadAsset("web/assets/app.js")
 	rateMeterJS := mustReadAsset("web/assets/rate-meter.js")
 	timelineJS := mustReadAsset("web/assets/timeline.js")
+	requestLogJS := mustReadAsset("web/assets/request-log.js")
 	styleCSS := mustReadAsset("web/assets/style.css")
 	appName := hashedAssetName("app", "js", appJS)
 	rateMeterName := hashedAssetName("rate-meter", "js", rateMeterJS)
 	timelineName := hashedAssetName("timeline", "js", timelineJS)
+	requestLogName := hashedAssetName("request-log", "js", requestLogJS)
 	cssName := hashedAssetName("style", "css", styleCSS)
 
 	// The committed index.html keeps the stable names so the CI preview still resolves them.
 	served := strings.ReplaceAll(string(index), "assets/app.js", "assets/"+appName)
 	served = strings.ReplaceAll(served, "assets/rate-meter.js", "assets/"+rateMeterName)
 	served = strings.ReplaceAll(served, "assets/timeline.js", "assets/"+timelineName)
+	served = strings.ReplaceAll(served, "assets/request-log.js", "assets/"+requestLogName)
 	served = strings.ReplaceAll(served, "assets/style.css", "assets/"+cssName)
 
 	return &dashboard{
@@ -90,6 +104,7 @@ func newDashboard(authSvc *auth.Service, store *ghdata.Store, baseURL string, re
 			{url: "/assets/" + appName, content: appJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + rateMeterName, content: rateMeterJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + timelineName, content: timelineJS, contentType: "text/javascript; charset=utf-8"},
+			{url: "/assets/" + requestLogName, content: requestLogJS, contentType: "text/javascript; charset=utf-8"},
 			{url: "/assets/" + cssName, content: styleCSS, contentType: "text/css; charset=utf-8"},
 		},
 		reqlog:    reqlog,
@@ -141,6 +156,7 @@ func (d *dashboard) routes(r chi.Router) {
 	r.Get("/api/jobs", d.handleJobs)
 	r.Get("/api/requests", d.handleRequests)
 	r.Get("/api/timeline", d.handleTimeline)
+	r.Get("/api/stream", d.handleStream)
 
 	// Admin-only truth browse and consistency check/reconcile; see docs/dashboard/operator-tooling.md.
 	r.Get("/api/cache/data", d.handleCacheData)

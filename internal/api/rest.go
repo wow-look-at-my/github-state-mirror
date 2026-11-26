@@ -35,6 +35,8 @@ type handlers struct {
 	shapes *shapeStore
 	// oauthRelaySecrets: client id -> the secret the login relay adds for it.
 	oauthRelaySecrets map[string]string
+	// appRead reads a Checks API route with the mirror's own App. Nil-safe.
+	appRead *appReader
 }
 
 // Cached REST routes rebuild the response without any URL field, under an

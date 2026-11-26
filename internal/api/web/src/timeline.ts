@@ -19,11 +19,12 @@ import type {
     Task,
     WireSchema,
 } from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js';
-import type { TimelineEvent, TimelineResponse } from "./types";
+import type { StreamSignal, TimelineEvent, TimelineResponse } from "./types";
 
 const COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js";
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
-const POLL_MS = 5000; // the dashboard's shared refresh cadence (app.ts REFRESH_MS)
+// The least time between reads while the ring keeps growing.
+const READ_GAP_MS = 250;
 const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
 const STALE_AFTER_MS = 12000;
 const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
@@ -427,8 +428,9 @@ class GsmTimeline extends HTMLElement {
 
     private view: TimelineViewElement | null = null;
     private note: HTMLElement | null = null;
-    private timer: ReturnType<typeof setInterval> | undefined;
     private pollInFlight = false;
+    // The ring grew while a read ran, or while the page was hidden: read again.
+    private pollOwed = false;
     private maxId = 0;
     // The ring's retention floor (epoch ms) as of the last read — the point at which history is genuinely exhausted.
     private retentionStart = 0;
@@ -444,9 +446,12 @@ class GsmTimeline extends HTMLElement {
     private feedSize = START_FEED_INTERVALS;
 
     connectedCallback(): void {
+        window.addEventListener("gsm:stream", this.onStream);
+        document.addEventListener("visibilitychange", this.onVisible);
         if (this.view || this.note) {
             // Reconnect of an already-booted instance (app.ts never moves the element, but be correct anyway).
-            this.startPolling();
+            this.pollOwed = true;
+            this.readIfOwed();
             return;
         }
         this.note = elem("p", "timeline-note", "chart loading…");
@@ -455,9 +460,30 @@ class GsmTimeline extends HTMLElement {
     }
 
     disconnectedCallback(): void {
-        // The tab was left (loadView wipes #scope-body): stop polling.
-        if (this.timer !== undefined) clearInterval(this.timer);
-        this.timer = undefined;
+        // The tab was left (loadView wipes #scope-body): stop listening.
+        window.removeEventListener("gsm:stream", this.onStream);
+        document.removeEventListener("visibilitychange", this.onVisible);
+    }
+
+    // The dashboard's stream (app.ts) says when the ring grew. A frame that
+    // names no growth is still proof that the feed is alive.
+    private readonly onStream = (ev: Event): void => {
+        const s = (ev as CustomEvent<StreamSignal>).detail;
+        if (!s.live || !this.view) return;
+        if (s.topics.includes("timeline")) {
+            this.pollOwed = true;
+            this.readIfOwed();
+        } else if (!this.pollInFlight) {
+            this.markFresh(this.view);
+        }
+    };
+
+    private readonly onVisible = (): void => this.readIfOwed();
+
+    private readIfOwed(): void {
+        if (!this.pollOwed || this.pollInFlight || document.hidden || !this.isConnected || !this.view) return;
+        this.pollOwed = false;
+        void this.poll().then(() => new Promise((r) => setTimeout(r, READ_GAP_MS))).then(() => this.readIfOwed());
     }
 
     private async boot(): Promise<void> {
@@ -475,15 +501,7 @@ class GsmTimeline extends HTMLElement {
         await this.poll(); // first page: setData + initial viewport
         this.note?.remove();
         this.note = null;
-        this.startPolling();
-    }
-
-    private startPolling(): void {
-        if (this.timer !== undefined || !this.isConnected || !this.view) return;
-        this.timer = setInterval(() => {
-            if (document.hidden) return;
-            void this.poll();
-        }, POLL_MS);
+        this.readIfOwed();
     }
 
     // Dynamic-import the Pages component, retrying forever on a fixed cadence

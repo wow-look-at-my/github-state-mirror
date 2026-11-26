@@ -19,6 +19,11 @@ func TestLatency_RecordsWebhookHandlingTime(t *testing.T) {
 		"label":      map[string]any{"name": "bug"},
 		"repository": map[string]any{"full_name": "org1/repo1", "name": "repo1", "owner": map[string]any{"login": "org1"}},
 	})
+	postWebhookJSON(t, router, "workflow_job", map[string]any{
+		"action":       "queued",
+		"workflow_job": map[string]any{"id": 7, "run_id": 9, "status": "queued", "head_sha": "abc"},
+		"repository":   map[string]any{"full_name": "org1/repo1", "name": "repo1", "owner": map[string]any{"login": "org1"}},
+	})
 
 	req := httptest.NewRequest("GET", "/api/latency", nil)
 	req.AddCookie(mintSession(t, svc, "PazerOP"))
@@ -35,7 +40,9 @@ func TestLatency_RecordsWebhookHandlingTime(t *testing.T) {
 		counts[k.Kind] = k.Count
 		assert.Len(t, k.Buckets, len(body.BoundsMs)+1, "%s: one bucket per edge plus overflow", k.Kind)
 	}
-	assert.Equal(t, int64(1), counts[KindWebhook], "the delivery's handling time is on the Latency tab")
+	assert.Equal(t, int64(2), counts[KindWebhook], "every delivery's handling time is on the Latency tab")
+	assert.Equal(t, int64(1), counts[KindWebhook+".client"], "the label delivery is timed under its lane")
+	assert.Equal(t, int64(1), counts[KindWebhook+".bulk"], "the workflow_job delivery is timed under its lane")
 }
 
 func TestLatency_NonAdminForbidden(t *testing.T) {

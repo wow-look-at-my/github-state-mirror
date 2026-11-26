@@ -65,12 +65,12 @@ func (j *memJournal) Put(_ context.Context, d Stored) (bool, error) {
 	return true, nil
 }
 
-func (j *memJournal) Pending(_ context.Context, limit int) ([]Stored, error) {
+func (j *memJournal) Pending(_ context.Context, lane Lane, limit int) ([]Stored, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	var out []Stored
 	for _, r := range j.rows {
-		if !j.applied[r.DeliveryID] && len(out) < limit {
+		if !j.applied[r.DeliveryID] && LaneOf(r.EventType) == lane && len(out) < limit {
 			out = append(out, r)
 		}
 	}

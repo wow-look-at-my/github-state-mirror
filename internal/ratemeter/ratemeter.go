@@ -42,6 +42,16 @@ type Store struct {
 	obs map[key]Observation
 	// now is the clock, a test seam set at construction; tests override it before use.
 	now func() time.Time
+	// onObserve: see SetOnObserve.
+	onObserve func()
+}
+
+// SetOnObserve installs a hook that runs after every stored reading, outside
+// the lock. Call it before the first observation.
+func (s *Store) SetOnObserve(fn func()) {
+	if s != nil {
+		s.onObserve = fn
+	}
 }
 
 // New returns an empty Store.
@@ -84,7 +94,12 @@ func (s *Store) Observe(identity, name string, resp *http.Response) {
 	k := key{identity: identity, resource: resource}
 	now := s.now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		if s.onObserve != nil {
+			s.onObserve()
+		}
+	}()
 	s.pruneLocked(now)
 	prev, exists := s.obs[k]
 	if !exists && len(s.obs) >= maxEntries {

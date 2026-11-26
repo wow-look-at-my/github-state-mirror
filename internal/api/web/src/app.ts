@@ -20,8 +20,9 @@ import type {
     TimelineResponse, GsmTimelineElement,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     LatencyResponse, LatencyKind,
-    DemoStateData, DemoConfig,
+    DemoStateData, DemoConfig, StreamMessage, StreamSignal,
 } from "./types";
+import type { GsmRequestLogElement } from "./request-log";
 
 const DEMO: DemoConfig | null = typeof window !== "undefined" ? window.__GSM_DEMO__ ?? null : null;
 
@@ -190,6 +191,8 @@ async function renderDashboard(me: Me): Promise<void> {
         );
         head.appendChild(tabs);
     }
+    head.appendChild(el("span", { id: "live-pill", role: "status" }));
+    setLiveState(liveState, liveDetail);
     head.appendChild(renderCopyJsonControl());
     head.appendChild(el("div", { class: "sub", id: "scope-sub" }));
     main.appendChild(head);
@@ -210,8 +213,9 @@ async function renderDashboard(me: Me): Promise<void> {
     onHashChange = (scope) => {
         if (scope !== currentView && hasTab(scope)) switchTab(scope);
     };
+    startLive();
     await loadView(initial);
-    startAutoRefresh();
+    lastRefreshEnd = Date.now();
 
     function hasTab(scope: string): boolean {
         if (!scope || !tabs) return false;
@@ -232,7 +236,8 @@ async function renderDashboard(me: Me): Promise<void> {
         currentView = scope;
         // replaceState (not location.hash=) so tab clicks don't pile up history entries the back button would have.
         history.replaceState(null, "", "#" + scope);
-        void loadView(scope);
+        refreshPending = false;
+        void loadView(scope).finally(() => { lastRefreshEnd = Date.now(); });
     }
 }
 
@@ -331,11 +336,188 @@ function renderCopyJsonControl(): HTMLElement {
     return wrap;
 }
 
-// ---- auto-refresh ---- The dashboard polls the active tab every few seconds.
-const REFRESH_MS = 5000;
+// live updates ---- The server pushes over one EventSource (GET /api/stream).
+const STREAM_RETRY_MS = 2000; // fixed: it never grows and never gives up
+const STREAM_STALL_MS = 16000;
+const STREAM_WATCH_MS = 5000;
+// How many events the first Requests load asks for: the server's whole ring.
+const LOG_BACKFILL = 10000;
+
+// The topic that makes each tab stale, and the least time between loads of
+// it. The Timeline is absent: its element hears the stream itself.
+const VIEW_FEEDS: Readonly<Record<string, readonly [topic: string, minMs: number]>> = {
+    mine: ["cache", 5000],
+    all: ["cache", 5000],
+    webhooks: ["webhooks", 1000],
+    requests: ["requests", 2000],
+    ratelimit: ["ratelimit", 1000],
+    latency: ["latency", 1000],
+};
+
 let currentView = "mine";
-let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let modalOpen = false;
+
+let stream: EventSource | null = null;
+let streamBoot = "";
+let streamLive = false;
+let streamLastAt = 0;
+let streamFailures = 0;
+let streamWatch: ReturnType<typeof setInterval> | undefined;
+
+let refreshPending = false;
+let refreshInFlight = false;
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+let lastRefreshEnd = 0;
+
+// The Requests log lives for the whole page, so it keeps filling on other tabs.
+let requestLog: GsmRequestLogElement | null = null;
+let requestsBackfilled = false;
+let requestTotals: { total: number; by: Record<string, number>; db: string } | null = null;
+
+type LiveState = "connecting" | "live" | "down" | "demo";
+let liveState: LiveState = "connecting";
+let liveDetail = "";
+
+function setLiveState(state: LiveState, detail = ""): void {
+    liveState = state;
+    liveDetail = detail;
+    const pill = document.getElementById("live-pill");
+    if (!pill) return;
+    pill.className = "live-pill " + state;
+    pill.textContent = state === "live" ? "Live" : state === "demo" ? "Demo" : state === "down" ? "Reconnecting" : "Connecting";
+    pill.title = state === "live" ? "Updates arrive as they happen."
+        : state === "demo" ? "Canned data. Nothing here is live."
+            : state === "down" ? "The live connection is down (" + detail + "). The page shows its last data and retries every " + (STREAM_RETRY_MS / 1000) + "s."
+                : "Opening the live connection.";
+}
+
+function signalStream(live: boolean, now: number, topics: string[]): void {
+    const detail: StreamSignal = { live, now, topics };
+    window.dispatchEvent(new CustomEvent("gsm:stream", { detail }));
+}
+
+function startLive(): void {
+    if (dashIsAdmin && !requestLog) {
+        requestLog = document.createElement("gsm-request-log") as GsmRequestLogElement;
+        requestLog.describeReason = describeReason;
+    }
+    if (streamWatch !== undefined) return;
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) pumpRefresh(); });
+    if (DEMO) {
+        setLiveState("demo");
+        streamWatch = setInterval(demoTick, 2000);
+        return;
+    }
+    // The poll left: it asks whether the push channel is still alive.
+    streamWatch = setInterval(() => {
+        if (stream && Date.now() - streamLastAt > STREAM_STALL_MS) streamDown(streamLive ? "no heartbeat" : "no answer");
+    }, STREAM_WATCH_MS);
+    openStream();
+}
+
+function openStream(): void {
+    const since = requestLog?.model.maxSeq ?? 0;
+    const es = new EventSource("/api/stream" + (since ? "?requests_since=" + since : ""));
+    stream = es;
+    streamLastAt = Date.now();
+    es.onmessage = (ev) => { if (stream === es) onStreamMessage(JSON.parse(ev.data as string) as StreamMessage); };
+    es.onerror = () => { if (stream === es) streamDown("connection lost"); };
+}
+
+function streamDown(why: string): void {
+    stream?.close();
+    stream = null;
+    streamLive = false;
+    streamFailures++;
+    setLiveState("down", why);
+    signalStream(false, Date.now(), []);
+    // A session that ended looks the same as a dead server from here, so ask.
+    if (streamFailures === 3) {
+        void api<Me>("/api/me").then((me) => { if (!me.authenticated) location.reload(); }, () => undefined);
+    }
+    setTimeout(openStream, STREAM_RETRY_MS);
+}
+
+function onStreamMessage(m: StreamMessage): void {
+    streamLastAt = Date.now();
+    const topics = m.topics.slice();
+    if (m.boot !== undefined) {
+        const reconnected = streamBoot !== "";
+        if (reconnected && streamBoot !== m.boot) {
+            // The server restarted, so its log starts again from the first event.
+            requestLog?.reset();
+            requestsBackfilled = false;
+        }
+        streamBoot = m.boot;
+        streamFailures = 0;
+        streamLive = true;
+        setLiveState("live");
+        if (reconnected) {
+            // Whatever changed while the stream was down was never announced.
+            topics.push("timeline");
+            requestRefresh();
+        }
+    }
+    if (m.requests) {
+        requestLog?.ingest(m.requests.events);
+        if (requestTotals) {
+            requestTotals.total = m.requests.total;
+            requestTotals.by = m.requests.by_disposition;
+            if (currentView === "requests") renderRequestsSub();
+        }
+    }
+    signalStream(true, m.now, topics);
+    const feed = VIEW_FEEDS[currentView];
+    if (feed && topics.includes(feed[0])) requestRefresh();
+}
+
+// requestRefresh loads the active tab again: at once when it is idle, and no
+// more frequently than its feed allows while changes keep coming.
+function requestRefresh(): void {
+    refreshPending = true;
+    pumpRefresh();
+}
+
+function pumpRefresh(): void {
+    if (!refreshPending || refreshInFlight || refreshTimer !== undefined || modalOpen || document.hidden) return;
+    const feed = VIEW_FEEDS[currentView];
+    if (!feed) {
+        refreshPending = false;
+        return;
+    }
+    const wait = lastRefreshEnd + feed[1] - Date.now();
+    if (wait > 0) {
+        refreshTimer = setTimeout(() => {
+            refreshTimer = undefined;
+            pumpRefresh();
+        }, wait);
+        return;
+    }
+    refreshPending = false;
+    refreshInFlight = true;
+    void loadView(currentView, true).finally(() => {
+        refreshInFlight = false;
+        lastRefreshEnd = Date.now();
+        pumpRefresh();
+    });
+}
+
+// demoTick stands in for the stream in the backend-free preview: it replays
+// canned requests so the live log moves, and keeps the Timeline loading.
+let demoSeq = 0;
+function demoTick(): void {
+    const canned = (DEMO?.data[DEMO.current ?? DEMO.initial]?.requests?.recent ?? []);
+    if (requestLog && canned.length) {
+        if (demoSeq === 0) demoSeq = canned.length;
+        const events: RequestEvent[] = [];
+        for (let i = 0; i < 3; i++) {
+            const pick = canned[(demoSeq + i * 3) % canned.length] as RequestEvent;
+            events.push({ ...pick, at: new Date().toISOString(), seq: ++demoSeq });
+        }
+        requestLog.ingest(events);
+    }
+    signalStream(true, Date.now(), ["timeline"]);
+}
 
 // ---- URL-hash tab sync ---- The active tab is mirrored into the URL hash so a refresh.
 let onHashChange: ((scope: string) => void) | null = null;
@@ -348,14 +530,6 @@ let closeCopyJsonMenu: (() => void) | null = null;
 if (typeof document !== "undefined") {
     document.addEventListener("click", () => closeCopyJsonMenu?.());
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCopyJsonMenu?.(); });
-}
-
-function startAutoRefresh(): void {
-    if (DEMO || refreshTimer !== undefined) return;
-    refreshTimer = setInterval(() => {
-        if (modalOpen || document.hidden) return;
-        void loadView(currentView, true);
-    }, REFRESH_MS);
 }
 
 async function loadScope(scope: string, silent = false): Promise<void> {
@@ -766,9 +940,9 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
 // requests (one lane per route shape), each bar a REAL measured duration —
 // rendered by the <gsm-timeline> element (src/timeline.ts). Unlike every
 // other tab this loader must NOT wipe and rebuild on refresh: the canvas
-// holds viewport/zoom state. The element is created ONCE and kept alive —
-// it polls /api/timeline?since=<id> itself (5s, paused while the page is
-// hidden) and merges new events in place.
+// holds viewport/zoom state. The element is created ONCE and kept alive. It
+// reads /api/timeline?since=<id> when the stream says the ring grew, and
+// merges new events in place.
 async function loadTimeline(): Promise<void> {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
@@ -788,14 +962,18 @@ async function loadTimeline(): Promise<void> {
 // straight through.
 async function loadRequests(silent = false): Promise<void> {
     const body = byId("scope-body");
-    const sub = byId("scope-sub");
     if (!silent) {
         body.innerHTML = "";
         body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
     }
+    const log = requestLog;
+    if (!log) return;
+    // The first load takes the server's whole ring. A later one takes what the stream has not sent yet.
     let data: RequestsResponse;
     try {
-        data = await api<RequestsResponse>("/api/requests");
+        data = await api<RequestsResponse>(requestsBackfilled
+            ? "/api/requests?since=" + log.model.maxSeq
+            : "/api/requests?limit=" + LOG_BACKFILL);
     } catch (e) {
         if (silent) return;
         body.innerHTML = "";
@@ -803,38 +981,57 @@ async function loadRequests(silent = false): Promise<void> {
         return;
     }
     if (currentView !== "requests") return;
-    body.innerHTML = "";
-    const recent = data.recent ?? [];
-    const by = data.by_disposition ?? {};
-    const total = data.total || 0;
-    const dbSize = dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes);
-    sub.textContent = total + " request" + (total === 1 ? "" : "s") + " since restart" +
-        " — hit " + (by.hit || 0) + pctLabel(by.hit, total) +
-        ", miss " + (by.miss || 0) + pctLabel(by.miss, total) +
-        ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, total) +
-        ", write " + (by.write || 0) + pctLabel(by.write, total) +
-        (by.error ? ", error " + by.error + pctLabel(by.error, total) : "") +
-        (dbSize ? " — " + dbSize : "");
-
-    body.appendChild(requestLegend());
-    // Grouped views first (aggregate hot spots), then the flat history below.
-    const groups = data.groups ?? [];
-    if (groups.length > 0) {
-        body.appendChild(topGroupsSection(groups, total));
-        const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
-        if (uncached) {
-            body.appendChild(uncached);
-            body.appendChild(briefBar());
-        }
-    }
-    if (recent.length === 0) {
-        body.appendChild(el("div", { class: "empty" },
-            el("p", { text: "No data-API requests recorded yet." }),
-            el("p", { class: "sub", text: "Requests appear here live as clients call the mirror — cache hits, misses, and passthroughs to GitHub." }),
-        ));
+    if ((data.seq ?? 0) < log.model.maxSeq) {
+        // The server's log is behind ours: it restarted. Start again from its first event.
+        log.reset();
+        requestsBackfilled = false;
+        requestRefresh();
         return;
     }
-    body.appendChild(wideWrap(requestTable(recent)));
+    requestsBackfilled = true;
+    log.ingest(data.recent ?? []);
+    const by = data.by_disposition ?? {};
+    const total = data.total || 0;
+    requestTotals = { total, by, db: dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes) };
+    renderRequestsSub();
+
+    // The summary above the log is rebuilt. The log element is never rebuilt: it holds the user's filter and open rows.
+    let summary = document.getElementById("req-summary");
+    if (!summary || !body.contains(log)) {
+        body.innerHTML = "";
+        summary = el("div", { id: "req-summary" });
+        body.append(summary, el("div", { class: "section-label", text: "Live log" }), log);
+    }
+    summary.innerHTML = "";
+    summary.appendChild(requestLegend());
+    const groups = data.groups ?? [];
+    if (groups.length > 0) {
+        summary.appendChild(topGroupsSection(groups, total));
+        const uncached = uncachedGroupsSection(groups, by.passthrough || 0);
+        if (uncached) {
+            summary.appendChild(uncached);
+            summary.appendChild(briefBar());
+        }
+    }
+}
+
+// renderRequestsSub writes the Requests tab's totals line. The stream calls it on every frame.
+function renderRequestsSub(): void {
+    const t = requestTotals;
+    if (!t) return;
+    const by = t.by;
+    byId("scope-sub").textContent = t.total + " request" + (t.total === 1 ? "" : "s") + " since restart" +
+        " — hit " + (by.hit || 0) + pctLabel(by.hit, t.total) +
+        ", miss " + (by.miss || 0) + pctLabel(by.miss, t.total) +
+        ", passthrough " + (by.passthrough || 0) + pctLabel(by.passthrough, t.total) +
+        ", write " + (by.write || 0) + pctLabel(by.write, t.total) +
+        (by.error ? ", error " + by.error + pctLabel(by.error, t.total) : "") +
+        (t.db ? " — " + t.db : "");
+}
+
+// describeReason is a passthrough reason code with its sentence.
+function describeReason(reason: string): string {
+    return reason + (PASSTHROUGH_REASONS[reason] ? " — " + PASSTHROUGH_REASONS[reason] : "");
 }
 
 // A count's share of the total, rendered as a " (88.8%)" suffix — empty when
@@ -915,12 +1112,20 @@ function wideWrap(table: HTMLElement): HTMLElement {
 // table to the width of a wide one spreads its content across empty space.
 // Only a table that runs out of room asks for it.
 function groupSection(title: string, caption: string | null, table: HTMLElement, wide = false): HTMLElement {
-    return el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: true },
+    const section = el("details", { class: "req-groups" + (wide ? " table-wide" : ""), open: !closedSections.has(title) },
         el("summary", { text: title }),
         caption ? el("p", { class: "grp-caption", text: caption }) : null,
         table,
-    );
+    ) as HTMLDetailsElement;
+    section.addEventListener("toggle", () => {
+        if (section.open) closedSections.delete(title);
+        else closedSections.add(title);
+    });
+    return section;
 }
+
+// A pushed refresh rebuilds these sections, so a collapsed one is remembered by title.
+const closedSections = new Set<string>();
 
 // topGroupsSection: the most frequent request groups by total volume.
 function topGroupsSection(groups: RequestGroup[], total: number): HTMLElement {
@@ -1148,11 +1353,6 @@ function expandedSet(table: string): Set<string> {
     return fresh;
 }
 
-// requestRowKey identifies a request row across refreshes.
-function requestRowKey(e: RequestEvent, i: number): string {
-    return [e.at, e.method, e.path, e.actor || "", String(i)].join("\u0000");
-}
-
 // collapsibleRow returns the visible row plus its (initially hidden) detail
 // row. Clicking, or Enter/Space on the focused row, toggles the pair.
 function collapsibleRow(table: string, key: string, cells: HTMLElement[], detail: () => HTMLElement): HTMLElement[] {
@@ -1220,62 +1420,6 @@ function requestLegend(): HTMLElement {
     return legend;
 }
 
-function requestTable(events: RequestEvent[]): HTMLElement {
-    const rows = events.flatMap((e, i) => {
-        const disp = e.disposition || "passthrough";
-        // A passthrough's reason rides on the disposition chip's tooltip.
-        const dispTitle = e.reason
-            ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "")
-            : null;
-        // Path goes LAST: it is far and away the widest field. Trailing it
-        // keeps the fixed-width columns packed together on the left instead of
-        // separated by a column of mostly-empty space. It puts the ragged
-        // (ellipsized) edge where nothing has to line up after it.
-        const cells = [
-            el("td", null, el("span", { class: "disp " + reqDispClass(disp), text: disp, title: dispTitle })),
-            el("td", null, statusBadge(e.status)),
-            el("td", { class: "wh-event", text: e.method }),
-            // Resolved name when known (full key in the detail); bare key otherwise.
-            el("td", { class: "wh-caller", text: e.actor_name || e.actor || "" }),
-            el("td", { class: "wh-path", text: e.path }),
-        ];
-        // The row is dense and its cells ellipsize. Everything cut off — the
-        // full path, the principal key, the exact time the "When" column used
-        // to show. Everything lives one click away in the detail panel.
-        return collapsibleRow("requests", requestRowKey(e, i), cells, () => detailPairs([
-            ["Path", e.path],
-            ["Method", e.method],
-            ["Result", disp],
-            ["Upstream", e.status ? String(e.status) : "— (no upstream call)"],
-            ["Why", e.reason ? e.reason + (PASSTHROUGH_REASONS[e.reason] ? " — " + PASSTHROUGH_REASONS[e.reason] : "") : null],
-            ["Caller", e.actor_name ? e.actor_name + "  (" + e.actor + ")" : e.actor],
-            ["When", fmtAbsolute(e.at) + " · " + fmtTime(e.at)],
-        ]));
-    });
-    // No "When" column: the ring is the LIVE tail of traffic, so on any busy
-    // mirror every row reads "just now" — a whole column of noise. The exact
-    // timestamp is in each row's detail panel, where it is worth reading.
-    return el("table", { class: "webhooks rows-collapsible cols-requests" },
-        el("thead", null, el("tr", null,
-            el("th", { text: "Result" }),
-            el("th", { text: "Upstream" }),
-            el("th", { text: "Method" }),
-            el("th", { text: "Caller" }),
-            el("th", { text: "Path" }),
-        )),
-        el("tbody", null, rows),
-    );
-}
-
-// statusBadge renders the upstream HTTP status for a passthrough, colored by
-// class (2xx ok, 3xx redirect, 4xx/5xx error). Empty when there's no upstream
-// call (a cache hit), where "—" is shown instead.
-function statusBadge(status?: number): Node {
-    if (!status) return document.createTextNode("—");
-    const cls = status >= 500 ? "err" : status >= 400 ? "warn" : status >= 300 ? "redir" : "ok";
-    return el("span", { class: "status-code " + cls, text: String(status) });
-}
-
 // ---- rate limit: the App's own live poll, plus headers observed on every upstream response ----
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
@@ -1334,7 +1478,10 @@ async function loadRateLimits(silent = false): Promise<void> {
 // The kinds the server reports, in display order, with what each measures.
 const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
     ["webhook.handle", "Webhook handling", "receipt to applied, per delivery; GitHub is answered once the delivery is recorded"],
-    ["db.write_wait", "Write-lock wait", "the time a writer queued for the write lock"],
+    ["webhook.handle.client", "Webhook handling: client lane", "receipt to applied for the deliveries clients wait on, which the worker applies first"],
+    ["webhook.handle.bulk", "Webhook handling: bulk lane", "receipt to applied for workflow_job and workflow_run deliveries"],
+    ["db.write_wait", "Write-lock wait", "the time a foreground writer, such as a request, queued for the write lock"],
+    ["db.write_wait.background", "Write-lock wait: background", "the time a background writer, such as the webhook worker, queued for the write lock; it yields to foreground writers"],
     ["db.write_hold", "Write-lock hold", "the time one writer kept the write lock: a transaction, or one autocommit write"],
     ["db.begin", "SQLite begin", "BEGIN IMMEDIATE, once the write lock is ours"],
     ["db.exec", "SQLite exec", "one write statement, or a read-free statement"],
@@ -1374,7 +1521,7 @@ async function loadLatency(silent = false): Promise<void> {
             body.appendChild(el("div", { class: "empty" }, el("p", { text: "Nothing observed yet." }), el("p", { class: "sub", text: what })));
             continue;
         }
-        body.appendChild(latencyCard(k, data.bounds_ms, what, kind === "webhook.handle" ? data.webhook_timeout_ms : 0));
+        body.appendChild(latencyCard(k, data.bounds_ms, what, kind.startsWith("webhook.handle") ? data.webhook_timeout_ms : 0));
     }
 }
 
@@ -1491,6 +1638,7 @@ function openModal(titleText: string): Modal {
     const close = (): void => {
         backdrop.remove();
         modalOpen = false;
+        pumpRefresh();
         document.removeEventListener("keydown", onKey);
     };
     function onKey(e: KeyboardEvent): void { if (e.key === "Escape") close(); }

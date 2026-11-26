@@ -1,3 +1,5 @@
+// ratelimit_headers.go holds principalSlotKey.
+
 package api
 
 import (

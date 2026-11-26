@@ -40,7 +40,14 @@ func NewRouter(
 	app *ghclient.AppAuthenticator,
 	lat *latency.Recorder,
 	oauthRelaySecrets map[string]string,
+	eng Engine,
+	live *LiveHub,
 ) http.Handler {
+	// live: the dashboard's push channel; see docs/dashboard/live-stream.md.
+	if live == nil {
+		live = NewLiveHub()
+	}
+	live.watch(timeline, meter, lat)
 	r := chi.NewRouter()
 	r.Use(stampRequestStart)
 	r.Use(middleware.Logger)
@@ -57,6 +64,7 @@ func NewRouter(
 	// reqlog: the dashboard "Requests" view; every request is also mirrored onto the Timeline.
 	reqlog := newRequestLog()
 	reqlog.timeline = timeline
+	reqlog.live = live
 
 	// shapes captures uncached-traffic shapes for the admin brief; see docs/dashboard/implementation-brief.md.
 	shapes := newShapeStore()
@@ -72,9 +80,15 @@ func NewRouter(
 	// recordIdentity: shared by requireAuth and the self-verifying app-JWT routes; see CLAUDE.md.
 	recordIdentity := newIdentityRecorder(store)
 
+	// A route the engine spec declares goes to the engine, behind requireAuth; see engine.go.
+	if eng != nil {
+		eng.SetRequestSink(reqlog.recordEngine)
+	}
+	r.Use(engineDispatch(eng, requireAuth(gh, recordIdentity)))
+
 	// upstream is observed at its transport, so every call it makes reaches the Timeline.
 	upstream := httpobs.Client(0, TimelineUpstreamObserver(timeline))
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: upstream, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes, oauthRelaySecrets: oauthRelaySecrets}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: upstream, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes, oauthRelaySecrets: oauthRelaySecrets, appRead: newAppReader(app)}
 
 	// Web dashboard: session-cookie authz, distinct from the data API below; see docs/dashboard/dashboard.md.
 	var appEvents func(context.Context) ([]string, error)
@@ -83,6 +97,7 @@ func NewRouter(
 	}
 	dash := newDashboard(authSvc, store, baseURL, reqlog, checker, meter, notifier, dbPath, timeline, shapes, appEvents, dispatcher.Ordering)
 	dash.latency = lat
+	dash.live = live
 	dash.routes(r)
 
 	// Webhook endpoint: HMAC-signed, outside requireAuth; see docs/webhooks/dispatch.md.
@@ -150,9 +165,6 @@ func NewRouter(
 
 		r.Get("/repos/{owner}/{repo}/git/commits/{sha}", h.cachedGitCommit)
 
-		// Cached git tree read, content-addressed and immutable; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/git/trees/{sha}", h.cachedGitTree)
-
 		// Cached ref-prefix search; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/git/matching-refs/heads/*", h.cachedMatchingRefs)
 
@@ -197,9 +209,6 @@ func NewRouter(
 		// Cached check-run annotations, flushed by the run's own deliveries; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations", h.cachedCheckRunAnnotations)
 
-		// Cached rules in force on a branch; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/rules/branches/*", h.cachedBranchRules)
-
 		// Cached Code Quality setup; the PATCH flushes before proxying; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/code-quality/setup", h.cachedCodeQualitySetup)
 		// Every write spelling flushes; a proxy-only method leaves a stale GET.
@@ -220,9 +229,6 @@ func NewRouter(
 		r.Get("/repos/{owner}/{repo}/tarball/*", h.cachedArchive(ghdata.RepoAnswerKindTarball))
 		r.Get("/repos/{owner}/{repo}/zipball", h.cachedArchive(ghdata.RepoAnswerKindZipball))
 		r.Get("/repos/{owner}/{repo}/zipball/*", h.cachedArchive(ghdata.RepoAnswerKindZipball))
-
-		// Cached tags listing, per-page pages on repo_answer_cache; see docs/cache/rest-routes.md.
-		r.Get("/repos/{owner}/{repo}/tags", h.cachedTags)
 
 		// Cached branches list, per-page whole-doc snapshots; see docs/cache/rest-routes.md.
 		r.Get("/repos/{owner}/{repo}/branches", h.cachedBranchesList)

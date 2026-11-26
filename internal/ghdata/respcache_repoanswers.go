@@ -13,13 +13,11 @@ import (
 
 // The routes on repo_answer_cache; see docs/cache/rest-routes.md.
 const (
-	RepoAnswerKindTags              = "tags"
 	RepoAnswerKindRunLogs           = "run_logs"
 	RepoAnswerKindJobLogs           = "job_logs"
 	RepoAnswerKindCommit            = "commit"
 	RepoAnswerKindBranchesWhereHead = "branches_where_head"
 	RepoAnswerKindAnnotations       = "annotations"
-	RepoAnswerKindBranchRules       = "branch_rules"
 	RepoAnswerKindCommitsPath       = "commits_path"
 	RepoAnswerKindCommitsVerdict    = "commits_verdict"
 	RepoAnswerKindPullDiff          = "pull_diff"
@@ -141,17 +139,6 @@ func (s *Store) InvalidateRepoAnswers(ctx context.Context, owner, repo string) e
 func (s *Store) InvalidateRepoAnswersOfKind(ctx context.Context, owner, repo, kind string) error {
 	_, err := s.dbx(ctx).ExecContext(ctx, `DELETE FROM repo_answer_cache WHERE owner = ? AND repo = ? AND kind = ?`,
 		NormalizeRepoKey(owner), NormalizeRepoKey(repo), kind)
-	return err
-}
-
-// BranchRulesTTL backstops a ruleset change no delivery reached.
-const BranchRulesTTL = time.Hour
-
-// InvalidateOwnerAnswersOfKind drops one kind across every repo of an owner,
-// for an org-level change that names no repository.
-func (s *Store) InvalidateOwnerAnswersOfKind(ctx context.Context, owner, kind string) error {
-	_, err := s.dbx(ctx).ExecContext(ctx, `DELETE FROM repo_answer_cache WHERE owner = ? AND kind = ?`,
-		NormalizeRepoKey(owner), kind)
 	return err
 }
 

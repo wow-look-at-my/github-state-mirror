@@ -107,7 +107,7 @@ func newCheckerStack(t *testing.T, authSvc *auth.Service, gh http.Handler) (http
 	// A nil notifier keeps subscriber notifications inert for these tests.
 	queue := newTestQueue(t, dispatcher, nil)
 	// No relay secrets configured: these tests exercise the cache-check stream, not the login relay.
-	return NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, client, []string{"*"}, authSvc, "", checker, meter, nil, dbPath, nil, nil, nil, nil, nil), store
+	return NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, client, []string{"*"}, authSvc, "", checker, meter, nil, dbPath, nil, nil, nil, nil, nil, nil, nil), store
 }
 
 // decodeStreamLines splits an NDJSON body and unmarshals every line.

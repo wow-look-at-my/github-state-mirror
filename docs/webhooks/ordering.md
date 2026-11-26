@@ -6,7 +6,7 @@ That failure is the quietest one this service has. A merged PR came back OPEN ma
 
 ## The clock
 
-There is no timestamp header to lean on. GitHub sends `X-GitHub-Delivery` (a UUID, not time-ordered), `X-GitHub-Event`, `X-GitHub-Hook-ID` and the signature. Cloudflare's tunnel and describes our hop ads everything else on the wire here — `CF-Ray`, `CF-Connecting-IP`, `X-Forwarded-*`, `Date` —, not GitHub's. `Date` in particular moves with a retry rather than with the event.
+There is no timestamp header to lean on. `Date` in particular moves with a retry rather than with the event.
 
 So the clock comes from the payload, which is also the only part the signature covers. Rules decide whether a field can serve as one (`webhook.OrderOf`):
 
@@ -17,32 +17,15 @@ A payload with no such field is UNORDERABLE and says so. It applies unconditiona
 
 ## The subject
 
-Ordering is per RESOURCE, at the grain where "older" means "superseded":
-
-| event | subject | clock |
-| --- | --- | --- |
-| push | `ref:owner/repo:refs/heads/x` | `repository.pushed_at` |
-| pull_request | `pr:owner/repo#12` | `pull_request.updated_at` |
-| pull_request_review | `review:owner/repo:<id>` | `review.submitted_at` |
-| issue_comment | `comment:owner/repo:<id>` | `comment.updated_at` |
-| status | `status:owner/repo:<sha>:<context>` | `updated_at` |
-| check_run | `check_run:owner/repo:<id>` | `completed_at` ?? `started_at` |
-| check_suite | `check_suite:owner/repo:<id>` | `check_suite.updated_at` |
-| workflow_run | `workflow_run:owner/repo:<id>` | `workflow_run.updated_at` |
-| workflow_job | `workflow_job:owner/repo:<id>` | `completed_at` ?? `started_at` |
-| repository | `repo:owner/repo` | `repository.updated_at` |
-| issues | `issue:owner/repo#7` | `issue.updated_at` |
-| installation | `installation:<id>` | `installation.updated_at` |
-
 The status row is the one that matters most and is easiest to get incorrect. One commit carries many contexts, and they supersede only themselves. Keyed on the sha alone, an `all-builds` result landing first will discard a `ci` result posted a second earlier. Silently losing a check this mirror is the source of truth for. `TestOrdering_StatusContextsOnOneShaDoNotSupersedeEachOther` pins it.
 
 The `pull_request_review` row keys on the REVIEW, not the PR: two reviews on one PR are independent. Only a re-delivery of the same review is ordered against this one.
 
-`label` (no timestamp anywhere in the payload), `organization`, and `membership` are unorderable and apply as they always did — reported, not guessed at.
-
 ## The watermark
 
-Every delivery is applied the moment it arrives. Nothing is held. Ordering is the watermark's job (`internal/sync/ordering.go`, `ghdata.ClaimEventOrder`, `webhook_watermarks`). The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone. The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
+Every delivery is applied the moment the worker reaches it, and none is held for a clock. The worker applies the client lane ahead of the Actions bulk lane, and each lane in arrival order (docs/webhooks/lanes.md). No subject spans both lanes. Ordering is the watermark's job. The newest applied view of each subject is recorded, and a delivery older than it is refused with the `superseded` disposition rather than written. Equal times apply: GitHub's clocks are second-granular, and refusing on equality will drop a genuinely distinct view on rounding alone.
+
+The advance is a conditional upsert, so concurrent deliveries for one subject are resolved by the payload clock rather than by which transaction commits first.
 
 Refusing is not a lesser outcome for a snapshot. GitHub payloads are full views, not deltas, so applying only the newest lands on the same last state ordering them will have.
 

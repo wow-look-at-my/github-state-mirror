@@ -6,11 +6,11 @@ The short version: **the mirror stores no organization state for this payload to
 
 ## What the payload carries
 
-An `organization` delivery names an action (`member_added`, `member_removed`, `member_invited`, `renamed`, `deleted`, ...), the `organization` object (login, id, description, avatar), and — for the member actions — the account affected, under `membership.user` or `member`.
+An `organization` delivery names an action, the `organization` object (login, id, description, avatar), and — for the member actions — the account affected, under `membership.user` or `member`.
 
 ## Why it is not applied
 
-Look at what this service actually persists. The truth tables are `repos`, `pull_requests`, `pr_labels`, `commit_checks`, `workflow_runs` and the response caches keyed off them. **There is no organization table, no membership table, and no per-org row.** An organization's login appears only as the `owner` half of a repo's key, and the member accounts in this payload appear nowhere at all. The mirror has never stored who belongs to an org, because nothing it serves is derived from that.
+Look at what this service actually persists. **There is no organization table, no membership table, and no per-org row.** An organization's login appears only as the `owner` half of a repo's key, and the member accounts in this payload appear nowhere at all. The mirror has never stored who belongs to an org, because nothing it serves is derived from that.
 
 So there is no upsert to write. The `organization` object in the payload duplicates fields already absorbed from every delivery's own `repository` object — `absorbRepoFromPayload` runs on every event. It keeps the owner login and avatar on the repo rows current — and the member accounts have no representation to update.
 
@@ -31,7 +31,7 @@ Separate things. They are worth naming so the next person does not have to re-de
 1. **To apply anything at all**, the mirror will first have to start storing org membership — a table, a reason to keep it. Something served from it. Nothing today reads such a thing. Adding a table purely so this handler has somewhere to write will be the tail wagging the dog.
 2. **To stop the fleet-wide invalidation** (the more useful of the two), the `invalidator` interface needs a per-principal narrowing — `InvalidateActor(principal, kind, key)` — plus a login-to-principal lookup. This `actor_identities` already provides (it maps a principal to the login GitHub verified for it). Then `member_removed`/`member_added` will restale only the affected principal's marker. That is a genuine improvement and it does use the payload. It is simply not the same thing as applying state. It is not implemented today.
 
-A cheaper partial step, also unimplemented: `member_invited`, `renamed` and `edited` cannot change what any account may read. As a result, those actions can be answered with no invalidation at all rather than the current unconditional one.
+As a result, those actions can be answered with no invalidation at all rather than the current unconditional one.
 
 ## How this stays honest
 

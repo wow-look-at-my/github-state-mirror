@@ -24,6 +24,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database/dbgen"
+	"github.com/wow-look-at-my/github-state-mirror/internal/engine"
 	"github.com/wow-look-at-my/github-state-mirror/internal/freshness"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghclient"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
@@ -141,6 +142,7 @@ type testStack struct {
 	// debouncer is nil unless the test asked for passthrough coalescing via
 	debouncer *Debouncer
 	queue     *webhook.Queue
+	meter     *ratemeter.Store
 }
 
 func newFullTestStack(t *testing.T, authSvc *auth.Service, ghHandler http.Handler) testStack {
@@ -193,10 +195,31 @@ func newFullTestStackDebounced(t *testing.T, authSvc *auth.Service, ghHandler ht
 	debouncer := NewDebouncer(window)
 	t.Cleanup(func() { debouncer.Drain(5 * time.Second) })
 	lat := latency.New()
-	queue := newTestQueue(t, dispatcher, DeliveryRecorder(timeline, lat), notifier)
-	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, nil)
+	eng := newTestEngine(t, ghSrv.URL, timeline, meter)
+	queue := newTestQueue(t, eng.Applier(dispatcher, AmendDelivery(store)), DeliveryRecorder(timeline, lat), notifier)
+	router := NewRouter(mgr, store, testWebhookSecret, dispatcher, queue, gh, []string{"*"}, authSvc, "", checker, meter, notifier, dbPath, timeline, debouncer, nil, lat, nil, eng, nil)
 	webhookQueues.Store(router, queue)
-	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue}
+	return testStack{router: router, store: store, db: db, ghURL: ghSrv.URL, notifier: notifier, timeline: timeline, debouncer: debouncer, queue: queue, meter: meter}
+}
+
+// newTestEngine builds the embedded engine against the fake GitHub, as cmd/server does.
+func newTestEngine(t *testing.T, base string, timeline *reqtimeline.Recorder, meter *ratemeter.Store) *engine.Engine {
+	t.Helper()
+	// The spec reads both at build time; production sets the same variables.
+	t.Setenv("WEBHOOK_SECRET", testWebhookSecret)
+	t.Setenv("PASSTHROUGH_DEBOUNCE", "0")
+	eng, err := engine.New(context.Background(), engine.Options{
+		DB:         filepath.Join(t.TempDir(), "engine.db"),
+		Base:       base,
+		OnExchange: EngineObserver(timeline, meter),
+	}, testWebhookSecret)
+	require.NoError(t, err)
+	eng.Start()
+	t.Cleanup(func() {
+		eng.Drain(5 * time.Second)
+		_ = eng.Close()
+	})
+	return eng
 }
 
 // webhookQueues maps each test router to its webhook queue, so a test can wait for what it posted to apply.
@@ -221,9 +244,9 @@ func newTestQueue(t *testing.T, dispatcher webhook.Dispatcher, rec webhook.Deliv
 // awaitWebhooks waits until every delivery posted to router has been applied.
 func awaitWebhooks(t *testing.T, router http.Handler) {
 	t.Helper()
-	q, ok := webhookQueues.Load(router)
+	v, ok := webhookQueues.Load(router)
 	require.True(t, ok, "router was not built by a test stack")
-	require.True(t, q.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
+	require.True(t, v.(*webhook.Queue).Idle(10*time.Second), "posted deliveries were not applied in time")
 }
 
 func setupTestRouter(t *testing.T) (http.Handler, *ghdata.Store) {

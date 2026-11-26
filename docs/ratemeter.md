@@ -4,7 +4,7 @@ Extracted verbatim from the package doc comment and per-field/per-function comme
 
 ## What it is
 
-GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the show probe, and ghclient's own calls) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
+GitHub attaches rate-limit headers to every API response. As a result, the mirror can know each credential's standing for free — no `GET /rate_limit` polling spend. Every upstream path (the passthrough proxy, cached-route miss fetches, the show probe, ghclient's own calls, and every call of the embedded engine through `api.EngineObserver`) reports its responses here, and the admin dashboard's "Rate limit" tab reads the snapshot.
 
 The store is deliberately in-memory — the same live-view-not-audit-log stance as the api package's request log. Rate-limit windows reset within the hour. As a result, the data is sub-hour-ephemeral, and persisting it will add a schema.sql table, whose every edit nukes the whole cache. It resets on start.
 
@@ -22,7 +22,7 @@ An actively observed identity is re-observed with a fresh future reset on every 
 
 ## Observation fields
 
-`Identity` labels WHO consums the limit: the request's principal (`user:<id>`, `app:<id>`, `app-installation:<id>`, a token fingerprint) or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
+`Identity` labels WHO consums the limit: the request's principal or a credential-derived label (`app-jwt`, `token:<fp12>`). Never a raw token value.
 
 `Name` is the identity's verified display name (a user login, an app slug, an installation's account login) when the caller supplied one. Display-only. Never part of the (identity, resource) key. A later observation without a name keeps the last known one — the identity is the same principal either way. In `Observe`: the (identity, resource) key already pins the principal. As a result, a nameless reading is the same actor seen through a path that did not carry the name.
 
