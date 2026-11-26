@@ -363,9 +363,7 @@ async function demoShowView(scope: string): Promise<void> {
 const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"];
 
 // dataForView fetches one tab's own JSON directly from its endpoint,
-// independent of whatever is rendered. Backs the Copy JSON control, so a copy
-// is always a live fetch rather than a snapshot of whatever last happened to
-// be on screen.
+// independent of whatever is rendered.
 async function dataForView(scope: string): Promise<unknown> {
     const path = VIEW_PATHS[scope];
     if (!path) throw new Error("unknown view " + scope);
