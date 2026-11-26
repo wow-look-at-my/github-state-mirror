@@ -543,6 +543,12 @@ function streamDown(why: string): void {
     streamFailures++;
     setLiveState("down", why);
     signalStream(false, Date.now());
+    // A tab with no data yet must say why, or it reads "Loading" for as long as the server is away.
+    if (viewData === undefined && !viewError) {
+        viewError = "the live connection is down (" + why + ")";
+        viewDirty = true;
+        renderView();
+    }
     // A session that ended looks the same as a dead server from here, so ask.
     if (streamFailures === 3) {
         void api<Me>("/api/me").then((me) => { if (!me.authenticated) location.reload(); }, () => undefined);
