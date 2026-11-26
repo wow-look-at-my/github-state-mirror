@@ -200,6 +200,17 @@ function logRows(page: Page): Promise<Array<[string, string]>> {
 	}));
 }
 
+// openTab shows a tab and waits for its set-up requests to end. The Timeline
+// reads its first page and then opens the stream again from that page's cursor.
+async function openTab(page: Page, tab: string): Promise<void> {
+	await page.goto(`${LIVE}/#${tab}`);
+	await page.waitForSelector(".live-pill.live");
+	if (tab === "timeline") {
+		await page.waitForFunction(() => (document.querySelector("gsm-timeline") as unknown as { liveReady?: boolean } | null)?.liveReady === true, undefined, { timeout: 20000 });
+	}
+	await page.waitForTimeout(2500);
+}
+
 async function until<T>(what: string, read: () => Promise<T>, ok: (v: T) => boolean, timeoutMs: number): Promise<T> {
 	const start = Date.now();
 	let last = await read();
@@ -248,17 +259,14 @@ test("the dashboard is pushed its updates and polls for nothing", async (t) => {
 	});
 
 	await t.test("an idle page makes no request at all", async () => {
-		// The Requests tab loads its group tables once more after traffic. Let that pass first.
-		await page.waitForTimeout(3000);
 		apiCalls.length = 0;
 		await page.waitForTimeout(12000);
 		assert.deepEqual(apiCalls, [], "the page polled while nothing was happening");
 		assert.equal(await page.getAttribute("#live-pill", "class"), "live-pill live", "the heartbeat keeps the stream live");
 
-		// A tab whose own load raised its own topic would load itself forever. Every tab must settle.
+		// A tab opens its stream, and the Timeline reads its first page. No tab may ask for more.
 		for (const tab of ["mine", "all", "webhooks", "ratelimit", "latency", "timeline"]) {
-			await page.goto(`${LIVE}/#${tab}`);
-			await page.waitForTimeout(2500);
+			await openTab(page, tab);
 			apiCalls.length = 0;
 			await page.waitForTimeout(6000);
 			assert.deepEqual(apiCalls, [], `the ${tab} tab kept loading with nothing happening`);
@@ -308,6 +316,27 @@ test("the dashboard is pushed its updates and polls for nothing", async (t) => {
 		await page.waitForSelector(".empty");
 		await sendWebhook();
 		await until("the delivery row", () => page.$eval("#scope-body", (el) => el.querySelectorAll("table.cols-webhooks tr.row-toggle").length), (n) => n === 1, 2500);
+	});
+
+	// The stream a tab opens is the request it makes. Traffic must add none: a
+	// page that reads its tab again on each change is a poll under steady
+	// traffic.
+	await t.test("a busy page is pushed its data and makes no request", async () => {
+		const rows = (): Promise<number> => page.$eval("#scope-body", (el) => el.querySelectorAll("table.cols-webhooks tr.row-toggle").length);
+		const handled = (): Promise<number> => page.$eval("#scope-body", (el) => Number(el.querySelector(".lat-card .mini .n")?.textContent ?? "0"));
+		for (const tab of ["mine", "all", "webhooks", "requests", "ratelimit", "latency", "timeline"]) {
+			await openTab(page, tab);
+			const before = tab === "webhooks" ? await rows() : tab === "latency" ? await handled() : 0;
+			apiCalls.length = 0;
+			for (let i = 0; i < 12; i++) {
+				await Promise.all([hit(`busy/${tab}/${i}`), sendWebhook()]);
+				await page.waitForTimeout(250);
+			}
+			if (tab === "webhooks") await until("each delivery's row", rows, (n) => n === before + 12, 2500);
+			if (tab === "latency") await until("each delivery's count", handled, (n) => n === before + 12, 2500);
+			await page.waitForTimeout(1500);
+			assert.deepEqual(apiCalls, [], `the ${tab} tab made a request while traffic flowed`);
+		}
 	});
 
 	await t.test("a dead server is reported and a new one is picked up", async () => {
