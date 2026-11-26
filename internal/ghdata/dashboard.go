@@ -104,6 +104,8 @@ func (s *Store) RecentRefreshes(ctx context.Context, actorKey string, limit int6
 // WebhookDelivery is recorded webhook delivery and what the dispatcher did
 // with it. It is global -- see the webhook_deliveries table.
 type WebhookDelivery struct {
+	// ID is the log row's own key. It grows with each delivery, and a write ignores it.
+	ID          int64  `json:"id"`
 	DeliveryID  string `json:"delivery_id"`
 	EventType   string `json:"event_type"`
 	Action      string `json:"action"`
@@ -188,6 +190,7 @@ func (s *Store) RecentWebhookDeliveries(ctx context.Context, limit int64) ([]Web
 	out := make([]WebhookDelivery, len(rows))
 	for i, r := range rows {
 		out[i] = WebhookDelivery{
+			ID:          r.ID,
 			DeliveryID:  r.DeliveryID,
 			EventType:   r.EventType,
 			Action:      r.Action,

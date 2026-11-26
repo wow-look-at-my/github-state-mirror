@@ -20,7 +20,7 @@ import type {
     TimelineResponse, GsmTimelineElement,
     RateLimitResponse, InstallationRateLimit, ObservedRateLimit,
     LatencyResponse, LatencyKind,
-    DemoStateData, DemoConfig, StreamMessage, StreamSignal,
+    DemoStateData, DemoConfig, StreamMessage, StreamSignal, StreamView, WebhooksFrame, TimelineFrame,
 } from "./types";
 import type { GsmRequestLogElement } from "./request-log";
 
@@ -214,8 +214,7 @@ async function renderDashboard(me: Me): Promise<void> {
         if (scope !== currentView && hasTab(scope)) switchTab(scope);
     };
     startLive();
-    await loadView(initial);
-    lastRefreshEnd = Date.now();
+    showView(initial);
 
     function hasTab(scope: string): boolean {
         if (!scope || !tabs) return false;
@@ -236,19 +235,128 @@ async function renderDashboard(me: Me): Promise<void> {
         currentView = scope;
         // replaceState (not location.hash=) so tab clicks don't pile up history entries the back button would have.
         history.replaceState(null, "", "#" + scope);
-        refreshPending = false;
-        void loadView(scope).finally(() => { lastRefreshEnd = Date.now(); });
+        showView(scope);
     }
 }
 
-// loadView dispatches to the loader for a tab.
-function loadView(scope: string, silent = false): Promise<void> {
-    if (scope === "webhooks") return loadWebhooks(silent);
-    if (scope === "requests") return loadRequests(silent);
-    if (scope === "timeline") return loadTimeline();
-    if (scope === "ratelimit") return loadRateLimits(silent);
-    if (scope === "latency") return loadLatency(silent);
-    return loadScope(scope, silent);
+// What each tab shows while its first data is on the way.
+const VIEW_LOADING: Readonly<Record<string, string>> = {
+    mine: "Loading cache…",
+    all: "Loading cache…",
+    webhooks: "Loading webhook activity…",
+    requests: "Loading request activity…",
+    ratelimit: "Loading rate limit…",
+    latency: "Loading latency…",
+};
+
+// The endpoint that serves the same data as a tab's pushes. Only the demo and Copy JSON read these.
+const VIEW_PATHS: Readonly<Record<string, string>> = {
+    mine: "/api/cache?scope=mine",
+    all: "/api/cache?scope=all",
+    webhooks: "/api/webhooks",
+    requests: "/api/requests",
+    ratelimit: "/api/ratelimit",
+    latency: "/api/latency",
+    timeline: "/api/timeline",
+};
+
+// showView opens a tab. The page fetches nothing for it: the stream is opened
+// for that tab, and the server pushes the tab's data now and on each change.
+function showView(scope: string): void {
+    viewData = undefined;
+    viewError = "";
+    viewDirty = false;
+    if (scope === "timeline") {
+        mountTimeline();
+    } else if (scope === "requests" && requestLog) {
+        mountRequests(requestLog);
+    } else {
+        const body = byId("scope-body");
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "loading", text: VIEW_LOADING[scope] ?? "Loading…" }));
+    }
+    if (DEMO) {
+        void demoShowView(scope);
+        return;
+    }
+    openStream();
+}
+
+// onViewPush takes one push for the active tab and draws it.
+function onViewPush(v: StreamView): void {
+    if (v.error) {
+        viewError = v.error;
+    } else if (v.name === "timeline") {
+        viewError = "";
+        timelineElement()?.push(v.data as TimelineFrame);
+    } else {
+        viewError = "";
+        viewData = v.name === "webhooks" ? foldWebhooks(viewData as WebhooksResponse | undefined, v.data as WebhooksFrame) : v.data;
+    }
+    viewDirty = true;
+    renderView();
+}
+
+// renderView draws the newest data of the active tab. A hidden page and an
+// open modal hold the draw, and the newest data is drawn when they end.
+function renderView(): void {
+    if (!viewDirty || modalOpen || document.hidden) return;
+    viewDirty = false;
+    const data = viewData;
+    if (data !== undefined) {
+        switch (currentView) {
+            case "mine":
+            case "all": renderScope(currentView, data as CacheResponse); break;
+            case "webhooks": renderWebhooks(data as WebhooksResponse); break;
+            case "requests": renderRequestsSummary(data as RequestsResponse); break;
+            case "ratelimit": renderRateLimits(data as RateLimitResponse); break;
+            case "latency": renderLatency(data as LatencyResponse); break;
+        }
+    }
+    renderViewError(data === undefined && currentView !== "timeline" && currentView !== "requests");
+}
+
+// renderViewError shows why the tab has no data, or why its data stopped
+// changing. alone says the tab has nothing else to show.
+function renderViewError(alone: boolean): void {
+    const body = byId("scope-body");
+    document.getElementById("view-error")?.remove();
+    if (!viewError) return;
+    if (alone) body.innerHTML = "";
+    body.prepend(el("div", {
+        class: "error-banner", id: "view-error",
+        text: (alone ? "Could not load this tab: " : "This tab stopped updating: ") + viewError,
+    }));
+}
+
+// foldWebhooks applies one Webhooks push to the data the tab holds.
+function foldWebhooks(held: WebhooksResponse | undefined, f: WebhooksFrame): WebhooksResponse {
+    const out: WebhooksResponse = f.reset || !held ? { deliveries: [] } : { ...held };
+    if (f.deliveries?.length) {
+        const byId = new Map((out.deliveries ?? []).map((d) => [d.id, d]));
+        for (const d of f.deliveries) byId.set(d.id, d);
+        out.deliveries = [...byId.values()].sort((a, b) => b.id - a.id).slice(0, f.window);
+    }
+    if (f.missing_subscriptions !== undefined) out.missing_subscriptions = f.missing_subscriptions;
+    if (f.ordering !== undefined) out.ordering = { ...f.ordering, recent: out.ordering?.recent };
+    if (f.ordering_recent !== undefined && out.ordering) out.ordering = { ...out.ordering, recent: f.ordering_recent };
+    return out;
+}
+
+// demoShowView stands in for the stream in the backend-free preview: one read of the canned data.
+async function demoShowView(scope: string): Promise<void> {
+    if (scope === "timeline") return;
+    try {
+        const data = await api<unknown>(VIEW_PATHS[scope] as string);
+        if (currentView !== scope) return;
+        if (scope === "requests") requestLog?.ingest((data as RequestsResponse).recent ?? []);
+        viewData = data;
+    } catch (e) {
+        if (currentView !== scope) return;
+        viewError = (e as Error).message;
+    }
+    viewDirty = true;
+    renderView();
 }
 
 // Each entry equals its tab's data-scope. Non-admins only ever see "mine".
@@ -259,16 +367,9 @@ const ALL_VIEWS: ReadonlyArray<string> = ["mine", "all", "webhooks", "requests",
 // is always a live fetch rather than a snapshot of whatever last happened to
 // be on screen.
 async function dataForView(scope: string): Promise<unknown> {
-    switch (scope) {
-        case "mine": return api<CacheResponse>("/api/cache?scope=mine");
-        case "all": return api<CacheResponse>("/api/cache?scope=all");
-        case "webhooks": return api<WebhooksResponse>("/api/webhooks");
-        case "requests": return api<RequestsResponse>("/api/requests");
-        case "ratelimit": return api<RateLimitResponse>("/api/ratelimit");
-        case "latency": return api<LatencyResponse>("/api/latency");
-        case "timeline": return api<TimelineResponse>("/api/timeline");
-        default: throw new Error("unknown view " + scope);
-    }
+    const path = VIEW_PATHS[scope];
+    if (!path) throw new Error("unknown view " + scope);
+    return api<unknown>(path);
 }
 
 // fullStateJSON gathers every tab the signed-in user can see into one
@@ -343,17 +444,6 @@ const STREAM_WATCH_MS = 5000;
 // How many events the first Requests load asks for: the server's whole ring.
 const LOG_BACKFILL = 10000;
 
-// The topic that makes each tab stale, and the least time between loads of
-// it. The Timeline is absent: its element hears the stream itself.
-const VIEW_FEEDS: Readonly<Record<string, readonly [topic: string, minMs: number]>> = {
-    mine: ["cache", 5000],
-    all: ["cache", 5000],
-    webhooks: ["webhooks", 1000],
-    requests: ["requests", 2000],
-    ratelimit: ["ratelimit", 1000],
-    latency: ["latency", 1000],
-};
-
 let currentView = "mine";
 let modalOpen = false;
 
@@ -363,11 +453,14 @@ let streamLive = false;
 let streamLastAt = 0;
 let streamFailures = 0;
 let streamWatch: ReturnType<typeof setInterval> | undefined;
+let streamRetry: ReturnType<typeof setTimeout> | undefined;
 
-let refreshPending = false;
-let refreshInFlight = false;
-let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-let lastRefreshEnd = 0;
+// The newest pushed data of the active tab. undefined means none arrived yet.
+let viewData: unknown;
+// Why the server could not build the active tab's data.
+let viewError = "";
+// viewData or viewError changed since the tab was drawn.
+let viewDirty = false;
 
 // The Requests log lives for the whole page, so it keeps filling on other tabs.
 let requestLog: GsmRequestLogElement | null = null;
@@ -391,8 +484,8 @@ function setLiveState(state: LiveState, detail = ""): void {
                 : "Opening the live connection.";
 }
 
-function signalStream(live: boolean, now: number, topics: string[]): void {
-    const detail: StreamSignal = { live, now, topics };
+function signalStream(live: boolean, now: number): void {
+    const detail: StreamSignal = { live, now };
     window.dispatchEvent(new CustomEvent("gsm:stream", { detail }));
 }
 
@@ -402,22 +495,43 @@ function startLive(): void {
         requestLog.describeReason = describeReason;
     }
     if (streamWatch !== undefined) return;
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) pumpRefresh(); });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) renderView(); });
     if (DEMO) {
         setLiveState("demo");
         streamWatch = setInterval(demoTick, 2000);
         return;
     }
-    // The poll left: it asks whether the push channel is still alive.
+    // The chart asks for the stream again when it can name the event it holds.
+    window.addEventListener("gsm:timeline-sync", () => { if (currentView === "timeline") openStream(); });
+    // The timer left asks whether the push channel is still alive.
     streamWatch = setInterval(() => {
         if (stream && Date.now() - streamLastAt > STREAM_STALL_MS) streamDown(streamLive ? "no heartbeat" : "no answer");
     }, STREAM_WATCH_MS);
-    openStream();
 }
 
-function openStream(): void {
+function timelineElement(): GsmTimelineElement | null {
+    return document.querySelector("gsm-timeline") as GsmTimelineElement | null;
+}
+
+// streamURL names the active tab, and the points the page continues from.
+function streamURL(): string {
+    const p = new URLSearchParams({ view: currentView });
     const since = requestLog?.model.maxSeq ?? 0;
-    const es = new EventSource("/api/stream" + (since ? "?requests_since=" + since : ""));
+    if (since) p.set("requests_since", String(since));
+    if (currentView === "timeline") {
+        const tl = timelineElement();
+        if (tl?.liveReady) p.set("timeline_since", String(tl.cursor));
+    }
+    return "/api/stream?" + p.toString();
+}
+
+// openStream opens the stream for the active tab. It replaces an open stream
+// and a retry that waits. Each new stream starts with the tab's whole data.
+function openStream(): void {
+    clearTimeout(streamRetry);
+    streamRetry = undefined;
+    stream?.close();
+    const es = new EventSource(streamURL());
     stream = es;
     streamLastAt = Date.now();
     es.onmessage = (ev) => { if (stream === es) onStreamMessage(JSON.parse(ev.data as string) as StreamMessage); };
@@ -430,33 +544,30 @@ function streamDown(why: string): void {
     streamLive = false;
     streamFailures++;
     setLiveState("down", why);
-    signalStream(false, Date.now(), []);
+    signalStream(false, Date.now());
     // A session that ended looks the same as a dead server from here, so ask.
     if (streamFailures === 3) {
         void api<Me>("/api/me").then((me) => { if (!me.authenticated) location.reload(); }, () => undefined);
     }
-    setTimeout(openStream, STREAM_RETRY_MS);
+    clearTimeout(streamRetry);
+    streamRetry = setTimeout(openStream, STREAM_RETRY_MS);
 }
 
 function onStreamMessage(m: StreamMessage): void {
     streamLastAt = Date.now();
-    const topics = m.topics.slice();
     if (m.boot !== undefined) {
-        const reconnected = streamBoot !== "";
-        if (reconnected && streamBoot !== m.boot) {
-            // The server restarted, so its log starts again from the first event.
+        if (streamBoot !== "" && streamBoot !== m.boot) {
+            // The server restarted. Its request log and its timeline ids start again.
             requestLog?.reset();
             requestsBackfilled = false;
+            timelineElement()?.remove();
+            if (currentView === "timeline") mountTimeline();
+            if (currentView === "requests" && requestLog) mountRequests(requestLog);
         }
         streamBoot = m.boot;
         streamFailures = 0;
         streamLive = true;
         setLiveState("live");
-        if (reconnected) {
-            // Whatever changed while the stream was down was never announced.
-            topics.push("timeline");
-            requestRefresh();
-        }
     }
     if (m.requests) {
         requestLog?.ingest(m.requests.events);
@@ -466,40 +577,8 @@ function onStreamMessage(m: StreamMessage): void {
             if (currentView === "requests") renderRequestsSub();
         }
     }
-    signalStream(true, m.now, topics);
-    const feed = VIEW_FEEDS[currentView];
-    if (feed && topics.includes(feed[0])) requestRefresh();
-}
-
-// requestRefresh loads the active tab again: at once when it is idle, and no
-// more frequently than its feed allows while changes keep coming.
-function requestRefresh(): void {
-    refreshPending = true;
-    pumpRefresh();
-}
-
-function pumpRefresh(): void {
-    if (!refreshPending || refreshInFlight || refreshTimer !== undefined || modalOpen || document.hidden) return;
-    const feed = VIEW_FEEDS[currentView];
-    if (!feed) {
-        refreshPending = false;
-        return;
-    }
-    const wait = lastRefreshEnd + feed[1] - Date.now();
-    if (wait > 0) {
-        refreshTimer = setTimeout(() => {
-            refreshTimer = undefined;
-            pumpRefresh();
-        }, wait);
-        return;
-    }
-    refreshPending = false;
-    refreshInFlight = true;
-    void loadView(currentView, true).finally(() => {
-        refreshInFlight = false;
-        lastRefreshEnd = Date.now();
-        pumpRefresh();
-    });
+    signalStream(true, m.now);
+    if (m.view && m.view.name === currentView) onViewPush(m.view);
 }
 
 // demoTick stands in for the stream in the backend-free preview: it replays
@@ -516,7 +595,8 @@ function demoTick(): void {
         }
         requestLog.ingest(events);
     }
-    signalStream(true, Date.now(), ["timeline"]);
+    signalStream(true, Date.now());
+    timelineElement()?.refresh();
 }
 
 // ---- URL-hash tab sync ---- The active tab is mirrored into the URL hash so a refresh.
@@ -532,23 +612,9 @@ if (typeof document !== "undefined") {
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCopyJsonMenu?.(); });
 }
 
-async function loadScope(scope: string, silent = false): Promise<void> {
+function renderScope(scope: string, data: CacheResponse): void {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    if (!silent) {
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "loading", text: "Loading cache…" }));
-    }
-    let data: CacheResponse;
-    try {
-        data = await api<CacheResponse>("/api/cache?scope=" + scope);
-    } catch (e) {
-        if (silent) return; // keep current content during a background refresh
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load cache stats: " + (e as Error).message }));
-        return;
-    }
-    if (currentView !== scope) return; // user switched tabs while we were fetching
     body.innerHTML = "";
     const principals = data.principals ?? [];
 
@@ -742,23 +808,9 @@ function principalActions(s: PrincipalStats): HTMLElement {
 }
 
 // ---- webhook activity (admin only) ----
-async function loadWebhooks(silent = false): Promise<void> {
+function renderWebhooks(data: WebhooksResponse): void {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    if (!silent) {
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "loading", text: "Loading webhook activity…" }));
-    }
-    let data: WebhooksResponse;
-    try {
-        data = await api<WebhooksResponse>("/api/webhooks");
-    } catch (e) {
-        if (silent) return;
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load webhook activity: " + (e as Error).message }));
-        return;
-    }
-    if (currentView !== "webhooks") return;
     body.innerHTML = "";
     const deliveries = data.deliveries ?? [];
     sub.textContent = deliveries.length
@@ -938,19 +990,18 @@ function webhookTable(deliveries: WebhookDelivery[]): HTMLElement {
 // ---- traffic timeline (admin only) ---- A swimlane chart of incoming
 // webhook deliveries (one lane per event type). It outgoing proxied GitHub
 // requests (one lane per route shape), each bar a REAL measured duration —
-// rendered by the <gsm-timeline> element (src/timeline.ts). Unlike every
-// other tab this loader must NOT wipe and rebuild on refresh: the canvas
-// holds viewport/zoom state. The element is created ONCE and kept alive. It
-// reads /api/timeline?since=<id> when the stream says the ring grew, and
-// merges new events in place.
-async function loadTimeline(): Promise<void> {
+// rendered by the <gsm-timeline> element (src/timeline.ts). The canvas holds
+// viewport and zoom state, so the element is never rebuilt while the tab is
+// open. It reads the hour it paints one time. The stream then pushes each
+// later event, and the element merges it in place.
+function mountTimeline(): void {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
     sub.textContent = "Every exchange the mirror participates in — webhook deliveries, served requests, upstream calls, its own GitHub traffic, notifications — real measured durations, last 24h (in-memory, resets on restart)";
-    if (body.querySelector("gsm-timeline")) return; // element self-updates; never rebuild it
+    if (body.querySelector("gsm-timeline")) return;
     body.innerHTML = "";
     const tl = el("gsm-timeline") as GsmTimelineElement;
-    // In demo mode route the element's polls through demoApi (canned data for the backend-free preview).
+    // The backend-free preview serves the element canned data.
     if (DEMO) tl.fetcher = (path) => api<TimelineResponse>(path);
     body.appendChild(tl);
 }
@@ -960,48 +1011,53 @@ async function loadTimeline(): Promise<void> {
 // covers a MISS (fetched then cached), or a PASSTHROUGH (forwarded to GitHub
 // uncached). This is the live view of how much the cache is used vs. proxied
 // straight through.
-async function loadRequests(silent = false): Promise<void> {
+function mountRequests(log: GsmRequestLogElement): void {
     const body = byId("scope-body");
-    if (!silent) {
+    // The log element is never rebuilt: it holds the user's filter and open rows.
+    if (!document.getElementById("req-summary") || !body.contains(log)) {
         body.innerHTML = "";
-        body.appendChild(el("div", { class: "loading", text: "Loading request activity…" }));
+        const summary = el("div", { id: "req-summary" }, el("div", { class: "loading", text: VIEW_LOADING.requests }));
+        body.append(summary, el("div", { class: "section-label", text: "Live log" }), log);
     }
-    const log = requestLog;
-    if (!log) return;
-    // The first load takes the server's whole ring. A later one takes what the stream has not sent yet.
-    let data: RequestsResponse;
+    if (!DEMO) void backfillRequests(log);
+}
+
+let requestsBackfilling = false;
+
+// backfillRequests reads the server's whole request ring one time. The stream
+// sends each later event, so no later read is necessary.
+async function backfillRequests(log: GsmRequestLogElement): Promise<void> {
+    if (requestsBackfilled || requestsBackfilling) return;
+    requestsBackfilling = true;
+    const note = "req-backfill-error";
     try {
-        data = await api<RequestsResponse>(requestsBackfilled
-            ? "/api/requests?since=" + log.model.maxSeq
-            : "/api/requests?limit=" + LOG_BACKFILL);
+        const data = await api<RequestsResponse>("/api/requests?limit=" + LOG_BACKFILL);
+        // A server log behind ours is a new process. Its first event is one seq again.
+        if ((data.seq ?? 0) < log.model.maxSeq) log.reset();
+        log.ingest(data.recent ?? []);
+        requestsBackfilled = true;
+        document.getElementById(note)?.remove();
     } catch (e) {
-        if (silent) return;
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load request activity: " + (e as Error).message }));
-        return;
+        document.getElementById(note)?.remove();
+        if (currentView !== "requests") return;
+        log.before(el("div", {
+            class: "error-banner", id: note,
+            text: "Could not load the earlier requests: " + (e as Error).message + ". New requests still arrive. Retrying.",
+        }));
+        setTimeout(() => { if (currentView === "requests") void backfillRequests(log); }, STREAM_RETRY_MS);
+    } finally {
+        requestsBackfilling = false;
     }
-    if (currentView !== "requests") return;
-    if ((data.seq ?? 0) < log.model.maxSeq) {
-        // The server's log is behind ours: it restarted. Start again from its first event.
-        log.reset();
-        requestsBackfilled = false;
-        requestRefresh();
-        return;
-    }
-    requestsBackfilled = true;
-    log.ingest(data.recent ?? []);
+}
+
+// renderRequestsSummary draws the counters and the group tables above the log.
+function renderRequestsSummary(data: RequestsResponse): void {
+    const summary = document.getElementById("req-summary");
+    if (!summary) return;
     const by = data.by_disposition ?? {};
     const total = data.total || 0;
     requestTotals = { total, by, db: dbSizeLabel(data.db_size_bytes, data.db_wal_size_bytes) };
     renderRequestsSub();
-
-    // The summary above the log is rebuilt. The log element is never rebuilt: it holds the user's filter and open rows.
-    let summary = document.getElementById("req-summary");
-    if (!summary || !body.contains(log)) {
-        body.innerHTML = "";
-        summary = el("div", { id: "req-summary" });
-        body.append(summary, el("div", { class: "section-label", text: "Live log" }), log);
-    }
     summary.innerHTML = "";
     summary.appendChild(requestLegend());
     const groups = data.groups ?? [];
@@ -1423,23 +1479,9 @@ function requestLegend(): HTMLElement {
 // ---- rate limit: the App's own live poll, plus headers observed on every upstream response ----
 const RATE_RESOURCES: ReadonlyArray<string> = ["core", "graphql", "search"];
 
-async function loadRateLimits(silent = false): Promise<void> {
+function renderRateLimits(data: RateLimitResponse): void {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    if (!silent) {
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "loading", text: "Loading rate limit…" }));
-    }
-    let data: RateLimitResponse;
-    try {
-        data = await api<RateLimitResponse>("/api/ratelimit");
-    } catch (e) {
-        if (silent) return;
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load rate limit: " + (e as Error).message }));
-        return;
-    }
-    if (currentView !== "ratelimit") return;
     body.innerHTML = "";
     const installs = data.live ?? [];
     // A reading that consumed nothing this window is noise, so it is hidden.
@@ -1489,23 +1531,9 @@ const LATENCY_KINDS: ReadonlyArray<[string, string, string]> = [
     ["db.commit", "SQLite commit", "one transaction commit"],
 ];
 
-async function loadLatency(silent = false): Promise<void> {
+function renderLatency(data: LatencyResponse): void {
     const body = byId("scope-body");
     const sub = byId("scope-sub");
-    if (!silent) {
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "loading", text: "Loading latency…" }));
-    }
-    let data: LatencyResponse;
-    try {
-        data = await api<LatencyResponse>("/api/latency");
-    } catch (e) {
-        if (silent) return;
-        body.innerHTML = "";
-        body.appendChild(el("div", { class: "error-banner", text: "Could not load latency: " + (e as Error).message }));
-        return;
-    }
-    if (currentView !== "latency") return;
     body.innerHTML = "";
     sub.textContent = "Latency distributions since " + fmtTime(data.since) + " — in-memory; resets on restart";
 
@@ -1638,7 +1666,7 @@ function openModal(titleText: string): Modal {
     const close = (): void => {
         backdrop.remove();
         modalOpen = false;
-        pumpRefresh();
+        renderView();
         document.removeEventListener("keydown", onKey);
     };
     function onKey(e: KeyboardEvent): void { if (e.key === "Escape") close(); }

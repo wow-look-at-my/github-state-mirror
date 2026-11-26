@@ -19,13 +19,13 @@ import type {
     Task,
     WireSchema,
 } from 'https://sites.pazer.build/js-snippets/branch/library/ui/timeline-wire.js';
-import type { StreamSignal, TimelineEvent, TimelineResponse } from "./types";
+import type { StreamSignal, TimelineEvent, TimelineFrame, TimelineResponse } from "./types";
 
 const COMPONENT_URL = "https://sites.pazer.build/js-snippets/branch/library/ui/timeline-view.js";
 const COMPONENT_RETRY_MS = 5000; // FIXED retry cadence — never grows, never gives up
-// The least time between reads while the ring keeps growing.
-const READ_GAP_MS = 250;
-const FETCH_TIMEOUT_MS = 15000; // a poll that cannot settle must fail, not wedge the guard
+// The most pushed frames held while a merge runs. Past it the element asks for the stream again.
+const MAX_QUEUED_FRAMES = 32;
+const FETCH_TIMEOUT_MS = 15000; // a read that cannot settle must fail, not wedge the guard
 const STALE_AFTER_MS = 12000;
 const INITIAL_WINDOW_MS = 60 * 60 * 1000; // first paint: the last hour
 // The first paint FETCHES exactly the hour it draws.
@@ -55,6 +55,14 @@ export async function fetchTimelineBytes(path: string): Promise<Uint8Array> {
 export async function fetchDecoded(path: string, onSlice?: (ms: number) => void): Promise<DecodedPage> {
     const buf = await fetchTimelineBytes(path);
     return w().runSliced(w().decodePageGen(buf, SCHEMA), onSlice);
+}
+
+/** The bytes of a pushed frame. An SSE frame is text, so the columnar page rides in base64. */
+export function bytesOfBase64(b64: string): Uint8Array {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
 }
 
 // Tiny DOM helper (this module is standalone; app.ts's el() is not shared).
@@ -429,8 +437,13 @@ class GsmTimeline extends HTMLElement {
     private view: TimelineViewElement | null = null;
     private note: HTMLElement | null = null;
     private pollInFlight = false;
-    // The ring grew while a read ran, or while the page was hidden: read again.
-    private pollOwed = false;
+    // The first page is in. The stream may now continue from the cursor.
+    liveReady = false;
+    // Pushed frames that wait for the merge before them.
+    private queue: TimelineFrame[] = [];
+    private draining = false;
+    // Frames.
+    private gap = false;
     private maxId = 0;
     // The ring's retention floor (epoch ms) as of the last read — the point at which history is genuinely exhausted.
     private retentionStart = 0;
@@ -445,13 +458,15 @@ class GsmTimeline extends HTMLElement {
     // How many intervals to hand the component per call; steered by what the last call cost (see TARGET_FEED_MS).
     private feedSize = START_FEED_INTERVALS;
 
+    /** The newest event id the chart holds: where the stream continues from. */
+    get cursor(): number { return this.maxId; }
+
     connectedCallback(): void {
         window.addEventListener("gsm:stream", this.onStream);
         document.addEventListener("visibilitychange", this.onVisible);
         if (this.view || this.note) {
-            // Reconnect of an already-booted instance (app.ts never moves the element, but be correct anyway).
-            this.pollOwed = true;
-            this.readIfOwed();
+            // An instance that already started was put back in the page.
+            if (this.liveReady) this.resync();
             return;
         }
         this.note = elem("p", "timeline-note", "chart loading…");
@@ -460,30 +475,83 @@ class GsmTimeline extends HTMLElement {
     }
 
     disconnectedCallback(): void {
-        // The tab was left (loadView wipes #scope-body): stop listening.
+        // The tab was left: app.ts wiped #scope-body.
         window.removeEventListener("gsm:stream", this.onStream);
         document.removeEventListener("visibilitychange", this.onVisible);
+        this.queue.length = 0;
     }
 
-    // The dashboard's stream (app.ts) says when the ring grew. A frame that
-    // names no growth is still proof that the feed is alive.
+    // Each frame of the dashboard's stream (app.ts) is proof that the feed is alive.
     private readonly onStream = (ev: Event): void => {
         const s = (ev as CustomEvent<StreamSignal>).detail;
-        if (!s.live || !this.view) return;
-        if (s.topics.includes("timeline")) {
-            this.pollOwed = true;
-            this.readIfOwed();
-        } else if (!this.pollInFlight) {
-            this.markFresh(this.view);
-        }
+        if (s.live && this.view && !this.pollInFlight && !this.draining) this.markFresh(this.view);
     };
 
-    private readonly onVisible = (): void => this.readIfOwed();
+    private readonly onVisible = (): void => {
+        if (document.hidden || !this.gap || !this.isConnected) return;
+        this.resync();
+    };
 
-    private readIfOwed(): void {
-        if (!this.pollOwed || this.pollInFlight || document.hidden || !this.isConnected || !this.view) return;
-        this.pollOwed = false;
-        void this.poll().then(() => new Promise((r) => setTimeout(r, READ_GAP_MS))).then(() => this.readIfOwed());
+    // resync asks app.ts to open the stream again from this element's cursor.
+    private resync(): void {
+        this.gap = false;
+        this.queue.length = 0;
+        window.dispatchEvent(new CustomEvent("gsm:timeline-sync"));
+    }
+
+    /** Takes one pushed frame: the ring's events after the cursor. */
+    push(frame: TimelineFrame): void {
+        if (!this.liveReady || !this.view) return;
+        // A hidden page paints no frame, so a merge there never ends. Drop the frame and catch up later.
+        if (document.hidden || this.queue.length >= MAX_QUEUED_FRAMES) {
+            this.queue.length = 0;
+            this.gap = true;
+            if (!document.hidden) this.resyncWhenIdle();
+            return;
+        }
+        this.queue.push(frame);
+        void this.drain();
+    }
+
+    // The queue was full: the merge is behind the stream. Start again when it ends.
+    private resyncWhenIdle(): void {
+        if (this.draining || this.pollInFlight) return;
+        this.resync();
+    }
+
+    private async drain(): Promise<void> {
+        const tl = this.view;
+        if (this.draining || !tl) return;
+        this.draining = true;
+        try {
+            for (let f = this.queue.shift(); f; f = this.queue.shift()) {
+                // A frame that starts past the cursor skipped events.
+                if (f.since > this.maxId) {
+                    this.gap = true;
+                    break;
+                }
+                const decoded = await w().runSliced(w().decodePageGen(bytesOfBase64(f.wire), SCHEMA), this.recordSlice);
+                if (!this.isConnected || this.view !== tl) return;
+                if (decoded.maxId > this.maxId) this.maxId = decoded.maxId;
+                this.retentionStart = decoded.retentionStart;
+                await this.merge(tl, decoded, {
+                    start: this.coveredFrom || decoded.now - INITIAL_WINDOW_MS,
+                    end: decoded.now,
+                });
+            }
+        } catch (e) {
+            // A frame that cannot be read leaves a hole. Ask for the events again.
+            console.error("timeline: pushed frame failed:", e);
+            this.gap = true;
+        } finally {
+            this.draining = false;
+        }
+        if (this.gap && !document.hidden && this.isConnected) this.resync();
+    }
+
+    /** Demo only: reads the canned page again, in place of a pushed frame. */
+    refresh(): void {
+        if (this.fetcher && this.liveReady && !document.hidden) void this.poll();
     }
 
     private async boot(): Promise<void> {
@@ -498,10 +566,16 @@ class GsmTimeline extends HTMLElement {
         this.appendChild(tl);
         // Let the EMPTY chart paint once before any data arrives.
         await w().nextFrame();
-        await this.poll(); // first page: setData + initial viewport
+        // The first page seeds the chart and sets the viewport. It is retried until it loads.
+        while (!(await this.poll())) {
+            await new Promise((r) => setTimeout(r, COMPONENT_RETRY_MS));
+            if (!this.isConnected) return;
+        }
         this.note?.remove();
         this.note = null;
-        this.readIfOwed();
+        // From here the stream pushes each later event.
+        this.liveReady = true;
+        this.resync();
     }
 
     // Dynamic-import the Pages component, retrying forever on a fixed cadence
@@ -529,9 +603,10 @@ class GsmTimeline extends HTMLElement {
         }
     }
 
-    private async poll(): Promise<void> {
+    // poll reads one page over HTTP: the first page, and the demo's canned page. It reports success.
+    private async poll(): Promise<boolean> {
         const tl = this.view;
-        if (!tl || this.pollInFlight) return;
+        if (!tl || this.pollInFlight) return false;
         this.pollInFlight = true;
         try {
             // First read: the hour the chart paints.
@@ -547,7 +622,7 @@ class GsmTimeline extends HTMLElement {
             const decoded = fetcher
                 ? await w().runSliced(pageFromJSONGen(await fetcher(path)), this.recordSlice)
                 : await fetchDecoded(path, this.recordSlice);
-            if (!this.isConnected || this.view !== tl) return; // tab left mid-decode
+            if (!this.isConnected || this.view !== tl) return false; // tab left mid-decode
             if (decoded.maxId > this.maxId) this.maxId = decoded.maxId;
             this.retentionStart = decoded.retentionStart;
             // The live read covers [what it asked for, now].
@@ -555,9 +630,11 @@ class GsmTimeline extends HTMLElement {
                 start: this.coveredFrom || decoded.now - INITIAL_WINDOW_MS,
                 end: decoded.now,
             });
+            return true;
         } catch (e) {
-            // Keep the last data; the component's staleness marking says the feed is down once STALE_AFTER_MS passes without.
-            console.error("timeline: poll failed:", e);
+            // Keep the last data. The component marks the chart stale after STALE_AFTER_MS with no fresh mark.
+            console.error("timeline: read failed:", e);
+            return false;
         } finally {
             this.pollInFlight = false;
         }

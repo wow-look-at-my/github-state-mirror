@@ -62,7 +62,7 @@ func TestMissingSubscriptions_ComeFromTheAppNotTheTrafficLog(t *testing.T) {
 	}
 	d := &dashboard{appEvents: func(context.Context) ([]string, error) { return subscribed, nil }}
 
-	missing := d.missingSubscriptions(httptest.NewRequest("GET", "/api/webhooks", nil))
+	missing := d.missingSubscriptions(context.Background())
 
 	require.Len(t, missing, 1, "only the genuinely unsubscribed event may be reported")
 	assert.Equal(t, "label", missing[0].Event)
@@ -81,7 +81,7 @@ func TestMissingSubscriptions_SilentButSubscribedReportsNothing(t *testing.T) {
 		all = append(all, req.Event)
 	}
 	d := &dashboard{appEvents: func(context.Context) ([]string, error) { return all, nil }}
-	assert.Empty(t, d.missingSubscriptions(httptest.NewRequest("GET", "/api/webhooks", nil)),
+	assert.Empty(t, d.missingSubscriptions(context.Background()),
 		"an idle but subscribed fleet must produce no subscription warnings")
 }
 
@@ -89,7 +89,7 @@ func TestMissingSubscriptions_SilentButSubscribedReportsNothing(t *testing.T) {
 // when the call fails, the panel says nothing rather than asserting a
 // configuration problem the mirror has no evidence for.
 func TestMissingSubscriptions_UnknownIsNotMissing(t *testing.T) {
-	r := httptest.NewRequest("GET", "/api/webhooks", nil)
+	r := context.Background()
 
 	noApp := &dashboard{}
 	assert.Nil(t, noApp.missingSubscriptions(r), "no App credential: claim nothing")
