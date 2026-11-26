@@ -22,6 +22,8 @@ var (
 	pageTimer        = regexp.MustCompile(`(?m)^.*\bsetInterval\(.*$`)
 	pageCall         = regexp.MustCompile(`\b(?:api<[^>]*>|fetch|fetcher|fetchDecoded)\(\s*([^,)]*)`)
 	pageLiteralPath  = regexp.MustCompile("^[\"`]([^\"`?$]*)")
+	// "path: string" opens a function's parameter list. It is not a call.
+	pageParamDecl = regexp.MustCompile(`^\w+\??: `)
 )
 
 // pageSource is one front-end source with its comments removed.
@@ -38,7 +40,7 @@ func pageCallSites(src string) map[string]int {
 	sites := map[string]int{}
 	for _, m := range pageCall.FindAllStringSubmatch(src, -1) {
 		arg := strings.TrimSpace(m[1])
-		if strings.Contains(arg, ": ") {
+		if pageParamDecl.MatchString(arg) {
 			continue
 		}
 		if lit := pageLiteralPath.FindStringSubmatch(arg); lit != nil {
