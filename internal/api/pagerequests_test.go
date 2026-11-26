@@ -16,8 +16,9 @@ import (
 // under steady traffic. A new timer is where the next one starts.
 
 var (
+	// A comment is a whole line, or the tail of one. A "/*" inside a string literal is code.
 	pageLineComment  = regexp.MustCompile(`(?m)(^|\s)//.*$`)
-	pageBlockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	pageBlockComment = regexp.MustCompile(`(?m)^\s*(/\*|\*).*$`)
 	pageTimer        = regexp.MustCompile(`(?m)^.*\bsetInterval\(.*$`)
 	pageCall         = regexp.MustCompile(`\b(?:api<[^>]*>|fetch|fetcher|fetchDecoded)\(\s*([^,)]*)`)
 	pageLiteralPath  = regexp.MustCompile("^[\"`]([^\"`?$]*)")
