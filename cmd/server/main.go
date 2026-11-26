@@ -162,11 +162,14 @@ func main() {
 	// Deliveries left recorded by the last process are applied first.
 	go queue.Run(ctx)
 
+	// No caller waits on these, so their writes yield the write lock to requests.
+	bgCtx := database.WithBackgroundWrites(ctx)
+
 	// Start periodic refresher.
-	go refresher.Start(ctx)
+	go refresher.Start(bgCtx)
 
 	// A restart is itself a gap window, so the cycle runs immediately.
-	go replayer.Start(ctx)
+	go replayer.Start(bgCtx)
 
 	// Start HTTP server.
 	srv := &http.Server{

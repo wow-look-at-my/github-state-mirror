@@ -88,7 +88,7 @@ func TestHandler_AnswersOnceRecordedNotOnceApplied(t *testing.T) {
 	assert.Equal(t, webhook.DispQueued, w.Header().Get("X-GSM-Disposition"))
 	assert.Empty(t, dispatcher.applied(), "answered before the apply ran")
 
-	pending, err := store.Pending(context.Background(), 10)
+	pending, err := store.Pending(context.Background(), webhook.LaneClient, 10)
 	require.NoError(t, err)
 	require.Len(t, pending, 1, "the answered delivery is in the journal")
 	assert.Equal(t, "d-1", pending[0].DeliveryID)
@@ -138,7 +138,7 @@ func TestQueue_AppliesWhatACrashLeftRecorded(t *testing.T) {
 	require.True(t, q.Idle(5*time.Second))
 	assert.Equal(t, []string{"d-crash"}, dispatcher.applied())
 
-	pending, err := store.Pending(context.Background(), 10)
+	pending, err := store.Pending(context.Background(), webhook.LaneClient, 10)
 	require.NoError(t, err)
 	assert.Empty(t, pending)
 }
@@ -156,6 +156,41 @@ func TestQueue_AppliesInArrivalOrder(t *testing.T) {
 	runQueue(t, q)
 	require.True(t, q.Idle(5*time.Second))
 	assert.Equal(t, want, dispatcher.applied())
+}
+
+// Pending reads one lane at a time, oldest first. The worker can apply the
+// client lane ahead of a backlog of bulk deliveries recorded before it.
+func TestStore_PendingSplitsTheLanes(t *testing.T) {
+	store := openStore(t, filepath.Join(t.TempDir(), "inbox.db"))
+	ctx := context.Background()
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i, d := range []struct{ id, typ string }{
+		{"job-1", "workflow_job"},
+		{"run-1", "workflow_run"},
+		{"pr-1", "pull_request"},
+		{"job-2", "workflow_job"},
+		{"push-1", "push"},
+	} {
+		fresh, err := store.Put(ctx, webhook.Stored{DeliveryID: d.id, EventType: d.typ, Body: []byte(`{}`), ReceivedAt: epoch.Add(time.Duration(i) * time.Second)})
+		require.NoError(t, err)
+		require.True(t, fresh)
+	}
+
+	ids := func(lane webhook.Lane, limit int) []string {
+		got, err := store.Pending(ctx, lane, limit)
+		require.NoError(t, err)
+		var out []string
+		for _, d := range got {
+			out = append(out, d.DeliveryID)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"pr-1", "push-1"}, ids(webhook.LaneClient, 10))
+	assert.Equal(t, []string{"job-1", "run-1", "job-2"}, ids(webhook.LaneBulk, 10))
+	assert.Equal(t, []string{"job-1", "run-1"}, ids(webhook.LaneBulk, 2), "the limit applies within the lane")
+
+	require.NoError(t, store.MarkApplied(ctx, "pr-1", time.Now()))
+	assert.Equal(t, []string{"push-1"}, ids(webhook.LaneClient, 10), "an applied delivery leaves its lane")
 }
 
 // Applied ids past Retention are dropped; younger ones still deduplicate.

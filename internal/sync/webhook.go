@@ -147,9 +147,32 @@ func (d *WebhookDispatcher) absorbRepoFromPayload(ctx context.Context, event web
 	if !ok {
 		return
 	}
+	// A bulk-lane delivery can apply after a newer push (docs/webhooks/lanes.md), so its older pushed_at must not land.
+	if repo.PushedAt.Valid {
+		if cur, err := d.store.GetRepo(ctx, repo.Owner, repo.Name); err == nil && laterTimestamp(cur.PushedAt, repo.PushedAt) {
+			repo.PushedAt = sql.NullString{}
+		}
+	}
 	if err := d.store.UpsertRepo(ctx, repo); err != nil {
 		slog.Warn("webhook: absorb repository object failed", "repo", event.RepoFullName(), "error", err)
 	}
+}
+
+// laterTimestamp reports whether stored is an RFC3339 time strictly after incoming.
+// A value that does not parse compares as not later, so the upsert behaves as it always did.
+func laterTimestamp(stored, incoming sql.NullString) bool {
+	if !stored.Valid || !incoming.Valid {
+		return false
+	}
+	s, err := time.Parse(time.RFC3339, stored.String)
+	if err != nil {
+		return false
+	}
+	in, err := time.Parse(time.RFC3339, incoming.String)
+	if err != nil {
+		return false
+	}
+	return s.After(in)
 }
 
 func (d *WebhookDispatcher) onPush(ctx context.Context, event webhook.Event) outcome {
