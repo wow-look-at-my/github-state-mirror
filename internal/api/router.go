@@ -39,6 +39,7 @@ func NewRouter(
 	debouncer *Debouncer,
 	app *ghclient.AppAuthenticator,
 	lat *latency.Recorder,
+	oauthRelaySecrets map[string]string,
 	eng Engine,
 	live *LiveHub,
 ) http.Handler {
@@ -87,7 +88,7 @@ func NewRouter(
 
 	// upstream is observed at its transport, so every call it makes reaches the Timeline.
 	upstream := httpobs.Client(0, TimelineUpstreamObserver(timeline))
-	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: upstream, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes, appRead: newAppReader(app)}
+	h := &handlers{mgr: mgr, store: store, ghProxy: ghProxy, reqlog: reqlog, gh: gh, upstream: upstream, meter: meter, recordIdentity: recordIdentity, timeline: timeline, shapes: shapes, oauthRelaySecrets: oauthRelaySecrets, appRead: newAppReader(app)}
 
 	// Web dashboard: session-cookie authz, distinct from the data API below; see docs/dashboard/dashboard.md.
 	var appEvents func(context.Context) ([]string, error)
