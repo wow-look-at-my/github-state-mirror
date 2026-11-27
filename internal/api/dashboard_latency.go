@@ -21,5 +21,9 @@ func (d *dashboard) handleLatency(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, latencyResponse{Snapshot: d.latency.Snapshot(), WebhookTimeoutMs: GitHubDeliveryTimeoutMs})
+	writeJSON(w, d.latencySnapshot())
+}
+
+func (d *dashboard) latencySnapshot() latencyResponse {
+	return latencyResponse{Snapshot: d.latency.Snapshot(), WebhookTimeoutMs: GitHubDeliveryTimeoutMs}
 }

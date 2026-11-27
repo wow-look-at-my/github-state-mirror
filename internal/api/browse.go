@@ -246,12 +246,16 @@ type rateLimitResponse struct {
 }
 
 // handleRateLimit reports a live per-installation poll plus passively
-// observed rate limits (admin only). Without a GitHub App, Live is empty
-// with a Note and Observed still renders.
+// observed rate limits (admin only).
 func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	if _, ok := d.requireAdmin(w, r); !ok {
 		return
 	}
+	writeJSON(w, d.rateLimits(r.Context()))
+}
+
+// rateLimits is the Rate limit tab's payload. It holds the per-installation poll for liveRatesTTL.
+func (d *dashboard) rateLimits(ctx context.Context) rateLimitResponse {
 	resp := rateLimitResponse{
 		Live:     []syncpkg.InstallationRateLimit{},
 		Observed: []observedRateLimit{},
@@ -271,14 +275,14 @@ func (d *dashboard) handleRateLimit(w http.ResponseWriter, r *http.Request) {
 	if d.checker == nil || !d.checker.Available() {
 		resp.Note = "no GitHub App configured (set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY): live per-installation polling is unavailable; showing passively observed rate limits only"
 	} else if limits, err := d.liveRates.get(liveRatesTTL, func() ([]syncpkg.InstallationRateLimit, error) {
-		return d.checker.RateLimits(r.Context())
+		return d.checker.RateLimits(ctx)
 	}); err != nil {
 		slog.Warn("rate limit fetch failed", "error", err)
 		resp.Note = "live rate-limit poll failed: " + err.Error()
 	} else if limits != nil {
 		resp.Live = limits
 	}
-	writeJSON(w, resp)
+	return resp
 }
 
 // requireAdmin enforces a signed-in admin session. It writes the appropriate

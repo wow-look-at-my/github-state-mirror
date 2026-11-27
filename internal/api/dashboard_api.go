@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -108,12 +109,17 @@ func (d *dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(v, requestLogRecentCap)
 	}
+	writeJSON(w, d.requestsSnapshot(cursor, hasCursor, limit))
+}
+
+// requestsSnapshot is the Requests tab's payload: the counters, the group tables and limit events.
+func (d *dashboard) requestsSnapshot(cursor uint64, hasCursor bool, limit int) requestLogSnapshot {
 	snap := d.reqlog.snapshotSince(cursor, hasCursor, limit)
 	if d.live != nil {
 		snap.Boot = d.live.boot
 	}
 	snap.DBSizeBytes, snap.DBWALSizeBytes = dbFileSizes(d.dbPath)
-	writeJSON(w, snap)
+	return snap
 }
 
 // dbFileSizes: see docs/dashboard/dashboard.md.
@@ -201,18 +207,24 @@ func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	totals, err := d.store.GlobalDataCounts(ctx)
+	resp, err := d.cacheStats(r.Context(), login, isAdmin, scope)
 	if err != nil {
-		slog.Warn("global data counts failed", "error", err)
+		slog.Warn("cache stats failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	writeJSON(w, resp)
+}
+
+// cacheStats builds the cache tabs' payload. The caller checks that login may read scope.
+func (d *dashboard) cacheStats(ctx context.Context, login string, isAdmin bool, scope string) (cacheResponse, error) {
+	totals, err := d.store.GlobalDataCounts(ctx)
+	if err != nil {
+		return cacheResponse{}, fmt.Errorf("global data counts: %w", err)
+	}
 	identities, err := d.store.ListActorIdentities(ctx)
 	if err != nil {
-		slog.Warn("list principal identities failed", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return cacheResponse{}, fmt.Errorf("list principal identities: %w", err)
 	}
 
 	inputs := d.collectInputs(ctx, scope, login, identities)
@@ -222,9 +234,7 @@ func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	for _, in := range inputs {
 		p, err := d.buildPrincipal(ctx, in, login, detailed)
 		if err != nil {
-			slog.Warn("build principal failed", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+			return cacheResponse{}, fmt.Errorf("build principal: %w", err)
 		}
 		resp.Principals = append(resp.Principals, p)
 	}
@@ -236,7 +246,7 @@ func (d *dashboard) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		truthErrs, _ := d.store.ErrorMessagesByKind(ctx, "global")
 		resp.Truth = groupKinds(truthFresh, truthErrs)
 	}
-	writeJSON(w, resp)
+	return resp, nil
 }
 
 // collectInputs returns the principals to summarize for the requested scope,
