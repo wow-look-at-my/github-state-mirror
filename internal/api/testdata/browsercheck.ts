@@ -107,9 +107,9 @@ if (new URLSearchParams(location.search).has("warm")) {
 </script>
 <script type="module" src="/timeline.js"></script>
 <script>
-// The harness plays the dashboard stream's part: it says the ring grew.
+// The harness plays the dashboard stream's part: each frame says the feed is alive.
 setInterval(() => window.dispatchEvent(new CustomEvent("gsm:stream", {
-    detail: { live: true, now: Date.now(), topics: ["timeline"] },
+    detail: { live: true, now: Date.now() },
 })), 5000);
 // Long tasks are the browser's own verdict on main-thread blocking: anything
 // over 50 ms is reported by spec, so we ALSO time every animation frame gap,

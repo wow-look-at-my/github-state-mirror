@@ -3,9 +3,12 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -18,7 +21,7 @@ import (
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
 )
 
-// liveTopic is one dashboard data source. A set bit says "this changed".
+// liveTopic is one dashboard data source. A set bit says "this changed". A topic never reaches the page.
 type liveTopic uint32
 
 const (
@@ -29,21 +32,6 @@ const (
 	topicRateLimit
 	topicLatency
 )
-
-const topicAll = topicCache | topicRequests | topicWebhooks | topicTimeline | topicRateLimit | topicLatency
-
-// liveTopicNames is the wire vocabulary, in bit order. The client keys on these names.
-var liveTopicNames = []struct {
-	bit  liveTopic
-	name string
-}{
-	{topicCache, "cache"},
-	{topicRequests, "requests"},
-	{topicWebhooks, "webhooks"},
-	{topicTimeline, "timeline"},
-	{topicRateLimit, "ratelimit"},
-	{topicLatency, "latency"},
-}
 
 const (
 	// liveFlushInterval coalesces a burst of changes into one message.
@@ -66,9 +54,10 @@ type LiveHub struct {
 	closeOnce sync.Once
 }
 
+// liveSub hears the topics in mask. wake holds at most one token.
 type liveSub struct {
-	pending atomic.Uint32
-	wake    chan struct{}
+	mask liveTopic
+	wake chan struct{}
 }
 
 func NewLiveHub() *LiveHub {
@@ -92,7 +81,9 @@ func (h *LiveHub) publish(t liveTopic) {
 	}
 	h.mu.RLock()
 	for s := range h.subs {
-		s.pending.Or(uint32(t))
+		if s.mask&t == 0 {
+			continue
+		}
 		select {
 		case s.wake <- struct{}{}:
 		default:
@@ -101,8 +92,8 @@ func (h *LiveHub) publish(t liveTopic) {
 	h.mu.RUnlock()
 }
 
-func (h *LiveHub) subscribe() *liveSub {
-	s := &liveSub{wake: make(chan struct{}, 1)}
+func (h *LiveHub) subscribe(mask liveTopic) *liveSub {
+	s := &liveSub{mask: mask, wake: make(chan struct{}, 1)}
 	h.mu.Lock()
 	h.subs[s] = struct{}{}
 	h.n.Store(int32(len(h.subs)))
@@ -137,14 +128,22 @@ func (h *LiveHub) watch(tl *reqtimeline.Recorder, meter *ratemeter.Store, lat *l
 	})
 }
 
-// liveMessage is one SSE data frame.
+// liveMessage is one SSE data frame. An empty one is the heartbeat.
 type liveMessage struct {
 	// Boot is set on the first frame only.
 	Boot string `json:"boot,omitempty"`
 	// Now is the server clock in epoch milliseconds.
 	Now      int64         `json:"now"`
-	Topics   []string      `json:"topics"`
 	Requests *liveRequests `json:"requests,omitempty"`
+	// View is the data of the tab the stream was opened for.
+	View *liveView `json:"view,omitempty"`
+}
+
+// liveView is one push of a tab's data. Error replaces Data when the build failed.
+type liveView struct {
+	Name  string          `json:"name"`
+	Data  json.RawMessage `json:"data,omitempty"`
+	Error string          `json:"error,omitempty"`
 }
 
 // liveRequests is the request-log delta since the stream's cursor, oldest first.
@@ -156,8 +155,8 @@ type liveRequests struct {
 	Missed uint64 `json:"missed,omitempty"`
 }
 
-// handleStream serves the push channel. Any signed-in user gets the cache
-// topic. An admin gets every topic and the request-log delta.
+// handleStream serves the push channel. ?view= names the tab whose data the
+// stream carries. An admin also gets the request-log delta on every tab.
 func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 	login, ok := d.auth.Session(r)
 	if !ok {
@@ -170,14 +169,16 @@ func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := d.auth.IsAdmin(login)
-	mask := topicCache
-	if admin {
-		mask = topicAll
+	q := r.URL.Query()
+	feed, status, why := d.liveFeedFor(q, login, admin)
+	if status != 0 {
+		http.Error(w, why, status)
+		return
 	}
 
 	// The cursor starts at the log's tip unless the client names where it stopped.
 	cursor := d.reqlog.latestSeq()
-	if v := r.URL.Query().Get("requests_since"); v != "" {
+	if v := q.Get("requests_since"); v != "" {
 		since, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
 			http.Error(w, "bad requests_since", http.StatusBadRequest)
@@ -191,14 +192,32 @@ func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 
-	sub := d.live.subscribe()
-	defer d.live.unsubscribe(sub)
+	// Request events go to an admin only. A nil channel never wakes the loop.
+	var wake chan struct{}
+	if admin {
+		sub := d.live.subscribe(topicRequests)
+		defer d.live.unsubscribe(sub)
+		wake = sub.wake
+	}
+
+	// The tab's data is built off this loop, so a slow build holds no request event back.
+	var views chan liveView
+	if feed != nil {
+		views = make(chan liveView)
+		ctx, cancel := context.WithCancel(r.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			d.pumpView(ctx, feed, views)
+		}()
+		defer func() {
+			cancel()
+			<-done
+		}()
+	}
 
 	send := func(m liveMessage) bool {
 		m.Now = time.Now().UnixMilli()
-		if m.Topics == nil {
-			m.Topics = []string{}
-		}
 		body, err := json.Marshal(m)
 		if err != nil {
 			return false
@@ -220,9 +239,8 @@ func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if admin && cursor < d.reqlog.latestSeq() {
-		sub.pending.Or(uint32(topicRequests))
 		select {
-		case sub.wake <- struct{}{}:
+		case wake <- struct{}{}:
 		default:
 		}
 	}
@@ -230,44 +248,33 @@ func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(liveHeartbeat)
 	defer heartbeat.Stop()
 	for {
+		msg := liveMessage{}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-d.live.closed:
 			return
 		case <-heartbeat.C:
-			if !send(liveMessage{}) {
+		case v := <-views:
+			msg.View = &v
+		case <-wake:
+			// Let the burst land, then report it once.
+			select {
+			case <-r.Context().Done():
 				return
+			case <-d.live.closed:
+				return
+			case <-time.After(liveFlushInterval):
 			}
-			continue
-		case <-sub.wake:
-		}
-		// Let the burst land, then report it once.
-		select {
-		case <-r.Context().Done():
-			return
-		case <-d.live.closed:
-			return
-		case <-time.After(liveFlushInterval):
-		}
-		bits := liveTopic(sub.pending.Swap(0)) & mask
-		if bits == 0 {
-			continue
-		}
-		msg := liveMessage{}
-		for _, t := range liveTopicNames {
-			if bits&t.bit != 0 {
-				msg.Topics = append(msg.Topics, t.name)
-			}
-		}
-		if bits&topicRequests != 0 {
 			delta := d.reqlog.since(cursor, liveRequestBatch)
+			if len(delta.events) == 0 && delta.missed == 0 {
+				continue
+			}
 			cursor = delta.next
 			msg.Requests = &liveRequests{Events: delta.events, Total: delta.total, ByDisposition: delta.byDisp, Missed: delta.missed}
 			if delta.more {
-				sub.pending.Or(uint32(topicRequests))
 				select {
-				case sub.wake <- struct{}{}:
+				case wake <- struct{}{}:
 				default:
 				}
 			}
@@ -279,8 +286,70 @@ func (d *dashboard) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ttlValue caches one slow answer for a fixed time. It keeps a push-driven
-// refetch from turning into a GitHub call per event.
+// pumpView builds one tab's data and hands each change to the stream. It
+// builds once at the start, and again each time the feed's topic is raised.
+// The feed sets the least time between builds.
+func (d *dashboard) pumpView(ctx context.Context, feed *liveFeed, out chan<- liveView) {
+	// Subscribe before the first build, so a change during it is not lost.
+	sub := d.live.subscribe(feed.topic)
+	defer d.live.unsubscribe(sub)
+	var last []byte
+	for {
+		built := time.Now()
+		v := liveView{Name: feed.name}
+		data, err := feed.build(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			slog.Warn("live view build failed", "view", feed.name, "error", err)
+			v.Error = "the server could not read the data of this tab"
+		} else if data != nil {
+			if v.Data, err = json.Marshal(data); err != nil {
+				slog.Error("live view encode failed", "view", feed.name, "error", err)
+				v.Data, v.Error = nil, "the server could not encode the data of this tab"
+			}
+		}
+		// A build that changed nothing sends nothing.
+		body := append([]byte(v.Error+"\x00"), v.Data...)
+		if (v.Error != "" || v.Data != nil) && !bytes.Equal(body, last) {
+			select {
+			case out <- v:
+				last = body
+			case <-ctx.Done():
+				return
+			case <-d.live.closed:
+				return
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.live.closed:
+			return
+		case <-sub.wake:
+		}
+		pace := time.NewTimer(max(liveFlushInterval, feed.every-time.Since(built)))
+		select {
+		case <-ctx.Done():
+			pace.Stop()
+			return
+		case <-d.live.closed:
+			pace.Stop()
+			return
+		case <-pace.C:
+		}
+		// The next build covers every change up to here.
+		select {
+		case <-sub.wake:
+		default:
+		}
+	}
+}
+
+// ttlValue caches one slow answer for a fixed time. It keeps a pushed tab
+// from making a GitHub call per event.
 type ttlValue[T any] struct {
 	mu  sync.Mutex
 	val T

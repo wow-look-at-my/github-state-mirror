@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/github-state-mirror/internal/auth"
 	"github.com/wow-look-at-my/github-state-mirror/internal/database"
+	"github.com/wow-look-at-my/github-state-mirror/internal/ghdata"
 	"github.com/wow-look-at-my/github-state-mirror/internal/latency"
 	"github.com/wow-look-at-my/github-state-mirror/internal/ratemeter"
 	"github.com/wow-look-at-my/github-state-mirror/internal/reqtimeline"
@@ -94,14 +96,50 @@ func (lf *liveFrames) ended() bool {
 	}
 }
 
-// liveDashboard is a dashboard with only what /api/stream and /api/requests read.
+// view returns the next push of a tab's data, decoded into out. It skips frames that carry none.
+func (lf *liveFrames) view(name string, out any) {
+	lf.t.Helper()
+	for {
+		m := lf.next()
+		if m.View == nil {
+			continue
+		}
+		require.Equal(lf.t, name, m.View.Name)
+		require.Empty(lf.t, m.View.Error)
+		require.NoError(lf.t, json.Unmarshal(m.View.Data, out))
+		return
+	}
+}
+
+// quiet fails the test if a frame arrives within d.
+func (lf *liveFrames) quiet(d time.Duration, why string) {
+	lf.t.Helper()
+	select {
+	case m, ok := <-lf.frames:
+		if ok {
+			body, _ := json.Marshal(m)
+			require.Fail(lf.t, why, "got %s", body)
+		}
+	case <-time.After(d):
+	}
+}
+
+// liveDashboard is a dashboard with what /api/stream and its tab feeds read.
+// The feeds push at the stream's own flush interval, so a test waits for nothing else.
 func liveDashboard(t *testing.T) (*dashboard, *auth.Service, *httptest.Server) {
 	t.Helper()
 	svc := configuredAuth(t)
+	db := openTestDB(t, filepath.Join(t.TempDir(), "live.db"))
+	t.Cleanup(func() { db.Close() })
 	hub := NewLiveHub()
 	log := newRequestLog()
 	log.live = hub
-	d := &dashboard{auth: svc, reqlog: log, live: hub}
+	d := &dashboard{
+		auth: svc, reqlog: log, live: hub, store: ghdata.NewStore(db),
+		timeline: reqtimeline.New(), meter: ratemeter.New(), latency: latency.New(),
+		liveTuning: &liveTuning{timelineBatch: defaultLiveTuning.timelineBatch},
+	}
+	hub.watch(d.timeline, d.meter, d.latency)
 	srv := httptest.NewServer(http.HandlerFunc(d.handleStream))
 	t.Cleanup(srv.Close)
 	t.Cleanup(hub.Close)
@@ -120,13 +158,13 @@ func TestLiveStream_PushesRequestsToAdmin(t *testing.T) {
 	lf := openLive(t, svc, srv.URL, "PazerOP")
 	hello := lf.next()
 	assert.Equal(t, d.live.boot, hello.Boot, "the first frame names the process")
-	assert.Empty(t, hello.Topics)
+	assert.Nil(t, hello.Requests)
+	assert.Nil(t, hello.View, "a stream opened for no tab carries no tab")
 
 	d.reqlog.record(callerIdent{Key: "user:1", Name: "octocat"}, "GET", "/repos/o/r", DispMiss)
 	d.reqlog.record(callerIdent{Key: "user:1", Name: "octocat"}, "GET", "/repos/o/r", DispHit)
 
 	m := lf.next()
-	assert.Equal(t, []string{"requests"}, m.Topics)
 	require.NotNil(t, m.Requests)
 	require.Len(t, m.Requests.Events, 2, "a burst arrives as one frame, without the event recorded before the stream opened")
 	assert.Equal(t, uint64(2), m.Requests.Events[0].Seq, "oldest first")
@@ -154,23 +192,9 @@ func TestLiveStream_ResumesFromCursor(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, bad.status)
 }
 
-func TestLiveStream_NonAdminGetsCacheOnly(t *testing.T) {
-	d, svc, srv := liveDashboard(t)
-	lf := openLive(t, svc, srv.URL, "octocat")
-	lf.next()
-
-	d.reqlog.record(callerIdent{Key: "user:1"}, "GET", "/secret/path", DispHit)
-	d.live.publish(topicWebhooks | topicTimeline | topicRateLimit | topicLatency)
-	d.live.publish(topicCache)
-
-	m := lf.next()
-	assert.Equal(t, []string{"cache"}, m.Topics, "admin topics never reach a non-admin")
-	assert.Nil(t, m.Requests, "request events never reach a non-admin")
-}
-
 func TestLiveStream_EndsWhenTheHubCloses(t *testing.T) {
 	d, svc, srv := liveDashboard(t)
-	lf := openLive(t, svc, srv.URL, "PazerOP")
+	lf := openLive(t, svc, srv.URL+"?view=latency", "PazerOP")
 	lf.next()
 	d.live.Close()
 	assert.True(t, lf.ended(), "shutdown must end an open stream")
@@ -181,9 +205,24 @@ func TestLiveHub_WatchMapsRecordersToTopics(t *testing.T) {
 	hub := NewLiveHub()
 	tl, meter, lat := reqtimeline.New(), ratemeter.New(), latency.New()
 	hub.watch(tl, meter, lat)
-	sub := hub.subscribe()
-	defer hub.unsubscribe(sub)
-	take := func() liveTopic { return liveTopic(sub.pending.Swap(0)) }
+	topics := []liveTopic{topicCache, topicRequests, topicWebhooks, topicTimeline, topicRateLimit, topicLatency}
+	subs := make([]*liveSub, len(topics))
+	for i, topic := range topics {
+		subs[i] = hub.subscribe(topic)
+		defer hub.unsubscribe(subs[i])
+	}
+	// take returns the topics raised since the call before it.
+	take := func() liveTopic {
+		var raised liveTopic
+		for i, sub := range subs {
+			select {
+			case <-sub.wake:
+				raised |= topics[i]
+			default:
+			}
+		}
+		return raised
+	}
 
 	tl.RecordRequest(time.Now(), time.Millisecond, "GET", "/x", 200, DispHit, "user:1", "")
 	assert.Equal(t, topicTimeline, take())

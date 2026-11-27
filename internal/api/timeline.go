@@ -182,7 +182,7 @@ type timelineResponse struct {
 // handleTimeline returns the timed traffic events for the dashboard's Timeline chart. Admin-only, like /api/requests — it spans every actor/tenant. It reads these query shapes, all answering the same payload:
 //
 //	(no params)          the whole retained window
-//	?since=<id>          only events newer than that cursor: the 5s live poll
+//	?since=<id>          only events newer than that cursor: what the stream pushes to the chart
 //	?from=&to=<unix ms>  the events overlapping a time window: the chart's async history loader
 //
 // The history loader keeps a paint from decoding the whole 24h ring to draw the hour on screen.

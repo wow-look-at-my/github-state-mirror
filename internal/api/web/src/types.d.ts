@@ -58,6 +58,7 @@ export interface CacheResponse {
 }
 
 export interface WebhookDelivery {
+    id: number; // the log row's key; it grows with each delivery
     delivery_id: string;
     event_type: string;
     action: string;
@@ -133,20 +134,43 @@ export interface RequestEvent {
 export interface StreamMessage {
     boot?: string; // first frame only; a new value means the server restarted
     now: number; // server clock, epoch ms
-    topics: string[]; // what changed: cache, requests, webhooks, timeline, ratelimit, latency
     requests?: {
         events: RequestEvent[]; // oldest first
         total: number;
         by_disposition: Record<string, number>;
         missed?: number;
     };
+    view?: StreamView;
+}
+
+// One push of a tab's data. error replaces data when the server could not build it.
+export interface StreamView {
+    name: string;
+    data?: unknown;
+    error?: string;
+}
+
+// One Webhooks push: what changed since the push before it. An absent field means "no change".
+export interface WebhooksFrame {
+    reset?: boolean; // first push of a stream: drop the rows held
+    window: number; // how many rows to keep, newest by id
+    deliveries?: WebhookDelivery[]; // new or changed rows
+    ordering?: OrderingSnapshot; // the counters, without recent
+    ordering_recent?: OutOfOrderSample[];
+    missing_subscriptions?: MissingSubscription[];
+}
+
+// One Timeline push: the ring's events after since, as a base64 columnar page.
+export interface TimelineFrame {
+    since: number;
+    wire: string;
+    more?: boolean;
 }
 
 // What app.ts tells the other modules, as the detail of a window "gsm:stream" event.
 export interface StreamSignal {
     live: boolean;
     now: number;
-    topics: string[];
 }
 
 // One route-shape group: cumulative (since restart) per-disposition counts for
@@ -223,6 +247,10 @@ export interface TimelineResponse {
 // The <gsm-timeline> custom element (src/timeline.ts).
 export interface GsmTimelineElement extends HTMLElement {
     fetcher: ((path: string) => Promise<TimelineResponse>) | null;
+    readonly liveReady: boolean; // the first page is in, so the stream may continue from cursor
+    readonly cursor: number; // the newest event id the chart holds
+    push(frame: TimelineFrame): void;
+    refresh(): void; // demo only: read the canned page again
 }
 
 // ---- GitHub App rate limit ----
